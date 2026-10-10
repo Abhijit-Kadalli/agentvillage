@@ -17,7 +17,9 @@ export const INDEX_PLUGIN_REVISION = "04d833b840541fedabe78cbdad306c18853d784a";
  * file, so no bundle activates. Moving it is a PR that changes this constant
  * (docs/moralmod_lifecycle.md, "The release pin").
  */
-export const MORALMOD_RELEASE_SHA256 = "93eab95f9ed270e500c694b79f2c48b5950c30cd1553e0ce75383774f558d2a1";
+// Decision Studio f46a5f8f9aac2a941ee25e95493f08a46dbad5c2, built with Bun 1.4.2:
+// https://github.com/Edge-City/agentvillage/releases/tag/moralmod-f46a5f8-c1b31a683085
+export const MORALMOD_RELEASE_SHA256 = "c1b31a6830850eff11c9a90304e2ea58792b0462edbbf1d7b8b0e24a7981a5dd";
 const FILES = ["negotiator-core.js", "negotiator-runtime.js", "INDEX-LICENSE"] as const;
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
