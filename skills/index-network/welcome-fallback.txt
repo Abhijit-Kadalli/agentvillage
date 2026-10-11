@@ -1,0 +1,20 @@
+Welcome to Edge City India ☀️
+
+I'm Edge, your personal agent for Edge City India. It's a pleasure to meet you.
+
+What can you ask me?
+• What events are happening tomorrow?
+• Please RSVP me to [event name] on the calendar.
+You can also send me Telegram voice notes.
+
+To complete your onboarding
+Explore the Agent Village app: https://agents.edgecity.live/
+
+1) Rolodex: browse people and track who you've met.
+2) Send someone a gold star to show gratitude (three per day).
+3) Skylight: make an avatar for me in the virtual village.
+
+Your intents
+I can't load your intents right now. Tell me what you're looking for, and I'll still help you find relevant people and events.
+
+I'm excited for our time at Edge City India together!
