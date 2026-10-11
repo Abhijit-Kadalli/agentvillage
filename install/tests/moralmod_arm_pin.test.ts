@@ -24,7 +24,8 @@
  * loader is taken out by the next ON run, so the plugin's own negotiator.js never runs beside it.
  * S1: an active.json naming another release withholds every ON run not handed a release.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -288,7 +289,7 @@ describe("M1: arm off or unset with MoralMod files present is OFF", () => {
       const plugin = join(home, "plugins", INDEX_PLUGIN);
       mkdirSync(join(plugin, "runtime", "dist"), { recursive: true });
       writeFileSync(join(plugin, "plugin.yaml"), `name: ${INDEX_PLUGIN}\n`);
-      writeFileSync(join(plugin, "runtime", "dist", "negotiator.js"), "// Managed MoralMod lifecycle 2; loader\n");
+      writeFileSync(join(plugin, "runtime", "dist", "negotiator.js"), managedLoaderSource(home, join(home, "index", "moralmod", pin)));
       writeFileSync(join(plugin, "morning.py"), 'SCHEDULE = "*/5 * * * *"\n');
       mkdirSync(join(home, "index", "moralmod"), { recursive: true });
       writeFileSync(join(home, "index", "moralmod", "active.json"), JSON.stringify({ release_digest: pin }) + "\n");
@@ -523,6 +524,81 @@ describe("ov#282 M1: a plugin reinstall on an activated box keeps the receipt va
   );
 });
 
+describe("installer retries preserve customized managed loaders", () => {
+  test("OFF without a pinned checkout preserves marker-only text and a loader generated for another home", () => {
+    const runtime = join(home, "plugins", INDEX_PLUGIN, "runtime/dist/negotiator.js");
+    mkdirSync(join(home, "plugins", INDEX_PLUGIN, "runtime/dist"), { recursive: true });
+    for (const customized of ["// Managed MoralMod lifecycle 2; resident code\n", managedLoaderSource(outside, join(outside, "index/moralmod", "a".repeat(64)))]) {
+      writeFileSync(runtime, customized);
+      expect(step(recorder().run)).toMatchObject({ state: "off", failed: "moralmod_cleanup" });
+      expect(readFileSync(runtime, "utf8")).toBe(customized);
+    }
+  });
+
+  for (const receipt of [true, false]) {
+    for (const action of ["ON retry", "ON reinstall", "OFF cleanup"] as const) {
+      test.skipIf(!havePlugin)(`${action}, receipt ${receipt}: preserve customized bytes and report failure before any plugin reinstall`, () => {
+        process.env[MORALMOD_ARM_ENV] = "on";
+        writeFileSync(join(home, "config.yaml"), BASE);
+        const pin = supplyRelease();
+        expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+        const root = join(home, "index/moralmod");
+        const runtime = join(home, "plugins", INDEX_PLUGIN, "runtime/dist/negotiator.js");
+        const customized = readFileSync(runtime, "utf8") + "\n// resident customization; preserve this\n";
+        writeFileSync(runtime, customized);
+        writeFileSync(join(root, "fallback.sqlite"), "queued research evidence\n");
+        if (!receipt) rmSync(join(root, "active.json"));
+        if (action === "ON reinstall") rmSync(installMetadataPath(home));
+        if (action === "OFF cleanup") process.env[MORALMOD_ARM_ENV] = "off";
+        const { calls, run } = recorder();
+        // A second run must keep refusing it even after cleanup has removed the receipt/releases.
+        for (let retry = 0; retry < 2; retry++) {
+          expect(step(run, true, pin)).toMatchObject(action === "OFF cleanup"
+            ? { state: "off", failed: "moralmod_cleanup" }
+            : { state: "failed", failed: "sidecar" });
+          expect(readFileSync(runtime, "utf8")).toBe(customized);
+          expect(enabled()).toEqual(["av-events"]);
+          expect(calls).toEqual([]);
+          expect(readFileSync(join(root, "fallback.sqlite"), "utf8")).toBe("queued research evidence\n");
+        }
+        if (action === "OFF cleanup") {
+          expect(existsSync(join(root, "resident.json"))).toBe(false);
+          expect(existsSync(join(root, "active.json"))).toBe(false);
+          expect(existsSync(join(root, pin))).toBe(false);
+        }
+      });
+    }
+  }
+
+  const rename = fs.renameSync;
+  for (const phase of ["before", "after"] as const) {
+    for (const target of ["resident.json", "runtime", "hook", "active.json"] as const) {
+      test.skipIf(!havePlugin)(`actual installer recovers after interruption ${phase} ${target}`, () => {
+        process.env[MORALMOD_ARM_ENV] = "on";
+        writeFileSync(join(home, "config.yaml"), BASE);
+        const pin = supplyRelease();
+        const runtime = join(home, "plugins", INDEX_PLUGIN, "runtime/dist/negotiator.js");
+        const root = join(home, "index/moralmod");
+        const path = target === "runtime" ? runtime : target === "hook" ? negotiatorPath(home) : join(root, target);
+        const interrupted = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+          if (String(to) === path && phase === "before") throw Error("controlled activation interruption");
+          rename(from, to);
+          if (String(to) === path && phase === "after") throw Error("controlled activation interruption");
+        });
+        try {
+          expect(step(recorder().run, true, pin)).toMatchObject({ state: "failed", failed: "sidecar" });
+        } finally { interrupted.mockRestore(); }
+        const { calls, run } = recorder();
+        expect(step(run, true, pin)).toMatchObject({ state: "pinned", failed: null });
+        expect(calls).toEqual([]);
+        expect(readFileSync(runtime, "utf8")).toBe(managedLoaderSource(home, join(root, pin)));
+        expect(JSON.parse(readFileSync(join(root, "active.json"), "utf8"))).toMatchObject({ installed: true, ready: false, entry_sha256: sha256(readFileSync(runtime)) });
+        expect(enabled()).toEqual(["av-events", INDEX_PLUGIN]);
+      });
+    }
+  }
+});
+
 describe("ov#277 refute S1: a managed loader on disk is held to the pin on every ON run", () => {
   const plugin = () => join(home, "plugins", INDEX_PLUGIN);
   const loaderPath = () => join(plugin(), "runtime", "dist", "negotiator.js");
@@ -636,7 +712,9 @@ describe("ov#277 refute S1: a managed loader on disk is held to the pin on every
       const result = step(run, true, used, SKIP);
       expect([label, result.state, result.failed]).toEqual([label, "failed", "release_unpinned"]);
       expect([label, enabled()]).toEqual([label, ["av-events"]]);
-      expect([label, existsSync(loaderPath())]).toEqual([label, false]);
+      // A marker alone never authorizes erasing a resident's modification.
+      expect([label, existsSync(loaderPath())]).toEqual([label, label === "changed loader"]);
+      if (label === "changed loader") expect(readFileSync(loaderPath(), "utf8")).toContain("import './elsewhere.js';");
     }
   });
 

@@ -574,8 +574,11 @@ export function installIndexPlugin(
   // managed loader on disk to the pin. ov#284 refute M2: taking it out takes the marker hook and the
   // managed morning.py with it, so a later run never pairs the plugin's own negotiator.js with them.
   if (managedLoaderPresent(home) && !managedLoaderPinned(home, releasePin)) {
-    const reason = `a managed loader on disk is not MORALMOD_RELEASE_SHA256's release${retired(retireManagedLoader(home))}`;
+    const cleanup = retireManagedLoader(home);
+    const reason = `a managed loader on disk is not MORALMOD_RELEASE_SHA256's release${retired(cleanup)}`;
     if (!handed) return withholdForSidecar(run, home, reason, null, "release_unpinned", "MoralMod release not pinned");
+    // In particular, do not let a --force plugin reinstall erase a loader retirement refused.
+    if (cleanup.left.length) return withholdForSidecar(run, home, reason, null);
     console.warn(`  warning: index-network plugin: ${reason}`);
   }
   // ov#284 refute S1: active.json names a release that is not the pin (the pin moved, or the

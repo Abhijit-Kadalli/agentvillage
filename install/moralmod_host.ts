@@ -14,7 +14,7 @@ import {
   rmdirSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   INDEX_PLUGIN_REVISION,
   RELEASE_DIRECTORY_FILES,
@@ -151,6 +151,27 @@ export function managedLoaderPresent(home: string): boolean {
     return code !== "ENOENT" && code !== "ENOTDIR";
   }
 }
+/** Recognize the complete generated loader and its home-bound paths, not just a marker.
+ * No receipt or intact release is required: retirement also handles interrupted activation
+ * and partially removed releases. This proves ownership of the loader, not permission to run it.
+ */
+function managedLoaderOwned(home: string): boolean {
+  try {
+    const runtime = runtimePath(home);
+    if (!lstatSync(runtime).isFile()) return false;
+    const source = readFileSync(runtime, "utf8");
+    const reference = source.match(/import \{startResident\} from (.+);\n/);
+    if (!reference) return false;
+    const entry: unknown = JSON.parse(reference[1]!);
+    if (typeof entry !== "string") return false;
+    const directory = dirname(entry);
+    return dirname(directory) === join(home, "index", "moralmod") &&
+      entry === join(directory, "negotiator-runtime.js") &&
+      source === managedLoaderSource(home, directory);
+  } catch {
+    return false;
+  }
+}
 /**
  * ov#277 refute S1: the loader on disk is exactly the one an activation of the pinned release writes,
  * and that release, as installed, is the pinned one (`installedReleasePinned`).
@@ -166,9 +187,11 @@ export function managedLoaderPinned(home: string, pin: string): boolean {
 /**
  * ov#277 refute S1, S2: take a managed loader out of the plugin. The plugin's own negotiator.js is
  * put back from its checkout at `INDEX_PLUGIN_REVISION` (`restored`); without that checkout the
- * loader is deleted (`removed`); `failed` when neither worked.
+ * loader is deleted (`removed`); `failed` when ownership is unverified or neither worked.
  */
 function retireLoaderFile(home: string): "restored" | "removed" | "failed" {
+  // A resident's customization may retain our marker. Never overwrite or delete those bytes.
+  if (!managedLoaderOwned(home)) return "failed";
   const runtime = runtimePath(home);
   const upstream = upstreamRuntime(join(home, "plugins", "index-network"));
   if (upstream) {
