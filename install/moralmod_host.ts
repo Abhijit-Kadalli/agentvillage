@@ -14,7 +14,7 @@ import {
   rmdirSync,
   rmSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   INDEX_PLUGIN_REVISION,
   RELEASE_DIRECTORY_FILES,
@@ -151,7 +151,7 @@ export function managedLoaderPresent(home: string): boolean {
     return code !== "ENOENT" && code !== "ENOTDIR";
   }
 }
-/** Recognize the complete generated loader and its home-bound paths, not just a marker.
+/** Recognize the complete generated loader and its home-bound, digest-named release path, not just a marker.
  * No receipt or intact release is required: retirement also handles interrupted activation
  * and partially removed releases. This proves ownership of the loader, not permission to run it.
  */
@@ -166,6 +166,7 @@ function managedLoaderOwned(home: string): boolean {
     if (typeof entry !== "string") return false;
     const directory = dirname(entry);
     return dirname(directory) === join(home, "index", "moralmod") &&
+      SHA256_HEX.test(basename(directory)) &&
       entry === join(directory, "negotiator-runtime.js") &&
       source === managedLoaderSource(home, directory);
   } catch {
