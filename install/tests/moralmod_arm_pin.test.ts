@@ -24,7 +24,8 @@
  * loader is taken out by the next ON run, so the plugin's own negotiator.js never runs beside it.
  * S1: an active.json naming another release withholds every ON run not handed a release.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,7 +47,7 @@ import {
   negotiatorPath,
   recordIndexPluginStatus,
 } from "../install_index_plugin";
-import { managedLoaderSource } from "../moralmod_host";
+import { activateMoralmod, managedLoaderSource, residentConfiguration } from "../moralmod_host";
 import { morningSource } from "../moralmod_morning";
 import { INDEX_PLUGIN_REVISION, MORALMOD_HOOK_VERSION, MORALMOD_RELEASE_SHA256, installMoralmodRelease } from "../moralmod_release";
 import { installStatusPath, writeInstallStatus } from "../install_status";
@@ -80,12 +81,67 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  fsRenameSpy?.mockRestore();
+  fsRenameSpy = undefined;
   rmSync(home, { recursive: true, force: true });
   rmSync(outside, { recursive: true, force: true });
   for (const key of ENV_KEYS) {
     if (savedEnv[key] === undefined) delete process.env[key];
     else process.env[key] = savedEnv[key];
   }
+});
+
+let fsRenameSpy: ReturnType<typeof spyOn> | undefined;
+
+describe("interrupted activation and verified cleanup", () => {
+  const moralmod = () => join(home, "index", "moralmod");
+  const loaderPath = () => join(home, "plugins", INDEX_PLUGIN, "runtime", "dist", "negotiator.js");
+  (havePlugin ? test : test.skip)("retry repairs every activation write before the receipt, and a lost CP completion", () => {
+    const pin = supplyRelease();
+    const release = installMoralmodRelease(home, process.env.MORALMOD_RELEASE_DIR!, pin);
+    const config = residentConfiguration(process.env.MORALMOD_RESIDENT_CONFIG!);
+    const { run } = recorder();
+    run(FRESH);
+    const plugin = join(home, "plugins", INDEX_PLUGIN);
+    const original = Bun.spawnSync(["git", "show", "HEAD:runtime/dist/negotiator.js"], { cwd: plugin }).stdout;
+    const morning = Bun.spawnSync(["git", "show", "HEAD:morning.py"], { cwd: plugin }).stdout;
+    for (const suffix of ["morning.py", "resident.json", "negotiator.js", "negotiator.ts", "active.json"]) {
+      writeFileSync(loaderPath(), original);
+      writeFileSync(join(plugin, "morning.py"), morning);
+      rmSync(negotiatorPath(home), { force: true });
+      rmSync(join(moralmod(), "active.json"), { force: true });
+      const rename = fs.renameSync;
+      fsRenameSpy = spyOn(fs, "renameSync").mockImplementation((a, b) => {
+        if (String(b).endsWith("/" + suffix)) throw Error("controlled interruption");
+        return rename(a, b);
+      });
+      expect(() => activateMoralmod(home, release, config)).toThrow();
+      fsRenameSpy.mockRestore(); fsRenameSpy = undefined;
+      activateMoralmod(home, release, config);
+      expect(readFileSync(loaderPath(), "utf8")).toBe(managedLoaderSource(home, release.directory));
+      expect(JSON.parse(readFileSync(join(moralmod(), "active.json"), "utf8")).installed).toBe(true);
+      // The receipt exists but CP did not finish: the identical next installer is safe.
+      activateMoralmod(home, release, config);
+    }
+  });
+
+  test("OFF preserves a customized loader retaining the managed marker and withholds the plugin", () => {
+    const pin = supplyRelease();
+    installMoralmodRelease(home, process.env.MORALMOD_RELEASE_DIR!, pin);
+    mkdirSync(join(home, "plugins", INDEX_PLUGIN, "runtime", "dist"), { recursive: true });
+    writeFileSync(loaderPath(), managedLoaderSource(home, join(moralmod(), pin)));
+    writeFileSync(join(moralmod(), "resident.json"), readFileSync(process.env.MORALMOD_RESIDENT_CONFIG!));
+    writeFileSync(join(moralmod(), "active.json"), JSON.stringify({ release_digest: pin }));
+    listPlugin();
+    const changed = readFileSync(loaderPath(), "utf8") + "import './resident-owned.js';\n";
+    writeFileSync(loaderPath(), changed);
+    process.env[MORALMOD_ARM_ENV] = "off";
+    const { run } = recorder();
+    expect(step(run, true, pin)).toMatchObject({ state: "off", failed: "moralmod_cleanup" });
+    expect(readFileSync(loaderPath(), "utf8")).toBe(changed);
+    expect(enabled()).not.toContain(INDEX_PLUGIN);
+    expect(existsSync(join(moralmod(), "resident.json"))).toBe(false);
+  });
 });
 
 /**
@@ -288,7 +344,7 @@ describe("M1: arm off or unset with MoralMod files present is OFF", () => {
       const plugin = join(home, "plugins", INDEX_PLUGIN);
       mkdirSync(join(plugin, "runtime", "dist"), { recursive: true });
       writeFileSync(join(plugin, "plugin.yaml"), `name: ${INDEX_PLUGIN}\n`);
-      writeFileSync(join(plugin, "runtime", "dist", "negotiator.js"), "// Managed MoralMod lifecycle 2; loader\n");
+      writeFileSync(join(plugin, "runtime", "dist", "negotiator.js"), managedLoaderSource(home, join(home, "index", "moralmod", pin)));
       writeFileSync(join(plugin, "morning.py"), 'SCHEDULE = "*/5 * * * *"\n');
       mkdirSync(join(home, "index", "moralmod"), { recursive: true });
       writeFileSync(join(home, "index", "moralmod", "active.json"), JSON.stringify({ release_digest: pin }) + "\n");
@@ -634,7 +690,8 @@ describe("ov#277 refute S1: a managed loader on disk is held to the pin on every
       const result = step(run, true, used, SKIP);
       expect([label, result.state, result.failed]).toEqual([label, "failed", "release_unpinned"]);
       expect([label, enabled()]).toEqual([label, ["av-events"]]);
-      expect([label, existsSync(loaderPath())]).toEqual([label, false]);
+      expect([label, existsSync(loaderPath())]).toEqual([label, label === "changed loader"]);
+      if (label === "changed loader") expect(readFileSync(loaderPath(), "utf8")).toContain("import './elsewhere.js';");
     }
   });
 

@@ -14,7 +14,7 @@ import {
   rmdirSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   INDEX_PLUGIN_REVISION,
   RELEASE_DIRECTORY_FILES,
@@ -151,6 +151,24 @@ export function managedLoaderPresent(home: string): boolean {
     return code !== "ENOENT" && code !== "ENOTDIR";
   }
 }
+/** Recognize the complete generated loader, including its home-bound paths, not text markers. */
+function managedLoaderOwned(home: string): boolean {
+  try {
+    const runtime = runtimePath(home);
+    if (!lstatSync(runtime).isFile()) return false;
+    const source = readFileSync(runtime, "utf8");
+    const reference = source.match(/import \{startResident\} from (.+);\n/);
+    if (!reference) return false;
+    const entry: unknown = JSON.parse(reference[1]!);
+    if (typeof entry !== "string") return false;
+    const directory = dirname(entry);
+    return dirname(directory) === join(home, "index", "moralmod") &&
+      entry === join(directory, "negotiator-runtime.js") &&
+      source === managedLoaderSource(home, directory);
+  } catch {
+    return false;
+  }
+}
 /**
  * ov#277 refute S1: the loader on disk is exactly the one an activation of the pinned release writes,
  * and that release, as installed, is the pinned one (`installedReleasePinned`).
@@ -169,6 +187,8 @@ export function managedLoaderPinned(home: string, pin: string): boolean {
  * loader is deleted (`removed`); `failed` when neither worked.
  */
 function retireLoaderFile(home: string): "restored" | "removed" | "failed" {
+  // A customized file can retain the marker. Withhold the plugin, leave those bytes intact.
+  if (!managedLoaderOwned(home)) return "failed";
   const runtime = runtimePath(home);
   const upstream = upstreamRuntime(join(home, "plugins", "index-network"));
   if (upstream) {
@@ -338,11 +358,13 @@ export function activateMoralmod(
   regular(runtime);
   const state = join(home, "index", "moralmod", "active.json");
   regular(state);
+  const entry = managedLoaderSource(home, release.directory);
+  const currentHash = hash(readFileSync(runtime));
+  const entryHash = hash(entry);
   if (existsSync(state)) {
-    const previous = JSON.parse(readFileSync(state, "utf8"));
+    JSON.parse(readFileSync(state, "utf8"));
     // The plugin's own file is accepted too: an OFF run or a revoked pin put it back (ov#277 refute S1, S2).
-    const current = hash(readFileSync(runtime));
-    if (current !== previous.entry_sha256 && current !== upstreamRuntimeSha256(plugin))
+    if (currentHash !== entryHash && currentHash !== upstreamRuntimeSha256(plugin) && !managedLoaderOwned(home))
       throw Error("Managed plugin runtime was modified");
   } else {
     const upstream = Bun.spawnSync(
@@ -352,13 +374,12 @@ export function activateMoralmod(
     if (
       upstream.exitCode !== 0 ||
       !existsSync(runtime) ||
-      hash(readFileSync(runtime)) !== hash(upstream.stdout)
+      (currentHash !== hash(upstream.stdout) && currentHash !== entryHash)
     )
       throw Error("Unowned plugin runtime was modified");
   }
   installMorning(home);
   const configFile = join(home, "index", "moralmod", "resident.json");
-  const entry = managedLoaderSource(home, release.directory);
   mkdirSync(join(plugin, "runtime", "dist"), { recursive: true });
   atomic(configFile, JSON.stringify(config) + "\n");
   atomic(runtime, entry);

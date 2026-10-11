@@ -43,9 +43,11 @@ export function installMorning(home: string): void {
   const base=original.stdout.toString(), wanted=morningSource(base), current=readFileSync(path,"utf8");
   if(current===wanted) return;
   if(current!==base) throw Error("Unowned morning adapter changed");
-  const temp=path+`.av-morning-${process.pid}.tmp`;
-  writeFileSync(temp,wanted,{flag:"wx",mode:stat.mode & 0o777});
-  renameSync(temp,path);
+  const temp=path+`.av-morning-${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temp,wanted,{flag:"wx",mode:stat.mode & 0o777});
+    renameSync(temp,path);
+  } finally { rmSync(temp,{force:true}); }
   if(readFileSync(path,"utf8")!==wanted) throw Error("Morning adapter verification failed");
 }
 /**
