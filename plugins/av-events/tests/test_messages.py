@@ -84,9 +84,11 @@ def test_the_welcome_is_recorded_as_one_ordinary_message_out(live, ctx, av, case
     assert payload["channel"] == "telegram" and payload["cron_job_id"] is None
     assert payload["length"] == len(text)
     assert payload["content_hash"] == keyed(text)
-    assert payload["flags"]["is_ask"] is (case == "zero")
+    # Every branch of the welcome now carries a question ("What can you ask me?"), so the
+    # structural is_ask flag is true for all of them, not only the no-intents one (agentvillage #289).
+    assert payload["flags"]["is_ask"] is True
     blob = json.dumps(av.read_buffer(live._COLLECTOR))
-    assert "Welcome to Edge City India" not in blob and "morning brief" not in blob
+    assert "Welcome to Edge City India" not in blob and "pleasure to meet you" not in blob
 
 def test_the_message_counts_still_reach_session_ended(live, ctx, av):
     converse(ctx)
