@@ -83,21 +83,27 @@ where this page is briefer.
    "Tag release", "Run workflow", branch `main`:
    https://github.com/Edge-City/agentvillage/actions/workflows/tag-release.yml.
    Inputs: `ref` (default `main`; a commit, branch or tag that `main`
-   contains), `dry_run` (default on: plans and runs the suites, creates
+   contains), `dry_run` (default on: plans and checks the suites, creates
    nothing), `version` (leave empty for the highest `vX.Y.Z-rcN` plus one;
-   give one only to start a new line or after a final version) and `note`
+   give one only to start a new line or after a final version), `note`
    (optional, one line of at most 200 characters, e.g. what the tag
    deliberately leaves out; it goes on its own `Note:` line in the tag
-   message). Run a dry run
+   message), and `force_tests` (default off, see below). Run a dry run
    first and read its summary: the version, the commit, the commits since the
    previous release tag and the seed check. Then run again with `dry_run`
    unticked and `ref` set to the commit the dry run showed (`main` gets bot
    commits several times a day). The real run tags only after this repo's
-   suites pass at that commit, pushes only the annotated tag (its message
-   names who ran it, the run, the commits and the seed check), and its summary
-   gives the Roll inputs. It refuses, creating nothing, when the ref is not on
-   `main`, the commit already carries a release tag (roll that one), the commit
-   does not contain the latest release tag, a branch has the new tag's name, the
+   suites pass at that commit. They run again in the workflow (about 5
+   minutes) unless `main`'s own `test` run from the push of that exact commit
+   (the file `.github/workflows/test.yml`, newest run, latest attempt) already
+   succeeded; the plan job's "Suites" line names that run, or says why it does
+   not count, and `force_tests` runs them regardless. A commit whose
+   `test.yml` differs from `main`'s always runs them here. It then pushes only the
+   annotated tag (its message names who ran it, the run, the commits and the
+   seed check), and its summary gives the Roll inputs. It refuses, creating
+   nothing, when the ref is not on `main`, the commit already carries a
+   release tag (roll that one), the commit does not contain the latest release
+   tag, a branch has the new tag's name, the
    `version` given exists or is not higher than every release tag, a tag that
    looks like a release has a number longer than 6 digits, a directory that
    `test.yml` runs `bun test` on does not exist at the commit
@@ -276,11 +282,38 @@ id, schedule or prompt text, so an update finds every job up to date.
 | Job | Time (Hermes's zone, which must be IST; staggered) | Action | What the model is given |
 |---|---|---|---|
 | Edge — digest prepare | 02:00 | `prefetch` | Nothing: the one `no_agent` job of the seven (the knowledge sync, "Edge India knowledge" below, is the other `no_agent` job). It writes the brief's context to `av-events/proactive/brief-context.json` and is always silent. |
-| Edge — daily digest | 08:00 | `brief` | Dates, weather, organiser announcements, today's schedule facts, the resident's interests and notes, the count of eligible new matches, up to three cleaned names, the Connections link, the count of things waiting in their approvals. |
-| Edge — opportunity drop (midday), (evening) | 12:00, 17:00 | `drop-midday`, `drop-evening` | One person: cleaned name, profile and message links. |
-| Edge — negotiation summary | 14:00 | `negotiation` | The resident's own signals; cleaned names with their links. |
-| Edge — evening questions | 19:00 | `evening` | One person (cleaned name, links), or the last-day closeout question. |
+| Edge — daily digest | 08:00 | `brief` | Dates, weather, organiser announcements, today's schedule facts, the resident's interests (the profile's; when it states none, what they stated on their Context page) and notes, their stated Preferences, the count of eligible new matches, up to three cleaned names, the Connections link, the count of things waiting in their approvals. |
+| Edge — opportunity drop (midday), (evening) | 12:00, 17:00 | `drop-midday`, `drop-evening` | One person: cleaned name, profile and message links; the resident's stated Preferences. |
+| Edge — negotiation summary | 14:00 | `negotiation` | The resident's own signals; cleaned names with their links; their stated Preferences. |
+| Edge — evening questions | 19:00 | `evening` | One person (cleaned name, links, and the resident's stated Preferences), or the last-day closeout question. |
 | Edge — pending opportunity (DATA-430) | hourly at :20 (staggered :20-:29), delivering 08:00-22:00 only; **installed paused in rc29**, turned on by `PENDING_ALERT_ENABLED=true` (README, "Overriding the Index cron times") | `pending` | Up to three cards that newly turned pending for the resident: cleaned name, the app link to that card (`appUrl`), the deadline's words or null (`respondBy`; null today: Index serves no deadline). No once-a-day mark; the per-card ledger `pendingAlerts` is the gate, and the first run on a box seeds it silently. Outside contact style: a quiet or balanced resident gets it too (it is about their own pending decision, not outreach); the quiet hours and the stop-by-label (`Pending opportunity`) still apply. |
+
+**The Context tags.** The interests and Preferences above come from the entry
+the Agent Village app keeps in `$HERMES_HOME/memories/USER.md`, headed
+`[Context tags, kept in the Agent Village app]`
+(`skills/index-network/scripts/context-tags.ts`). Only items the resident
+stated are read: marked `setup`, `you` or `telegram`, or unmarked; never a
+`(guess)` or `(chat, guess)` item, never a plain `(chat)` item, never the
+`Summary:` line, and never anything under `Removed by you:`. The brief takes Here to, Curious about, Working on and
+Wants to meet (each whole, at most 60 characters, 12 in all) as
+`you.interests` only when `av-profile.json` states no interests (they then
+pick the events too; when they suggest no village tag, the tags from the
+memory files pick them, as before); the
+Preferences (at most 4) reach the brief, both drops, the follow-up and the
+evening reminder about a person as `you.preferences`, never the outcome ask
+or the closeout question, which go out word for word. Each item takes the
+stricter cleaner and the scan. Without the file or the entry every Script
+Output is exactly what it was before. The resident's about me from
+`av-profile.json` still reaches none of these jobs.
+
+**Chat items are never used.** A plain `(chat)` item is the app's reading
+of the agent's own chat notes, not the resident's words, so no job uses it
+(the app's Skylight read leaves it out too). This also means the reader does
+not depend on the app's version: an app build before
+Edge-City/agentvillage-app#117 writes a chat guess as plain `(chat)`, and a
+box can keep that old entry for a while after #117 (an entry the app cannot
+fit is retried later). `(chat, guess)` is parsed as a guess and left out like
+any other guess.
 
 The rules the trigger holds:
 - **No third-party free text reaches the model.** Only dates, the resident's
@@ -385,7 +418,7 @@ label line, `(<Label> message - you can ask me to stop or manage it)`, which
 the model writes as the message's last line and leaves off a `[SILENT]`
 reply. The labels and their jobs: Daily digest = `Edge — daily digest`;
 Conversation update = `Edge — negotiation summary`; Evening questions =
-`Edge — evening questions`; Introduction suggestion = both opportunity drops;
+`Edge — evening questions`; Extra introduction drops = both opportunity drops;
 Usage report = `Edge — token usage audit` (opt-in); Pending opportunity = `Edge — pending opportunity`. Template jobs added by an
 operator carry their base prompt's line. The agent stops and restarts any of
 the six on a resident's request (`skills/index-network/tools.md`, "Cron schedule") with

@@ -160,6 +160,20 @@ Index keeps the old wording and the map entry is unchanged (with approval on,
 any update of a published id is `approval_required` before this check).
 [Reversal R9: drop the hash and rely on the prompt.] A corrupt file is renamed aside to
 `intentions.json.corrupt-<n>`, logged `map_corrupt`, and the map starts empty.
+DATA-448 (ruling R13, fail closed): the held check is the one map read that
+gates a publish, so when it cannot read the map (an `OSError` other than a
+missing file, `MapUnreadable`) or finds it corrupt (set aside as above), that
+capture or approval-off update is not published or mirrored, nor proposed:
+`publish_refused="map_unreadable"`, recorded locally like
+`held_ambient_exists`, and the agent is told not to publish it another way and
+to capture it again only if the resident stated those words. For a corrupt map
+(not JSON, or not UTF-8) the refusal is at most one-shot: whichever read meets
+it first (a lookup, `remember`, the rate count, the approval pass or the held
+check) sets it aside and every later read starts from an empty map, as on a
+first run. Only when the held check is that first read is a publish refused;
+after the set-aside, held entries that lived only in that file are gone and no
+held check can hold them. A missing map (first run) holds nothing and publishes
+as before. Every other map read keeps its own failure handling.
 An update or withdrawal of an id not in the map mirrors nothing: its event is
 ambient with `publish_refused="unknown_id"`.
 
@@ -990,23 +1004,34 @@ def _set_aside(path: str) -> None:
     logger.warning("av-events: record_intention map_corrupt=%d", n)
 
 
-def _load_locked() -> tuple[dict[str, dict], list[float]]:
-    """(entries, publish timestamps). Call under `_Locked`."""
+def _load_locked(*, strict: bool = False) -> tuple[dict[str, dict], list[float]]:
+    """(entries, publish timestamps). Call under `_Locked`. A corrupt map (not
+    JSON, not UTF-8, or no `intentions` object) is set aside by whichever read
+    meets it first and read as empty; with `strict` (DATA-448, the held check
+    that gates a publish) it is still set aside, then raises `MapUnreadable`.
+    So a publish is refused only when the held check is that first read; after
+    any set-aside, held entries that lived only in the old file are gone and
+    no later check can hold them. An `OSError` other than a missing file raises
+    `MapUnreadable` in both modes, on every call while it lasts."""
     path = map_path()
     try:
         with open(path, encoding="utf-8") as handle:
-            raw = handle.read()
+            raw: Optional[str] = handle.read()
     except FileNotFoundError:
         return {}, []
+    except UnicodeDecodeError:
+        raw = None  # DATA-448: bytes that are not UTF-8 are a corrupt map, not an unreadable one
     except OSError:
         raise MapUnreadable() from None
     try:
-        data = json.loads(raw)
+        data = json.loads(raw) if raw is not None else None
     except ValueError:
         data = None
     entries = data.get("intentions") if isinstance(data, dict) else None
     if not isinstance(entries, dict):
         _set_aside(path)
+        if strict:
+            raise MapUnreadable()
         return {}, []
     clean = {k: v for k, v in entries.items() if valid_id(k) and isinstance(v, dict)}
     stamps = data.get("publishes")
@@ -1036,9 +1061,9 @@ def _save_locked(entries: dict[str, dict], publishes: list[float]) -> None:
         raise
 
 
-def _load_map() -> dict[str, dict]:
+def _load_map(*, strict: bool = False) -> dict[str, dict]:
     with _Locked():
-        return _load_locked()[0]
+        return _load_locked(strict=strict)[0]
 
 
 def lookup(intention_id: str) -> Optional[dict]:
@@ -1140,12 +1165,34 @@ def _held_match(entry: dict, norm_hash: str, norm_hash_v2: Optional[str]) -> boo
 
 
 def held_hash_exists(norm_hash: str, norm_hash_v2: Optional[str] = None) -> bool:
-    try:
-        entries = _load_map()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("av-events: record_intention map_read_failed=%s", type(exc).__name__)
-        return False
+    """Whether a held entry matches. Raises when the map cannot be read or is
+    corrupt (set aside first), so a caller can never read failure as "none
+    held" (DATA-448); a missing map holds nothing. Only a corrupt map this
+    check is the first to meet raises: if a lookup, `remember`, the rate count
+    or the approval pass met it first, it was set aside there and read as
+    empty, and this check then reads the fresh map, which cannot hold the
+    entries that were only in the old file. Gate a publish with
+    `held_refusal`, which turns that into a code."""
+    entries = _load_map(strict=True)
     return any(_held_match(v, norm_hash, norm_hash_v2) for v in entries.values())
+
+
+#: DATA-448: a publish refused because the held check could not read the map.
+MAP_UNREADABLE = "map_unreadable"
+
+
+def held_refusal(norm_hash: str, norm_hash_v2: Optional[str] = None) -> Optional[str]:
+    """The `publish_refused` code the held check gives a publish: None when
+    nothing held matches, `held_ambient_exists` when something does, and
+    `map_unreadable` when the map could not be read or this check was the first
+    to meet it corrupt, or the read failed any other way (R13: fail closed; a
+    refusal costs a retry, a wrong publish puts unconfirmed words on Index)."""
+    try:
+        return "held_ambient_exists" if held_hash_exists(norm_hash, norm_hash_v2) else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("av-events: record_intention map_read_failed=%s publish_refused=%s",
+                       type(exc).__name__, MAP_UNREADABLE)
+        return MAP_UNREADABLE
 
 
 #: B2: set on a published entry once its archive mirror succeeded, so a second
@@ -1373,6 +1420,9 @@ def _capture(args: dict, held: Optional[str]) -> dict:
         result["confirmed_in_chat"] = confirmed
     norm_v2 = held_norm_hash_v2(text)
     approval_on = _approval_on()
+    # R9/DATA-387/DATA-448: the held check, read only for a capture that would
+    # publish (a personal capture is never checked, a held one is held anyway).
+    held_refused = held_refusal(norm, norm_v2) if publish and source != RESTRICTIVE_SOURCE else None
     if not publish:
         # DATA-311: an explicit `publish=false` is honoured for every source and
         # in every lineage, before the ambient hold: nothing the caller marked
@@ -1399,7 +1449,23 @@ def _capture(args: dict, held: Optional[str]) -> dict:
             f"Held as an ambient intention (intention_id {intention_id}). It stays off Index until the "
             "resident confirms it, and confirmation is not available yet: do not publish it another way."
         )
-    elif held_hash_exists(norm, norm_v2):
+    elif held_refused == MAP_UNREADABLE:
+        # DATA-448 (R13): whether this text is held cannot be known. Record it
+        # locally, the same way, and send nothing anywhere (not to Index, not
+        # proposed). A retry is checked against whatever map it reads, and a
+        # corrupt one set aside no longer holds what it held, so the message
+        # allows a stated retry only for the resident's own words.
+        intention_id = uuid7()
+        result.update(intention_id=intention_id, index_intent_id=None, published=False,
+                      publish_refused=MAP_UNREADABLE)
+        result["message"] = (
+            f"Recorded locally (intention_id {intention_id}), not published: this agent's private record of "
+            "held intentions could not be read, so whether the same intention is waiting for the resident's "
+            "confirmation is unknown. Nothing was sent; do not publish it another way. Capture it again only "
+            "if the resident stated these words themselves in this conversation; if they are your wording or "
+            "inferred, capture them again as ambient instead."
+        )
+    elif held_refused is not None:
         # R9 revised: the same intention is held as ambient. Record this
         # capture locally (the event is emitted) and never publish around the
         # confirmation.
@@ -1426,6 +1492,7 @@ def _capture(args: dict, held: Optional[str]) -> dict:
         if index_id is not None:
             result.update(intention_id=index_id, index_intent_id=index_id, published=True)
             result["message"] = f"Recorded and published to Index (intention_id {index_id})."
+            _attach_intent_link(result)
         else:
             intention_id = uuid7()
             result.update(intention_id=intention_id, index_intent_id=None, published=False, publish_refused=code)
@@ -1486,6 +1553,28 @@ def _approval_on() -> Optional[bool]:
 
 
 _NO_OTHER_WAY = "Do not publish it another way."
+#: index-links never sees this tool's result, so a published call names the
+#: portal page. Without it the agent builds https://index.network/i/<id>.
+_PORTAL_INTENT = "https://agents.edgecity.live/intents?intent="
+
+
+def _attach_intent_link(result: dict) -> dict:
+    """Name the portal page by Index's id. Called only where this call itself
+    published the intention (a capture, an in-call approval publish, a
+    `confirm` that published now); never on an update, a withdrawal or an
+    "already published" answer. The url ends the message, so no punctuation
+    is glued to it."""
+    if result.get("published") is not True or result.get("publish_refused") is not None:
+        return result
+    index_id = result.get("index_intent_id")
+    if not valid_id(index_id):
+        return result
+    link = _PORTAL_INTENT + index_id
+    result["url"] = link
+    message = result.get("message")
+    if isinstance(message, str) and link not in message:
+        result["message"] = message + " Link it as: " + link
+    return result
 
 
 def _advance_inline(intention_id: str, cls: str):
@@ -1532,6 +1621,7 @@ def _held_through_approval(result: dict, intention_id: str, text: str, norm: str
         result["message"] = (
             f"Published to Index under the resident's approval policy (intention_id {intention_id})."
         )
+        _attach_intent_link(result)
     elif outcome.state in ("requested", "cleared", "starting", "publishing"):
         result["message"] = (
             f"{held} The resident has been asked in their approval channel whether to publish it, and it is "
@@ -1580,7 +1670,7 @@ def _stated_through_approval(result: dict, text: str, source: str) -> dict:
         if outcome.approved_by:
             result["approved_by"] = outcome.approved_by
         result["message"] = f"Recorded and published to Index (intention_id {intention_id})."
-        return result
+        return _attach_intent_link(result)
     if outcome.state in ("requested", "starting"):
         refused = "approval_pending"
         message = (
@@ -1652,6 +1742,7 @@ def _confirm(args: dict) -> dict:
         if outcome.approved_by:
             result["approved_by"] = outcome.approved_by
         result["message"] = f"The resident approved it: intention {intention_id} is published to Index."
+        _attach_intent_link(result)
     elif outcome.state in ("requested", "unknown"):
         # A manual class with no grant on the daemon: refused, never published.
         return _refuse("awaiting_resident")
@@ -1770,13 +1861,14 @@ def _update_or_withdraw(action: str, args: dict, held: Optional[str]) -> dict:
             # without the resident seeing them. Local only; capture the new
             # wording to propose it.
             code = "approval_required"
-        elif action == "update" and held_hash_exists(held_norm_hash(text), held_norm_hash_v2(text)):
+        elif action == "update":
             # DATA-447: the capture path's R9/DATA-387 check, on new words. A
             # held ambient text never reaches Index around the resident's
             # confirmation, as a capture or as a rewording of a published one.
-            code = "held_ambient_exists"
-        elif action == "update":
-            code = mirror_update(index_id, description=text)
+            # DATA-448: nor when the map cannot be read (`map_unreadable`).
+            code = held_refusal(held_norm_hash(text), held_norm_hash_v2(text))
+            if code is None:
+                code = mirror_update(index_id, description=text)
         elif already_archived:
             code = None  # B2: archived on Index already; the archive is not sent twice
         else:
@@ -1797,6 +1889,14 @@ def _update_or_withdraw(action: str, args: dict, held: Optional[str]) -> dict:
             f"{verb} intention {intention_id} locally only: the new wording is already held as ambient, and a "
             "held intention is published only through the resident's confirmation, so Index still has the old "
             "wording. Do not publish it another way."
+        )
+    elif code == MAP_UNREADABLE:
+        # DATA-448: nothing was sent; the same update can simply be made again.
+        result["message"] = (
+            f"{verb} intention {intention_id} locally only: this agent's private record of held intentions "
+            "could not be read, so whether the new wording is waiting for the resident's confirmation is "
+            "unknown. Nothing was sent and Index still has the old wording. Make the same update again in a "
+            "moment; do not publish it another way."
         )
     elif code.startswith("held_"):
         result["message"] = f"{verb} intention {intention_id} locally; this session cannot change it on Index."
