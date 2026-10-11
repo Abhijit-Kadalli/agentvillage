@@ -362,8 +362,8 @@ describe("the seed: zero active intents and selected intentions → up to three 
     const { text, branch, calls } = await run(fakeIndex());
     expect(creates(calls).map((c) => c.arguments)).toEqual([{ description: KEPT[0].text, sourceType: SEED_SOURCE_TYPE }]);
     expect(text).toBe(golden.seededOne);
-    expect(text).toContain(`\n${SEEDED_COPY_ONE.publish.lead}\n- ${KEPT[0].text}\n\n`);
-    expect(text).toContain(`\n\n${SEEDED_COPY_ONE.publish.close}\n\n`);
+    expect(text).toContain(`\n${SEEDED_COPY_ONE.publish.lead}\n\n- ${KEPT[0].text}\n\n`);
+    expect(text).toContain(`people and events. ${SEEDED_COPY_ONE.publish.close}\n\n`);
     expect(text).not.toMatch(/these signals|any of them/);
     expect(branch).toEqual({ fallback: "none", intents_listed: 1, intents_seeded: 1, seed_failed: 0 });
   });
@@ -381,7 +381,7 @@ describe("the seed: zero active intents and selected intentions → up to three 
     const { text, branch, names } = await run(fakeIndex(), ["--draft"]);
     expect(names).toEqual(["list_intents", "create_intent", "pause_intent", "list_intents"]);
     expect(text).toBe(golden.seededPausedOne);
-    expect(text).toContain(`\n${SEEDED_COPY_ONE.paused.lead}\n- ${KEPT[0].text}\n\n`);
+    expect(text).toContain(`\n${SEEDED_COPY_ONE.paused.lead}\n\n- ${KEPT[0].text}\n\n`);
     expect(text).toContain(`\n\n${SEEDED_COPY_ONE.paused.close}\n\n`);
     expect(branch).toEqual({ fallback: "none", intents_listed: 1, intents_seeded: 1, seed_failed: 0 });
   });
@@ -1092,16 +1092,9 @@ describe("the seeded texts", () => {
     const three = KEPT.slice(0, 3).map((k) => k.text);
     for (const mode of ["publish", "paused"] as const) {
       const text = welcomeText("Mira", { kind: "listed", titles: three, seeded: mode }, INTENTS_URL);
-      expect(text.split("\n\n")).toEqual([
-        "Welcome to Edge City India ☀️",
-        "I'm Mira, your personal agent for Edge City India. It's a pleasure to meet you.",
-        "What can you ask me?\n• What events are happening tomorrow?\n• Please RSVP me to [event name] on the calendar.\nYou can also send me Telegram voice notes.",
-        "To complete your onboarding\nExplore the Agent Village app: https://agents.edgecity.live/\n1) Rolodex: browse people and track who you've met.\n2) Send someone a gold star to show gratitude (three per day).\n3) Skylight: make an avatar for me in the virtual village.",
-        ["Your intents", SEEDED_COPY[mode].lead, ...three.map((t) => `- ${t}`)].join("\n"),
-        mode === "paused" ? "These intents will stay paused until you tell me to publish them." : "I'll use these to look for relevant people and events.",
-        SEEDED_COPY[mode].close,
-        "I'm excited for our time at Edge City India together!",
-      ]);
+      expect(text).toBe(golden[mode === "paused" ? "seededPausedThree" : "seededThree"]);
+      expect(text).toContain(`Explore the Agent Village app: https://agents.edgecity.live/\n\n1) Rolodex`);
+      expect(text).toContain(`${SEEDED_COPY[mode].lead}\n\n- ${three[0]}`);
       expect(text).not.toContain("Intents page");
     }
     expect(SEEDED_COPY.publish).toEqual({
@@ -1125,16 +1118,17 @@ describe("the seeded texts", () => {
       close: "Tell me when you'd like to publish, change, or drop it, or add a new intent.",
     });
     for (const mode of ["publish", "paused"] as const) {
-      expect(welcomeText("Mira", { kind: "listed", titles: ["One want"], seeded: mode }, INTENTS_URL).split("\n\n").slice(4)).toEqual([
-        `Your intents\n${SEEDED_COPY_ONE[mode].lead}\n- One want`,
-        mode === "paused" ? "This intent will stay paused until you tell me to publish it." : "I'll use this to look for relevant people and events.",
-        SEEDED_COPY_ONE[mode].close,
-        "I'm excited for our time at Edge City India together!",
-      ]);
+      const one = welcomeText("Mira", { kind: "listed", titles: ["One want"], seeded: mode }, INTENTS_URL);
+      expect(one).toContain(`Your intents\n${SEEDED_COPY_ONE[mode].lead}\n\n- One want`);
+      expect(one).toContain(
+        mode === "paused"
+          ? `This intent will stay paused until you tell me to publish it.\n\n${SEEDED_COPY_ONE[mode].close}`
+          : `I'll use this to look for relevant people and events. ${SEEDED_COPY_ONE[mode].close}`,
+      );
       for (const titles of [["One want", "Two want"], ["One want", "Two want", "Three want"], ["One want", "Two want", "Three want", "Four want"]]) {
         const parts = welcomeText("Mira", { kind: "listed", titles, seeded: mode }, INTENTS_URL).split("\n\n");
-        expect(parts[4]).toContain(SEEDED_COPY[mode].lead);
-        expect(parts[6]).toBe(SEEDED_COPY[mode].close);
+        expect(parts.join("\n\n")).toContain(`${SEEDED_COPY[mode].lead}\n\n- One want`);
+        expect(parts.join("\n\n")).toContain(mode === "paused" ? SEEDED_COPY[mode].close : `people and events. ${SEEDED_COPY[mode].close}`);
       }
     }
   });

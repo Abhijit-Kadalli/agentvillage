@@ -71,6 +71,7 @@ You can also send me Telegram voice notes.
 
 To complete your onboarding
 Explore the Agent Village app: https://agents.edgecity.live/
+
 1) Rolodex: browse people and track who you've met.
 2) Send someone a gold star to show gratitude (three per day).
 3) Skylight: make an avatar for me in the virtual village.

@@ -744,6 +744,7 @@ function composeWelcome(name: string, read: IntentsRead, intentsUrl: string, lis
   const onboarding = [
     "To complete your onboarding",
     `Explore the Agent Village app: ${appHomeUrl}`,
+    "",
     "1) Rolodex: browse people and track who you've met.",
     "2) Send someone a gold star to show gratitude (three per day).",
     "3) Skylight: make an avatar for me in the virtual village.",
@@ -757,24 +758,23 @@ function composeWelcome(name: string, read: IntentsRead, intentsUrl: string, lis
     parts.push(["Your intents", CONTEXT_COPY.lead].join("\n"), CONTEXT_COPY.close);
   } else if (read.titles.length === 0) {
     parts.push(
-      ["Your intents", "You don't have an active intent yet. To help me find the right people and events, answer any of these:", ...CONTEXT_QUESTIONS.map((q) => `- ${q}`)].join("\n"),
+      ["Your intents", "You don't have an active intent yet. To help me find the right people and events, answer any of these:", "", ...CONTEXT_QUESTIONS.map((q) => `- ${q}`)].join("\n"),
       "I'll turn your answers into intents for you to confirm.",
     );
   } else if (read.seeded) {
     const copy = (listed.length === 1 ? SEEDED_COPY_ONE : SEEDED_COPY)[read.seeded];
     parts.push(
-      ["Your intents", copy.lead, ...listed.map((t) => `- ${t}`)].join("\n"),
+      ["Your intents", copy.lead, "", ...listed.map((t) => `- ${t}`)].join("\n"),
       read.seeded === "paused"
         ? `${listed.length === 1 ? "This intent" : "These intents"} will stay paused until you tell me to publish ${listed.length === 1 ? "it" : "them"}.`
-        : `I'll use ${listed.length === 1 ? "this" : "these"} to look for relevant people and events.`,
-      copy.close,
+        : `I'll use ${listed.length === 1 ? "this" : "these"} to look for relevant people and events. ${copy.close}`,
+      ...(read.seeded === "paused" ? [copy.close] : []),
     );
   } else {
     const lead = read.titles.length > MAX_LISTED ? "Your intents\nHere are three of them:" : "Your intents";
     parts.push(
-      [lead, ...listed.map((t) => `- ${t}`)].join("\n"),
-      `I'll use ${listed.length === 1 ? "this" : "these"} to look for relevant people and events.`,
-      "Tell me if you'd like to add, change, or pause an intent.",
+      [lead, "", ...listed.map((t) => `- ${t}`)].join("\n"),
+      `I'll use ${listed.length === 1 ? "this" : "these"} to look for relevant people and events. Tell me if you'd like to add, change, or pause an intent.`,
     );
   }
   parts.push("I'm excited for our time at Edge City India together!");
