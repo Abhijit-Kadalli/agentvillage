@@ -32,7 +32,7 @@ export function morningSource(pinned: string): string {
     .replace('Missing means off.','Missing means on; unreadable preferences hold.')
     .replace('only when the account has turned the morning brief on.','unless the account has explicitly turned the morning brief off.');
 }
-export function installMorning(home: string): void {
+function morningState(home: string): { path: string; base: string; wanted: string; current: string; mode: number } {
   const plugin=join(home,"plugins/index-network"), path=join(plugin,"morning.py");
   const head=Bun.spawnSync(["git","rev-parse","HEAD"],{cwd:plugin});
   if(head.exitCode || head.stdout.toString().trim()!==INDEX_PLUGIN_REVISION) throw Error("Morning plugin revision differs");
@@ -41,10 +41,23 @@ export function installMorning(home: string): void {
   const stat=lstatSync(path);
   if(!stat.isFile() || stat.isSymbolicLink()) throw Error("Morning adapter must be a regular file");
   const base=original.stdout.toString(), wanted=morningSource(base), current=readFileSync(path,"utf8");
+  return {path, base, wanted, current, mode:stat.mode & 0o777};
+}
+/** Hermes --force replaces this file before installMorning can inspect it. Check ownership first. */
+export function morningReplaceable(home: string): boolean {
+  try {
+    const {base, wanted, current}=morningState(home);
+    return current===base || current===wanted;
+  } catch {
+    return false;
+  }
+}
+export function installMorning(home: string): void {
+  const {path, base, wanted, current, mode}=morningState(home);
   if(current===wanted) return;
   if(current!==base) throw Error("Unowned morning adapter changed");
   const temp=path+`.av-morning-${process.pid}.tmp`;
-  writeFileSync(temp,wanted,{flag:"wx",mode:stat.mode & 0o777});
+  writeFileSync(temp,wanted,{flag:"wx",mode});
   renameSync(temp,path);
   if(readFileSync(path,"utf8")!==wanted) throw Error("Morning adapter verification failed");
 }

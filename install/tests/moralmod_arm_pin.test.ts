@@ -40,7 +40,9 @@ import {
   MORNING_JOB,
   MORNING_LAUNCHER,
   NEGOTIATOR_SEED,
+  SIDECAR_ANCHOR,
   SIDECAR_PATCHED,
+  SIDECAR_PATCHED_V1,
   indexPluginFailedLine,
   installIndexPlugin,
   installMetadataPath,
@@ -617,6 +619,105 @@ describe("automatic managed reinstalls validate the runtime before replacing the
         expect(readFileSync(runtime, "utf8")).toBe(upstream);
         expect(existsSync(join(plugin, ".git"))).toBe(false);
       }
+    });
+  }
+});
+
+describe("automatic managed reinstalls preserve morning and sidecar adapters", () => {
+  for (const file of ["morning.py", "sidecar.py"] as const) {
+    for (const receipt of [true, false]) {
+      for (const metadata of ["present", "missing"] as const) {
+        test.skipIf(!havePlugin)(`${file}, receipt ${receipt}, metadata ${metadata}: customized adapter survives repeated retries`, () => {
+          process.env[MORALMOD_ARM_ENV] = "on";
+          writeFileSync(join(home, "config.yaml"), BASE);
+          const pin = supplyRelease();
+          expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+          const root = join(home, "index/moralmod"), plugin = join(home, "plugins", INDEX_PLUGIN);
+          const path = join(plugin, file), customized = readFileSync(path, "utf8") + "\n# resident customization\n";
+          writeFileSync(path, customized);
+          writeFileSync(join(root, "fallback.sqlite"), "queued research evidence\n");
+          if (!receipt) rmSync(join(root, "active.json"));
+          if (metadata === "missing") rmSync(installMetadataPath(home));
+          const { calls, run } = recorder();
+          for (let retry = 0; retry < 2; retry++) {
+            const result = step(run, true, pin);
+            if (metadata === "missing" || file === "morning.py")
+              expect(result).toMatchObject({ state: "failed", failed: "sidecar" });
+            else expect(result).toMatchObject({ state: "pinned", failed: null });
+            expect(calls).toEqual([]);
+            expect(readFileSync(path, "utf8")).toBe(customized);
+            expect(readFileSync(join(root, "fallback.sqlite"), "utf8")).toBe("queued research evidence\n");
+            if (metadata === "missing" || file === "morning.py") expect(enabled()).toEqual(["av-events"]);
+          }
+        });
+      }
+    }
+
+    test.skipIf(!havePlugin)(`${file}: customization of upstream bytes is preserved before a forced reinstall`, () => {
+      process.env[MORALMOD_ARM_ENV] = "on";
+      writeFileSync(join(home, "config.yaml"), BASE);
+      const pin = supplyRelease();
+      expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+      const plugin = join(home, "plugins", INDEX_PLUGIN), path = join(plugin, file);
+      const upstream = Bun.spawnSync(["git", "show", `HEAD:${file}`], { cwd: plugin }).stdout.toString();
+      const customized = upstream + "\n# resident customization\n";
+      writeFileSync(path, customized);
+      rmSync(installMetadataPath(home));
+      const { calls, run } = recorder();
+      expect(step(run, true, pin)).toMatchObject({ state: "failed", failed: "sidecar" });
+      expect(calls).toEqual([]);
+      expect(readFileSync(path, "utf8")).toBe(customized);
+    });
+
+    for (const invalid of ["symlink", "directory", "missing"] as const) {
+      test.skipIf(!havePlugin)(`${file}, ${invalid}: unverifiable adapter is preserved before reinstall`, () => {
+        process.env[MORALMOD_ARM_ENV] = "on";
+        writeFileSync(join(home, "config.yaml"), BASE);
+        const pin = supplyRelease();
+        expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+        const path = join(home, "plugins", INDEX_PLUGIN, file), original = readFileSync(path, "utf8");
+        rmSync(path);
+        if (invalid === "symlink") {
+          writeFileSync(join(outside, file), original);
+          fs.symlinkSync(join(outside, file), path);
+        } else if (invalid === "directory") mkdirSync(path);
+        rmSync(installMetadataPath(home));
+        const { calls, run } = recorder();
+        expect(step(run, true, pin)).toMatchObject({ state: "failed", failed: "sidecar" });
+        expect(calls).toEqual([]);
+        expect(enabled()).toEqual(["av-events"]);
+        if (invalid === "symlink") {
+          expect(fs.lstatSync(path).isSymbolicLink()).toBe(true);
+          expect(readFileSync(join(outside, file), "utf8")).toBe(original);
+        } else if (invalid === "directory") expect(fs.lstatSync(path).isDirectory()).toBe(true);
+        else expect(existsSync(path)).toBe(false);
+      });
+    }
+  }
+
+  for (const content of ["upstream morning", "upstream sidecar", "v1 sidecar", "v2 sidecar"] as const) {
+    test.skipIf(!havePlugin)(`${content}: verified adapter reinstall succeeds without an activation receipt`, () => {
+      process.env[MORALMOD_ARM_ENV] = "on";
+      writeFileSync(join(home, "config.yaml"), BASE);
+      const pin = supplyRelease();
+      expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+      const plugin = join(home, "plugins", INDEX_PLUGIN), root = join(home, "index/moralmod");
+      const file = content === "upstream morning" ? "morning.py" : "sidecar.py";
+      const upstream = Bun.spawnSync(["git", "show", `HEAD:${file}`], { cwd: plugin }).stdout.toString();
+      const source = content === "v1 sidecar" ? upstream.replace(SIDECAR_ANCHOR, () => SIDECAR_PATCHED_V1)
+        : content === "v2 sidecar" ? upstream.replace(SIDECAR_ANCHOR, () => SIDECAR_PATCHED.replace(', "AV_MORALMOD_ARM"', "")) : upstream;
+      writeFileSync(join(plugin, file), source);
+      rmSync(installMetadataPath(home));
+      rmSync(join(root, "active.json"));
+      const { calls, run } = recorder();
+      expect(step(run, true, pin)).toMatchObject({ state: "installed", failed: null });
+      expect(calls).toEqual([["plugins", "install", INDEX_PLUGIN_SOURCE, "--force", "--ref", INDEX_PLUGIN_REF, "--no-enable"]]);
+      const baseMorning = Bun.spawnSync(["git", "show", "HEAD:morning.py"], { cwd: plugin }).stdout.toString();
+      const baseSidecar = Bun.spawnSync(["git", "show", "HEAD:sidecar.py"], { cwd: plugin }).stdout.toString();
+      expect(readFileSync(join(plugin, "morning.py"), "utf8")).toBe(morningSource(baseMorning));
+      expect(readFileSync(join(plugin, "sidecar.py"), "utf8")).toBe(baseSidecar.replace(SIDECAR_ANCHOR, () => SIDECAR_PATCHED));
+      expect(readFileSync(join(plugin, "runtime/dist/negotiator.js"), "utf8")).toBe(managedLoaderSource(home, join(root, pin)));
+      expect(enabled()).toEqual(["av-events", INDEX_PLUGIN]);
     });
   }
 });
