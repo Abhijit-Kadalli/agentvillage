@@ -12,16 +12,15 @@
  *     line each (whole up to TITLE_MAX code points, else cut at a word
  *     boundary, and cut further only when the three together would take the
  *     welcome past WELCOME_MAX_CHARS: fitTitles), what the agent will do with
- *     them, and how to add or change them (the app's Intents page, or just
- *     tell me);
+ *     them, and how to add, change or pause one (just tell me);
  *   - no active intents, and the resident told the app nothing at signup
- *     (hasSetupContext): the app's three Context questions, and a promise to
+ *     (hasSetupContext): under "Your intents", the app's three Context questions and a promise to
  *     turn the answers into intents the resident confirms;
  *   - no active intents, but the resident did tell the app something at
  *     signup: CONTEXT_COPY, which says the agent read it and asks what to
  *     look for first, never the three questions again;
  *   - no key, Index unreachable or an answer it cannot read: the welcome
- *     without the list, saying it will catch up in the morning brief.
+ *     without the list, saying it cannot load the intents right now.
  *
  * DATA-412 / DATA-416: the seed. When no welcome was sent yet (the welcome
  * marker below, read in both modes), that read succeeds and lists no active
@@ -36,7 +35,7 @@
  * `AV_WELCOME_SEED_MODE=paused` pauses each one it created (`pause_intent`).
  * It then lists the intents again (the creates leave it
  * WELCOME_RELIST_RESERVE_MS of the budget) and the welcome names the seeded
- * ones first ("From what you told me at signup, ..."); the marker then gets
+ * ones first ("Based on what you shared at signup, ..."); the marker then gets
  * `done`. A run that finds the marker already there, whatever its first list
  * showed (another run's creates may have landed only in part), waits while it
  * lacks `done` and then lists again, so its welcome shows what was seeded.
