@@ -17,6 +17,8 @@ Run:
 bun skills/village-digest/scripts/read.ts
 ```
 
+Call `terminal` with exactly `command` and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`. If the call returns an error about background commands, the command did not run; call it once more without those arguments.
+
 For a topic-specific question, filter the already available summary locally:
 
 ```bash
