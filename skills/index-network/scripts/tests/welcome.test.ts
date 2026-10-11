@@ -49,7 +49,7 @@ const SCRIPT = join(import.meta.dir, "..", "welcome.ts");
 const REPO = join(import.meta.dir, "..", "..", "..", "..");
 const INTENTS_URL = "https://agents.edgecity.live/intents";
 /** The control plane sends its fixed greeting instead of a welcome this long or longer (telegram-onboarding.js WELCOME_MAX_CHARS). */
-const CONTROL_PLANE_WELCOME_MAX = 3500;
+const CONTROL_PLANE_WELCOME_MAX = 2100;
 /** A nickname at the profile's 32 code points, each a supplementary-plane letter: 64 UTF-16 code units, the longest name in `.length`. */
 const ASTRAL_NAME = "\u{20000}".repeat(32);
 /** A text of `n` code points, words of four letters and a space (`n` > 0). */

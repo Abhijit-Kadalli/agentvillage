@@ -104,12 +104,12 @@ export const MAX_LISTED = 3;
 export const TITLE_MAX = 300;
 /**
  * Characters (UTF-16 code units, JavaScript's `.length`) of the whole welcome
- * at most. The coordinated control-plane delivery cap is 3500, leaving room
+ * at most. The coordinated control-plane delivery cap is 2100, leaving room
  * below Telegram's 4096-character message limit. welcomeText holds every
  * welcome to this smaller generator cap: the listed titles share what the
  * rest of the text leaves (fitTitles).
  */
-export const WELCOME_MAX_CHARS = 3000;
+export const WELCOME_MAX_CHARS = 2000;
 /**
  * Characters of the Intents link at most: a longer one (an AV_CONNECTIONS_URL
  * host of absurd length) gives way to the default host's, so the link can
