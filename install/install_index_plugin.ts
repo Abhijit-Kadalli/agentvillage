@@ -109,7 +109,7 @@ import { dotenvFileValue, readConfig, writeConfig } from "./config";
 import { persistedEnvVar, readCronJobs } from "./install_index";
 import { installStatusPath } from "./install_status";
 import { hermesHome } from "./paths";
-import { type Retirement, activateMoralmod, activeReleaseUnpinned, checkResidentHook, managedHookPresent, managedLoaderPinned, managedLoaderPresent, residentConfiguration, retireManagedAssets, retireManagedLoader } from "./moralmod_host";
+import { type Retirement, activateMoralmod, activeReleaseUnpinned, checkResidentHook, managedHookPresent, managedLoaderPinned, managedLoaderPresent, managedRuntimeReplaceable, residentConfiguration, retireManagedAssets, retireManagedLoader } from "./moralmod_host";
 import { MORALMOD_RELEASE_SHA256, MoralmodReleaseUnpinned, installMoralmodRelease } from "./moralmod_release";
 
 export const INDEX_PLUGIN = "index-network";
@@ -649,6 +649,10 @@ export function installIndexPlugin(
   if (pinnedAtRef(home)) {
     console.log(`→ index-network plugin: at ${INDEX_PLUGIN_REF.slice(0, 8)}, no Hermes call`);
   } else {
+    // Hermes --force replaces the tree. Activation afterward would inspect fresh upstream bytes,
+    // losing any resident customization without a managed marker, so verify before the call.
+    if (managed && existsSync(pluginDir(home)) && !managedRuntimeReplaceable(home))
+      return withholdForSidecar(run, home, "existing runtime ownership unverified", null);
     const before = new Set(installTmpDirs(home));
     try {
       run(pinnedInstallArgs(home));

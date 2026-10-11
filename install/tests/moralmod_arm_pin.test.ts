@@ -161,6 +161,7 @@ function recorder() {
     calls.push(args);
     if (args[0] === "plugins" && args[1] === "install") {
       const dest = join(home, "plugins", INDEX_PLUGIN);
+      if (args.includes("--force")) rmSync(dest, { recursive: true, force: true });
       mkdirSync(join(home, "plugins"), { recursive: true });
       if (Bun.spawnSync(["git", "clone", "--quiet", pluginRepo, dest]).exitCode !== 0) throw new Error("clone failed");
       if (Bun.spawnSync(["git", "checkout", "--quiet", INDEX_PLUGIN_REVISION], { cwd: dest }).exitCode !== 0) throw new Error("checkout failed");
@@ -522,6 +523,102 @@ describe("ov#282 M1: a plugin reinstall on an activated box keeps the receipt va
     },
     60_000,
   );
+});
+
+describe("automatic managed reinstalls validate the runtime before replacing the plugin", () => {
+  for (const receipt of [true, false]) {
+    for (const customization of ["modified upstream", "replacement runtime"] as const) {
+      test.skipIf(!havePlugin)(`${customization}, receipt ${receipt}: missing install metadata cannot authorize replacement`, () => {
+        process.env[MORALMOD_ARM_ENV] = "on";
+        writeFileSync(join(home, "config.yaml"), BASE);
+        const pin = supplyRelease();
+        expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+        const plugin = join(home, "plugins", INDEX_PLUGIN);
+        const root = join(home, "index/moralmod");
+        const runtime = join(plugin, "runtime/dist/negotiator.js");
+        const upstream = Bun.spawnSync(["git", "show", "HEAD:runtime/dist/negotiator.js"], { cwd: plugin }).stdout.toString();
+        const customized = customization === "modified upstream"
+          ? upstream + "\n// resident customization\n"
+          : "export function negotiate() { return 'resident implementation'; }\n";
+        expect(customized).not.toContain("Managed MoralMod lifecycle");
+        expect(customized).not.toContain("/index/moralmod/");
+        writeFileSync(runtime, customized);
+        writeFileSync(join(plugin, "resident-notes.txt"), "keep the existing plugin tree\n");
+        writeFileSync(join(root, "fallback.sqlite"), "queued research evidence\n");
+        rmSync(installMetadataPath(home));
+        if (!receipt) rmSync(join(root, "active.json"));
+        const { calls, run } = recorder();
+        for (let retry = 0; retry < 2; retry++) {
+          expect(step(run, true, pin)).toMatchObject({ state: "failed", failed: "sidecar" });
+          expect(calls).toEqual([]);
+          expect(readFileSync(runtime, "utf8")).toBe(customized);
+          expect(readFileSync(join(plugin, "resident-notes.txt"), "utf8")).toBe("keep the existing plugin tree\n");
+          expect(readFileSync(join(root, "fallback.sqlite"), "utf8")).toBe("queued research evidence\n");
+          expect(enabled()).toEqual(["av-events"]);
+          expect(existsSync(installMetadataPath(home))).toBe(false);
+        }
+      });
+    }
+
+    for (const content of ["managed loader", "pinned upstream"] as const) {
+      test.skipIf(!havePlugin)(`${content}, receipt ${receipt}: missing install metadata permits a verified reinstall`, () => {
+        process.env[MORALMOD_ARM_ENV] = "on";
+        writeFileSync(join(home, "config.yaml"), BASE);
+        const pin = supplyRelease();
+        expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+        const plugin = join(home, "plugins", INDEX_PLUGIN);
+        const root = join(home, "index/moralmod");
+        const runtime = join(plugin, "runtime/dist/negotiator.js");
+        if (content === "pinned upstream") {
+          expect(Bun.spawnSync(["git", "checkout", "--", "runtime/dist/negotiator.js"], { cwd: plugin }).exitCode).toBe(0);
+        }
+        rmSync(installMetadataPath(home));
+        if (!receipt) rmSync(join(root, "active.json"));
+        const { calls, run } = recorder();
+        expect(step(run, true, pin)).toMatchObject({ state: "installed", failed: null });
+        expect(calls).toEqual([["plugins", "install", INDEX_PLUGIN_SOURCE, "--force", "--ref", INDEX_PLUGIN_REF, "--no-enable"]]);
+        expect(readFileSync(runtime, "utf8")).toBe(managedLoaderSource(home, join(root, pin)));
+        expect(JSON.parse(readFileSync(join(root, "active.json"), "utf8"))).toMatchObject({ installed: true, entry_sha256: sha256(readFileSync(runtime)) });
+        expect(enabled()).toEqual(["av-events", INDEX_PLUGIN]);
+      });
+    }
+  }
+
+  for (const invalid of ["symlink", "directory", "missing checkout"] as const) {
+    test.skipIf(!havePlugin)(`${invalid}: existing runtime must be verifiable before a managed reinstall`, () => {
+      process.env[MORALMOD_ARM_ENV] = "on";
+      writeFileSync(join(home, "config.yaml"), BASE);
+      const pin = supplyRelease();
+      expect(step(recorder().run, true, pin)).toMatchObject({ state: "installed", failed: null });
+      const plugin = join(home, "plugins", INDEX_PLUGIN);
+      const runtime = join(plugin, "runtime/dist/negotiator.js");
+      const upstream = Bun.spawnSync(["git", "show", "HEAD:runtime/dist/negotiator.js"], { cwd: plugin }).stdout.toString();
+      rmSync(runtime);
+      if (invalid === "symlink") {
+        writeFileSync(join(outside, "runtime.js"), upstream);
+        fs.symlinkSync(join(outside, "runtime.js"), runtime);
+      } else if (invalid === "directory") {
+        mkdirSync(runtime);
+      } else {
+        writeFileSync(runtime, upstream);
+        rmSync(join(plugin, ".git"), { recursive: true });
+      }
+      rmSync(installMetadataPath(home));
+      const { calls, run } = recorder();
+      expect(step(run, true, pin)).toMatchObject({ state: "failed", failed: "sidecar" });
+      expect(calls).toEqual([]);
+      expect(enabled()).toEqual(["av-events"]);
+      if (invalid === "symlink") {
+        expect(fs.lstatSync(runtime).isSymbolicLink()).toBe(true);
+        expect(readFileSync(join(outside, "runtime.js"), "utf8")).toBe(upstream);
+      } else if (invalid === "directory") {
+        expect(fs.lstatSync(runtime).isDirectory()).toBe(true);
+      } else {
+        expect(readFileSync(runtime, "utf8")).toBe(upstream);
+        expect(existsSync(join(plugin, ".git"))).toBe(false);
+      }
+    });
+  }
 });
 
 describe("installer retries preserve customized managed loaders", () => {

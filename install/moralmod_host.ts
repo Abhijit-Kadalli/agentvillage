@@ -172,6 +172,20 @@ function managedLoaderOwned(home: string): boolean {
     return false;
   }
 }
+/** A forced reinstall replaces the plugin tree before activation can inspect it.
+ * Check the current bytes first, even when a resident removed every managed marker.
+ * Missing Hermes metadata or an ownership receipt does not authorize unknown content.
+ */
+export function managedRuntimeReplaceable(home: string): boolean {
+  try {
+    const runtime = runtimePath(home);
+    if (!lstatSync(runtime).isFile()) return false;
+    return managedLoaderOwned(home) ||
+      hash(readFileSync(runtime)) === upstreamRuntimeSha256(join(home, "plugins", "index-network"));
+  } catch {
+    return false;
+  }
+}
 /**
  * ov#277 refute S1: the loader on disk is exactly the one an activation of the pinned release writes,
  * and that release, as installed, is the pinned one (`installedReleasePinned`).
