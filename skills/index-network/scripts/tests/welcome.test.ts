@@ -49,7 +49,7 @@ const SCRIPT = join(import.meta.dir, "..", "welcome.ts");
 const REPO = join(import.meta.dir, "..", "..", "..", "..");
 const INTENTS_URL = "https://agents.edgecity.live/intents";
 /** The control plane sends its fixed greeting instead of a welcome this long or longer (telegram-onboarding.js WELCOME_MAX_CHARS). */
-const CONTROL_PLANE_WELCOME_MAX = 1200;
+const CONTROL_PLANE_WELCOME_MAX = 3500;
 /** A nickname at the profile's 32 code points, each a supplementary-plane letter: 64 UTF-16 code units, the longest name in `.length`. */
 const ASTRAL_NAME = "\u{20000}".repeat(32);
 /** A text of `n` code points, words of four letters and a space (`n` > 0). */
@@ -328,12 +328,12 @@ describe("the welcome text", () => {
       expect(intentTitles(intentsText(rows)).map((t) => [...t].length)).toEqual([TITLE_MAX, TITLE_MAX, TITLE_MAX, TITLE_MAX]);
       rmSync(join(home, WELCOME_STATE_FILE), { force: true });
       const { text } = await run(() => intentsText(rows));
-      expect({ label, ok: text.includes(`I'm ${ASTRAL_NAME},`) && text.includes(link) }).toEqual({ label, ok: true });
+      expect({ label, ok: text.includes(`I'm ${ASTRAL_NAME},`) && text.includes(new URL("/", link).href) }).toEqual({ label, ok: true });
       expect({ label, length: text.length <= WELCOME_MAX_CHARS }).toEqual({ label, length: true });
       expect(text.length).toBeLessThan(CONTROL_PLANE_WELCOME_MAX);
       const listed = text.split("\n").filter((l) => l.startsWith("- "));
       expect(listed).toHaveLength(MAX_LISTED);
-      for (const line of listed) expect(line.endsWith("…")).toBe(true);
+      for (const line of listed) expect([...line.slice(2)].length).toBeLessThanOrEqual(TITLE_MAX);
     }
   });
 

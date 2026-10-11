@@ -62,11 +62,23 @@ The welcome script seeds intents from the resident's signup selections on the fi
 
 Welcome to Edge City India ☀️
 
-Mandrem, Goa, October 11 to November 1. I'm your personal agent for your time in the village. You can call me Edge, or give me whatever name you like.
+I'm Edge, your personal agent for Edge City India. It's a pleasure to meet you.
 
-I can't see what you're here for just yet, so I'll catch up and bring people and events that fit to your morning brief.
+What can you ask me?
+• What events are happening tomorrow?
+• Please RSVP me to [event name] on the calendar.
+You can also send me Telegram voice notes.
 
-Meanwhile, tell me what you're looking for, or ask me anything about the village.
+To complete your onboarding
+Explore the Agent Village app: https://agents.edgecity.live/
+1) Rolodex: browse people and track who you've met.
+2) Send someone a gold star to show gratitude (three per day).
+3) Skylight: make an avatar for me in the virtual village.
+
+Your intents
+I can't load your intents right now. Tell me what you're looking for, and I'll still help you find relevant people and events.
+
+I'm excited for our time at Edge City India together!
 
 ---
 
