@@ -122,9 +122,14 @@ export function activateMoralmod(
   regular(runtime);
   const state = join(home, "index", "moralmod", "active.json");
   regular(state);
+  const configFile = join(home, "index", "moralmod", "resident.json");
+  const entry = `${marker}\nimport {readFileSync} from 'node:fs';\nimport {startResident} from ${JSON.stringify(join(release.directory, "negotiator-runtime.js"))};\nconst config=JSON.parse(readFileSync(${JSON.stringify(configFile)},'utf8'));\ntry {\n const resident=await startResident({...process.env,...config,DECISION_JOURNAL_PATH:${JSON.stringify(join(home,"index","moralmod","fallback.sqlite"))}});\n const stop=()=>void resident.stop().finally(()=>process.exit(0));\n process.on('SIGTERM',stop);process.on('SIGINT',stop);\n console.log(JSON.stringify({ready:true,port:resident.port}));\n} catch { console.error(JSON.stringify({level:'warn',event:'moralmod_startup_unready'}));process.exit(1); }\n`;
+  // A prior attempt can replace the loader before committing active.json. Only the
+  // exact loader derived from this verified release is recoverable without its receipt.
+  const currentHash = hash(readFileSync(runtime)), entryHash = hash(entry);
   if (existsSync(state)) {
     const previous = JSON.parse(readFileSync(state, "utf8"));
-    if (hash(readFileSync(runtime)) !== previous.entry_sha256)
+    if (currentHash !== previous.entry_sha256 && currentHash !== entryHash)
       throw Error("Managed plugin runtime was modified");
   } else {
     const upstream = Bun.spawnSync(
@@ -134,13 +139,11 @@ export function activateMoralmod(
     if (
       upstream.exitCode !== 0 ||
       !existsSync(runtime) ||
-      hash(readFileSync(runtime)) !== hash(upstream.stdout)
+      (currentHash !== hash(upstream.stdout) && currentHash !== entryHash)
     )
       throw Error("Unowned plugin runtime was modified");
   }
   installMorning(home);
-  const configFile = join(home, "index", "moralmod", "resident.json");
-  const entry = `${marker}\nimport {readFileSync} from 'node:fs';\nimport {startResident} from ${JSON.stringify(join(release.directory, "negotiator-runtime.js"))};\nconst config=JSON.parse(readFileSync(${JSON.stringify(configFile)},'utf8'));\ntry {\n const resident=await startResident({...process.env,...config,DECISION_JOURNAL_PATH:${JSON.stringify(join(home,"index","moralmod","fallback.sqlite"))}});\n const stop=()=>void resident.stop().finally(()=>process.exit(0));\n process.on('SIGTERM',stop);process.on('SIGINT',stop);\n console.log(JSON.stringify({ready:true,port:resident.port}));\n} catch { console.error(JSON.stringify({level:'warn',event:'moralmod_startup_unready'}));process.exit(1); }\n`;
   mkdirSync(join(plugin, "runtime", "dist"), { recursive: true });
   atomic(configFile, JSON.stringify(config) + "\n");
   atomic(runtime, entry);
@@ -151,7 +154,7 @@ export function activateMoralmod(
       hook_version: release.hookVersion,
       release_digest: release.releaseDigest,
       plugin_revision: INDEX_PLUGIN_REVISION,
-      entry_sha256: hash(entry),
+      entry_sha256: entryHash,
       installed: true,
       selected: "unverified",
       ready: false,
