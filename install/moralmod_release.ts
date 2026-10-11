@@ -19,6 +19,11 @@ export const INDEX_PLUGIN_REVISION = "04d833b840541fedabe78cbdad306c18853d784a";
  */
 export const MORALMOD_RELEASE_SHA256 = "unpinned: no reviewed MoralMod release yet";
 const FILES = ["negotiator-core.js", "negotiator-runtime.js", "INDEX-LICENSE"] as const;
+/**
+ * ov#284 refute M1: every file an installed release directory (`index/moralmod/<release.json sha256>/`)
+ * holds, bundle files first and `release.json` last, the order an OFF cleanup removes them in.
+ */
+export const RELEASE_DIRECTORY_FILES: readonly string[] = [...FILES, "release.json"];
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const regular = (path: string) => { if (existsSync(path) && !lstatSync(path).isFile()) throw new Error("MoralMod managed path must be a regular file"); };
@@ -26,7 +31,7 @@ function atomic(path: string, value: string | Uint8Array) {
   regular(path); const temp = `${path}.${randomUUID()}.tmp`;
   writeFileSync(temp, value, { mode: 0o600, flag: "wx" }); renameSync(temp, path);
 }
-const SHA256_HEX = /^[0-9a-f]{64}$/;
+export const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** The release's `release.json` is not the one pinned in `MORALMOD_RELEASE_SHA256` (or no release is pinned). */
 export class MoralmodReleaseUnpinned extends Error {
   constructor() {
@@ -35,6 +40,27 @@ export class MoralmodReleaseUnpinned extends Error {
   }
 }
 export interface InstalledRelease { hookVersion: string; releaseDigest: string; directory: string; changed: boolean }
+
+/**
+ * ov#277 refute S1: the release a managed loader on disk imports, `index/moralmod/<pin>/`, is the
+ * pinned one: `pin` is a sha256, that directory's `release.json` hashes to it, and every bundle file
+ * to the digest that `release.json` lists. False for the sentinel, so no loader passes under it.
+ */
+export function installedReleasePinned(home: string, pin: string = MORALMOD_RELEASE_SHA256): boolean {
+  if (!SHA256_HEX.test(pin)) return false;
+  const directory = join(home, "index", "moralmod", pin);
+  try {
+    regular(join(directory, "release.json"));
+    const manifestBytes = readFileSync(join(directory, "release.json"));
+    if (hash(manifestBytes) !== pin) return false;
+    const manifest: unknown = JSON.parse(manifestBytes.toString("utf8"));
+    if (!object(manifest) || !object(manifest.files)) return false;
+    const listed = manifest.files;
+    return FILES.every((name) => { regular(join(directory, name)); return hash(readFileSync(join(directory, name))) === listed[name]; });
+  } catch {
+    return false;
+  }
+}
 
 /** @param pin - The expected sha256 of `release.json` (a seam for tests; production passes none). */
 export function installMoralmodRelease(home: string, source: string, pin: string = MORALMOD_RELEASE_SHA256): InstalledRelease {
