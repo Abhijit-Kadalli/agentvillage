@@ -1,7 +1,7 @@
 ---
 name: rolodex
-description: Help someone find and open the Village Rolodex, view a person's card, mark that they met in person, or undo an accidental We met. Use for Rolodex, directory cards, meeting history and unmeet requests. Use the village tool for live search and requested meeting changes using the existing paired account.
-version: 1.0.0
+description: Follow up on people you recommended, check whether the owner has marked them met, find Rolodex cards, mark or undo meetings, and offer gratitude after a meaningful interaction. Use for meeting updates and replies to introduction or evening questions. Live reads use the existing paired account; writes need the owner's request.
+version: 1.1.0
 author: Edge City
 ---
 
@@ -37,6 +37,37 @@ Preserve it exactly. Do not invent an attendee id, guess a profile URL from a
 name or Telegram handle, or assume an Index match proves a meeting. If no
 verified person link is available, use the directory link and the search box.
 For discovering who to meet or requesting an introduction, use `index-network`.
+
+## Follow through in conversation
+
+In the owner's private conversation, when a past recommendation or meeting is
+relevant, use the conversation or `recall` to establish who you actually
+recommended. Do not claim a recommendation from an unrelated directory match.
+Search that person's current Rolodex state before saying whether it is marked.
+Disambiguate names; an Index identifier is not a Rolodex attendee identifier.
+
+- If `met` is false: “Did you get to meet Naman? I can mark it in your Rolodex.”
+  An unmarked card does not prove they haven't met. Their answer resolves that.
+- If `met` is true: “I see you've marked Naman as met in your Rolodex. How was it?”
+  Say you recommended them only if the earlier recommendation is supported.
+  The mark does not prove when, where, how well, or whether they enjoyed meeting.
+- If they clearly ask to mark/undo, or answer yes to your specific offer to
+  mark that named person, perform the requested change. A reply to a generic
+  “Did you meet?” question can start reflection; ask before recording it if
+  the request to update the Rolodex is unclear.
+- After they describe a meaningful interaction, load `gold-stars` and optionally
+  ask whether they'd like to thank the person. A meeting is never a star approval.
+
+Use one natural follow-up at a time, not a meeting questionnaire after every
+message. Skip it if already answered, declined, unrelated to what they need,
+or they asked you to stop. Respect corrections and undo; do not re-mark from
+old memory. These are contextual reads in a live private conversation, not
+continuous monitoring or permission to poll the whole directory. You cannot
+use this tool from cron, a group, or a delegated child.
+
+Replies to existing evening/Index questions follow this same conversation
+flow. Keep Index connection outcomes separate from Rolodex marks. Never
+deterministically parse a reply into either a meeting change or a star.
 
 Sign in using the email associated with the person's Edge City ticket and the
 code emailed to them. Never ask them to paste the code, cookies or tokens into

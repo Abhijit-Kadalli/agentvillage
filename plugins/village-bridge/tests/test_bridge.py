@@ -57,6 +57,32 @@ class BridgeTest(unittest.TestCase):
   self.transport.assert_not_called()
  def test_no_secret_in_error(self):
   self.transport.side_effect=RuntimeError(self.config['token']);self.assertNotIn(self.config['token'],json.dumps(self.call()))
+ def test_star_preview_and_send_share_runtime_turn_id_but_new_reply_changes_it(self):
+  attendee='550e8400-e29b-41d4-a716-446655440000'
+  self.call({'operation':'gold-stars.prepare','attendeeId':attendee,'note':'Thank you','visibility':'anonymous'})
+  first=self.transport.call_args.args[1]
+  self.assertEqual(first['visibility'],'anonymous');self.assertEqual(first['note'],'Thank you')
+  self.call({'operation':'gold-stars.send','draftId':attendee})
+  self.assertEqual(first['turnId'],self.transport.call_args.args[1]['turnId'])
+  self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
+  self.call({'operation':'gold-stars.send','draftId':attendee})
+  self.assertNotEqual(first['turnId'],self.transport.call_args.args[1]['turnId'])
+ def test_star_fields_are_exact_and_cannot_override_confirmation_origin(self):
+  base={'operation':'gold-stars.prepare','attendeeId':'550e8400-e29b-41d4-a716-446655440000','note':'Thanks','visibility':'named'}
+  for args in [{**base,'turnId':'forged'},{**base,'visibility':'private'},{**base,'note':'x'*501},
+               {**base,'confirmed':True},{'operation':'gold-stars.send','draftId':base['attendeeId'],'turnId':'forged'},
+               {'operation':'gold-stars.send','draftId':base['attendeeId'],'note':'changed'}]:
+   self.assertEqual(self.call(args)['error'],'village_unavailable')
+  self.transport.assert_not_called()
+ def test_status_and_cancel_use_only_exact_draft_id_and_star_calls_refuse_cron(self):
+  for op in ['gold-stars.status','gold-stars.cancel']:
+   args={'operation':op,'draftId':'550e8400-e29b-41d4-a716-446655440000'}
+   self.call(args);self.assertEqual(self.transport.call_args.args[1],args)
+  self.transport.reset_mock()
+  self.sc._VAR_MAP['HERMES_CRON_SESSION'].set('evening')
+  for op in ['gold-stars.prepare','gold-stars.send','gold-stars.status','gold-stars.cancel']:
+   self.assertEqual(self.call({'operation':op})['error'],'private_owner_chat_required')
+  self.transport.assert_not_called()
  def test_registration_idempotent(self):
   with patch.object(bridge,'_REGISTERED',False):
    ctx=types.SimpleNamespace(register_tool=unittest.mock.Mock());bridge.register(ctx);bridge.register(ctx);self.assertEqual(ctx.register_tool.call_count,1)
