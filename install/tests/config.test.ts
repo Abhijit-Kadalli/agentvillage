@@ -11,6 +11,7 @@ import {
   configureAvEvents,
   configureHostedGateway,
   configureIndexLinks,
+  configureVillageBridge,
   configureStt,
   disableTelegramLinkPreviews,
   dumpConfig,
@@ -41,6 +42,15 @@ function withConfig(doc: Record<string, unknown>): string {
 function readConfig(path: string): Record<string, unknown> {
   return YAML.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
 }
+
+test("village tool install is idempotent and preserves a deliberate disabled setting", () => {
+  const path = withConfig({ plugins: { enabled: ["existing"], disabled: ["village-bridge"], hook_callback_timeout: 30 } });
+  configureVillageBridge();
+  const first = readFileSync(path, "utf8");
+  configureVillageBridge();
+  expect(readFileSync(path, "utf8")).toBe(first);
+  expect(readConfig(path).plugins).toEqual({ enabled: ["existing", "village-bridge"], disabled: ["village-bridge"], hook_callback_timeout: 30 });
+});
 
 test("capModelMaxTokens adds a safe default cap when missing", () => {
   const configPath = withConfig({

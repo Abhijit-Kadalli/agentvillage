@@ -895,3 +895,14 @@ export function configureRecall(): void {
   setRecallPluginEnabled(choice);
   console.log(choice ? `→ enabled plugin ${RECALL_PLUGIN}` : `→ disabled plugin ${RECALL_PLUGIN} (AV_RECALL_ENABLED off)`);
 }
+
+/** Native village tool uses narrow credentials provisioned automatically for the existing paired account. */
+export function configureVillageBridge(): void {
+  const doc = readConfig();
+  const plugins = { ...((doc.plugins as Record<string, unknown>) ?? {}) };
+  const enabled = Array.isArray(plugins.enabled) ? plugins.enabled.filter((v: unknown) => typeof v === "string") : [];
+  if (!enabled.includes("village-bridge")) enabled.push("village-bridge");
+  plugins.enabled = enabled;
+  doc.plugins = plugins;
+  writeConfig(doc);
+}
