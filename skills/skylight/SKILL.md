@@ -1,6 +1,6 @@
 ---
 name: skylight
-description: Explain and open Skylight from Agent Village for characters, personal islands and the shared village. Use for Skylight, changing a character, opening an island, or questions about what the agent can see there. Use the village tool for bounded, factual activity after account connection. No journal reads or Skylight mutations.
+description: Explain and open Skylight from Agent Village for characters, personal islands and the shared village. Use for Skylight, changing a character, opening an island, or questions about what the agent can see there. Use the village tool for bounded, factual activity using the existing paired account. No journal reads or Skylight mutations.
 version: 1.0.0
 author: Edge City
 ---
@@ -34,7 +34,12 @@ help them open Skylight without claiming their character or account was deleted.
 State freshness when relevant. An observation does not subscribe you to updates.
 Do not create scheduled updates unless the owner asks.
 
-If the tool is missing or disconnected, help them connect once:
+Access uses the existing account and Telegram pairing automatically; there is no
+new connection step. If an agent update is still pending, offer the Skylight link
+and suggest retrying shortly. If sign-in has expired, use the normal sign-in:
+https://agents.edgecity.live/signin
+
+Respect an explicit opt-out. Access can be managed in Settings:
 https://agents.edgecity.live/connections/village
 
 You cannot move an agent, edit a character, visit an island, or read journals or

@@ -1,6 +1,6 @@
 ---
 name: rolodex
-description: Help someone find and open the Village Rolodex, view a person's card, mark that they met in person, or undo an accidental We met. Use for Rolodex, directory cards, meeting history and unmeet requests. Use the village tool for live search and requested meeting changes after account connection.
+description: Help someone find and open the Village Rolodex, view a person's card, mark that they met in person, or undo an accidental We met. Use for Rolodex, directory cards, meeting history and unmeet requests. Use the village tool for live search and requested meeting changes using the existing paired account.
 version: 1.0.0
 author: Edge City
 ---
@@ -23,7 +23,7 @@ choose the first result, guess an id, or infer a meeting from a match. Then
 call `rolodex.meeting` with that `attendeeId` and `met: true`. A clear request
 to undo uses `met: false`. Search again if the target is unclear.
 
-A clear request authorizes the meeting change after account connection. Do not
+A clear request authorizes the meeting change using the existing paired account. Do not
 ask for redundant website confirmation. Only report completion from a successful
 receipt. A `historicalReceipt` records an older change: search current state
 before saying it still applies. On a timeout or unknown outcome, check the
@@ -42,14 +42,18 @@ Sign in using the email associated with the person's Edge City ticket and the
 code emailed to them. Never ask them to paste the code, cookies or tokens into
 chat. They can use the Rolodex after sign-in without connecting a Telegram agent.
 
-If the tool is missing, disabled or says `not_connected`, explain that the
-person can enable it once here, then return to chat:
+The skill uses the person's existing Agent Village account and paired Telegram
+agent automatically. There is no new Connect step. If access is pending after
+an update, suggest retrying shortly and offer the Rolodex link in the meantime.
+If sign-in has expired, link to https://agents.edgecity.live/signin; access
+updates automatically after their normal sign-in. If they deliberately turned
+access off, respect that choice. They can manage it in Settings:
 https://agents.edgecity.live/connections/village
 
-The connection lets their own agent read matching shared profiles and their
-own meeting state, and mark/undo meetings. It expires, can be disconnected,
-and stops when their agent or Telegram pairing changes. The tool is for the
-paired owner's private Telegram chat. For other contexts give the website link.
+The agent can read matching shared profiles and the owner's meeting state,
+and mark/undo their meetings. Access follows current account and Telegram
+pairing. The tool is for the paired owner's private Telegram chat. For other
+contexts give the website link.
 Never borrow credentials or call APIs through the shell to bypass a refusal.
 A missing person may be a directory issue, not evidence they have no ticket.
 
