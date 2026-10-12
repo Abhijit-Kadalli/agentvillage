@@ -331,9 +331,23 @@ av-events reads RSVPs from those curls; no approval class gates EdgeOS yet.
 are readable by the agent's own user, so code the agent writes can still open
 them and read every key. Closing that needs agent-run code under a second unix
 user (the proposal in the lane's report). The only off switch is
-`av_approval: {custody: false}` in `config.yaml` (`policy.core`: an operator sets
-it from a sandbox shell with `hermes config set av_approval.custody false`; the
-agent cannot), one warning line; use it only to rule custody out while debugging.
+`av_approval: {custody: false}` in `config.yaml` (an operator sets it from a
+sandbox shell with `hermes config set av_approval.custody false`), one warning
+line; use it only to rule custody out while debugging. The hook treats a write to
+config.yaml as `policy.core` when it is spelled `~/.hermes/...` or
+`$HOME/.hermes/...`; the `$HERMES_HOME/...` spelling and the plugin directory
+(`plugins/av-approval/_custody.py`, which holds the floor of stripped names) are
+covered by approval-md APRV-511 (0.4.5), and until then an agent can reach both
+through those spellings.
+
+**Listing av-approval on every tenant closes one failure mode that used to be
+open.** A box with `AV_APPROVAL_ENABLED=1` and no hook files (a failed first
+approval install, or a control-plane rewire that writes the switch and restarts
+without running the installer, tenants.js:849-857) used to run ungated, because
+the plugin was not listed. Now the plugin loads, its backstop finds the hooks
+missing, and every gated tool is blocked until a restart with the hooks in
+place. That is the intended fail-closed reading; whether the control plane may
+flip the switch without an install is Carter's question.
 
 ## Uncovered surfaces
 

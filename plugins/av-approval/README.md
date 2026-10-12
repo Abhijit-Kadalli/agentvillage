@@ -107,9 +107,15 @@ registers no hook), and never touches `ctx`. Every failure is a warning:
 or `_custody` failing to load), and a decisions file that no longer marks a floor
 name (`... does not mark ... strip ...; they are stripped anyway`). The only off
 switch is `av_approval: {custody: false}` in `$HERMES_HOME/config.yaml`, read
-with Hermes's raw config loader: the hook treats that file as `policy.core`, so
-the agent cannot write it. No environment variable is read: Hermes loads dotenv
-files the agent can write (`hermes-agent/.env`, `.op.env`) into the gateway.
+with Hermes's raw config loader. No environment variable is read: Hermes loads
+dotenv files the agent can write (`hermes-agent/.env`, `.op.env`) into the
+gateway. What the hook protects today: a write to config.yaml spelled
+`~/.hermes/config.yaml` or `$HOME/.hermes/config.yaml` is `policy.core`
+(human-only); the `$HERMES_HOME/config.yaml` spelling and the plugin directory
+(this module, which holds `FLOOR`) classify `files.write.workspace` and are
+covered by approval-md APRV-511 (0.4.5). Until then an agent can turn custody off
+or shrink the list through those spellings; an edit of `custody_keys.json` alone
+cannot shrink it.
 Not closed: `$HERMES_HOME/.env` and `/proc/<gateway pid>/environ` stay readable
 by the agent's user; see `skills/approval/README.md`.
 

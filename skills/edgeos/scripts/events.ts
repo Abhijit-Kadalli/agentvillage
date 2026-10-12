@@ -177,9 +177,9 @@ export function days(args: Args, now: Date, tz: string): string[] {
   else if (args.when === "tomorrow") first = addDays(today, 1);
   else if (args.when === "weekend") {
     const dow = new Date(`${today}T00:00:00Z`).getUTCDay(); // 0 Sunday … 6 Saturday
-    if (dow === 6) { first = today; count = 1 + args.days; }
+    if (dow === 6) { first = today; count = Math.min(1 + args.days, MAX_DAYS); }
     else if (dow === 0) { first = today; count = args.days; }
-    else { first = addDays(today, 6 - dow); count = 1 + args.days; }
+    else { first = addDays(today, 6 - dow); count = Math.min(1 + args.days, MAX_DAYS); }
   } else first = args.when;
   return Array.from({ length: count }, (_, i) => addDays(first, i));
 }

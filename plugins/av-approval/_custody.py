@@ -30,14 +30,19 @@ foreground builder with a canary under a strip name and must not see it, `_scrub
 the canary even when it is declared passthrough, and `LocalEnvironment._run_bash` and
 `_build_child_env` must still call the wrapped names. A surface that fails is reported NOT covered.
 
-The strip list cannot be shrunk from the plugin directory: `FLOOR` is always stripped, and a
-decisions file that drops a floor name (or cannot be read) is logged as a warning.
+An edit of `custody_keys.json` cannot shrink the list: `FLOOR` is always stripped, and a decisions
+file that drops a floor name (or cannot be read) is logged as a warning. An edit of this module can:
+the plugin directory is writable by the agent's user, and the approval hook classifies a write there
+as `files.write.workspace` until approval-md APRV-511 (0.4.5) makes it `policy.core`.
 
-Switch: custody is always on unless `~/.hermes/config.yaml` says `av_approval: {custody: false}`
-(read with Hermes's raw config loader, no environment expansion). The config file is `policy.core`
-to the approval hook, so the agent cannot write it; an operator can (`hermes config set
-av_approval.custody false` from a sandbox shell). No environment variable is consulted: Hermes loads
-dotenv files the agent can write (the project `.env`, `.op.env`) into the gateway's environment.
+Switch: custody is always on unless `$HERMES_HOME/config.yaml` says `av_approval: {custody: false}`
+(read with Hermes's raw config loader, no environment expansion); an operator sets it with
+`hermes config set av_approval.custody false` from a sandbox shell. The approval hook classifies a
+write to that file as `policy.core` (human-only) when the command spells it `~/.hermes/config.yaml`
+or `$HOME/.hermes/config.yaml`, but not when it spells it `$HERMES_HOME/config.yaml`: that spelling,
+like the plugin directory, is covered by approval-md APRV-511 (0.4.5), and until then an agent can
+reach both through those spellings. No environment variable is consulted: Hermes loads dotenv files
+the agent can write (the project `.env`, `.op.env`) into the gateway's environment.
 
 What this does not do, stated plainly: `$HERMES_HOME/.env` stays readable by the agent's user, and
 so does `/proc/<gateway pid>/environ`. Agent-written code that opens either file still gets the keys;
@@ -52,8 +57,8 @@ import functools
 import importlib
 import json
 import logging
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
@@ -72,6 +77,7 @@ DECISIONS = frozenset({"strip", "hermes", "agent_readable", "not_secret"})
 MEASURED_HERMES = "0.21.5"
 CANARY_NAME = "INDEX_API_KEY"
 CANARY_VALUE = "av-custody-canary"
+_LIST_ENV = "import os, sys; sys.stdout.write(chr(10).join(os.environ))"
 _OFF = frozenset({"false", "0", "no", "off"})
 
 #: (surface, module, attribute) for the two wrapped builders, and (module, class or None, function)
@@ -220,12 +226,11 @@ def _calls(importer: Callable[[str], Any], surface: str, attr: str) -> bool:
 
 
 def _spawn_sees_canary(env: Mapping[str, str]) -> bool:
-    """Spawn one child with `env` and report whether it sees the canary."""
-    env_bin = shutil.which("env", path=env.get("PATH")) or shutil.which("env")
-    if not env_bin:
-        raise RuntimeError("no env binary to spawn")
-    out = subprocess.run([env_bin], env=dict(env), capture_output=True, text=True, timeout=5, check=False).stdout
-    return any(line.split("=", 1)[0] == CANARY_NAME for line in out.splitlines())
+    """Spawn one child with `env` and report whether it sees the canary. The child is this interpreter
+    by absolute path, never a PATH lookup: Hermes puts its own agent-writable bin directory first."""
+    out = subprocess.run([sys.executable, "-c", _LIST_ENV], env=dict(env), capture_output=True, text=True,
+                         timeout=5, check=False).stdout
+    return CANARY_NAME in out.splitlines()
 
 
 def probe(importer: Callable[[str], Any], surface: str) -> bool:

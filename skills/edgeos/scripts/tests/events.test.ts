@@ -74,6 +74,11 @@ describe("windows", () => {
     expect(days(args({ when: "weekend", days: 2 }), new Date("2026-10-18T04:30:00Z"), "Asia/Kolkata")).toEqual(["2026-10-18", "2026-10-19"]);
   });
 
+  test("--when weekend never asks for more than MAX_DAYS (recheck N3)", () => {
+    expect(days(args({ when: "weekend", days: 14 }), new Date("2026-10-17T04:30:00Z"), "Asia/Kolkata").length).toBe(14);
+    expect(days(args({ when: "weekend", days: 14 }), NOW, "Asia/Kolkata").length).toBe(14);
+  });
+
   test("a zone with daylight saving", () => {
     expect(localMidnightUtc("2026-07-01", "America/Los_Angeles").toISOString()).toBe("2026-07-01T07:00:00.000Z");
     expect(localMidnightUtc("2026-12-01", "America/Los_Angeles").toISOString()).toBe("2026-12-01T08:00:00.000Z");
