@@ -103,7 +103,20 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { DEFAULT_NAME, agentName, readProfile } from "../../agent-profile/scripts/profile";
-import { type IndexMcpTarget, type IntentRefusal, callIndexTool, indexMcpUrl, intentRefusal, toolJsonArray, toolJsonObject } from "./index-mcp";
+import {
+  type IndexMcpTarget,
+  type IntentRefusal,
+  type RecoveryQuestion,
+  INTENT_NEEDS_REVISION,
+  IndexMcpError,
+  PREPARE_UNAVAILABLE,
+  callIndexTool,
+  indexMcpUrl,
+  intentRefusal,
+  prepareIntent,
+  toolJsonArray,
+  toolJsonObject,
+} from "./index-mcp";
 import { DEFAULT_CONNECTIONS_URL, cleanTitle, connectionsUrl, cronScanHit, cutAtWord, envOrDotenv } from "./proactive-text";
 import { acquireStateLock } from "./state-lock";
 
@@ -178,6 +191,30 @@ export const REFUSED_LINE_MAX = 200;
 export const REFUSED_FEEDBACK_MAX = 160;
 /** Refused lines one REFUSED_SEEDS block names at most. */
 export const REFUSED_SHOWN_MAX = 3;
+/**
+ * SEED-REJECT part 3b: the trailer's codes, to the data door's contract
+ * (agentvillage-data #506, CLAIMS 18:28Z ruling: codes only): at most
+ * SEED_CODES_MAX `seed_codes`, each SEED_CODE, one per seed line that left a
+ * code; at most SEED_RECOVERY_KINDS_MAX `seed_recovery_kinds`.
+ */
+export const SEED_CODES_MAX = 3;
+export const SEED_CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
+export const SEED_RECOVERY_KINDS_MAX = 4;
+/** Index's recovery questions kept per refused line in the seed marker, and options per question, and code points per option. */
+export const RECOVERY_QUESTIONS_MAX = 4;
+export const RECOVERY_OPTIONS_MAX = 6;
+export const RECOVERY_OPTION_MAX = 60;
+/** A line whose `prepare` call or create could not even start: too little of the budget left. */
+export const BUDGET_EXHAUSTED = "budget_exhausted";
+/**
+ * Index's admission categories (protocol intent.admission.ts admissionFailure),
+ * read from its two fixed feedback sentences; any other feedback is the
+ * specificity warning, `broad`.
+ */
+export const ADMISSION_FEEDBACK: Readonly<Record<string, "non_actionable" | "vague_or_invalid">> = {
+  "Describe who you want to reach and what you want to do together.": "non_actionable",
+  "Make the goal more concrete: specify the role, outcome, or particular help you need.": "vague_or_invalid",
+};
 
 /**
  * The app's intention categories, a closed set (agentvillage-app
@@ -264,7 +301,13 @@ export type IntentsRead =
 const UNREACHABLE: IntentsRead = { kind: "unreachable" };
 
 /** What a run's seed did: intents it created (and, paused mode, paused), and lines it meant to and could not. */
-export type SeedCounts = { intents_seeded: number; seed_failed: number };
+/**
+ * What a run's seed did: intents it created (and, paused mode, paused), and
+ * lines it meant to and could not; SEED-REJECT part 3b: the code each line
+ * left (seedCodes) and the kinds of Index's recovery questions, both for the
+ * trailer behind AV_SEED_TRAILER_V2 (codes only, never text).
+ */
+export type SeedCounts = { intents_seeded: number; seed_failed: number; seed_codes?: string[]; seed_recovery_kinds?: RecoveryQuestion["kind"][] };
 const NO_SEED: SeedCounts = { intents_seeded: 0, seed_failed: 0 };
 
 /** The branch a welcome took, as `--draft` reports it on stderr. */
@@ -276,21 +319,44 @@ export type WelcomeBranch = { fallback: "none" | "questions" | "context" | "unre
  * signup (hasSetupContext). Pure.
  */
 export function welcomeBranch(read: IntentsRead, seed: SeedCounts = NO_SEED, context = false): WelcomeBranch {
-  const counts = { intents_seeded: seed.intents_seeded, seed_failed: seed.seed_failed };
+  const counts: SeedCounts = {
+    intents_seeded: seed.intents_seeded,
+    seed_failed: seed.seed_failed,
+    ...(seed.seed_codes?.length ? { seed_codes: seed.seed_codes } : {}),
+    ...(seed.seed_recovery_kinds?.length ? { seed_recovery_kinds: seed.seed_recovery_kinds } : {}),
+  };
   if (read.kind === "unreachable") return { fallback: "unreachable", intents_listed: 0, ...counts };
   if (read.titles.length === 0) return { fallback: context ? "context" : "questions", intents_listed: 0, ...counts };
   return { fallback: "none", intents_listed: Math.min(read.titles.length, MAX_LISTED), ...counts };
 }
 
-/** The `--draft` stderr line for `branch`, without its newline: these five keys in this order, always, nothing else. */
-export function draftTrailer(branch: WelcomeBranch): string {
+/**
+ * The `--draft` stderr line for `branch`, without its newline: these five keys
+ * in this order, always; with `v2` (seedTrailerV2), then `seed_codes` and
+ * `seed_recovery_kinds` when the seed left any, and nothing else, ever.
+ */
+export function draftTrailer(branch: WelcomeBranch, v2 = false): string {
   return JSON.stringify({
     welcome: 1,
     fallback: branch.fallback,
     intents_listed: branch.intents_listed,
     intents_seeded: branch.intents_seeded ?? 0,
     seed_failed: branch.seed_failed ?? 0,
+    // SEED-REJECT part 3b, behind AV_SEED_TRAILER_V2 (seedTrailerV2): codes only, each key only when non-empty.
+    ...(v2 && branch.seed_codes?.length ? { seed_codes: branch.seed_codes.slice(0, SEED_CODES_MAX) } : {}),
+    ...(v2 && branch.seed_recovery_kinds?.length ? { seed_recovery_kinds: branch.seed_recovery_kinds.slice(0, SEED_RECOVERY_KINDS_MAX) } : {}),
   });
+}
+
+/**
+ * SEED-REJECT part 3b: `AV_SEED_TRAILER_V2` (environment, else `$HERMES_HOME/.env`)
+ * is `1`: the trailer may carry `seed_codes` and `seed_recovery_kinds`. Off by
+ * default, because the data door refuses a welcome.sent with a key it does not
+ * know, and a control plane before part 3a refuses the whole trailer with a
+ * sixth key: the switch goes on only after the data release and the cp half.
+ */
+export function seedTrailerV2(home: string): boolean {
+  return envOrDotenv("AV_SEED_TRAILER_V2", home).trim() === "1";
 }
 
 function homeFrom(argv: string[]): string {
@@ -510,7 +576,20 @@ export function createdIntent(text: string): { id: string | null; title: string 
 }
 
 /** One line Index refused, as the seed marker keeps it (SEED-REVISION). */
-export type RefusedSeed = { line: string; feedback: string | null; code: string; at: string; keys: string[]; surfacedAt?: string };
+export type RefusedSeed = {
+  line: string;
+  feedback: string | null;
+  code: string;
+  at: string;
+  keys: string[];
+  surfacedAt?: string;
+  /** SEED-REJECT part 3b, only from a `prepare` refusal: Index's category and its recovery questions (cleaned). */
+  category?: string;
+  recovery?: Array<{ kind: RecoveryQuestion["kind"]; question: string; options?: string[] }>;
+};
+
+/** A `prepare` refusal as seedOne hands it on: the IntentRefusal ov#302 keeps, with the category and the raw questions. */
+export type PreparedRefusal = IntentRefusal & { category: string; recovery: RecoveryQuestion[] };
 
 /** A word joined by an underscore (`create_intent`, `source_type`): the shape of a tool or field name, never Index's prose. */
 const SNAKE_CASE = /\p{L}+_[\p{L}\p{N}_]*[\p{L}\p{N}]/u;
@@ -534,9 +613,52 @@ export function refusedLine(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? cutAtWord(raw, REFUSED_LINE_MAX) : null;
 }
 
-function refusedSeed(line: string, refusal: IntentRefusal, now: Date): RefusedSeed | null {
+function refusedSeed(line: string, refusal: IntentRefusal | PreparedRefusal, now: Date): RefusedSeed | null {
   const kept = refusedLine(line);
-  return kept === null ? null : { line: kept, feedback: refusedFeedback(refusal.feedback), code: refusal.code, at: now.toISOString(), keys: refusal.keys };
+  if (kept === null) return null;
+  const seed: RefusedSeed = { line: kept, feedback: refusedFeedback(refusal.feedback), code: refusal.code, at: now.toISOString(), keys: refusal.keys };
+  if ("category" in refusal) {
+    seed.category = refusal.category;
+    const recovery = recoveryQuestions(refusal.recovery);
+    if (recovery.length) seed.recovery = recovery;
+  }
+  return seed;
+}
+
+/**
+ * Index's recovery questions as the seed marker keeps them for the agent's
+ * first turn: at most RECOVERY_QUESTIONS_MAX, each question through
+ * refusedFeedback (cleaned, scanned, withheld whole on a hit: the question is
+ * then dropped), options (single and multi only) through the same cleaner at
+ * RECOVERY_OPTION_MAX, at most RECOVERY_OPTIONS_MAX. Pure.
+ */
+export function recoveryQuestions(raw: RecoveryQuestion[]): NonNullable<RefusedSeed["recovery"]> {
+  const out: NonNullable<RefusedSeed["recovery"]> = [];
+  for (const q of raw) {
+    if (out.length === RECOVERY_QUESTIONS_MAX) break;
+    const question = refusedFeedback(q.question);
+    if (question === null) continue;
+    const options = q.kind === "text" ? [] : q.options.map((o) => refusedOption(o)).filter((o): o is string => o !== null).slice(0, RECOVERY_OPTIONS_MAX);
+    out.push({ kind: q.kind, question, ...(options.length ? { options } : {}) });
+  }
+  return out;
+}
+
+function refusedOption(raw: unknown): string | null {
+  if (typeof raw !== "string" || cronScanHit(raw) || SNAKE_CASE.test(raw)) return null;
+  const clean = cleanTitle(raw, RECOVERY_OPTION_MAX, "word");
+  return clean === null || SNAKE_CASE.test(clean) || cronScanHit(clean) ? null : clean;
+}
+
+/** `code` as the trailer may carry it (SEED_CODE): characters outside the set become `_`, cut to 64; null when nothing is left. Pure. */
+export function seedCode(code: string): string | null {
+  const shaped = code.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 64);
+  return SEED_CODE.test(shaped) ? shaped : null;
+}
+
+/** Index's admission category for a `prepare` refusal's feedback (ADMISSION_FEEDBACK), else `broad`. Pure. */
+export function admissionCategory(feedback: string | null): string {
+  return (feedback !== null && ADMISSION_FEEDBACK[feedback.trim()]) || "broad";
 }
 
 /**
@@ -631,6 +753,47 @@ async function awaitSeed(home: string, target: IndexMcpTarget, first: { read: In
   return { read: again.read.kind === "listed" ? again.read : first.read, seed: NO_SEED };
 }
 
+type SeedLineInput = { text: string; title: string; key: string };
+
+/**
+ * Seed `lines` (seedOne, all at once), list again, and classify each line:
+ * created (or landed after its own call gave up: publish mode, active in the
+ * second list), else failed, a refused one (ov#302's create refusal, or part
+ * 3b's `prepare` refusal) kept for the first chat turn. `codes`: the code each
+ * line left, in line order, shaped for the trailer (seedCode); `kinds`: the
+ * kinds of the refused lines' recovery questions, at most
+ * SEED_RECOVERY_KINDS_MAX. Shared by the welcome's seed and `--reseed`.
+ */
+async function seedLines(home: string, target: IndexMcpTarget, clock: Clock, lines: SeedLineInput[], now: Date) {
+  const mode = seedMode(home);
+  const made = (await Promise.allSettled(lines.map((line) => seedOne(target, clock, mode, line.text)))).map((r) =>
+    r.status === "fulfilled" ? r.value : { out: null, code: "error" },
+  );
+  const relistTarget = timed(target, clock, WELCOME_INDEX_TIMEOUT_MS);
+  const again = relistTarget ? await listIntents(relistTarget) : { read: UNREACHABLE, rows: null };
+  const seeded: Array<{ id: string | null; title: string; key: string }> = [];
+  const refused: RefusedSeed[] = [];
+  const codes: string[] = [];
+  let failed = 0;
+  lines.forEach((line, i) => {
+    const { out: one, code } = made[i]!;
+    const created = one && !("refused" in one) ? one : null;
+    if (created) seeded.push({ id: created.id, title: created.title ?? line.title, key: line.key });
+    // A create that landed after its own call gave up (publish mode: in paused mode it was never paused).
+    else if (mode === "publish" && again.rows?.some((row) => row.active && row.keys.includes(line.key))) seeded.push({ id: null, title: line.title, key: line.key });
+    else {
+      failed++;
+      // SEED-REVISION: Index wanted this line clearer; keep it for the first chat turn.
+      const kept = one && "refused" in one ? refusedSeed(line.text, one, now) : null;
+      if (kept) refused.push(kept);
+    }
+    const shaped = code === null ? null : seedCode(code);
+    if (shaped !== null && codes.length < SEED_CODES_MAX) codes.push(shaped);
+  });
+  const kinds = refused.flatMap((r) => (r.recovery ?? []).map((q) => q.kind)).slice(0, SEED_RECOVERY_KINDS_MAX);
+  return { mode, again, seeded, failed, refused, codes, kinds };
+}
+
 /**
  * The seed, after a read that listed `first` (DATA-412, DATA-416): when no
  * welcome was sent yet (`welcomed` false, in both modes), no intent is
@@ -678,30 +841,10 @@ async function seedWelcome(
     return unchanged;
   }
 
-  const mode = seedMode(home);
-  const made = (await Promise.allSettled(lines.map((line) => seedOne(target, clock, mode, line.text)))).map((r) =>
-    r.status === "fulfilled" ? r.value : null,
-  );
-  const relistTarget = timed(target, clock, WELCOME_INDEX_TIMEOUT_MS);
-  const again = relistTarget ? await listIntents(relistTarget) : { read: UNREACHABLE, rows: null };
-  const seeded: Array<{ id: string | null; title: string; key: string }> = [];
-  const refused: RefusedSeed[] = [];
-  let failed = 0;
-  lines.forEach((line, i) => {
-    const one = made[i];
-    const created = one && !("refused" in one) ? one : null;
-    if (created) seeded.push({ id: created.id, title: created.title ?? line.title, key: line.key });
-    // A create that landed after its own call gave up (publish mode: in paused mode it was never paused).
-    else if (mode === "publish" && again.rows?.some((row) => row.active && row.keys.includes(line.key))) seeded.push({ id: null, title: line.title, key: line.key });
-    else {
-      failed++;
-      // SEED-REVISION: Index wanted this line clearer; keep it for the first chat turn.
-      const kept = one && "refused" in one ? refusedSeed(line.text, one, now) : null;
-      if (kept) refused.push(kept);
-    }
-  });
+  const { mode, again, seeded, failed, refused, codes, kinds } = await seedLines(home, target, clock, lines, now);
   recordSeed(home, now, selected.length, seeded.length, failed, refused);
-  const seed = { intents_seeded: seeded.length, seed_failed: failed };
+  // SEED-REJECT part 3b: the codes ride on the branch only behind AV_SEED_TRAILER_V2, so with it off the branch is today's.
+  const seed: SeedCounts = { intents_seeded: seeded.length, seed_failed: failed, ...(seedTrailerV2(home) ? { seed_codes: codes, seed_recovery_kinds: kinds } : {}) };
 
   if (seeded.length === 0) return { read: again.read.kind === "listed" ? again.read : first.read, seed };
   // A seeded intent's row in the second list: by the id its create answer named, else by the text sent.
@@ -734,27 +877,47 @@ async function seedWelcome(
  * back), or in `paused` mode no id to pause or a pause that failed (never
  * retried).
  */
-async function seedOne(
-  target: IndexMcpTarget,
-  clock: Clock,
-  mode: SeedMode,
-  description: string,
-): Promise<{ id: string | null; title: string | null } | IntentRefusal | null> {
+/** One seed line's outcome (seedOne) and the code it left for the trailer (null: created, nothing to say). */
+type SeedLine = { out: { id: string | null; title: string | null } | IntentRefusal | PreparedRefusal | null; code: string | null };
+
+const withCode = (prefix: string | null, code: string): string => (prefix === null ? code : `${prefix}:${code}`);
+
+async function seedOne(target: IndexMcpTarget, clock: Clock, mode: SeedMode, description: string): Promise<SeedLine> {
+  // `description` is the resident's line exactly as selectedIntentions read it: never rewritten, trimmed or composed.
+  let prefix: string | null = null;
   try {
+    // SEED-REJECT part 3b, release gate (2): one `prepare` per line, inside the same budget and timeout, no retry.
+    const prepareTarget = timed(target, clock, WELCOME_SEED_TIMEOUT_MS, clock.reserve);
+    if (!prepareTarget) return { out: null, code: BUDGET_EXHAUSTED };
+    try {
+      const verdict = await prepareIntent(prepareTarget, description);
+      // Release gate (1): not ready, never created; the line is kept as revisable (seedWelcome), the welcome goes on.
+      if (verdict.status === "needs_revision") {
+        const category = admissionCategory(verdict.feedback);
+        const refusal: PreparedRefusal = { refused: true, code: INTENT_NEEDS_REVISION, feedback: verdict.feedback, keys: verdict.keys, category, recovery: verdict.recovery };
+        return { out: refusal, code: `${INTENT_NEEDS_REVISION}:${category}` };
+      }
+    } catch {
+      // Release gate (5): prepare unavailable (HTTP error, timeout, not JSON): today's create path, recorded.
+      prefix = PREPARE_UNAVAILABLE;
+    }
     const createTarget = timed(target, clock, WELCOME_SEED_TIMEOUT_MS, clock.reserve);
-    if (!createTarget) return null;
+    if (!createTarget) return { out: null, code: withCode(prefix, BUDGET_EXHAUSTED) };
     const answer = await callIndexTool(createTarget, "create_intent", { description, sourceType: SEED_SOURCE_TYPE });
-    if (typeof answer !== "string") return answer;
+    if (typeof answer !== "string") return { out: answer, code: withCode(prefix, answer.code) };
     const refusal = intentRefusal(answer);
-    if (refusal) return refusal;
+    if (refusal) return { out: refusal, code: withCode(prefix, refusal.code) };
     const made = createdIntent(answer);
-    if (!made || mode === "publish") return made;
-    if (made.id === null) return null;
+    if (!made) return { out: null, code: withCode(prefix, "create-refused") };
+    if (mode === "publish") return { out: made, code: prefix };
+    if (made.id === null) return { out: null, code: withCode(prefix, "pause-no-id") };
     const pauseTarget = timed(target, clock, WELCOME_SEED_TIMEOUT_MS, clock.reserve);
-    if (!pauseTarget) return null;
-    return writeRefused(await callIndexTool(pauseTarget, "pause_intent", { intentId: made.id })) ? null : made;
-  } catch {
-    return null;
+    if (!pauseTarget) return { out: null, code: withCode(prefix, BUDGET_EXHAUSTED) };
+    return writeRefused(await callIndexTool(pauseTarget, "pause_intent", { intentId: made.id }))
+      ? { out: null, code: withCode(prefix, "pause-refused") }
+      : { out: made, code: prefix };
+  } catch (err) {
+    return { out: null, code: withCode(prefix, err instanceof IndexMcpError ? err.code : "error") };
   }
 }
 
@@ -1038,7 +1201,7 @@ export async function main(
     out = { text: welcomeText(DEFAULT_NAME, UNREACHABLE, intentsPageUrl(homeFrom(argv))), branch: welcomeBranch(UNREACHABLE) };
   }
   io.stdout(`${out.text}\n`);
-  if (argv.includes("--draft") && out.branch) io.stderr(`${draftTrailer(out.branch)}\n`);
+  if (argv.includes("--draft") && out.branch) io.stderr(`${draftTrailer(out.branch, seedTrailerV2(homeFrom(argv)))}\n`);
 }
 
 if (import.meta.main) {

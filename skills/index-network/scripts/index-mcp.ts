@@ -345,3 +345,75 @@ export function toolJsonArray(text: string, key: string): unknown[] {
   if (!Array.isArray(list)) throw new IndexMcpError("mcp-unparsed");
   return list;
 }
+
+// ── SEED-REJECT part 3b: Index's admission verdict before a create ──────────
+
+/** The code a seed line records when `prepare` could not be read and the create ran without it (release gate (5)). */
+export const PREPARE_UNAVAILABLE = "prepare_unavailable";
+
+/** One of Index's recovery questions, raw (the caller cleans every text before it goes anywhere). */
+export type RecoveryQuestion = { kind: "single" | "multi" | "text"; question: string; options: string[] };
+
+/**
+ * Index's `POST /api/intents/prepare` answer (services/api intent.controller.ts
+ * `prepare`; protocol intent.preparer.ts PrepareResult): `ready`, or
+ * `needs_revision` with Index's `feedback` (raw) and its `recovery` questions
+ * (raw), plus the answer's top-level key names (identifier-shaped, never a
+ * value).
+ */
+export type PrepareVerdict =
+  | { status: "ready" }
+  | { status: "needs_revision"; feedback: string | null; recovery: RecoveryQuestion[]; keys: string[] };
+
+const RECOVERY_KINDS = ["single", "multi", "text"] as const;
+
+/** `prepare`'s REST URL: `$INDEX_API_URL` (an origin, or `<origin>/api`) when set, else the MCP URL's origin. */
+export function indexPrepareUrl(mcpUrl: string): string {
+  const configured = process.env.INDEX_API_URL?.trim();
+  const origin = configured ? configured.replace(/\/+$/, "").replace(/\/api$/, "") : new URL(mcpUrl).origin;
+  return `${origin}/api/intents/prepare`;
+}
+
+/**
+ * One `prepare` (Index runs its admission verdict and creates NOTHING) for
+ * `payload`, sent exactly as given. Same key, `x-api-key`; one request, no
+ * retry, the target's timeout, no redirect. Throws
+ * IndexMcpError(PREPARE_UNAVAILABLE) on anything that is not an HTTP 200 JSON
+ * answer whose `status` is `ready` or `needs_revision`: a transport failure,
+ * a timeout, another status, a body that does not parse.
+ */
+export async function prepareIntent(target: IndexMcpTarget, payload: string): Promise<PrepareVerdict> {
+  const send = target.fetch ?? globalThis.fetch;
+  let body: Record<string, unknown> | null;
+  try {
+    const res = await send(indexPrepareUrl(target.mcpUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "x-api-key": target.apiKey },
+      body: JSON.stringify({ payload }),
+      redirect: "error",
+      signal: AbortSignal.timeout(target.timeoutMs ?? INDEX_MCP_TIMEOUT_MS),
+    });
+    if (res.status !== 200) throw new Error("status");
+    body = asRecord(await res.json());
+  } catch {
+    throw new IndexMcpError(PREPARE_UNAVAILABLE);
+  }
+  if (body?.status === "ready") return { status: "ready" };
+  if (body?.status !== "needs_revision") throw new IndexMcpError(PREPARE_UNAVAILABLE);
+  const recovery: RecoveryQuestion[] = [];
+  for (const item of Array.isArray(body.recovery) ? body.recovery : []) {
+    const field = asRecord(item);
+    const kind = RECOVERY_KINDS.find((k) => k === field?.kind);
+    if (!field || !kind || typeof field.label !== "string") continue;
+    const options = (Array.isArray(field.options) ? field.options : [])
+      .map((o) => (typeof o === "string" ? o : asRecord(o)?.label))
+      .filter((o): o is string => typeof o === "string");
+    recovery.push({ kind, question: field.label, options: kind === "text" ? [] : options });
+  }
+  return {
+    status: "needs_revision",
+    feedback: typeof body.feedback === "string" ? body.feedback : null,
+    recovery,
+    keys: Object.keys(body).filter((key) => REFUSAL_KEY.test(key)).slice(0, REFUSAL_KEYS_MAX),
+  };
+}
