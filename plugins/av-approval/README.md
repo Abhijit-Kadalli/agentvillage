@@ -74,6 +74,31 @@ What closes the gap, in order:
    Hermes post envelope to `/hook/hermes`, in a background worker so the agent
    loop is never held, and never raises.
 
+## Credential custody (every start, whatever the gate's switch)
+
+`_custody.py` keeps the service keys `custody_keys.json` marks `strip`
+(`INDEX_API_KEY`, `AV_EVENTS_TOKEN`, `AV_BACKUP_TOKEN`, `ADMIN_TOKEN`,
+`TURING_FALLS_CLAIM_TOKEN`) out of every child the agent's code runs in, while
+the gateway (the Index MCP client, av-events) keeps them. Three levers, each
+fail-soft and reported in one line on the `av-approval.custody` logger:
+
+- **provider**: a strip-only `TerminalEnvironmentProvider` (`av_custody`; never
+  available, never a backend). Hermes strips every provider's `strip_env_keys`
+  from the background/PTY terminal, cron and user scripts, search workers and
+  non-terminal spawns.
+- **foreground**: Hermes v2026.9.24's foreground terminal
+  (`tools.environments.local._make_run_env`, every command and the session
+  snapshot) passes an empty plugin key set, so the provider does not reach it;
+  the builder is wrapped to drop the same names.
+- **execute_code**: `tools.code_execution_env._scrub_child_env` is wrapped so a
+  skill's `required_environment_variables` cannot re-admit a stripped name.
+
+`register` applies it after the backstop and never touches `ctx`. A Hermes
+without one of those names logs `av-approval: custody: NOT covered: <surface>`
+as a warning. `AV_CUSTODY=0|false|no|off` turns it off (one warning line).
+Not closed: `$HERMES_HOME/.env` and `/proc/<gateway pid>/environ` stay readable
+by the agent's user; see `skills/approval/README.md`.
+
 ## Kill switch
 
 The fail-open line tracks the gate, not the plugin. It is logged once per process:
@@ -99,3 +124,12 @@ Hermes (opt-in: `AV_HERMES_SRC=<Hermes source tree>
 AV_HERMES_PYTHON=<its interpreter>`): healthy, 35 shell hooks register (13 before R3b) and
 nothing blocks; with a mode-000 allowlist lock, `register_from_config` raises
 `PermissionError` and the backstop blocks `terminal`.
+
+`tests/test_custody.py`: the decisions file, each lever against fake Hermes
+modules, the switch, the inventory scan (every credential-shaped name the
+overlay reads has a decision; no stale decisions), and the skills (no pasted
+key placeholder, every `Authorization: Bearer` names a variable, no recipe
+names a stripped one). `test_against_real_hermes` runs when Hermes is
+importable (`PYTHONPATH=<Hermes source tree>`; it skips in CI): the real
+foreground, background and non-terminal builders, `execute_code` with the
+names registered as passthrough, and a real bash child and its snapshot file.

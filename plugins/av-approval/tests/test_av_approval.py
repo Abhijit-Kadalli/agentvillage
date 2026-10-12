@@ -55,7 +55,7 @@ def test_manifest_is_a_backend_plugin_that_declares_its_env_and_hook():
     manifest = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8"))
     assert manifest["name"] == "av-approval"
     assert manifest["kind"] == "backend"
-    assert set(manifest["optional_env"]) == {"AV_APPROVAL_ENABLED", "AV_APPROVAL_URL", "AV_APPROVAL_TOKEN"}
+    assert set(manifest["optional_env"]) == {"AV_APPROVAL_ENABLED", "AV_APPROVAL_URL", "AV_APPROVAL_TOKEN", "AV_CUSTODY"}
     assert manifest["provides_hooks"] == ["pre_tool_call"]
     assert manifest["version"] == load_plugin().PLUGIN_VERSION
 

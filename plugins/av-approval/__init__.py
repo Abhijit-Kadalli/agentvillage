@@ -67,6 +67,12 @@ ungated. Off with the entries still present logs that the gate is still in
 force until the installer runs. Unset (never opted in) logs nothing. Unlike
 `av-events` this plugin belongs to a gate, so the gap is logged as fail-open.
 
+CREDENTIAL CUSTODY (`_custody.py`, every start, whatever the switch): after the
+backstop, `register` removes the service keys `custody_keys.json` marks `strip`
+from every child the agent's code runs in (terminal, execute_code, cron
+scripts); the gateway keeps them. `AV_CUSTODY=0` turns it off. It never
+touches `ctx`.
+
 Python 3.11, standard library and PyYAML (Hermes ships it). Never raises out
 of `register`; the pre-call callback raises only to block a gated call.
 """
@@ -84,7 +90,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.3.0"
 __version__ = PLUGIN_VERSION
 
 #: The core version whose facade was read for a receipt surface.
@@ -412,7 +418,25 @@ def _log_once(key: str, line: str) -> None:
 
 
 def register(ctx: Any) -> None:
-    """Hermes plugin entrypoint. Off/unset: logs the state once. On: the start-time check, then the backstop."""
+    """Hermes plugin entrypoint: the gate's backstop, then credential custody (whatever the gate's switch)."""
+    try:
+        _register_backstop(ctx)
+    finally:
+        apply_custody()
+
+
+def apply_custody() -> dict:
+    """Credential custody (`_custody.py`): service keys out of agent-run code. Never raises; touches no ctx."""
+    try:
+        from . import _custody
+
+        return _custody.install()
+    except Exception:  # noqa: BLE001 - custody must never break Hermes's plugin loading
+        return {}
+
+
+def _register_backstop(ctx: Any) -> None:
+    """Off/unset: logs the state once. On: the start-time check, then the backstop."""
     try:
         state = switch()
         if state == "unset":
@@ -443,6 +467,7 @@ def register(ctx: Any) -> None:
 
 __all__ = [
     "CORE_VERSION",
+    "apply_custody",
     "DISABLED_LINE",
     "GATED_MATCHERS",
     "GateUnverified",
