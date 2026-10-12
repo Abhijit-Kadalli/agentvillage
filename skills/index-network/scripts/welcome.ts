@@ -87,15 +87,20 @@
  * seed marker also keeps it under `refused`: the resident's own line (at most
  * REFUSED_LINE_MAX code points), Index's feedback (refusedFeedback: cleaned,
  * scanned, withheld whole as null on a hit), the code, the run's time and the
- * key names (never the values) of Index's answer. The default run that
+ * key names (never the values) of Index's answer (and, from a `prepare`
+ * refusal, Index's category and recovery questions). The default run that
  * prints WELCOME_ALREADY_SENT (the AGENTS.md welcome gate, once the welcome
- * went out) then also prints, once ever, one line
+ * went out) then also prints, once ever, one line naming ONE refused line
  *
- *   REFUSED_SEEDS [{"line":"...","feedback":"..."|null}, ...]
+ *   REFUSED_SEEDS [{"line":"...","kind":"single"|"multi"|"text"|null,"question":"..."|null}]
  *
- * with up to REFUSED_SHOWN_MAX of them, and marks each `surfacedAt`, so the
- * agent can ask the resident to say it in their own words. The script never
- * sends a refused line again; `--draft` never prints the block.
+ * the resident's own line (if they still have it on their Context page) and
+ * Index's first recovery question (refusedQuestion: cleaned, scanned, tool
+ * names in any spelling and stop words withheld whole as null). Index's
+ * feedback is never printed. Every pending entry is marked `surfacedAt`, so
+ * the agent asks the resident once to say it in their own words and
+ * publishes only their answer, with their yes. The script never sends a
+ * refused line again; `--draft` never prints the block.
  */
 
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
@@ -117,7 +122,9 @@ import {
   toolJsonArray,
   toolJsonObject,
 } from "./index-mcp";
+import { contextHolds, contextTagsState } from "./context-tags";
 import { DEFAULT_CONNECTIONS_URL, cleanTitle, connectionsUrl, cronScanHit, cutAtWord, envOrDotenv } from "./proactive-text";
+import { type GuardHit, questionGuardHit } from "./question-guard";
 import { acquireStateLock } from "./state-lock";
 
 /** The marker, relative to `$HERMES_HOME` (install/welcome_state.ts WELCOME_STATE_RELATIVE_PATH). */
@@ -187,10 +194,12 @@ export const SEED_SOURCE_TYPE = "agentvillage";
 export const REFUSED_SEEDS = "REFUSED_SEEDS";
 /** Code points of a refused line kept and printed at most (the resident's own text, cut at a word). */
 export const REFUSED_LINE_MAX = 200;
-/** Code points of Index's feedback kept and printed at most (cleanTitle, cut at a word). */
+/** Code points of Index's feedback kept at most in the seed marker (cleanTitle, cut at a word). Never printed. */
 export const REFUSED_FEEDBACK_MAX = 160;
-/** Refused lines one REFUSED_SEEDS block names at most. */
-export const REFUSED_SHOWN_MAX = 3;
+/** Refused lines one REFUSED_SEEDS block names: one (lead 18:19Z, ONE recovery question); the others are recorded, never printed. */
+export const REFUSED_SHOWN_MAX = 1;
+/** Code points of Index's recovery question printed at most (cleanTitle, cut at a word; withheld whole on a hit). */
+export const REFUSED_QUESTION_MAX = 160;
 /**
  * SEED-REJECT part 3b: the trailer's codes, to the data door's contract
  * (agentvillage-data #506, CLAIMS 18:28Z ruling: codes only): at most
@@ -606,6 +615,36 @@ export function refusedFeedback(raw: unknown): string | null {
   if (typeof raw !== "string" || cronScanHit(raw) || SNAKE_CASE.test(raw)) return null;
   const clean = cleanTitle(raw, REFUSED_FEEDBACK_MAX, "word");
   return clean === null || SNAKE_CASE.test(clean) || cronScanHit(clean) ? null : clean;
+}
+
+/** Why a recovery question was withheld from the REFUSED_SEEDS block: the seed marker records this code, never the text. */
+export type QuestionWithheld = "empty" | "malformed" | "scanner" | GuardHit;
+
+/** The first guard `text` trips: Hermes's cron scanner, a snake_case word, then question-guard.ts (look-alikes, tool names, stop words). */
+function questionHit(text: string): QuestionWithheld | null {
+  if (cronScanHit(text)) return "scanner";
+  if (SNAKE_CASE.test(text)) return "tool_name";
+  return questionGuardHit(text);
+}
+
+/**
+ * Index's recovery question as the REFUSED_SEEDS block may carry it (lead
+ * 18:19Z: the agent asks the resident ONE of Index's questions in plain
+ * words). Third-party, model-written text, so it is withheld whole (question
+ * null, with the reason) when the raw text or the cleaned one trips
+ * questionHit, or when nothing is left; else cleanTitle's one plain line (no
+ * link, handle, markup, phone number), at most REFUSED_QUESTION_MAX code
+ * points, cut at a word. The raw text is checked too, so a hit past the cut
+ * still withholds it. Pure.
+ */
+export function refusedQuestion(raw: unknown): { question: string | null; withheld: QuestionWithheld | null } {
+  if (typeof raw !== "string") return { question: null, withheld: "empty" };
+  const before = questionHit(raw);
+  if (before) return { question: null, withheld: before };
+  const clean = cleanTitle(raw, REFUSED_QUESTION_MAX, "word");
+  if (clean === null) return { question: null, withheld: "empty" };
+  const after = questionHit(clean);
+  return after ? { question: null, withheld: after } : { question: clean, withheld: null };
 }
 
 /** The resident's refused line, verbatim, at most REFUSED_LINE_MAX code points (cut at a word); null when blank. Pure. */
@@ -1045,23 +1084,44 @@ function refusedMarker(home: string): { marker: Record<string, unknown>; refused
   }
 }
 
-/** Indexes of the refused entries with a line that were never printed, in order, at most REFUSED_SHOWN_MAX. */
+/** Indexes of the refused entries with a line that were never surfaced, in the resident's order. */
 function pendingRefused(refused: unknown[]): number[] {
   const pending: number[] = [];
   refused.forEach((entry, i) => {
     const row = record(entry);
     if (row && row.surfacedAt === undefined && refusedLine(row.line) !== null) pending.push(i);
   });
-  return pending.slice(0, REFUSED_SHOWN_MAX);
+  return pending;
+}
+
+/** One REFUSED_SEEDS entry: the resident's own line and Index's first recovery question (kind + text), or null. */
+type ShownSeed = { line: string; kind: RecoveryQuestion["kind"] | null; question: string | null };
+const RECOVERY_KINDS: ReadonlyArray<RecoveryQuestion["kind"]> = ["single", "multi", "text"];
+
+/** The block's question for a refused entry: the first of its `recovery` list, through refusedQuestion. */
+function shownQuestion(row: Record<string, unknown>): { kind: RecoveryQuestion["kind"] | null; question: string | null; withheld: QuestionWithheld | null } {
+  if (!Array.isArray(row.recovery) || row.recovery.length === 0) return { kind: null, question: null, withheld: null };
+  const first = record(row.recovery[0]);
+  const kind = RECOVERY_KINDS.find((k) => k === first?.kind);
+  if (!first || !kind) return { kind: null, question: null, withheld: "malformed" };
+  const { question, withheld } = refusedQuestion(first.question);
+  return question === null ? { kind: null, question: null, withheld } : { kind, question, withheld: null };
 }
 
 /**
- * The REFUSED_SEEDS line for the refused lines not printed before, or null
- * when there are none. Each named entry is marked `surfacedAt` (under the
- * marker's lock, temp file and rename) BEFORE the line is returned, so an
- * entry is printed at most once, ever; a write that fails prints nothing.
- * What it prints is checked again (refusedLine, refusedFeedback), whatever
- * the file holds. Never throws.
+ * The REFUSED_SEEDS line, or null when there is nothing to print. It names
+ * ONE refused line (REFUSED_SHOWN_MAX): the first not yet surfaced, in the
+ * resident's order, that the resident still has (S1: checked against the
+ * Context tags entry of `memories/USER.md`; a line they removed or edited
+ * away is skipped, `notShown: "gone"`; with no entry nothing was ever
+ * removed; an unreadable file prints nothing and leaves the marker for a
+ * later run). With it, Index's first recovery question (shownQuestion), or
+ * null; Index's feedback is never printed (box file only). Every pending
+ * entry is marked `surfacedAt` in the same write, the ones not printed with
+ * `notShown` ("gone", or "cap" past the one), and a withheld question with
+ * `questionWithheld` (a code, never text), under the marker's lock (temp
+ * file and rename) BEFORE the line is returned: the block is printed at most
+ * once, ever, and a write that fails prints nothing. Never throws.
  */
 export async function surfaceRefusedSeeds(home: string, now: Date = new Date()): Promise<string | null> {
   try {
@@ -1073,13 +1133,27 @@ export async function surfaceRefusedSeeds(home: string, now: Date = new Date()):
       if (!held) return null;
       const pending = pendingRefused(held.refused);
       if (pending.length === 0) return null;
+      const context = contextTagsState(home);
+      if (context === "unreadable") return null;
       const at = now.toISOString();
-      const refused = held.refused.map((entry, i) => (pending.includes(i) ? { ...record(entry), surfacedAt: at } : entry));
-      replaceSeedMarker(home, `${JSON.stringify({ ...held.marker, refused })}\n`);
-      const shown = pending.map((i) => {
+      const marks = new Map<number, Record<string, unknown>>();
+      const shown: ShownSeed[] = [];
+      for (const i of pending) {
         const row = record(held.refused[i])!;
-        return { line: refusedLine(row.line)!, feedback: refusedFeedback(row.feedback) };
-      });
+        const line = refusedLine(row.line)!;
+        if (context !== "absent" && !contextHolds(context, line)) {
+          marks.set(i, { surfacedAt: at, notShown: "gone" });
+        } else if (shown.length >= REFUSED_SHOWN_MAX) {
+          marks.set(i, { surfacedAt: at, notShown: "cap" });
+        } else {
+          const { kind, question, withheld } = shownQuestion(row);
+          shown.push({ line, kind, question });
+          marks.set(i, { surfacedAt: at, ...(withheld ? { questionWithheld: withheld } : {}) });
+        }
+      }
+      const refused = held.refused.map((entry, i) => (marks.has(i) ? { ...record(entry), ...marks.get(i) } : entry));
+      replaceSeedMarker(home, `${JSON.stringify({ ...held.marker, refused })}\n`);
+      if (shown.length === 0) return null;
       // One line whatever the resident typed: JSON escapes C0 controls; these three it leaves raw.
       return `${REFUSED_SEEDS} ${JSON.stringify(shown).replace(/[\u0085\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`)}`;
     } finally {

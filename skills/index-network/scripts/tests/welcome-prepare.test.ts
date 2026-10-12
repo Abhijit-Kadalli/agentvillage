@@ -203,7 +203,9 @@ describe("(1) a prepare that is not ready never creates and never blocks the wel
     await run(fakeIndex(() => revise(VAGUE)));
     const block = await surfaceRefusedSeeds(home);
     expect(block?.startsWith(`${REFUSED_SEEDS} `)).toBe(true);
-    expect(JSON.parse(block!.slice(REFUSED_SEEDS.length + 1))).toEqual([{ line: LINES[0], feedback: VAGUE }]);
+    // ONE entry: the resident's line and Index's first recovery question (kind + text); never Index's feedback.
+    expect(JSON.parse(block!.slice(REFUSED_SEEDS.length + 1))).toEqual([{ line: LINES[0], kind: "single", question: "Which founders would you like to meet?" }]);
+    expect(block).not.toContain(VAGUE);
   });
 
   test("recovery questions are cleaned for the box: scanner hits and tool names dropped, options cut, at most 4 questions of 6 options", () => {
