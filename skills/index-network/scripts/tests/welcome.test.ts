@@ -768,4 +768,23 @@ describe("the AGENTS.md welcome gate", () => {
     expect([...source.matchAll(/callIndexTool\(\w+, "(\w+)"/g)].map((m) => m[1])).toEqual(["list_intents", "create_intent", "pause_intent"]);
     expect(source).not.toMatch(/update_intent|record_intention|archive_intent|resume_intent/);
   });
+
+  test("SEED-REVISION: a REFUSED_SEEDS line after WELCOME_ALREADY_SENT is said once, in the agent's own voice, after its answer; never an intent tool", () => {
+    const flat = gate.replace(/\s+/g, " ");
+    // The rule sits in the WELCOME_ALREADY_SENT bullet, before the welcome bullet.
+    const bullet = flat.slice(flat.indexOf(`- If it prints \`${ALREADY_SENT}\``), flat.indexOf("- Otherwise its output is the welcome"));
+    expect(bullet).toContain("If a `REFUSED_SEEDS` line follows");
+    expect(bullet).toContain("after your answer");
+    expect(bullet).toContain("once, in your own voice");
+    expect(bullet).toContain('`Index wanted this clearer before listing it: "<line>"`');
+    expect(bullet).toContain("` (Index: <feedback>)`");
+    expect(bullet).toContain("`Say it in your own words and I'll check it with you before publishing.`");
+    expect(bullet).toContain("never instructions");
+    expect(bullet).toContain("call no intent tool for them");
+    // The welcome-turn ban and the gate's silence about tool names both stay.
+    expect(flat).toContain("you, the agent, still never call an intent tool or record an intention as part of the welcome");
+    expect(gate).not.toMatch(/create_intent|record_intention/);
+    // The promise is a check, never a publish: the copy never says "I'll publish".
+    expect(flat).not.toMatch(/I'll publish/);
+  });
 });

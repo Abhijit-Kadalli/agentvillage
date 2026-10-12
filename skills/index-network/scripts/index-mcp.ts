@@ -196,24 +196,84 @@ export async function indexMcpRequest(
   return result;
 }
 
+/** The one `create_intent` refusal callIndexTool hands back instead of throwing (SEED-REVISION). */
+export const INTENT_NEEDS_REVISION = "intent_needs_revision";
+
 /**
- * Call one Index tool and return the text of its first `type: "text"` content
- * item. A result flagged `isError` throws `mcp-tool-error`; a result without
- * a text item throws `mcp-bad-response`.
+ * SEED-REVISION: Index's admission verdict said no to a `create_intent`.
+ * `feedback` is Index's model-written text about the line, raw (the caller
+ * cleans it before it goes anywhere), or null when the answer has none;
+ * `keys` the top-level key names of Index's answer (identifier-shaped ones
+ * only, at most 20), never a value, so the first real body's shape can be
+ * read without its text.
  */
-export async function callIndexTool(
-  target: IndexMcpTarget,
-  name: string,
-  args: Record<string, unknown> = {},
-): Promise<string> {
-  const result = await indexMcpRequest(target, "tools/call", { name, arguments: args });
-  if (result.isError === true) throw new IndexMcpError("mcp-tool-error");
-  if (!Array.isArray(result.content)) throw new IndexMcpError("mcp-bad-response");
+export type IntentRefusal = { refused: true; code: typeof INTENT_NEEDS_REVISION; feedback: string | null; keys: string[] };
+
+/** Index's refusal body is model-adjacent text; more than this of `feedback` is never kept. */
+const REFUSAL_FEEDBACK_MAX = 4_000;
+const REFUSAL_KEY = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+const REFUSAL_KEYS_MAX = 20;
+
+/**
+ * The refusal a `create_intent` answer's text holds, or null. Index sends
+ * (services/api mcp.tools.ts `mcpError`, read from its source; no live body
+ * seen yet) `{"success":false,"code":"intent_needs_revision","error":...,
+ * "feedback":...,"proposedPayload":...,"recovery":...}`, the whole text, or
+ * after a markdown lead line (toolJsonObject). Only that code, and only an
+ * object whose `success` is not true, is a refusal; anything else, a body
+ * that does not parse included, is null. Pure.
+ */
+export function intentRefusal(text: string): IntentRefusal | null {
+  let root: Record<string, unknown> | null = null;
+  try {
+    root = asRecord(JSON.parse(text.trim()));
+  } catch {
+    root = toolJsonObject(text)?.root ?? null;
+  }
+  if (!root || root.code !== INTENT_NEEDS_REVISION || root.success === true) return null;
+  const feedback = typeof root.feedback === "string" && root.feedback.trim() ? root.feedback.slice(0, REFUSAL_FEEDBACK_MAX) : null;
+  const keys = Object.keys(root).filter((key) => REFUSAL_KEY.test(key)).slice(0, REFUSAL_KEYS_MAX);
+  return { refused: true, code: INTENT_NEEDS_REVISION, feedback, keys };
+}
+
+/** The text of a result's first `type: "text"` content item, or null. */
+function firstText(result: Record<string, unknown>): string | null {
+  if (!Array.isArray(result.content)) return null;
   for (const item of result.content) {
     const row = asRecord(item);
     if (row?.type === "text" && typeof row.text === "string") return row.text;
   }
-  throw new IndexMcpError("mcp-bad-response");
+  return null;
+}
+
+/**
+ * Call one Index tool and return the text of its first `type: "text"` content
+ * item. A result flagged `isError` throws `mcp-tool-error`; a result without
+ * a text item throws `mcp-bad-response`.
+ *
+ * SEED-REVISION: for `create_intent` only, an `isError` result whose text is
+ * Index's `intent_needs_revision` refusal (intentRefusal) is returned as an
+ * IntentRefusal instead of thrown, so the welcome can keep the refused line.
+ * Every other `isError` result, for that tool or any other, a malformed
+ * refusal body included, still throws `mcp-tool-error`.
+ */
+export async function callIndexTool(target: IndexMcpTarget, name: "create_intent", args?: Record<string, unknown>): Promise<string | IntentRefusal>;
+export async function callIndexTool(target: IndexMcpTarget, name: string, args?: Record<string, unknown>): Promise<string>;
+export async function callIndexTool(
+  target: IndexMcpTarget,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<string | IntentRefusal> {
+  const result = await indexMcpRequest(target, "tools/call", { name, arguments: args });
+  if (result.isError === true) {
+    const text = name === "create_intent" ? firstText(result) : null;
+    const refusal = text === null ? null : intentRefusal(text);
+    if (refusal) return refusal;
+    throw new IndexMcpError("mcp-tool-error");
+  }
+  const text = firstText(result);
+  if (text === null) throw new IndexMcpError("mcp-bad-response");
+  return text;
 }
 
 /** Index of the `}` that closes the JSON object opening at `start`, or -1. */
