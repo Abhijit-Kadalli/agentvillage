@@ -68,6 +68,8 @@ describe("opportunity copy: the lead line is profiles, every pending card gets i
     expect(count(tools, "Showing the message link is not accepting: the link is the resident's own tap, and every pending introduction carries it when the tool returned one.")).toBe(1);
     expect(count(tools, "The consent rule governs the tools, not the link: call `accept_opportunity` or `reject_opportunity` only after the user says yes in this conversation.")).toBe(1);
     expect(count(tools, "Agreement between agents is not their approval.")).toBe(1);
+    // INTRO-TELEGRAM refute S1: the agent's own accept now shares the resident's Telegram once mutual.
+    expect(count(tools, "Your own accept shares the resident's Telegram too: once both sides have accepted, each of them can open a Telegram chat with the other. So accept (`accept_opportunity`, or `index_update_opportunity` with an accept) only on the resident's explicit yes to that person in this conversation, and say in that reply that once the other person accepts too, a Telegram chat opens between them. Without that yes, give the message link instead.")).toBe(1);
     expect(count(tools, "In the resident's own private chat, never answer a list request with \"tell me and I will give you the link\" or hold the link back for a later turn, and never write \"Profile\" as a bare label: the person's name is the profile link.")).toBe(1);
     expect(tools).not.toContain("Accept or pass only after the user says yes in this conversation:");
   });
