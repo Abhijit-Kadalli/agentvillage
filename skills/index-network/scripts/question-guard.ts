@@ -3,36 +3,43 @@
  * question before the AGENTS.md welcome gate's REFUSED_SEEDS block hands it to
  * the agent's first chat turn (welcome.ts refusedQuestion).
  *
- * It FAILS CLOSED (commit review of d738cf87): the question is optional and
- * its null path costs nothing (the agent asks the fixed "What would make it
- * clearer?"), so any doubt withholds it. A real Index recovery question is one
- * plain question about the resident's own intent (who, what outcome, by
- * when); it never names a destination. questionGuardHit returns the first
- * reason, in this order:
+ * It FAILS CLOSED (commit review of d738cf87 and 33d81d95): the question
+ * is optional and its null path costs nothing (the agent asks the fixed "What
+ * would make it clearer?"), so any doubt withholds it. A real Index recovery
+ * question is one short plain question about the resident's own intent (who,
+ * what outcome, by when); it never names a destination.
  *
- *   - `hidden`: a control, format, zero-width, bidi, private-use or
- *     default-ignorable character, or a line break;
- *   - `confusable`: a word mixing scripts (`іgnore`);
- *   - `scanner`: Hermes's cron scanner phrase in any check reading
- *     (questionReadings), also with every space and joiner removed;
- *   - `tool_name`: a snake_case word, or TOOL_NAMES in any reading and
- *     spelling (snake, camel, hyphen, spaced, joined, upper case); a spaced
- *     or camel form matches only where the name has a part boundary ("to do"
- *     is not `todo`);
- *   - `destination`: a link or address shape (`://`, `www`, a dotted host,
- *     "dot com", `@`, t.me / wa.me), an email, a phone-like digit run, a
- *     wallet-like token, a currency sign or word, or a word that asks to
- *     contact, pay, click, visit, download, install or enter a code or OTP;
- *   - `stop_word`: STOP_WORD in any reading, also two or more adjacent
- *     words read as one (`i g n o r e`, `sen d`);
- *   - `mixed_word`: a word mixing letters and digits (`1gnore`, `0x52…`);
- *   - `shape`: any character but letters, marks, digits, spaces and
- *     `, ' ’ - ( ) &` before one final `?` (no emoji, quotes, dots, colons,
- *     slashes, symbols);
- *   - `not_question`: no final `?`, more than one, or a first word that is
- *     not a question word (QUESTION_START: no imperative start);
- *   - `quotes_line`: the resident's own line quoted back inside it;
- *   - `too_long`: over QUESTION_MAX code points (withheld, never cut).
+ * FIRST an ALLOW-SHAPE (as ov#301 does for headlines): only what passes
+ * every rule survives, the first rule broken is the reason:
+ *   - `hidden`: no control, format, zero-width, bidi, private-use or
+ *     default-ignorable character, and no line break, anywhere;
+ *   - `too_long`: at most QUESTION_MAX code points (withheld, never cut);
+ *   - `not_question`: one sentence ending in its only `?`;
+ *   - `script`: every letter Latin (NFKC, then with its accents removed it is
+ *     ASCII a-z, or one of LATIN_FOLD): no Cyrillic or Greek look-alike;
+ *   - `shape`: nothing but those letters, single spaces, and a comma (after
+ *     a letter, before a space), an apostrophe or a hyphen between two
+ *     letters: no digit, `@ . / : _ # $`, quote, bracket, emoji or symbol;
+ *   - `long_word`: no word longer than WORD_MAX letters;
+ *   - `capitals`: no run of more than CAPITALS_MAX capitals.
+ * This removes links, handles, phone numbers, wallets, amounts, leetspeak and
+ * script tricks by construction.
+ *
+ * THEN the denylist, as a second check on the surviving text, in a COPY of
+ * ov#301's check readings (questionReadings):
+ *   - `scanner`: Hermes's cron scanner phrase in any reading, also with every
+ *     space and joiner removed;
+ *   - `tool_name`: TOOL_NAMES in any reading and spelling (camel, hyphen,
+ *     spaced, joined); a spaced or camel form matches only where the name has
+ *     a part boundary ("to do" is not `todo`);
+ *   - `destination`: "dot com", t me / wa me, or a word asking to contact,
+ *     pay, click, visit, download, install, open (not "open to") or enter a
+ *     code or OTP, or naming a channel, address or money;
+ *   - `stop_word`: STOP_WORD in any reading, also two or more adjacent words
+ *     read as one (`i g n o r e`, `sen d`);
+ *   - `not_question`: a first word that is not a question word
+ *     (QUESTION_START: no imperative start);
+ *   - `quotes_line`: the resident's own line quoted back inside it.
  *
  * Pure; never throws; nothing of the text is returned or logged.
  */
@@ -75,16 +82,23 @@ export const TOOL_NAMES: readonly string[] = `
 
 export type GuardHit =
   | "hidden"
-  | "confusable"
+  | "too_long"
+  | "not_question"
+  | "script"
+  | "shape"
+  | "long_word"
+  | "capitals"
   | "scanner"
   | "tool_name"
   | "destination"
   | "stop_word"
-  | "mixed_word"
-  | "shape"
-  | "not_question"
-  | "quotes_line"
-  | "too_long";
+  | "quotes_line";
+
+/** Letters of a word at most; capitals in a row at most. */
+export const WORD_MAX = 20;
+export const CAPITALS_MAX = 3;
+/** Latin letters that do not reduce to a-z by removing accents, allowed as they are. */
+const LATIN_FOLD = new Set(["æ", "Æ", "œ", "Œ", "ß"]);
 
 /** The words that withhold a question, whole words in any reading, with their inflections (the lead's list). */
 const STOP_WORD =
@@ -119,12 +133,8 @@ const CODE_TO_ENTER = /(?:^| )(?:enter|type|give|share|send|read)(?: \p{L}+){0,2
 const QUESTION_START = new Set(
   "who whom whose what which when where why how is are am was were do does did can could would will should shall may might have has had any anything anyone anybody in for with by from at on about within over".split(" "),
 );
-/** What a plain question may hold before its one final `?`. */
-const PLAIN_CHARS = /^[\p{L}\p{M}\p{Nd} ,'’\-()&]+$/u;
 /** Characters that are never shown: control, format, private use, surrogates, separators, default-ignorable, Hangul fillers. */
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u115f\u1160\u3164\uffa0]/u;
-/** A word joined by an underscore (`create_intent`, `source_type`): the shape of a tool or field name. */
-const SNAKE_CASE = /\p{L}+_[\p{L}\p{N}_]*[\p{L}\p{N}]/u;
 
 // ── The check readings: a COPY of ov#301's (intro/comms, proactive-text.ts
 // lookalikeFold / matchFieldReadings and their helpers, at 4dadc91d). ov#302 is
@@ -268,39 +278,49 @@ function joinedStopHit(tokens: readonly string[]): boolean {
 }
 
 const tokensOf = (reading: string) => reading.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-const SCRIPTS = ["Latin", "Cyrillic", "Greek", "Armenian", "Devanagari", "Arabic", "Hebrew", "Han", "Thai", "Hangul", "Hiragana", "Katakana", "Georgian", "Cherokee"].map(
-  (name) => new RegExp(`\\p{Script=${name}}`, "u"),
-);
 
-/** Why the question must not reach the agent, or null. `line` is the resident's own refused line (quotes_line). Pure. */
+/** The allow-shape (see the header): the first rule `text` (NFKC, trimmed) breaks, or null. */
+function shapeHit(raw: string, text: string): GuardHit | null {
+  if (HIDDEN.test(raw) || HIDDEN.test(text)) return "hidden";
+  if ([...text].length > QUESTION_MAX) return "too_long";
+  if (!text.endsWith("?") || text.slice(0, -1).includes("?")) return "not_question";
+  const body = text.slice(0, -1);
+  for (const ch of body) {
+    if (/\p{L}/u.test(ch)) {
+      if (!LATIN_FOLD.has(ch) && !/^[A-Za-z]$/.test(ch.normalize("NFD").replace(/\p{M}+/gu, ""))) return "script";
+    } else if (!" ,'’-".includes(ch)) {
+      return "shape";
+    }
+  }
+  if (/^ | $| {2}|(?<!\p{L}),|,(?! \p{L})|(?<!\p{L})['’-]|['’-](?!\p{L})/u.test(body)) return "shape";
+  if (body.split(/[ ,'’-]+/).some((word) => [...word].length > WORD_MAX)) return "long_word";
+  if (new RegExp(`\\p{Lu}{${CAPITALS_MAX + 1}}`, "u").test(body)) return "capitals";
+  return null;
+}
+
+/**
+ * Why the question must not reach the agent, or null: the allow-shape first,
+ * then the denylist on the surviving text. `line` is the resident's own
+ * refused line (quotes_line). Pure.
+ */
 export function questionGuardHit(raw: string, line?: string | null): GuardHit | null {
-  if (HIDDEN.test(raw)) return "hidden";
   const text = raw.normalize("NFKC").trim();
-  if (HIDDEN.test(text)) return "hidden";
-  const words = text.split(/\s+/).filter(Boolean);
-  if (words.some((word) => SCRIPTS.filter((script) => script.test(word)).length > 1)) return "confusable";
+  const shape = shapeHit(raw, text);
+  if (shape) return shape;
   const readings = questionReadings(text);
-  if (cronScanHit(text) || readings.some((r) => cronScanHit(r) || joinedScanHit(r.replace(/[\s'\-&/]+/g, "").replace(/[^\p{L}\p{N}]+/gu, "")))) return "scanner";
-  if (SNAKE_CASE.test(text)) return "tool_name";
+  if (cronScanHit(text) || readings.some((r) => cronScanHit(r) || joinedScanHit(r.replace(/[^\p{L}\p{N}]+/gu, "")))) return "scanner";
   const tokenSets = readings.map(tokensOf);
   if (tokenSets.some(namesTool)) return "tool_name";
   if (DESTINATION_SHAPES.some((shape) => shape.test(text))) return "destination";
-  if (words.some((word) => [...word].length >= 20 && /\p{L}/u.test(word) && /\p{Nd}/u.test(word))) return "destination";
   if (tokenSets.some((tokens) => tokens.some((t) => DESTINATION_WORD.test(t)))) return "destination";
   if (readings.some((r) => OPEN_NOT_TO.test(r) || CODE_TO_ENTER.test(r) || new RegExp(`(?:^| )dot ${TLD}(?: |$)`).test(r))) return "destination";
   if (tokenSets.some((tokens) => tokens.some((t, i) => STOP_WORD.test(t) || (t === "seed" && /^phrases?$/.test(tokens[i + 1] ?? ""))) || joinedStopHit(tokens))) return "stop_word";
-  if (words.some((word) => /\p{L}/u.test(word) && /\p{Nd}/u.test(word))) return "mixed_word";
-  const body = text.endsWith("?") ? text.slice(0, -1).trimEnd() : null;
-  if (body === null || body.includes("?")) return "not_question";
-  if (!PLAIN_CHARS.test(body)) return "shape";
-  const first = lookalikeFold(words[0] ?? "").replace(/[^\p{L}]+/gu, "");
+  const first = lookalikeFold(text.split(" ")[0] ?? "").replace(/[^\p{L}]+/gu, "");
   if (!QUESTION_START.has(first)) return "not_question";
   if (line) {
     const flat = (s: string) => ` ${tokensOf(lookalikeFold(s)).join(" ")} `;
     const said = flat(line);
     if (said.trim().split(" ").length >= 3 && flat(text).includes(said)) return "quotes_line";
   }
-  if ([...text].length > QUESTION_MAX) return "too_long";
   return null;
 }
-
