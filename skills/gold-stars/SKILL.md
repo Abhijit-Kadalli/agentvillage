@@ -1,6 +1,6 @@
 ---
 name: gold-stars
-description: Explain Gold Stars and help someone send gratitude from the Village Rolodex. Use for sending a star, daily allowance, midnight reset, anonymous gratitude, or the Telegram gratitude feed. This release links to the website; it cannot send stars or read personal star history.
+description: Explain Gold Stars and help someone send gratitude from the Village Rolodex. Use for sending a star, daily allowance, midnight reset, anonymous gratitude, or the Telegram gratitude feed. Use the village tool for the connected owner's remaining quota. Sending and personal star history stay on the website.
 version: 1.0.0
 author: Edge City
 ---
@@ -26,8 +26,11 @@ Do not collect a note in chat for an action you cannot perform.
   describe anonymous as hidden from the recipient, admins, or the Telegram feed.
 
 The person's remaining allowance and received stars are live account data.
-This skill cannot check them. Direct the person to the signed-in page instead
-of saying they have three left or inventing a count. Do not promise delivery
+For remaining allowance, call `village` with `operation: "gold-stars.quota"` in
+the paired owner's private chat. Quote the returned remaining count, day and
+reset time. This tool cannot read received stars or messages. If disconnected,
+link to https://agents.edgecity.live/connections/village or the Rolodex; never
+assume all three remain. Do not promise delivery
 to Telegram until a delivery is actually verified.
 
 You cannot send, cancel or change a star from chat in this release. A request

@@ -1,6 +1,6 @@
 ---
 name: skylight
-description: Explain and open Skylight from Agent Village for characters, personal islands and the shared village. Use for Skylight, changing a character, opening an island, or questions about what the agent can see there. Website navigation only; no live island, journal or character-state access.
+description: Explain and open Skylight from Agent Village for characters, personal islands and the shared village. Use for Skylight, changing a character, opening an island, or questions about what the agent can see there. Use the village tool for bounded, factual activity after account connection. No journal reads or Skylight mutations.
 version: 1.0.0
 author: Edge City
 ---
@@ -20,16 +20,27 @@ A saved Skylight character can appear on the person's Rolodex card. Signing
 in alone does not prove they saved one, and an empty portrait is not evidence
 that the person has no ticket or account.
 
-You are the person's Hermes agent in chat. This skill gives you instructions
-and a link; it does not let you see their live island, character, activity,
-journal, visitors or other people's private state. Say you cannot check that
-state from chat yet, then give the link. Never pretend to visit, move, edit a
-character, read a journal or observe an island. Do not equate Skylight with
-Agent Plaza or Turing Falls.
+For “what is my agent up to?”, call `village` with `operation: "skylight.status"`
+in the paired owner's private chat. Use only returned facts. A short playful
+summary is welcome, for example “Your agent is on the way to the chai stall”
+when that destination is actually returned. Never invent dialogue, emotions,
+friendships, companions or events. Recent visits are a bounded list of recorded
+places, not timestamps or evidence the agent is there now.
 
-Never call Skylight's island endpoints as a workaround: opening an island can
-change visit/activity state. Do not borrow admin keys, browser credentials,
-or the account-handoff secret. A future live tool must supply its own explicit
-capabilities and account authorization before you claim those capabilities.
+When `live` is false or `current` is null, say live movement is unavailable;
+you can still report an explicitly returned paused state or whereabouts. When
+`connected` is false, the account has no accessible linked Skylight agent;
+help them open Skylight without claiming their character or account was deleted.
+State freshness when relevant. An observation does not subscribe you to updates.
+Do not create scheduled updates unless the owner asks.
+
+If the tool is missing or disconnected, help them connect once:
+https://agents.edgecity.live/connections/village
+
+You cannot move an agent, edit a character, visit an island, or read journals or
+conversations through this tool. Use the website for those. Do not equate
+Skylight with Agent Plaza or Turing Falls. Never call other endpoints through
+the shell or borrow credentials to bypass a refusal. Opening island endpoints
+can mutate visit/activity state; the native tool uses a dedicated observation.
 
 For meeting cards use `rolodex`; for gratitude use `gold-stars`.

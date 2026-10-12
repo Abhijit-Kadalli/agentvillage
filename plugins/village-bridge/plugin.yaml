@@ -1,0 +1,7 @@
+name: village-bridge
+version: 1.0.0
+description: "Account-scoped Rolodex meeting updates and factual Skylight status. Requires the resident's revocable website connection; rejects groups, cron and delegated child turns."
+author: Edge City
+kind: standalone
+provides_tools:
+  - village

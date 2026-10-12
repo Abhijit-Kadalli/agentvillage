@@ -68,6 +68,7 @@ import {
   configureCronScriptTimeout,
   configureCronWrapResponse,
   configureIndexLinks,
+  configureVillageBridge,
   configureDashboardAuth,
   configureHostedGateway,
   configureStt,
@@ -314,6 +315,7 @@ function main(): void {
   configureAvEvents();
   configureAvApproval();
   configureIndexLinks();
+  configureVillageBridge();
   configureAvDisplay();
   // Opt-in and off the core path: a failure here is counted, never fatal.
   safeInstallRecall(SOURCE_SKILLS);
