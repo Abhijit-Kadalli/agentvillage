@@ -896,7 +896,7 @@ export function configureRecall(): void {
   console.log(choice ? `→ enabled plugin ${RECALL_PLUGIN}` : `→ disabled plugin ${RECALL_PLUGIN} (AV_RECALL_ENABLED off)`);
 }
 
-/** Native village tool is inert until the resident connects their account on the website. */
+/** Native village tool uses narrow credentials provisioned automatically for the existing paired account. */
 export function configureVillageBridge(): void {
   const doc = readConfig();
   const plugins = { ...((doc.plugins as Record<string, unknown>) ?? {}) };
