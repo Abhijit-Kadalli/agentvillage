@@ -9,8 +9,8 @@ builders, INDEX_API_KEY, AV_EVENTS_TOKEN and AV_BACKUP_TOKEN reach every foregro
 terminal child and the terminal's session snapshot file on disk. With INDEX_API_KEY agent code
 could publish to Index around the approval gate.
 
-`install()` removes the names `custody_keys.json` marks `strip` from every agent-run child, by three
-levers, each fail-soft and each reported:
+`install()` removes the strip names (`FLOOR`, plus any more `custody_keys.json` marks `strip`) from
+every agent-run child, by three levers, each fail-soft and each reported:
 
 1. **provider**: a `TerminalEnvironmentProvider` whose `strip_env_keys` is the list, registered in
    Hermes's terminal environment registry. Hermes strips the union of every provider's keys from
@@ -25,15 +25,25 @@ levers, each fail-soft and each reported:
    name a skill declared (`required_environment_variables`, registered at `skill_view`) back in. It
    is wrapped the same way, so a declaration cannot re-admit a stripped name.
 
-What this does not do, stated plainly: `$HERMES_HOME/.env` stays readable by the agent's user, and
-so does `/proc/<gateway pid>/environ` (the control plane puts INDEX_API_KEY in the sandbox's launch
-environment). Agent-written code that opens either file still gets the keys; closing that needs a
-second unix user for agent-run code (APPROVAL-CUSTODY's proposal). This module closes the
-environment routes: `env`, `printenv`, `echo $NAME`, `jq -n env`, `os.environ`, the snapshot file.
+After wrapping, a probe checks the real path, not just the names: one child is spawned through the
+foreground builder with a canary under a strip name and must not see it, `_scrub_child_env` must drop
+the canary even when it is declared passthrough, and `LocalEnvironment._run_bash` and
+`_build_child_env` must still call the wrapped names. A surface that fails is reported NOT covered.
 
-Switch: `AV_CUSTODY` (process environment). Unset or `1/true/yes/on`: applied. `0/false/no/off`:
-nothing is touched and one line says the keys reach agent-run code. Python 3.11, standard library.
-Never raises out of `install()`.
+The strip list cannot be shrunk from the plugin directory: `FLOOR` is always stripped, and a
+decisions file that drops a floor name (or cannot be read) is logged as a warning.
+
+Switch: custody is always on unless `~/.hermes/config.yaml` says `av_approval: {custody: false}`
+(read with Hermes's raw config loader, no environment expansion). The config file is `policy.core`
+to the approval hook, so the agent cannot write it; an operator can (`hermes config set
+av_approval.custody false` from a sandbox shell). No environment variable is consulted: Hermes loads
+dotenv files the agent can write (the project `.env`, `.op.env`) into the gateway's environment.
+
+What this does not do, stated plainly: `$HERMES_HOME/.env` stays readable by the agent's user, and
+so does `/proc/<gateway pid>/environ`. Agent-written code that opens either file still gets the keys;
+closing that needs a second unix user for agent-run code (APPROVAL-CUSTODY's proposal).
+
+Python 3.11, standard library. Never raises out of `install()`.
 """
 
 from __future__ import annotations
@@ -42,28 +52,46 @@ import functools
 import importlib
 import json
 import logging
-import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 logger = logging.getLogger("av-approval.custody")
 
 MANIFEST_PATH = Path(__file__).resolve().with_name("custody_keys.json")
-SWITCH = "AV_CUSTODY"
+#: The names stripped whatever the decisions file says (it lives where the agent's user can write).
+FLOOR: frozenset[str] = frozenset({
+    "INDEX_API_KEY", "INDEX_SESSION_TOKEN", "AV_EVENTS_TOKEN", "AV_BACKUP_TOKEN", "ADMIN_TOKEN",
+})
+#: config.yaml: `av_approval: {custody: false}` turns custody off. Anything else, or absent, is on.
+CONFIG_KEYS = ("av_approval", "custody")
 PROVIDER_NAME = "av_custody"
 WRAPPED_MARK = "_av_custody_wrapped"
 DECISIONS = frozenset({"strip", "hermes", "agent_readable", "not_secret"})
-_OFF = frozenset({"0", "false", "no", "off"})
+MEASURED_HERMES = "0.21.5"
+CANARY_NAME = "INDEX_API_KEY"
+CANARY_VALUE = "av-custody-canary"
+_OFF = frozenset({"false", "0", "no", "off"})
 
-#: (surface, module, attribute) for the two wrapped builders.
+#: (surface, module, attribute) for the two wrapped builders, and (module, class or None, function)
+#: whose code must still call them.
 FOREGROUND = ("foreground", "tools.environments.local", "_make_run_env")
 EXECUTE_CODE = ("execute_code", "tools.code_execution_env", "_scrub_child_env")
+CALLERS = {
+    "foreground": ("tools.environments.local", "LocalEnvironment", "_run_bash"),
+    "execute_code": ("tools.code_execution_env", None, "_build_child_env"),
+}
 SURFACES = ("provider", FOREGROUND[0], EXECUTE_CODE[0])
 
-OFF_LINE = ("av-approval: custody off (AV_CUSTODY); INDEX_API_KEY, AV_EVENTS_TOKEN and AV_BACKUP_TOKEN "
-            "reach agent-run code")
+OFF_LINE = ("av-approval: custody off (config.yaml av_approval.custody: false); INDEX_API_KEY, "
+            "AV_EVENTS_TOKEN and AV_BACKUP_TOKEN reach agent-run code")
 APPLIED_FMT = "av-approval: custody: {n} names withheld from agent-run code ({covered})"
 UNCOVERED_FMT = "av-approval: custody: NOT covered: {missing}; those children still receive the service keys"
+SHRUNK_FMT = ("av-approval: custody: custody_keys.json does not mark {names} strip (edited or unreadable); "
+              "they are stripped anyway")
+VERSION_FMT = ("av-approval: custody: measured at Hermes {measured}, running {running}; "
+               "the probe below is what was checked")
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> dict:
@@ -81,15 +109,31 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict:
 
 
 def strip_names(manifest: Optional[Mapping[str, Any]] = None) -> frozenset[str]:
-    """The names marked `strip`."""
+    """The names the decisions file marks `strip` (without the floor)."""
     data = manifest if manifest is not None else load_manifest()
     return frozenset(n for n, e in data["names"].items() if e["decision"] == "strip")
 
 
-def switch(environ: Optional[Mapping[str, str]] = None) -> str:
-    """`on` unless AV_CUSTODY is explicitly off."""
-    value = (environ if environ is not None else os.environ).get(SWITCH)
-    return "off" if value is not None and value.strip().lower() in _OFF else "on"
+def effective_names() -> tuple[frozenset[str], frozenset[str]]:
+    """(names to strip, floor names the decisions file failed to mark). Never raises."""
+    try:
+        marked = strip_names()
+    except Exception:  # noqa: BLE001 - an unreadable file must not shrink the list
+        marked = frozenset()
+    return marked | FLOOR, FLOOR - marked
+
+
+def switch(importer: Callable[[str], Any] = importlib.import_module) -> str:
+    """`off` only when Hermes's raw config.yaml has av_approval.custody false; `on` otherwise."""
+    try:
+        config = importer("hermes_cli.config")
+        raw = config.read_raw_config()
+        value = config.cfg_get(raw, *CONFIG_KEYS, default=None)
+    except Exception:  # noqa: BLE001 - no readable config is the default: on
+        return "on"
+    if value is False or (isinstance(value, str) and value.strip().lower() in _OFF):
+        return "off"
+    return "on"
 
 
 def scrub(env: Any, names: frozenset[str]) -> Any:
@@ -135,6 +179,10 @@ def make_provider(names: frozenset[str], base: type) -> Any:
             return "Agent Village credential custody (not a terminal backend)"
 
         @property
+        def description(self) -> str:
+            return "Not a terminal backend: do not select. av-approval registers it only to strip service keys."
+
+        @property
         def strip_env_keys(self) -> frozenset:
             return names
 
@@ -161,24 +209,64 @@ def _register_provider(names: frozenset[str], importer: Callable[[str], Any]) ->
     return callable(keys) and names <= set(keys())
 
 
-def install(*, importer: Callable[[str], Any] = importlib.import_module,
-            environ: Optional[Mapping[str, str]] = None) -> dict[str, bool]:
-    """Apply custody; returns which surfaces are covered. Logs one line (two when one is not)."""
+def _calls(importer: Callable[[str], Any], surface: str, attr: str) -> bool:
+    """Whether the function that builds this surface's child env still calls `attr` by name."""
+    module_name, cls, func = CALLERS[surface]
+    owner = importer(module_name)
+    if cls is not None:
+        owner = getattr(owner, cls)
+    code = getattr(getattr(owner, func), "__code__")
+    return attr in code.co_names
+
+
+def _spawn_sees_canary(env: Mapping[str, str]) -> bool:
+    """Spawn one child with `env` and report whether it sees the canary."""
+    env_bin = shutil.which("env", path=env.get("PATH")) or shutil.which("env")
+    if not env_bin:
+        raise RuntimeError("no env binary to spawn")
+    out = subprocess.run([env_bin], env=dict(env), capture_output=True, text=True, timeout=5, check=False).stdout
+    return any(line.split("=", 1)[0] == CANARY_NAME for line in out.splitlines())
+
+
+def probe(importer: Callable[[str], Any], surface: str) -> bool:
+    """The real path still drops a strip name: True when the surface is covered."""
+    if surface == "foreground":
+        build = getattr(importer(FOREGROUND[1]), FOREGROUND[2])
+        env = build({CANARY_NAME: CANARY_VALUE})
+        return (CANARY_NAME not in env and not _spawn_sees_canary(env)
+                and _calls(importer, surface, FOREGROUND[2]))
+    if surface == "execute_code":
+        scrub_fn = getattr(importer(EXECUTE_CODE[1]), EXECUTE_CODE[2])
+        env = scrub_fn({CANARY_NAME: CANARY_VALUE, "PATH": "/usr/bin"}, is_passthrough=lambda _name: True)
+        return CANARY_NAME not in env and _calls(importer, surface, EXECUTE_CODE[2])
+    return True
+
+
+def install(*, importer: Callable[[str], Any] = importlib.import_module) -> dict[str, bool]:
+    """Apply custody; returns which surfaces are covered. Logs one line, plus a warning per problem."""
     covered = {surface: False for surface in SURFACES}
     try:
-        if switch(environ) == "off":
+        if switch(importer) == "off":
             logger.warning(OFF_LINE)
             return covered
-        names = strip_names()
+        names, unmarked = effective_names()
+        if unmarked:
+            logger.warning(SHRUNK_FMT.format(names=", ".join(sorted(unmarked))))
         try:
             covered["provider"] = _register_provider(names, importer)
         except Exception:  # noqa: BLE001 - one lever failing must not stop the others
             covered["provider"] = False
         for surface, module_name, attr in (FOREGROUND, EXECUTE_CODE):
             try:
-                covered[surface] = wrap(importer(module_name), attr, names)
+                covered[surface] = wrap(importer(module_name), attr, names) and probe(importer, surface)
             except Exception:  # noqa: BLE001
                 covered[surface] = False
+        try:
+            running = getattr(importer("hermes_cli"), "__version__", None)
+            if running and running != MEASURED_HERMES:
+                logger.warning(VERSION_FMT.format(measured=MEASURED_HERMES, running=running))
+        except Exception:  # noqa: BLE001 - the version is informational
+            pass
         done = [s for s in SURFACES if covered[s]]
         missing = [s for s in SURFACES if not covered[s]]
         logger.info(APPLIED_FMT.format(n=len(names), covered=", ".join(done) or "none"))
@@ -193,15 +281,19 @@ def install(*, importer: Callable[[str], Any] = importlib.import_module,
 
 
 __all__ = [
+    "CONFIG_KEYS",
     "DECISIONS",
+    "FLOOR",
     "MANIFEST_PATH",
     "OFF_LINE",
     "PROVIDER_NAME",
     "SURFACES",
-    "SWITCH",
+    "UNCOVERED_FMT",
+    "effective_names",
     "install",
     "load_manifest",
     "make_provider",
+    "probe",
     "scrub",
     "strip_names",
     "switch",

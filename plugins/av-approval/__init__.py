@@ -70,8 +70,8 @@ force until the installer runs. Unset (never opted in) logs nothing. Unlike
 CREDENTIAL CUSTODY (`_custody.py`, every start, whatever the switch): after the
 backstop, `register` removes the service keys `custody_keys.json` marks `strip`
 from every child the agent's code runs in (terminal, execute_code, cron
-scripts); the gateway keeps them. `AV_CUSTODY=0` turns it off. It never
-touches `ctx`.
+scripts); the gateway keeps them. Only `config.yaml` `av_approval.custody: false` turns
+it off (no environment variable). It never touches `ctx`; a failure is logged as a warning.
 
 Python 3.11, standard library and PyYAML (Hermes ships it). Never raises out
 of `register`; the pre-call callback raises only to block a gated call.
@@ -107,6 +107,9 @@ UNVERIFIED_START_FMT = ("av-approval: gate unverified at start ({codes}); every 
 UNVERIFIED_LATER_FMT = "av-approval: gate unverified ({codes}); gated tool calls are blocked while it lasts"
 RECOVERED_LINE = "av-approval: gate verified again"
 UNREGISTERED_LINE = "av-approval: the backstop could not be registered (gated calls rely on the shell hook alone)"
+#: Logged when custody cannot run at all (`_custody` failed to import or raised); `_custody.UNCOVERED_FMT`.
+CUSTODY_UNCOVERED_LINE = ("av-approval: custody: NOT covered: provider, foreground, execute_code; "
+                          "those children still receive the service keys")
 #: The message a blocked gated call carries (Hermes prefixes the callback name and exception type).
 UNVERIFIED_FMT = "av-approval: gate unverified ({code})"
 
@@ -431,7 +434,11 @@ def apply_custody() -> dict:
         from . import _custody
 
         return _custody.install()
-    except Exception:  # noqa: BLE001 - custody must never break Hermes's plugin loading
+    except Exception:  # noqa: BLE001 - custody must never break Hermes's plugin loading, nor fail silently
+        try:
+            logging.getLogger("av-approval.custody").warning(CUSTODY_UNCOVERED_LINE)
+        except Exception:  # noqa: BLE001
+            pass
         return {}
 
 

@@ -64,7 +64,7 @@ bun skills/edgeos/scripts/events.ts --when 2026-10-20 --days 3 --search yoga
 bun skills/edgeos/scripts/events.ts --when today --days 7 --rsvped
 ```
 
-`--when` is `today`, `tomorrow`, `weekend` or a local date `YYYY-MM-DD`; `--days N` (up to 14) extends it; `--search WORDS` and `--rsvped` narrow it; `--json` prints the raw events instead. Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Exit 2 with "not set" means the schedule isn't connected to this agent (§0 above); exit 1 means EdgeOS was unreachable or refused, so say you can't reach the schedule right now. For anything the script doesn't cover (a tag, venue or track filter, a single event), use the recipes below.
+`--when` is `today`, `tomorrow`, `weekend` or a local date `YYYY-MM-DD`; `--days N` (up to 14) extends it (for `weekend`, N-1 more days after Sunday); each line ends with the event's id and `start <ISO>`, which is the `occurrence_start` to send when RSVPing to one occurrence of a recurring event (§6); `--search WORDS` and `--rsvped` narrow it; `--json` prints the raw events instead. Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Exit 2 with "not set" means the schedule isn't connected to this agent (§0 above); exit 1 means EdgeOS was unreachable or refused, so say you can't reach the schedule right now. For anything the script doesn't cover (a tag, venue or track filter, a single event), use the recipes below.
 
 All event-read recipes use `Authorization: Bearer $EDGEOS_API_KEY`.
 

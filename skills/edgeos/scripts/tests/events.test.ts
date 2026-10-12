@@ -69,6 +69,11 @@ describe("windows", () => {
     expect(days(args({ when: "weekend" }), new Date("2026-10-18T04:30:00Z"), "Asia/Kolkata")).toEqual(["2026-10-18"]);
   });
 
+  test("--days extends the weekend past Sunday (refuter N2)", () => {
+    expect(days(args({ when: "weekend", days: 3 }), NOW, "Asia/Kolkata")).toEqual(["2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20"]);
+    expect(days(args({ when: "weekend", days: 2 }), new Date("2026-10-18T04:30:00Z"), "Asia/Kolkata")).toEqual(["2026-10-18", "2026-10-19"]);
+  });
+
   test("a zone with daylight saving", () => {
     expect(localMidnightUtc("2026-07-01", "America/Los_Angeles").toISOString()).toBe("2026-07-01T07:00:00.000Z");
     expect(localMidnightUtc("2026-12-01", "America/Los_Angeles").toISOString()).toBe("2026-12-01T08:00:00.000Z");
@@ -156,7 +161,7 @@ describe("the call and the output", () => {
     expect((f.calls[0].init.headers as Record<string, string>).Authorization).toBe(`Bearer ${KEY}`);
     expect(f.calls[0].url).not.toContain(KEY);
     expect(r.out).not.toContain(KEY);
-    expect(r.out).toBe("Wed 14 Oct (Asia/Kolkata)\n  7:00 AM–8:00 AM IST · Morning swim · Mandrem beach · RSVP: registered · id 5f0c7a3e-1b2d-4c3e-8f9a-0b1c2d3e4f5a\n");
+    expect(r.out).toBe("Wed 14 Oct (Asia/Kolkata)\n  7:00 AM–8:00 AM IST · Morning swim · Mandrem beach · RSVP: registered · id 5f0c7a3e-1b2d-4c3e-8f9a-0b1c2d3e4f5a · start 2026-10-14T01:30:00Z\n");
   });
 
   test("an empty day says so; events are sorted and grouped by local day", async () => {
@@ -165,9 +170,9 @@ describe("the call and the output", () => {
     const r = await run(["--when", "today", "--days", "3"], { HERMES_HOME: home([`EDGEOS_API_KEY=${KEY}`, `AV_POPUP_ID=${POPUP}`]) }, f.impl, NOW);
     expect(r.out.split("\n")).toEqual([
       "Wed 14 Oct (Asia/Kolkata)",
-      "  7:00 AM–8:00 AM IST · Morning swim · Mandrem beach · RSVP: registered · id 5f0c7a3e-1b2d-4c3e-8f9a-0b1c2d3e4f5a",
+      "  7:00 AM–8:00 AM IST · Morning swim · Mandrem beach · RSVP: registered · id 5f0c7a3e-1b2d-4c3e-8f9a-0b1c2d3e4f5a · start 2026-10-14T01:30:00Z",
       "Thu 15 Oct (Asia/Kolkata)",
-      "  8:30 PM IST · Late talk · RSVP: none",
+      "  8:30 PM IST · Late talk · RSVP: none · start 2026-10-15T15:00:00Z",
       "Fri 16 Oct (Asia/Kolkata)",
       "  no published events",
       "",
@@ -190,6 +195,6 @@ describe("the call and the output", () => {
 
   test("a line for a highlighted event in another zone", () => {
     expect(eventLine({ title: "Demo", start_time: "2026-07-01T17:00:00Z", highlighted: true }, "America/Los_Angeles"))
-      .toBe("10:00 AM PDT · Demo · highlighted · RSVP: none");
+      .toBe("10:00 AM PDT · Demo · highlighted · RSVP: none · start 2026-07-01T17:00:00Z");
   });
 });

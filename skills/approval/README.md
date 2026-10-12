@@ -303,17 +303,22 @@ but not the overlay's own: measured against the real builders, `INDEX_API_KEY`,
 script and cron script, and the terminal's session snapshot file on disk. With
 `INDEX_API_KEY` agent code could publish to Index without passing the gate.
 
-At every start, whatever `AV_APPROVAL_ENABLED` says, the plugin removes the names
-`plugins/av-approval/custody_keys.json` marks `strip` from every agent-run
-child: a strip-only terminal provider for the background terminal, cron and
+At every start, whatever `AV_APPROVAL_ENABLED` says (the config step lists the
+plugin on every tenant; with the switch unset its backstop registers no hook and
+blocks nothing), the plugin removes `INDEX_API_KEY`, `INDEX_SESSION_TOKEN`,
+`AV_EVENTS_TOKEN`, `AV_BACKUP_TOKEN` and `ADMIN_TOKEN` (a floor in the code, plus
+any more `plugins/av-approval/custody_keys.json` marks `strip`) from every
+agent-run child: a strip-only terminal provider for the background terminal, cron and
 other scripts and every non-terminal spawn (Hermes's `strip_env_keys`), and a
 wrap of the foreground terminal's and `execute_code`'s env builders, which at
 this Hermes ignore a plugin's strip list (the foreground) or let a skill's
 `required_environment_variables` re-admit a name (`execute_code`). The gateway
 itself keeps every key: the Index MCP client and av-events run inside it. Skill
 scripts that need a stripped key read `$HERMES_HOME/.env` themselves (the
-index-network scripts already do). One log line names the covered surfaces;
-a second, a warning, names any it could not cover.
+index-network scripts already do). A probe then checks the real path (a child
+spawned through the foreground builder must not see a canary). One log line
+names the covered surfaces; a warning names any it could not cover, a decisions
+file that dropped a floor name, or a Hermes other than the measured 0.21.5.
 
 Each credential-shaped name the overlay reads has a decision in that file
 (`strip`, `hermes`, `agent_readable`, `not_secret`) with its reason, and
@@ -325,8 +330,10 @@ av-events reads RSVPs from those curls; no approval class gates EdgeOS yet.
 **What it does not close.** `$HERMES_HOME/.env` and `/proc/<gateway pid>/environ`
 are readable by the agent's own user, so code the agent writes can still open
 them and read every key. Closing that needs agent-run code under a second unix
-user (the proposal in the lane's report). `AV_CUSTODY=0` turns custody off
-(one warning line); use it only to rule custody out while debugging.
+user (the proposal in the lane's report). The only off switch is
+`av_approval: {custody: false}` in `config.yaml` (`policy.core`: an operator sets
+it from a sandbox shell with `hermes config set av_approval.custody false`; the
+agent cannot), one warning line; use it only to rule custody out while debugging.
 
 ## Uncovered surfaces
 
@@ -413,7 +420,6 @@ What the gate does not see, or does not judge, today:
 | `AV_APPROVAL_DAEMON_UID` | `.env`, else environment | The uid that must own a loopback listener or the unix socket. Default `10001`. |
 | `HERMES_ACCEPT_HOOKS=1` | `.env`, written | Headless consent, second form (the first is `hooks_auto_accept: true`). |
 | `APPROVAL_HOOK_URL_ENV`, `APPROVAL_HOOK_TOKEN_ENV`, `APPROVAL_HOOK_WAIT_S` | `.env`, written | The shim's settings: `AV_APPROVAL_URL`, `AV_APPROVAL_TOKEN`, `280`. |
-| `AV_CUSTODY` | environment (Hermes loads `.env` into it) | Unset or `1/true/yes/on`: credential custody applied (above). `0/false/no/off`: off, one warning line. |
 | `AV_APPROVAL_PREWARM` | environment, else `.env` | `0/false/no/off`: no pre-warm after the live fire, and `--prewarm` skips (above). |
 
 ## Identity map

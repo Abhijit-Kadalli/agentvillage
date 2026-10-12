@@ -177,9 +177,9 @@ export function days(args: Args, now: Date, tz: string): string[] {
   else if (args.when === "tomorrow") first = addDays(today, 1);
   else if (args.when === "weekend") {
     const dow = new Date(`${today}T00:00:00Z`).getUTCDay(); // 0 Sunday … 6 Saturday
-    if (dow === 6) { first = today; count = 2; }
-    else if (dow === 0) { first = today; count = 1; }
-    else { first = addDays(today, 6 - dow); count = 2; }
+    if (dow === 6) { first = today; count = 1 + args.days; }
+    else if (dow === 0) { first = today; count = args.days; }
+    else { first = addDays(today, 6 - dow); count = 1 + args.days; }
   } else first = args.when;
   return Array.from({ length: count }, (_, i) => addDays(first, i));
 }
@@ -212,6 +212,7 @@ export function eventLine(event: EdgeEvent, tz: string): string {
   if (event.highlighted) bits.push("highlighted");
   bits.push(`RSVP: ${event.my_rsvp_status ?? "none"}`);
   if (event.id) bits.push(`id ${event.id}`);
+  if (event.start_time) bits.push(`start ${event.start_time}`); // a recurring event's occurrence_start for an RSVP
   return bits.join(" · ");
 }
 

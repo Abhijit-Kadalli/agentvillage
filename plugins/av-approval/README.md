@@ -76,9 +76,10 @@ What closes the gap, in order:
 
 ## Credential custody (every start, whatever the gate's switch)
 
-`_custody.py` keeps the service keys `custody_keys.json` marks `strip`
-(`INDEX_API_KEY`, `AV_EVENTS_TOKEN`, `AV_BACKUP_TOKEN`, `ADMIN_TOKEN`,
-`TURING_FALLS_CLAIM_TOKEN`) out of every child the agent's code runs in, while
+`_custody.py` keeps the service keys in `FLOOR` (`INDEX_API_KEY`,
+`INDEX_SESSION_TOKEN`, `AV_EVENTS_TOKEN`, `AV_BACKUP_TOKEN`, `ADMIN_TOKEN`), plus
+any more `custody_keys.json` marks `strip`, out of every child the agent's code
+runs in, while
 the gateway (the Index MCP client, av-events) keeps them. Three levers, each
 fail-soft and reported in one line on the `av-approval.custody` logger:
 
@@ -93,9 +94,22 @@ fail-soft and reported in one line on the `av-approval.custody` logger:
 - **execute_code**: `tools.code_execution_env._scrub_child_env` is wrapped so a
   skill's `required_environment_variables` cannot re-admit a stripped name.
 
-`register` applies it after the backstop and never touches `ctx`. A Hermes
-without one of those names logs `av-approval: custody: NOT covered: <surface>`
-as a warning. `AV_CUSTODY=0|false|no|off` turns it off (one warning line).
+After wrapping, a probe checks the real path: one child spawned through the
+foreground builder must not see a canary under a strip name, `_scrub_child_env`
+must drop it even when declared passthrough, and `LocalEnvironment._run_bash` and
+`_build_child_env` must still call the wrapped names. A Hermes other than the
+measured 0.21.5 is named in a warning.
+
+`register` applies it after the backstop, on every box (the config step lists the
+plugin whatever `AV_APPROVAL_ENABLED` says; with the switch unset the backstop
+registers no hook), and never touches `ctx`. Every failure is a warning:
+`av-approval: custody: NOT covered: <surface>` (a missing lever, a failed probe,
+or `_custody` failing to load), and a decisions file that no longer marks a floor
+name (`... does not mark ... strip ...; they are stripped anyway`). The only off
+switch is `av_approval: {custody: false}` in `$HERMES_HOME/config.yaml`, read
+with Hermes's raw config loader: the hook treats that file as `policy.core`, so
+the agent cannot write it. No environment variable is read: Hermes loads dotenv
+files the agent can write (`hermes-agent/.env`, `.op.env`) into the gateway.
 Not closed: `$HERMES_HOME/.env` and `/proc/<gateway pid>/environ` stay readable
 by the agent's user; see `skills/approval/README.md`.
 
