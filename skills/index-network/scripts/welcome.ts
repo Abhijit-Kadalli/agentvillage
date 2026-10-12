@@ -124,7 +124,7 @@ import {
 } from "./index-mcp";
 import { contextHolds, contextTagsState } from "./context-tags";
 import { DEFAULT_CONNECTIONS_URL, cleanTitle, connectionsUrl, cronScanHit, cutAtWord, envOrDotenv } from "./proactive-text";
-import { type GuardHit, questionGuardHit } from "./question-guard";
+import { type GuardHit, QUESTION_MAX, questionGuardHit } from "./question-guard";
 import { acquireStateLock } from "./state-lock";
 
 /** The marker, relative to `$HERMES_HOME` (install/welcome_state.ts WELCOME_STATE_RELATIVE_PATH). */
@@ -198,8 +198,8 @@ export const REFUSED_LINE_MAX = 200;
 export const REFUSED_FEEDBACK_MAX = 160;
 /** Refused lines one REFUSED_SEEDS block names: one (lead 18:19Z, ONE recovery question); the others are recorded, never printed. */
 export const REFUSED_SHOWN_MAX = 1;
-/** Code points of Index's recovery question printed at most (cleanTitle, cut at a word; withheld whole on a hit). */
-export const REFUSED_QUESTION_MAX = 160;
+/** Code points of Index's recovery question printed at most; a longer one is withheld whole (question-guard.ts). */
+export const REFUSED_QUESTION_MAX = QUESTION_MAX;
 /**
  * SEED-REJECT part 3b: the trailer's codes, to the data door's contract
  * (agentvillage-data #506, CLAIMS 18:28Z ruling: codes only): at most
@@ -594,6 +594,8 @@ export type RefusedSeed = {
   surfacedAt?: string;
   /** SEED-REJECT part 3b, only from a `prepare` refusal: Index's category and its recovery questions (cleaned). */
   category?: string;
+  /** Why Index's first recovery question will not be shown (a code, never text): set at the seed or when the block is printed. */
+  questionWithheld?: QuestionWithheld;
   recovery?: Array<{ kind: RecoveryQuestion["kind"]; question: string; options?: string[] }>;
 };
 
@@ -618,33 +620,27 @@ export function refusedFeedback(raw: unknown): string | null {
 }
 
 /** Why a recovery question was withheld from the REFUSED_SEEDS block: the seed marker records this code, never the text. */
-export type QuestionWithheld = "empty" | "malformed" | "scanner" | GuardHit;
-
-/** The first guard `text` trips: Hermes's cron scanner, a snake_case word, then question-guard.ts (look-alikes, tool names, stop words). */
-function questionHit(text: string): QuestionWithheld | null {
-  if (cronScanHit(text)) return "scanner";
-  if (SNAKE_CASE.test(text)) return "tool_name";
-  return questionGuardHit(text);
-}
+export type QuestionWithheld = "empty" | "malformed" | GuardHit;
 
 /**
  * Index's recovery question as the REFUSED_SEEDS block may carry it (lead
  * 18:19Z: the agent asks the resident ONE of Index's questions in plain
- * words). Third-party, model-written text, so it is withheld whole (question
- * null, with the reason) when the raw text or the cleaned one trips
- * questionHit, or when nothing is left; else cleanTitle's one plain line (no
- * link, handle, markup, phone number), at most REFUSED_QUESTION_MAX code
- * points, cut at a word. The raw text is checked too, so a hit past the cut
- * still withholds it. Pure.
+ * words). Third-party, model-written text, so the guard FAILS CLOSED
+ * (question-guard.ts questionGuardHit, commit review of d738cf87): any
+ * doubt withholds it whole (question null, with the reason code); nothing is
+ * cut or repaired. What passes is one plain question of at most
+ * REFUSED_QUESTION_MAX code points, and it must come through cleanTitle
+ * unchanged (else `shape`). `line` is the resident's own refused line (a
+ * question quoting it back is withheld). Pure.
  */
-export function refusedQuestion(raw: unknown): { question: string | null; withheld: QuestionWithheld | null } {
-  if (typeof raw !== "string") return { question: null, withheld: "empty" };
-  const before = questionHit(raw);
-  if (before) return { question: null, withheld: before };
-  const clean = cleanTitle(raw, REFUSED_QUESTION_MAX, "word");
+export function refusedQuestion(raw: unknown, line?: string | null): { question: string | null; withheld: QuestionWithheld | null } {
+  if (typeof raw !== "string" || !raw.trim()) return { question: null, withheld: "empty" };
+  const hit = questionGuardHit(raw, line);
+  if (hit) return { question: null, withheld: hit };
+  const plain = raw.normalize("NFKC").trim().replace(/ +/g, " ");
+  const clean = cleanTitle(raw, REFUSED_QUESTION_MAX);
   if (clean === null) return { question: null, withheld: "empty" };
-  const after = questionHit(clean);
-  return after ? { question: null, withheld: after } : { question: clean, withheld: null };
+  return clean === plain ? { question: clean, withheld: null } : { question: null, withheld: "shape" };
 }
 
 /** The resident's refused line, verbatim, at most REFUSED_LINE_MAX code points (cut at a word); null when blank. Pure. */
@@ -660,6 +656,12 @@ function refusedSeed(line: string, refusal: IntentRefusal | PreparedRefusal, now
     seed.category = refusal.category;
     const recovery = recoveryQuestions(refusal.recovery);
     if (recovery.length) seed.recovery = recovery;
+    // Index's FIRST question is judged on its raw text here, before the marker's cleaner could strip a link out of it
+    // (commit review flag 1): withheld, the block carries null for this line whatever the kept list holds.
+    if (refusal.recovery.length) {
+      const { withheld } = refusedQuestion(refusal.recovery[0].question, line);
+      if (withheld) seed.questionWithheld = withheld;
+    }
   }
   return seed;
 }
@@ -1099,12 +1101,13 @@ type ShownSeed = { line: string; kind: RecoveryQuestion["kind"] | null; question
 const RECOVERY_KINDS: ReadonlyArray<RecoveryQuestion["kind"]> = ["single", "multi", "text"];
 
 /** The block's question for a refused entry: the first of its `recovery` list, through refusedQuestion. */
-function shownQuestion(row: Record<string, unknown>): { kind: RecoveryQuestion["kind"] | null; question: string | null; withheld: QuestionWithheld | null } {
+function shownQuestion(row: Record<string, unknown>, line: string): { kind: RecoveryQuestion["kind"] | null; question: string | null; withheld: QuestionWithheld | null } {
+  if (typeof row.questionWithheld === "string") return { kind: null, question: null, withheld: row.questionWithheld as QuestionWithheld };
   if (!Array.isArray(row.recovery) || row.recovery.length === 0) return { kind: null, question: null, withheld: null };
   const first = record(row.recovery[0]);
   const kind = RECOVERY_KINDS.find((k) => k === first?.kind);
   if (!first || !kind) return { kind: null, question: null, withheld: "malformed" };
-  const { question, withheld } = refusedQuestion(first.question);
+  const { question, withheld } = refusedQuestion(first.question, line);
   return question === null ? { kind: null, question: null, withheld } : { kind, question, withheld: null };
 }
 
@@ -1146,7 +1149,7 @@ export async function surfaceRefusedSeeds(home: string, now: Date = new Date()):
         } else if (shown.length >= REFUSED_SHOWN_MAX) {
           marks.set(i, { surfacedAt: at, notShown: "cap" });
         } else {
-          const { kind, question, withheld } = shownQuestion(row);
+          const { kind, question, withheld } = shownQuestion(row, line);
           shown.push({ line, kind, question });
           marks.set(i, { surfacedAt: at, ...(withheld ? { questionWithheld: withheld } : {}) });
         }
