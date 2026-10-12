@@ -145,7 +145,21 @@ export function capModelMaxTokens(): void {
   console.log(`→ capped model.max_tokens at ${model.max_tokens}`);
 }
 
-/** Hosted Telegram: pairing codes, no restart pings, no approval prompts. Idempotent. */
+/**
+ * Hosted Telegram: pairing codes, no restart pings, no approval prompts, and every message
+ * stamped with the time it was sent. Idempotent.
+ *
+ * `gateway.message_timestamps.enabled: true` (AGENT-DATE): Hermes 0.21.5 keeps a continuing
+ * session's system prompt byte for byte (agent/conversation_loop.py `_restore_or_build_system_prompt`),
+ * so its "today's date" line is the day of the last rebuild, often days old in a Telegram chat.
+ * With this on, the gateway prefixes each resident message in the model's context with
+ * `[Mon 2026-10-12 09:17:05 IST]` in Hermes's zone (gateway/run_turn.py:1495, read per message;
+ * gateway/run.py `_message_timestamps_enabled`; the stored transcript stays clean). Hermes's
+ * default is off (hermes_cli/config_defaults.py:2168). This is a pin, like
+ * `disableTelegramLinkPreviews`: a `false` set by hand, or the bare `message_timestamps: <bool>`
+ * shorthand Hermes also reads, becomes `{ enabled: true }`; other keys in the block are kept.
+ * AGENTS.md tells the agent to trust the stamp over the prompt's date.
+ */
 export function configureHostedGateway(): void {
   const doc = readConfig();
 
@@ -153,6 +167,14 @@ export function configureHostedGateway(): void {
   const pairing = { ...((gateway.pairing as Record<string, unknown>) ?? {}) };
   pairing.global_mode = "pair";
   gateway.pairing = pairing;
+  const rawStamps = gateway.message_timestamps;
+  if (rawStamps !== undefined && rawStamps !== null && !isMapping(rawStamps) && rawStamps !== true) {
+    // R3 fix round 4 (output injection): a config value is never echoed onto the installer's stdout.
+    console.log("→ gateway.message_timestamps was not a mapping; replaced with { enabled: true }");
+  } else if (isMapping(rawStamps) && "enabled" in rawStamps && rawStamps.enabled !== true) {
+    console.log("→ gateway.message_timestamps.enabled was not true; set to true");
+  }
+  gateway.message_timestamps = { ...(isMapping(rawStamps) ? rawStamps : {}), enabled: true };
   doc.gateway = gateway;
 
   const approvals = { ...((doc.approvals as Record<string, unknown>) ?? {}) };
@@ -166,7 +188,7 @@ export function configureHostedGateway(): void {
   doc.platforms = platforms;
 
   writeConfig(doc);
-  console.log("→ hosted gateway: pairing mode, approvals off, no telegram restart pings");
+  console.log("→ hosted gateway: pairing mode, approvals off, no telegram restart pings, message timestamps on");
 }
 
 /** Hermes `platforms.telegram.extra` key that decides whether a cold start discards the backlog. */

@@ -143,6 +143,72 @@ test("configureHostedGateway is idempotent and preserves other platform keys", (
   expect((telegram.extra as Record<string, unknown>).disable_link_previews).toBe(false);
 });
 
+// AGENT-DATE: every resident message reaches the model stamped with the time it was sent, so a
+// continuing session's frozen "today's date" line is never the agent's only clock.
+const stampsOf = (path: string): unknown => (readConfig(path).gateway as Record<string, unknown>).message_timestamps;
+
+test("configureHostedGateway turns message timestamps on for a fresh config", () => {
+  const configPath = withConfig({});
+
+  logged(configureHostedGateway);
+
+  expect(stampsOf(configPath)).toEqual({ enabled: true });
+  // Written as a real YAML boolean, which Hermes's PyYAML reader takes as True.
+  expect(readFileSync(configPath, "utf8")).toMatch(/message_timestamps:\n\s+enabled: true\n/);
+});
+
+test("configureHostedGateway keeps every other gateway key and the timestamp block's own keys", () => {
+  const configPath = withConfig({
+    gateway: {
+      pairing: { global_mode: "open", code_ttl: 600 },
+      max_inbound_media_bytes: 1024,
+      message_timestamps: { enabled: true, note: "kept" },
+    },
+  });
+
+  logged(configureHostedGateway);
+
+  const gateway = readConfig(configPath).gateway as Record<string, unknown>;
+  expect(gateway.pairing).toEqual({ global_mode: "pair", code_ttl: 600 });
+  expect(gateway.max_inbound_media_bytes).toBe(1024);
+  expect(gateway.message_timestamps).toEqual({ enabled: true, note: "kept" });
+});
+
+test("configureHostedGateway pins timestamps on over a false or a non-mapping value, and says so", () => {
+  for (const [value, line] of [
+    [{ enabled: false }, "gateway.message_timestamps.enabled was not true; set to true"],
+    [{ enabled: "yes" }, "gateway.message_timestamps.enabled was not true; set to true"],
+    [false, "gateway.message_timestamps was not a mapping; replaced with { enabled: true }"],
+    ["on", "gateway.message_timestamps was not a mapping; replaced with { enabled: true }"],
+    [[1], "gateway.message_timestamps was not a mapping; replaced with { enabled: true }"],
+  ] as const) {
+    const configPath = withConfig({ gateway: { message_timestamps: value } });
+    const out = logged(configureHostedGateway).join("\n");
+    expect({ value, stamps: stampsOf(configPath) }).toEqual({ value, stamps: { enabled: true } });
+    expect(out).toContain(line);
+  }
+  // The bare `true` shorthand Hermes reads is normalised without a warning; null counts as unset.
+  for (const value of [true, null]) {
+    const configPath = withConfig({ gateway: { message_timestamps: value } });
+    const out = logged(configureHostedGateway).join("\n");
+    expect(stampsOf(configPath)).toEqual({ enabled: true });
+    expect(out).not.toContain("was not");
+  }
+});
+
+test("configureHostedGateway: timestamps survive a roll and a re-run writes the same bytes", () => {
+  const configPath = withConfig({ gateway: { pairing: { global_mode: "pair" } }, timezone: "Asia/Kolkata" });
+
+  logged(configureHostedGateway);
+  const first = readFileSync(configPath, "utf8");
+  logged(configureHostedGateway);
+  logged(configureHostedGateway);
+
+  expect(readFileSync(configPath, "utf8")).toBe(first);
+  expect(stampsOf(configPath)).toEqual({ enabled: true });
+  expect(readConfig(configPath).timezone).toBe("Asia/Kolkata");
+});
+
 // DATA-160: av-events is enabled on every tenant, token or not. The old
 // behaviour (skip the enable without AV_EVENTS_TOKEN in the process env) left
 // the plugin off every control-plane tenant, because the control plane writes
