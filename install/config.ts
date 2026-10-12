@@ -729,6 +729,36 @@ export function configureAvEvents(): void {
   }
 }
 
+const AV_APPROVAL_PLUGIN = "av-approval";
+
+/**
+ * List `av-approval` on every tenant, whatever `AV_APPROVAL_ENABLED` says.
+ *
+ * The plugin carries two halves. Credential custody (`_custody.py`: the
+ * service keys out of every child the agent's code runs in) must run on every
+ * box, so the plugin must load on every box. The gate's backstop does nothing
+ * unless the switch is on (`register` returns before registering any hook when
+ * it is unset or off), so listing it here blocks no tool on a box without the
+ * gate. The approval step lists it too; the kill switch keeps it listed. An
+ * `av-approval` entry in `plugins.disabled` is left alone and logged.
+ * Idempotent; every other entry keeps its place.
+ */
+export function configureAvApproval(): void {
+  const doc = readConfig();
+  const plugins = { ...((doc.plugins as Record<string, unknown>) ?? {}) };
+  const enabled = Array.isArray(plugins.enabled)
+    ? (plugins.enabled as unknown[]).filter((n) => typeof n === "string") as string[]
+    : [];
+  if (!enabled.includes(AV_APPROVAL_PLUGIN)) enabled.push(AV_APPROVAL_PLUGIN);
+  plugins.enabled = enabled;
+  doc.plugins = plugins;
+  writeConfig(doc);
+  console.log(`→ enabled plugin ${AV_APPROVAL_PLUGIN} (credential custody; the gate half follows AV_APPROVAL_ENABLED)`);
+  if (Array.isArray(plugins.disabled) && (plugins.disabled as unknown[]).includes(AV_APPROVAL_PLUGIN)) {
+    console.log(`→ warning: ${AV_APPROVAL_PLUGIN} is in plugins.disabled; Hermes will not load it and custody is off`);
+  }
+}
+
 const INDEX_LINKS_PLUGIN = "index-links";
 
 /** List `index-links` so Hermes loads the tool-result link rewrite. Idempotent. */

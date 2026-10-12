@@ -64,6 +64,7 @@ import { gateReceiptLine, lastInstallVerified, runApprovalStep, stagePlugins } f
 import {
   capModelMaxTokens,
   configureAvEvents,
+  configureAvApproval,
   configureCronScriptTimeout,
   configureCronWrapResponse,
   configureIndexLinks,
@@ -311,6 +312,7 @@ function main(): void {
   configureTelegramDisplay();
   configureDashboardAuth();
   configureAvEvents();
+  configureAvApproval();
   configureIndexLinks();
   configureAvDisplay();
   // Opt-in and off the core path: a failure here is counted, never fatal.

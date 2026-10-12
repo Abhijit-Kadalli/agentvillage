@@ -7,6 +7,7 @@ import YAML from "yaml";
 
 import {
   capModelMaxTokens,
+  configureAvApproval,
   configureAvEvents,
   configureHostedGateway,
   configureIndexLinks,
@@ -580,4 +581,42 @@ test.skipIf(!PYYAML)("DATA-434: PyYAML (Hermes's reader) reads every dumpConfig 
   const out = JSON.parse(run.stdout.toString()) as { values: [string, unknown][]; keys: [string, unknown][] };
   expect(out.values).toEqual(doc.values.map((v) => ["str", v]));
   expect(out.keys).toEqual([...YAML11_WORDS, ...PYYAML_ONLY, "="].map((w) => ["str", w]));
+});
+
+// Approval code-gap lane 2 (credential custody): av-approval is listed on every tenant, whatever
+// AV_APPROVAL_ENABLED says, so custody runs everywhere; the gate half stays off unless the switch is on.
+for (const approvalSwitch of [undefined, "0", "1"]) {
+  test(`configureAvApproval lists av-approval with AV_APPROVAL_ENABLED=${approvalSwitch ?? "unset"}, idempotently`, () => {
+    const before = process.env.AV_APPROVAL_ENABLED;
+    if (approvalSwitch === undefined) delete process.env.AV_APPROVAL_ENABLED;
+    else process.env.AV_APPROVAL_ENABLED = approvalSwitch;
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const configPath = withConfig({ plugins: { enabled: ["dashboard-auth-edgecity", "av-events"], extra: { keep: true } } });
+      configureAvApproval();
+      configureAvApproval();
+      const plugins = readConfig(configPath).plugins as Record<string, unknown>;
+      expect(plugins.enabled).toEqual(["dashboard-auth-edgecity", "av-events", "av-approval"]);
+      expect(plugins.extra).toEqual({ keep: true });
+    } finally {
+      log.mockRestore();
+      if (before === undefined) delete process.env.AV_APPROVAL_ENABLED;
+      else process.env.AV_APPROVAL_ENABLED = before;
+    }
+  });
+}
+
+test("configureAvApproval on a config with no plugins block, and a warning when it is disabled", () => {
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const bare = withConfig({});
+    configureAvApproval();
+    expect((readConfig(bare).plugins as Record<string, unknown>).enabled).toEqual(["av-approval"]);
+    withConfig({ plugins: { enabled: [], disabled: ["av-approval"] } });
+    configureAvApproval();
+    const lines = log.mock.calls.map((args) => args.map(String).join(" "));
+    expect(lines.at(-1)).toBe("→ warning: av-approval is in plugins.disabled; Hermes will not load it and custody is off");
+  } finally {
+    log.mockRestore();
+  }
 });
