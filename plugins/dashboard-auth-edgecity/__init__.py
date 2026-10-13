@@ -1,6 +1,8 @@
-"""Edge City dashboard auth: owner email OTP on Hermes's login form, plus the archive_read bearer.
+"""Edge City dashboard auth: owner email OTP on Hermes's login form, the archive_read bearer, and
+the resident guard (residents get a named set of dashboard features; landing admins get all).
 
-See README.md. The archive_read token logic is in `_archive` (standard library only).
+See README.md. The archive_read token logic is in `_archive` and the resident guard in
+`_resident_guard` (both standard library only).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -50,13 +53,17 @@ except ModuleNotFoundError as _missing:
 else:
     _HERMES_MISSING = None
 
-from . import _archive
+from . import _archive, _resident_guard
 
 _log = logging.getLogger("dashboard-auth-edgecity")
 
 _SIG_LEN = hashlib.sha256().digest_size
 _ACCESS_TTL = 12 * 60 * 60
 _REFRESH_TTL = 30 * 24 * 60 * 60
+#: The signing key's generation. 1.3.0 replaces any key from before it once (SEC-1 M4): until 1.3.0
+#: any dashboard session could download this store, so an older key may be known to a resident.
+#: Every session signs in again once. Raise it to rotate again.
+_KEY_EPOCH = "2"
 
 
 def _env(name: str) -> str:
@@ -280,13 +287,24 @@ class EdgeCityDashboardAuth(DashboardAuthProvider):
         os.close(fd)
         os.chmod(self._db_path, 0o600)
         with self._db() as db:
+            # One writer at a time across processes, so exactly one of them rotates an old key.
+            db.execute("BEGIN IMMEDIATE")
             db.execute("CREATE TABLE IF NOT EXISTS identity (tenant TEXT PRIMARY KEY, secret BLOB NOT NULL)")
-            db.execute("INSERT OR IGNORE INTO identity VALUES (?, ?)", (self._tenant_id, secrets.token_bytes(32)))
-            self._secret = bytes(db.execute("SELECT secret FROM identity WHERE tenant = ?", (self._tenant_id,)).fetchone()[0])
             db.execute("""CREATE TABLE IF NOT EXISTS sessions (
                 sid TEXT PRIMARY KEY, tenant TEXT NOT NULL, subject TEXT NOT NULL,
                 email TEXT NOT NULL, role TEXT NOT NULL, absolute_exp INTEGER NOT NULL,
                 refresh_hash TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)""")
+            db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            epoch = db.execute("SELECT value FROM meta WHERE key = 'key_epoch'").fetchone()
+            if epoch is None or epoch[0] != _KEY_EPOCH:
+                # A key from an older version may have been downloaded: replace it, and drop every
+                # session row (no token signed with the old key verifies any more).
+                db.execute("DELETE FROM identity")
+                db.execute("DELETE FROM sessions")
+                db.execute("INSERT OR REPLACE INTO meta VALUES ('key_epoch', ?)", (_KEY_EPOCH,))
+                _log.info("dashboard-auth-edgecity: signing key generation %s; every session signs in again once", _KEY_EPOCH)
+            db.execute("INSERT OR IGNORE INTO identity VALUES (?, ?)", (self._tenant_id, secrets.token_bytes(32)))
+            self._secret = bytes(db.execute("SELECT secret FROM identity WHERE tenant = ?", (self._tenant_id,)).fetchone()[0])
 
     @contextmanager
     def _db(self):
@@ -528,12 +546,220 @@ def _register_archive_read(ctx) -> None:
         _log.warning("dashboard-auth-edgecity: archive_read not installed (%s)", type(exc).__name__)
 
 
+class ResidentGuardNotInstalled(RuntimeError):
+    """The HTTP seam is missing: the plugin refuses to load, so Hermes refuses to serve a gated
+    dashboard without its provider (fail closed, `web_server.py:1136`)."""
+
+
+def _gateway_modules():
+    """`tui_gateway.server`, `tui_gateway.ws` and `tui_gateway.server_requests`, loaded the first
+    time a resident opens the chat socket (in the dashboard, `start_server` has imported
+    `tui_gateway.server` by then)."""
+    from tui_gateway import server, server_requests, ws
+
+    return server, ws, server_requests
+
+
+def _stored_session(session_id, profile=None, *, prefix):
+    """One stored session's owner fields, read the way the session routes read it
+    (`web_routers/sessions.py`: the profile's store, read only; an exact id, else, with `prefix`, the
+    one unambiguous prefix match). None when there is no such session. Raises on a store failure
+    (the guard then refuses)."""
+    from hermes_cli.web_server_sessions import _open_session_db_for_profile
+
+    db = _open_session_db_for_profile(profile or None, read_only=True)
+    try:
+        if prefix:
+            resolved = db.resolve_session_id(session_id)
+        else:
+            resolved = session_id if db.get_session(session_id) else None
+        row = db.get_session(resolved) if resolved else None
+    finally:
+        db.close()
+    if not row:
+        return None
+    return {"id": row.get("id"), "user_id": row.get("user_id"), "source": row.get("source")}
+
+
+def _session_owners(ids, profile=None):
+    """`{id: {"id", "user_id", "source"}}` for the stored sessions among `ids` (exact ids, the
+    profile's store, read only, one open), for the gateway's list rows. Raises on a store failure
+    (the guard then refuses the list)."""
+    from hermes_cli.web_server_sessions import _open_session_db_for_profile
+
+    db = _open_session_db_for_profile(profile or None, read_only=True)
+    try:
+        out = {}
+        for session_id in dict.fromkeys(ids):
+            row = db.get_session(session_id)
+            if row:
+                out[session_id] = {"id": row.get("id"), "user_id": row.get("user_id"), "source": row.get("source")}
+        return out
+    finally:
+        db.close()
+
+
+def _session_list_page(query, limit, offset):
+    """One page of Hermes's own `GET /api/sessions` handler (`web_routers/sessions.py` `get_sessions`)
+    under the request's filters and order, compact rows only: what the guard builds a resident's
+    own list from. The handler has already answered this query with a 200, so its parameters are
+    valid; anything it raises refuses the list."""
+    from hermes_cli.web_routers.sessions import get_sessions
+
+    return get_sessions(
+        limit=limit, offset=offset, min_messages=int(query.get("min_messages", 0)),
+        archived=query.get("archived", "exclude"), order=query.get("order", "created"),
+        source=query.get("source"), sources=query.get("sources"), exclude_sources=query.get("exclude_sources"),
+        cwd_prefix=query.get("cwd_prefix"), full=False, profile=query.get("profile"))
+
+
+def _reference_parser(text):
+    from agent.context_references import parse_context_references
+
+    return parse_context_references(text)
+
+
+def _prompt_sanitizer(text):
+    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+
+    return sanitize_user_prompt_text(text)
+
+
+#: Where this plugin's own files are, for the agent read deny-list.
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+#: This plugin's private directory under HERMES_HOME: the signing key and the session store.
+_PRIVATE_DIR_NAME = ".dashboard-auth-edgecity"
+
+
+def _harden_agent_reads() -> None:
+    """S-new-2, the cheap half: the key store and this plugin's own directory join Hermes's agent
+    read deny-list (`agent.file_safety._READ_DENIED_DIRS`), so read_file and `@file:` refuse them,
+    and `@file:`/`@folder:` to a private path under HERMES_HOME is refused for every caller
+    (`harden_reference_reads`). Both required: if either seam is gone or reshaped, the plugin
+    refuses to load, as for the HTTP seam. The agent's terminal can still read the store; moving
+    the key out of its reach is SEC-2."""
+    guard = _resident_guard
+    try:
+        from agent import file_safety
+
+        ok = guard.harden_agent_reads(file_safety, [_PRIVATE_DIR_NAME, _PLUGIN_DIR])
+    except Exception as exc:  # noqa: BLE001
+        _log.error("dashboard-auth-edgecity: agent read deny-list NOT extended (%s); refusing to load",
+                   type(exc).__name__)
+        raise ResidentGuardNotInstalled(type(exc).__name__) from exc
+    if not ok:
+        _log.error("dashboard-auth-edgecity: agent read deny-list NOT extended (seam_missing); refusing to load")
+        raise ResidentGuardNotInstalled("agent_reads_seam_missing")
+    try:
+        from agent import context_references
+
+        refs_ok = guard.harden_reference_reads(context_references)
+    except Exception as exc:  # noqa: BLE001
+        _log.error("dashboard-auth-edgecity: @file: private-path check NOT installed (%s); refusing to load",
+                   type(exc).__name__)
+        raise ResidentGuardNotInstalled(type(exc).__name__) from exc
+    if not refs_ok:
+        # Required as the deny-list is (SEC1-refute2 N-r3-3): in the messaging gateway this check is
+        # the only line against @file: to config.yaml, plugin code, hooks and the key store.
+        _log.error("dashboard-auth-edgecity: @file: private-path check NOT installed (seam_missing); refusing to load")
+        raise ResidentGuardNotInstalled("references_seam_missing")
+
+
+def _files_module():
+    return sys.modules.get("hermes_cli.web_routers.files")
+
+
+def _install_chat_tab(guard) -> None:
+    """The Chat tab for residents (1.4.0): `/api/pty` with a credential bound to the resident's
+    login (README "The Chat tab"). Optional: without its seams a resident's `/api/pty` is refused,
+    as in 1.3.x, and everything else stands."""
+    try:
+        from fastapi import HTTPException
+        from hermes_cli import web_server_chat
+        from hermes_cli.dashboard_auth import ws_tickets
+        from hermes_cli.pty_session import RegistryFull
+
+        ok = guard.install_pty(web_server_chat, ws_tickets,
+                               refusal=lambda detail: HTTPException(status_code=403, detail=detail),
+                               registry_full=RegistryFull)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("dashboard-auth-edgecity: the Chat tab stays closed to residents (%s)", type(exc).__name__)
+        return
+    if not ok:
+        _log.warning("dashboard-auth-edgecity: the Chat tab stays closed to residents (seam_missing)")
+
+
+def _install_resident_guard() -> None:
+    """Install the resident guard on its three seams (README "Resident guard"). The HTTP seam is
+    required: without it the plugin does not load. Without the socket seam the embedded chat is
+    switched off for every session. The gateway seam installs the first time a resident opens the
+    chat socket; until it is in place, residents cannot open it."""
+    guard = _resident_guard
+    _harden_agent_reads()
+    try:
+        import hermes_cli
+
+        guard.set_private_roots([os.path.dirname(os.path.dirname(os.path.abspath(hermes_cli.__file__)))])
+    except Exception:  # noqa: BLE001 - HERMES_HOME's own trees are private regardless
+        pass
+    try:
+        from hermes_cli.dashboard_auth import middleware
+
+        http_ok = guard.install(middleware)
+    except Exception as exc:  # noqa: BLE001
+        _log.error("dashboard-auth-edgecity: resident guard NOT installed (%s); refusing to load", type(exc).__name__)
+        raise ResidentGuardNotInstalled(type(exc).__name__) from exc
+    if not http_ok:
+        _log.error("dashboard-auth-edgecity: resident guard NOT installed (seam_missing); refusing to load")
+        raise ResidentGuardNotInstalled("seam_missing")
+    try:
+        from hermes_cli.dashboard_auth import ws_tickets
+
+        tickets_ok = guard.install_tickets(ws_tickets)
+    except Exception:  # noqa: BLE001
+        tickets_ok = False
+    if not tickets_ok:
+        _log.warning("dashboard-auth-edgecity: socket tickets carry no role (seam_missing); "
+                     "every socket is a resident's, the console and terminal are closed to admins too")
+    try:
+        from hermes_cli import web_server_chat
+
+        ws_ok = guard.install_ws(web_server_chat)
+    except Exception:  # noqa: BLE001
+        ws_ok = False
+    if not ws_ok:
+        web_server = sys.modules.get("hermes_cli.web_server")
+        closed = web_server is not None and guard.close_embedded_chat(web_server)
+        _log.error("dashboard-auth-edgecity: socket guard NOT installed (seam_missing); embedded chat %s",
+                   "switched off for every session" if closed else "left to Hermes (no dashboard in this process)")
+    if ws_ok and tickets_ok:
+        _install_chat_tab(guard)
+    else:
+        _log.warning("dashboard-auth-edgecity: the Chat tab stays closed to residents (socket seam missing)")
+    guard.set_loader("gateway", _gateway_modules)
+    guard.set_loader("files", _files_module)
+    guard.set_session_lookup(_stored_session)
+    guard.set_session_owners(_session_owners)
+    guard.set_session_list(_session_list_page)
+    guard.set_reference_parser(_reference_parser)
+    guard.set_prompt_sanitizer(_prompt_sanitizer)
+    if "tui_gateway.server" in sys.modules and "tui_gateway.ws" in sys.modules:
+        guard._ensure("gateway")
+    _log.info("dashboard-auth-edgecity: resident guard on (edgecity admin sessions: everything; "
+              "everyone else: the resident allow-list)")
+
+
 def register(ctx) -> None:
     if _HERMES_MISSING is not None:
         raise ImportError("dashboard-auth-edgecity needs hermes_cli.dashboard_auth") from _HERMES_MISSING
+    # The guard first: if it cannot install, no provider is registered and a gated dashboard does
+    # not start.
+    _install_resident_guard()
     try:
-        ctx.register_dashboard_auth_provider(EdgeCityDashboardAuth())
+        provider = EdgeCityDashboardAuth()
     except ValueError:
+        # No edgecity provider means no edgecity admin: every session gets the resident list.
         return
+    ctx.register_dashboard_auth_provider(provider)
     _register_archive_read(ctx)
     _patch_hermes_login()

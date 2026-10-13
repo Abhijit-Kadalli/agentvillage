@@ -1,8 +1,9 @@
 """Loaders for the plugin under test.
 
-The plugin is a package (`__init__.py` imports `._archive`), loaded the way Hermes's plugin
-loader does it: `spec_from_file_location(..., submodule_search_locations=[plugin_dir])`.
-`_archive` alone is standard library only, so the Hermes-free tests load just that file.
+The plugin is a package (`__init__.py` imports `._archive` and `._resident_guard`), loaded the way
+Hermes's plugin loader does it: `spec_from_file_location(..., submodule_search_locations=[plugin_dir])`.
+`_archive` and `_resident_guard` alone are standard library only, so the Hermes-free tests load
+just that file.
 """
 import importlib.util
 import itertools
@@ -62,3 +63,16 @@ def load_archive_copy():
 def archive(load_archive_copy):
     """A fresh copy of `_archive` alone; no Hermes needed."""
     return load_archive_copy()
+
+
+@pytest.fixture
+def guard():
+    """A fresh copy of `_resident_guard` alone (fresh counts and seams), under its own module name;
+    no Hermes."""
+    name = f"edgecity_test_resident_guard_{next(_serial)}"
+    spec = importlib.util.spec_from_file_location(name, PLUGIN_DIR / "_resident_guard.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    yield module
+    sys.modules.pop(name, None)
