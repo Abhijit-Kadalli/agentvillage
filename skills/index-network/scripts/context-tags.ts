@@ -138,16 +138,19 @@ export function readContextTags(home: string): ContextTags | null {
 
 /**
  * readContextTags, telling the two kinds of "no tags" apart: `absent` (no
- * file, or a file without the entry: the app never wrote one, so nothing was
- * ever removed) and `unreadable` (unreadable, not a file, oversized: unknown).
- * Never throws.
+ * file, or a file that never mentions the entry: the app never wrote one, so
+ * nothing was ever removed) and `unreadable` (unreadable, not a file,
+ * oversized, or a file that holds CONTEXT_TAGS_MARK but no entry that starts
+ * with it, so the entry does not parse: unknown, OV-302 N9). Never throws.
  */
 export function contextTagsState(home: string): ContextTags | "absent" | "unreadable" {
   try {
     const path = join(home, MEMORY_USER_FILE);
     if (statSync(path).size > MAX_BYTES) return "unreadable";
-    const entry = contextTagsEntry(readFileSync(path, "utf8"));
-    return entry ? parseContextTags(entry) : "absent";
+    const text = readFileSync(path, "utf8");
+    const entry = contextTagsEntry(text);
+    if (entry) return parseContextTags(entry);
+    return text.includes(CONTEXT_TAGS_MARK) ? "unreadable" : "absent";
   } catch (err) {
     return (err as NodeJS.ErrnoException)?.code === "ENOENT" ? "absent" : "unreadable";
   }

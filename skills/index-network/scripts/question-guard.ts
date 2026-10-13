@@ -25,13 +25,31 @@
  * This removes links, handles, phone numbers, wallets, amounts, leetspeak and
  * script tricks by construction.
  *
- * THEN the denylist, as a second check on the surviving text, in a COPY of
- * ov#301's check readings (questionReadings):
+ * THEN the CLOSED VOCABULARY (round 3, OV-302 refute M1): every word must be
+ * in question-vocab.ts QUESTION_VOCAB, else `vocab`. A question asking for a
+ * key, a code, a number, money, a contact, a channel, a place or a publish
+ * yes needs a word that is not there, so the harmful set is withheld by
+ * construction; a plain question about the resident's own intent passes.
+ *
+ * THEN the model-written intent rule (round 3, S2): `proposal` when the
+ * question opens as a proposal ("how about", "what about", "shall I", "can
+ * I", "should I", "is it fine", "would ... work") or holds a capitalised word
+ * after its first (a quoted intent: "Is it Looking to meet ..."), else
+ * `closed` when it is not an open question (its first word, or the word after
+ * a first preposition, is not who / what / which / when / where / why / how /
+ * whom / whose): a yes/no question offers Index's own answer, and a yes to it
+ * would be model-written intent (Carter 18:23Z). The resident's answer to an
+ * open question is their own words.
+ *
+ * THEN the denylist, as the third check on the surviving text, in a COPY of
+ * ov#301's check readings (questionReadings; questionDenylistHit):
  *   - `scanner`: Hermes's cron scanner phrase in any reading, also with every
  *     space and joiner removed;
  *   - `tool_name`: TOOL_NAMES in any reading and spelling (camel, hyphen,
- *     spaced, joined); a spaced or camel form matches only where the name has
- *     a part boundary ("to do" is not `todo`);
+ *     spaced, joined); a one-part name matches a whole word only ("to do" is
+ *     not `todo`); a name of two or more parts also matches anywhere in the
+ *     reading with every space and joiner removed, so split anywhere ("re cord
+ *     inten tion", "create in tent", "c r e a t e intent") (round 3, S1);
  *   - `destination`: "dot com", t me / wa me, or a word asking to contact,
  *     pay, click, visit, download, install, open (not "open to") or enter a
  *     code or OTP, or naming a channel, address or money;
@@ -45,6 +63,7 @@
  */
 
 import { cronScanHit } from "./proactive-text";
+import { outOfVocabulary } from "./question-vocab";
 
 /** Code points a recovery question may have; a longer one is withheld whole. */
 export const QUESTION_MAX = 160;
@@ -88,6 +107,9 @@ export type GuardHit =
   | "shape"
   | "long_word"
   | "capitals"
+  | "vocab"
+  | "proposal"
+  | "closed"
   | "scanner"
   | "tool_name"
   | "destination"
@@ -240,6 +262,8 @@ function joinedScanHit(joined: string): boolean {
 /** Each name's parts joined, to the part boundaries (offsets in the joined form) a match may have. */
 const NAMES = new Map<string, Array<Set<number>>>();
 let WINDOW = 1;
+/** The names of two or more parts, joined: matched anywhere in a reading with every space and joiner removed (S1). */
+const JOINED_NAMES: string[] = [];
 for (const name of TOOL_NAMES) {
   const parts = name.toLowerCase().split("-").filter(Boolean);
   WINDOW = Math.max(WINDOW, parts.length);
@@ -248,6 +272,7 @@ for (const name of TOOL_NAMES) {
   for (const part of parts.slice(0, -1)) cuts.add((at += part.length));
   const joined = parts.join("");
   NAMES.set(joined, [...(NAMES.get(joined) ?? []), cuts]);
+  if (parts.length > 1) JOINED_NAMES.push(joined);
 }
 
 /** True when some run of consecutive tokens joins into a tool name, with its boundaries only where the name has one. */
@@ -298,19 +323,55 @@ function shapeHit(raw: string, text: string): GuardHit | null {
   return null;
 }
 
+/** Question words: an open question starts with one, or with a preposition and then one ("by when", "in which"). */
+const OPEN_START = new Set("who whom whose what which when where why how".split(" "));
+const OPEN_PREPOSITION = new Set("in for with by from at on about within to of".split(" "));
+/** A question that opens as a proposal of Index's own (S2). */
+const PROPOSAL_START = /^(?:how about|what about|shall i|can i|should i|is it fine|would(?: \S+)* work(?:s|ing)?)(?: |$)/;
+/** A capitalised word after the first, other than the pronoun I (I, I'm, I've): a quoted intent or a name. */
+const CAPITAL_WORD = /\p{Lu}/u;
+
+/** S2: `proposal` or `closed` for a question (`body`: its text without the `?`) that offers Index's own answer, else null. Pure. */
+function proposalHit(body: string): GuardHit | null {
+  const words = body.split(/[ ,]+/).filter(Boolean);
+  const lower = words.map((w) => w.toLowerCase().replace(/’/g, "'"));
+  if (PROPOSAL_START.test(lower.join(" "))) return "proposal";
+  if (words.slice(1).some((w) => CAPITAL_WORD.test(w) && !/^I(?:['’](?:m|ve|d|ll))?$/.test(w))) return "proposal";
+  const [first = "", second = ""] = lower;
+  if (OPEN_START.has(first) || (OPEN_PREPOSITION.has(first) && OPEN_START.has(second))) return null;
+  return "closed";
+}
+
 /**
  * Why the question must not reach the agent, or null: the allow-shape first,
- * then the denylist on the surviving text. `line` is the resident's own
- * refused line (quotes_line). Pure.
+ * then the closed vocabulary, then the proposal rule (S2), then the denylist
+ * on the surviving text. `line` is the resident's own refused line
+ * (quotes_line). Pure.
  */
 export function questionGuardHit(raw: string, line?: string | null): GuardHit | null {
   const text = raw.normalize("NFKC").trim();
   const shape = shapeHit(raw, text);
   if (shape) return shape;
+  const body = text.slice(0, -1);
+  if (outOfVocabulary(body)) return "vocab";
+  return proposalHit(body) ?? questionDenylistHit(text, line);
+}
+
+/**
+ * The denylist alone (the third check), on a question that passed the
+ * allow-shape (`text`: NFKC, trimmed). Exported so its rules stay pinned on
+ * their own: the vocabulary in front of it withholds nearly everything it
+ * would (question-guard.test.ts). Pure.
+ */
+export function questionDenylistHit(text: string, line?: string | null): GuardHit | null {
   const readings = questionReadings(text);
   if (cronScanHit(text) || readings.some((r) => cronScanHit(r) || joinedScanHit(r.replace(/[^\p{L}\p{N}]+/gu, "")))) return "scanner";
   const tokenSets = readings.map(tokensOf);
   if (tokenSets.some(namesTool)) return "tool_name";
+  if (readings.some((r) => {
+    const joined = r.replace(/[^\p{L}\p{N}]+/gu, "");
+    return JOINED_NAMES.some((name) => joined.includes(name));
+  })) return "tool_name";
   if (DESTINATION_SHAPES.some((shape) => shape.test(text))) return "destination";
   if (tokenSets.some((tokens) => tokens.some((t) => DESTINATION_WORD.test(t)))) return "destination";
   if (readings.some((r) => OPEN_NOT_TO.test(r) || CODE_TO_ENTER.test(r) || new RegExp(`(?:^| )dot ${TLD}(?: |$)`).test(r))) return "destination";

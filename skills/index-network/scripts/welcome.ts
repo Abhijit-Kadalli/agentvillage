@@ -803,7 +803,7 @@ type SeedLineInput = { text: string; title: string; key: string };
  * 3b's `prepare` refusal) kept for the first chat turn. `codes`: the code each
  * line left, in line order, shaped for the trailer (seedCode); `kinds`: the
  * kinds of the refused lines' recovery questions, at most
- * SEED_RECOVERY_KINDS_MAX. Shared by the welcome's seed and `--reseed`.
+ * SEED_RECOVERY_KINDS_MAX.
  */
 async function seedLines(home: string, target: IndexMcpTarget, clock: Clock, lines: SeedLineInput[], now: Date) {
   const mode = seedMode(home);
@@ -1117,8 +1117,8 @@ function shownQuestion(row: Record<string, unknown>, line: string): { kind: Reco
  * resident's order, that the resident still has (S1: checked against the
  * Context tags entry of `memories/USER.md`; a line they removed or edited
  * away is skipped, `notShown: "gone"`; with no entry nothing was ever
- * removed; an unreadable file prints nothing and leaves the marker for a
- * later run). With it, Index's first recovery question (shownQuestion), or
+ * removed; an unreadable file, or an entry that does not parse (N9), prints
+ * nothing and leaves the marker for a later run). With it, Index's first recovery question (shownQuestion), or
  * null; Index's feedback is never printed (box file only). Every pending
  * entry is marked `surfacedAt` in the same write, the ones not printed with
  * `notShown` ("gone", or "cap" past the one), and a withheld question with
