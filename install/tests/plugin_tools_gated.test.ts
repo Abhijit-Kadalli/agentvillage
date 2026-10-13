@@ -96,7 +96,6 @@ const NOT_GATED: readonly NotGated[] = [
     plugin: "recall",
     reason: "read: local SQLite FTS5 search over the agent's own notes and the owner's private sessions; no network, refuses in groups; opt-in (AV_RECALL_ENABLED)",
   },
-  { name: "village", plugin: "village-bridge", reason: NOT_STAGED_REASON },
 ];
 
 /**
