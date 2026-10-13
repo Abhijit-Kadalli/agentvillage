@@ -253,6 +253,170 @@ def loose_key(text: Any) -> str:
 
 
 # --------------------------------------------------------------------------
+# Declined topics (DREAM-1): two declines on a topic stop it. Shared by the memory signal gate
+# (which folds them into its own `memory_signal_runs.json`) and `record_intention`'s caps.
+# --------------------------------------------------------------------------
+
+#: A topic is stopped once a candidate is the same topic as this many declined suggestions.
+TOPIC_STOP_DECLINES = 2
+#: The declined word sets kept in `memory_signal_runs.json` (`declined_topics`), newest last.
+MAX_DECLINED_TOPICS = 50
+#: Words that say nothing about WHAT is wanted: English function words and the verbs every want
+#: line starts with ("looking for", "want to meet", "need help with"). A fixed list, never tuned
+#: per resident.
+_STOPWORDS_EN = """
+a about after again all also am an and another any anyone are around as at be been being but by can
+could did do does doing during each even ever every few for from get gets getting had has have having he
+her here him his how i if in into is it its just me might mine more most must my myself need needed
+needing needs no nor not now of off on once only onto or other others our ours out over own same she
+should so some somebody someone something soon still such than that the their them then there these
+they this those through to too under until up us very was we were what when where which while who whom
+whose why will with would yet you your yours
+find finding connect connecting connected help helping hope hoping interested keen like look looking
+looks meet meeting meets people person folks seek seeking seeks try trying want wanted wanting wants
+currently month next today tomorrow tonight week year
+"""
+#: Round 2 (refute S1): kept function words make unrelated lines look alike under Jaccard ("Mujhe
+#: yoga ke liye ek partner chahiye" and "Mujhe startup ke liye ek investor chahiye" share 5 of 9
+#: words). Hindi and Hinglish, romanised (common spellings) and in Devanagari: pronouns, postpositions,
+#: the copula, "need/want", quantity and time words. None names what is wanted.
+#: Round 3 (recheck S): the frame verbs and particles too ("dhundh raha hoon" = "am looking for",
+#: "seekhna", "milna", "ke baare mein jaanna"), as their English equivalents are above. "main"
+#: ("I"), "bare" and "banana" stay content words: each is also an English word in a want line.
+_STOPWORDS_HI = """
+mujhe muje mujhko mere meri mera mai hum hume humein hamein humko apna apni apne
+ko ke ka ki liye se me mein par bhi aur ya ek koi kisi kuch kuchh jo yeh ye woh wo saath sath
+chahiye chahie chaiye chahta chahti karna karne hai hain ho hu hoon tha kya wala wali wale
+bahut zyada kam abhi aaj kal
+dhundh dhund dhoondh dhundna dhoondhna raha rahi rahe hun chahte chaahiye milna milne milke baare
+jaanna janna jaanne seekhna sikhna seekhne sikhne dekhna lena lene dena dene banane shuru
+मुझे मुझको मेरे मेरी मेरा मैं हम हमें अपना अपनी अपने
+को के का की लिए लिये से में पर भी और या एक कोई किसी कुछ जो यह ये वह वो साथ
+चाहिए चाहता चाहती करना करने है हैं हो हूँ हूं था क्या वाला वाली वाले
+बहुत ज़्यादा ज्यादा कम अभी आज कल
+ढूंढ ढूँढ रहा रही रहे मिलना मिलने बारे जानना जानने सीखना सीखने देखना लेना लेने देना देने बनाना बनाने शुरू
+"""
+#: The same frame in Tamil, Bengali and Arabic ("I need a ...", "I want to find ... in ..."): a few
+#: pronouns, articles, postpositions and want verbs, so short lines in those scripts do not merge.
+#: Every other language keeps every word.
+_STOPWORDS_OTHER = """
+எனக்கு நான் என் என்னுடைய ஒரு வேண்டும் தேவை மற்றும்
+আমি আমার আমাকে একজন একটা একটি দরকার চাই জন্য এবং
+أنا انا أريد اريد أبحث ابحث أجد اجد أن ان عن في من على إلى الى مع أو او لي
+"""
+#: Each taken in its `loose_key` form (NFKC, casefolded): the precomposed "\u095b" in "ज़्यादा" above
+#: becomes the decomposed spelling a resident's text folds to.
+TOPIC_STOPWORDS = frozenset(loose_key(_STOPWORDS_EN + _STOPWORDS_HI + _STOPWORDS_OTHER).split(" "))
+
+
+def _singular(token: str) -> str:
+    """A plain ASCII word of 4+ letters, folded to one form for its singular and plural:
+    -sses/-ches/-shes/-xes lose "es" ("classes" = "class", "coaches" = "coach"), -zzes loses "zes"
+    ("quizzes" = "quiz"), -ies of 5+ letters becomes -y ("companies" = "company"), any other final "s"
+    is dropped ("investors" = "investor"), but not after "ss", "us" or "is". The singular is folded the
+    same way (round 3): -ie becomes -y ("movie" = "movies" = "movy", "foodie"), -che loses its "e"
+    ("niche" = "niches" = "nich") and -zz loses a "z" ("buzz" = "buzzes" = "buz"). Known edge: a
+    name in -ie folds onto one in -y ("Julie" = "July", "Katie" = "Katy")."""
+    if not token.isascii() or len(token) <= 3:
+        return token
+    if token.endswith("s"):
+        if token.endswith("zzes"):
+            return token[:-3]
+        if token.endswith(("sses", "ches", "shes", "xes")):
+            return token[:-2]
+        if token.endswith("ies") and len(token) > 4:
+            return token[:-3] + "y"
+        if token.endswith(("ss", "us", "is")):
+            return token
+        token = token[:-1]
+    if len(token) > 3 and token.endswith("ie"):
+        return token[:-2] + "y"
+    if token.endswith(("che", "zz")):
+        return token[:-1]
+    return token
+
+
+def topic_words(text: Any) -> frozenset:
+    """THE content words of a want line, for the declined-topic stop: the `loose_key` tokens (so
+    "co-founder" = "cofounder" and "C++" != "C"), minus TOPIC_STOPWORDS and minus tokens with no
+    letter (numbers, a lone `+`); a plain ASCII plural folded to its singular (`_singular`). Never
+    leaves the box."""
+    import unicodedata
+
+    out = set()
+    for token in loose_key(text).split(" "):
+        if not token or token in TOPIC_STOPWORDS:
+            continue
+        if not any(unicodedata.category(ch)[0] == "L" for ch in token):
+            continue
+        token = _singular(token)
+        if token in TOPIC_STOPWORDS:
+            continue
+        out.add(token)
+    return frozenset(out)
+
+
+def same_topic(a: Any, b: Any) -> bool:
+    """THE topic match: two non-empty word sets whose Jaccard overlap is at least 1/2
+    (shared words at least half of all their words), in integers. An empty set matches nothing."""
+    a, b = frozenset(a or ()), frozenset(b or ())
+    if not a or not b:
+        return False
+    return 2 * len(a & b) >= len(a | b)
+
+
+def _declined_topic_entries(value: Any) -> list[dict]:
+    """The well-formed `declined_topics` entries of the gate's file: an intention id and a
+    non-empty list of words; anything else is dropped."""
+    out = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("intention_id"), str):
+            continue
+        words = item.get("words")
+        if not isinstance(words, list) or not words or not all(isinstance(w, str) and w for w in words):
+            continue
+        at = item.get("declined_at")
+        at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+        out.append({"intention_id": item["intention_id"], "words": sorted(set(words)), "declined_at": at})
+    return out
+
+
+def fold_declined_topics(kept: Any, runs: Any, declined_at: dict) -> list[dict]:
+    """The declined word sets after this fold: the kept ones (`memory_signal_runs.json`
+    `declined_topics`), plus one for each run record whose recorded intention the resident has
+    since declined (`declined_at`: intention id -> when, from the plugin's map) and that is not
+    kept yet. The newest MAX_DECLINED_TOPICS. Run records keep 30 nights and a decline drops the
+    map's text, so this list is what remembers a declined topic. Pure: the gate writes the result,
+    `record_intention`'s caps read it."""
+    out = _declined_topic_entries(kept)
+    seen = {item["intention_id"] for item in out}
+    for run in runs if isinstance(runs, list) else []:
+        if not isinstance(run, dict):
+            continue
+        intention_id, text = run.get("recorded_intent_id"), run.get("recorded_text")
+        if not isinstance(intention_id, str) or intention_id in seen or intention_id not in declined_at:
+            continue
+        words = topic_words(text) if isinstance(text, str) else frozenset()
+        if not words:
+            continue
+        seen.add(intention_id)
+        at = declined_at.get(intention_id)
+        at = float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+        out.append({"intention_id": intention_id, "words": sorted(words), "declined_at": at})
+    return out[-MAX_DECLINED_TOPICS:]
+
+
+def topic_declines(words: Any, declined: Any) -> int:
+    """How many declined suggestions (`fold_declined_topics` entries) `words` is the same topic as."""
+    return sum(1 for item in _declined_topic_entries(declined) if same_topic(words, item["words"]))
+
+
+def topic_stopped(words: Any, declined: Any) -> bool:
+    """A want on a topic the resident declined TOPIC_STOP_DECLINES times or more: never proposed."""
+    return topic_declines(words, declined) >= TOPIC_STOP_DECLINES
+
+
+# --------------------------------------------------------------------------
 # uuid v7 (RFC 9562 §5.7)
 # --------------------------------------------------------------------------
 
