@@ -25,6 +25,11 @@ def test_callback_event_is_closed_and_uses_native_ids(plugin):
     assert set(event) == {"type", "callbackToken", "callbackId", "updateId", "telegramUserId", "chatId", "messageId", "occurredAt"}
 
 
+def test_callback_uses_the_shared_hardened_opener(plugin):
+    core = sys.modules[f"{plugin.__package__}._core"]
+    assert plugin._referendum.NO_REDIRECT_OPENER is core.NO_REDIRECT_OPENER
+
+
 @pytest.mark.parametrize("data", ["vote:x", "rv1.short", "rv1." + "a" * 23, "rv1." + "!" * 22])
 def test_callback_event_rejects_other_callbacks(plugin, data):
     referendum = plugin._referendum

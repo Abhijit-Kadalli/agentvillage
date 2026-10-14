@@ -19,18 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ._core import NO_REDIRECT_OPENER
+
 CALLBACK_PATTERN = r"^rv1\.[A-Za-z0-9_-]{22}$"
 CALLBACK_RE = re.compile(CALLBACK_PATTERN)
 EVENT_TYPE = "referendum.telegram_callback@1"
 TIMEOUT_S = 8.0
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        return None
-
-
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def _enabled() -> bool:
@@ -101,7 +95,7 @@ def _post(event: dict[str, Any]) -> tuple[bool, str]:
         headers={"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {token}"},
     )
     try:
-        with _OPENER.open(request, timeout=TIMEOUT_S) as response:
+        with NO_REDIRECT_OPENER.open(request, timeout=TIMEOUT_S) as response:
             payload = json.loads(response.read(4097).decode("utf-8"))
             return 200 <= int(response.status) < 300 and payload.get("recorded") is True, str(payload.get("message") or "Vote recorded")
     except urllib.error.HTTPError as exc:
