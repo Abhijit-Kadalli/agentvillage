@@ -132,7 +132,7 @@ describe("install.ts runs the stages in that order", () => {
     const helper = text.slice(text.indexOf("function installIndexHermesPlugin("), text.indexOf("function restartGateway("));
     expect(helper).toContain("installIndexPlugin(hermesRunner(hermesBin(), hermesExecEnv(), 60_000), process.argv, lastInstallVerified())");
     expect(text.match(/lastInstallVerified\(\)/g)).toHaveLength(1);
-    expect(text).toContain('import { gateReceiptLine, lastInstallVerified, NOT_STAGED_PLUGINS, runApprovalStep, stagePlugins } from "./install_approval";');
+    expect(text).toContain('import { gateReceiptLine, lastInstallVerified, NOT_STAGED_PLUGINS, resolveHermesPython, runApprovalStep, stagePlugins } from "./install_approval";');
     expect(main.indexOf("if (!runApprovalStep(SOURCE_SKILLS)) {")).toBeLessThan(main.indexOf("const indexPluginFailed = installIndexHermesPlugin();"));
   });
 
@@ -152,10 +152,11 @@ describe("install.ts runs the stages in that order", () => {
 
   test("R3 fix round 4 (output injection): the gate receipt is the last thing main() writes, and nothing runs after main()", () => {
     const body = main.slice(0, main.indexOf("\n}\n") + 3);
-    const at = body.indexOf("const receipt = gateReceiptLine();");
+    // rc43 (fail closed): no receipt when strict mode could not be verified (code_exec_install.test.ts).
+    const at = body.indexOf("const receipt = codeExecFailed ? null : gateReceiptLine();");
     expect(at).toBeGreaterThan(body.indexOf('console.log("next: message your Telegram bot'));
     // After the receipt: only its own write and the function's close.
-    expect(body.slice(at).replace(/\s+/g, " ").trim()).toBe("const receipt = gateReceiptLine(); if (receipt) process.stdout.write(`${receipt}\\n`); }");
+    expect(body.slice(at).replace(/\s+/g, " ").trim()).toBe("const receipt = codeExecFailed ? null : gateReceiptLine(); if (receipt) process.stdout.write(`${receipt}\\n`); }");
     expect(text.trimEnd().endsWith("\nmain();")).toBe(true);
     expect(text.slice(text.indexOf("function main(): void {")).match(/\nmain\(\);/g)).toHaveLength(1);
   });
