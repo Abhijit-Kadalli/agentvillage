@@ -51,9 +51,9 @@ test("old hook, wrong runtime/plugin and additional release files fail before in
 });
 
 describe("OV-249 post-hoc M2: the release must be the one pinned in MORALMOD_RELEASE_SHA256", () => {
-  test("the shipped pin is the reviewed policy release's release.json digest", () => {
+  test("the shipped pin is the diagnostics candidate's release.json digest", () => {
     expect(MORALMOD_RELEASE_SHA256).toMatch(/^[0-9a-f]{64}$/);
-    expect(MORALMOD_RELEASE_SHA256).toBe("ea7ff3530b9be3d9612c9944692df33e81010c3c1ed1619fcb7ea016902a3610");
+    expect(MORALMOD_RELEASE_SHA256).toBe("fbf4b832afe33fdb6f25615feef4d2271de795eb824c7b39012c1b709dae7896");
   });
 
   test("a self-consistent bundle (every file matches its own release.json) is refused under the shipped pin; nothing is written", () => {
@@ -90,7 +90,7 @@ describe("OV-249 post-hoc M2: the release must be the one pinned in MORALMOD_REL
 // CI fetches the actual reviewed release. An explicitly supplied missing/bad directory must fail,
 // rather than silently skip the published-artifact gate. No test pin override is used here.
 const published = process.env.AV_MORALMOD_RELEASE_TEST_DIR;
-describe.skipIf(!published)("published policy release under the production pin", () => {
+describe.skipIf(!published)("candidate release under the production pin", () => {
   test("installs exact protected files and reuses them without claiming service readiness", () => {
     const home = mkdtempSync(join(tmpdir(), "av-published-resident-"));
     try {
