@@ -56,12 +56,110 @@ class ApprovalTest(unittest.TestCase):
             self.assertEqual(refusal["error"], "approval_required")
         self.ap.start.assert_not_called()
 
-    def test_policy_autonomy_cannot_replace_manual_grant(self):
-        self.ap.propose.return_value = None
-        self.ap.propose.side_effect = lambda cls, key, summary, payload: answer(dict(ok=True, task="propose:" + "a" * 32, decision="autonomous", payload_hash=hashlib.sha256(payload.encode()).hexdigest()))
-        self.assertIsNone(mini.authorize_send(self.preview, self.draft)[0])
+    def autonomous(self, **extra):
+        self.ap.propose.side_effect = lambda cls, key, summary, payload: answer(dict(ok=True, task="propose:" + "a" * 32, decision="autonomous", state=None, seq=None, payload_hash=hashlib.sha256(payload.encode()).hexdigest(), **extra))
+
+    def test_policy_autonomy_starts_as_policy_without_waiting_for_a_grant(self):
+        # HOT-01 (B-032): the attested policy authorizes the send; core records the start as the
+        # policy's, and the control plane re-reads that start from the daemon's log (its proof).
+        self.autonomous()
+        self.ap.start.return_value = answer(dict(ok=True, authorization="policy"))
+        proof, refusal = mini.authorize_send(self.preview, self.draft)
+        self.assertIsNone(refusal)
+        args = self.ap.propose.call_args.args
+        self.assertEqual(proof, {"taskId": "propose:" + "a" * 32, "payloadHash": hashlib.sha256(args[3].encode()).hexdigest(), "payload": json.loads(args[3])})
+        self.assertEqual(self.ap.start.call_args.args, ("propose:" + "a" * 32, args[1], args[3]))
+        self.ap.wait.assert_not_called()
+
+    def test_policy_autonomy_needs_a_policy_start(self):
+        # A start that claims a grant on the policy path, a refused start, or a stray request state is refused.
+        for start in (answer(dict(ok=True, authorization="grant")), answer(dict(ok=False), 1), answer(dict(ok=True))):
+            self.autonomous()
+            self.ap.start.return_value = start
+            self.assertEqual(mini.authorize_send(self.preview, self.draft)[1]["error"], "approval_not_started")
+        self.ap.start.reset_mock()
+        for state in ("requested", "granted", "rejected"):
+            self.ap.propose.side_effect = lambda cls, key, summary, payload, state=state: answer(dict(ok=True, task="propose:" + "a" * 32, decision="autonomous", state=state, payload_hash=hashlib.sha256(payload.encode()).hexdigest()))
+            self.assertEqual(mini.authorize_send(self.preview, self.draft)[1]["error"], "approval_refused")
+        self.ap.start.assert_not_called()
+        self.ap.wait.assert_not_called()
+
+    def test_policy_autonomy_executed_replays_the_same_proof(self):
+        self.autonomous()
+        self.ap.start.return_value = answer(dict(ok=True, authorization="policy"))
+        original, _ = mini.authorize_send(self.preview, self.draft)
+        self.ap.start.reset_mock()
+        self.ap.propose.side_effect = lambda cls, key, summary, payload: answer(dict(ok=True, task="propose:" + "a" * 32, decision="autonomous", state="executed", payload_hash=hashlib.sha256(payload.encode()).hexdigest()))
+        replay, refusal = mini.authorize_send(self.preview, self.draft)
+        self.assertIsNone(refusal)
+        self.assertEqual(replay, original)
+        self.ap.start.assert_not_called()
+
+    def test_supervised_and_unknown_decisions_refused(self):
+        for decision in ("supervised", "granted", None, ""):
+            self.ap.propose.side_effect = lambda cls, key, summary, payload, decision=decision: answer(dict(ok=True, task="propose:" + "a" * 32, decision=decision, payload_hash=hashlib.sha256(payload.encode()).hexdigest()))
+            self.assertEqual(mini.authorize_send(self.preview, self.draft)[1]["error"], "approval_refused")
         self.ap.wait.assert_not_called()
         self.ap.start.assert_not_called()
+
+    # ov#370 round 1 (review-b S1): the autonomous path's matrix, each cell fail-closed.
+    def test_policy_autonomy_refuses_look_alike_authorizations_and_a_start_not_ok(self):
+        for doc in (dict(ok=True, authorization="Policy"), dict(ok=True, authorization="policy "), dict(ok=True, authorization=" policy"),
+                    dict(ok=True, authorization="policy;human"), dict(ok=True, authorization="POLICY"), dict(ok=True, authorization=1),
+                    dict(ok=True, authorization=["policy"]), dict(ok=True, authorization={"policy": True}), dict(ok=True, authorization=None),
+                    dict(ok="true", authorization="policy"), dict(ok=1, authorization="policy"), dict(authorization="policy")):
+            self.autonomous()
+            self.ap.start.return_value = answer(doc)
+            self.assertEqual([doc, mini.authorize_send(self.preview, self.draft)], [doc, (None, {"error": "approval_not_started"})])
+        # exit code not 0 with an otherwise perfect doc
+        self.autonomous()
+        self.ap.start.return_value = answer(dict(ok=True, authorization="policy"), 1)
+        self.assertEqual(mini.authorize_send(self.preview, self.draft)[1]["error"], "approval_not_started")
+        self.ap.wait.assert_not_called()
+
+    def test_policy_autonomy_start_that_raises_or_times_out_propagates(self):
+        # authorize_send never swallows a daemon failure on the autonomous path; handle() turns it into
+        # village_unavailable with no send (test_bridge.test_autonomous_start_failure_sends_nothing).
+        for error in (TimeoutError(), RuntimeError("approval_unavailable"), ValueError("transport")):
+            self.autonomous()
+            self.ap.start.side_effect = error
+            with self.assertRaises(type(error)):
+                mini.authorize_send(self.preview, self.draft)
+            self.ap.start.side_effect = None
+        self.ap.wait.assert_not_called()
+
+    def test_policy_autonomy_refuses_hash_mismatch_bad_task_and_a_refused_propose(self):
+        def answered(**doc):
+            base = dict(ok=True, task="propose:" + "a" * 32, decision="autonomous", state=None)
+            base.update(doc)
+            return lambda cls, key, summary, payload: answer({**base, **({"payload_hash": hashlib.sha256(payload.encode()).hexdigest()} if "payload_hash" not in doc else {})})
+        for side in (answered(payload_hash="wrong"), answered(payload_hash=None), answered(task="propose:123"), answered(task="propose:" + "A" * 32),
+                     answered(task=None), answered(ok=False), lambda *a: answer(dict(ok=True, decision="autonomous"), 1)):
+            self.ap.propose.side_effect = side
+            self.assertEqual(mini.authorize_send(self.preview, self.draft)[1]["error"], "approval_refused")
+        self.ap.start.assert_not_called()
+        self.ap.wait.assert_not_called()
+
+    def test_policy_autonomy_refuses_lapsed_or_withdrawn_states(self):
+        for state in ("expired", "withdrawn", "revoked", "void", "", "Executed", 0):
+            self.ap.propose.side_effect = lambda cls, key, summary, payload, state=state: answer(dict(ok=True, task="propose:" + "a" * 32, decision="autonomous", state=state, payload_hash=hashlib.sha256(payload.encode()).hexdigest()))
+            self.assertEqual([state, mini.authorize_send(self.preview, self.draft)[1]["error"]], [state, "approval_refused"])
+        self.ap.start.assert_not_called()
+        self.ap.wait.assert_not_called()
+
+    def test_look_alike_decisions_refused(self):
+        for decision in ("Autonomous", "autonomous ", " autonomous", "AUTONOMOUS", "requested ", True, 1, ["autonomous"]):
+            self.ap.propose.side_effect = lambda cls, key, summary, payload, decision=decision: answer(dict(ok=True, task="propose:" + "a" * 32, decision=decision, state=None, payload_hash=hashlib.sha256(payload.encode()).hexdigest()))
+            self.assertEqual([decision, mini.authorize_send(self.preview, self.draft)[1]["error"]], [decision, "approval_refused"])
+        self.ap.start.assert_not_called()
+        self.ap.wait.assert_not_called()
+
+    def test_approval_required_points_at_the_agent_approval_bot_and_the_same_draft(self):
+        self.ap.wait.return_value = answer(dict(status="requested"), 6)
+        refusal = mini.authorize_send(self.preview, self.draft)[1]
+        self.assertEqual(refusal, {"error": "approval_required", "instruction": mini.APPROVE_IN_BOT})
+        self.assertIn("approvals bot", mini.APPROVE_IN_BOT)
+        self.assertIn("SAME draftId", mini.APPROVE_IN_BOT)
 
     def test_changed_payload_hash_refused(self):
         self.ap.propose.side_effect = lambda *args: answer(dict(ok=True, task="propose:" + "a" * 32, decision="requested", payload_hash="wrong"))
@@ -69,6 +167,7 @@ class ApprovalTest(unittest.TestCase):
         self.ap.start.assert_not_called()
 
     def test_wrong_start_authorization_refused(self):
+        # A requested (ask-first) proposal must spend the human's grant; a policy start is refused there.
         self.ap.start.return_value = answer(dict(ok=True, authorization="policy"))
         self.assertEqual(mini.authorize_send(self.preview, self.draft)[1]["error"], "approval_not_started")
 
