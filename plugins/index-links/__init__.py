@@ -5,10 +5,12 @@ model sees the result. A string return replaces that result. ``None`` leaves
 it unchanged.
 
 A signed accept link (``action=accept``) becomes the Agent Village app's
-``https://agents.edgecity.live/intro/<opportunityId>`` (INTRO-TELEGRAM): the
-resident taps Accept there, signed in, and once both people have accepted it
-opens a Telegram chat with the other person. The signature is dropped, so the
-bearer link never reaches the chat. A plain ``/o/<id>`` opportunity link
+``https://agents.edgecity.live/intro/<opportunityId>`` (INTRO-TELEGRAM). That
+route owns the sign-in return (a signed-out tap from Telegram comes back to the
+card after sign-in), and under ``INTRO_LANDING=intents-v2`` the app redirects a
+V2 viewer on to that card on Intents V2 (CD-03 C), where the resident accepts,
+passes or messages the other person on Telegram. The signature is dropped, so
+the bearer link never reaches the chat. A plain ``/o/<id>`` opportunity link
 is left as Index minted it. A signed decline link is left as Index minted
 it. A person link becomes ``https://agents.edgecity.live/rolodex?person=<userId>``.
 A signal link becomes ``https://agents.edgecity.live/intents?intent=<intentId>``.
@@ -106,6 +108,7 @@ def rewrite_opportunity_link(url: str) -> str:
 
     A link that repeats ``action``, ``viewer``, ``sig``, ``surface`` or ``to``
     stays as minted: which duplicate counts is the verifier's call, not ours.
+    The id needs no encoding: ``_OPP_PATH`` admits only ``[A-Za-z0-9_-]``.
     """
     pairs = _query_pairs(url)
     keys = [key for key, _ in pairs]
