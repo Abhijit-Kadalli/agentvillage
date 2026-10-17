@@ -193,7 +193,8 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(mini.CARRIED_BY,{'skylight.selfie':'skylight.status'})
   self.assertIn('skylight.selfie',mini.READ_OPERATIONS);self.assertNotIn('skylight.selfie',mini.WRITE_OPERATIONS)
   for entry in mini.GOLD_STARS_ACCEPTED:self.assertNotIn('skylight.selfie',entry['operations'])
-  self.assertIn('skylight.selfie sends the owner',bridge.SCHEMA['description'])
+  # The description stays as it was (tool_search ranks `village` first for people lookups); skills/skylight routes it.
+  self.assertIn('skylight.selfie',bridge.SCHEMA['parameters']['properties']['operation']['enum'])
   with patch.object(mini.importlib,'import_module',side_effect=AssertionError('reads are not gate-checked here')):
    self.assertIn('data',self.call({'operation':'skylight.selfie'}))
   self.transport.assert_called_once_with(self.config,{'operation':'skylight.selfie'})
