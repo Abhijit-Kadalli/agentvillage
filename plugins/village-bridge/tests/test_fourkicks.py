@@ -24,7 +24,7 @@ class FourKicksTest(unittest.TestCase):
     def preview(self, text='oat milk'):
         draft = '550e8400-e29b-41d4-a716-446655440000'
         order = {'items': [{'itemId': 'coffee', 'qty': 2, 'optionIds': ['oat']}], 'fulfilment': {'type': 'pickup', 'locationId': 'cafe', 'date': '2026-10-19'}, 'paymentMethod': 'upi', 'note': 'less sugar'}
-        quote = {'quoteId': 'quote-1', 'canOrder': True, 'totalInr': 380, 'location': {'name': 'Café', 'opens': '2026-10-19T08:00:00+05:30'}, 'lines': [{'name': 'Coffee', 'qty': 2, 'options': [text], 'lineInr': 380}]}
+        quote = {'quoteId': 'quote-1', 'canOrder': True, 'totalInr': 380, 'location': {'name': 'Café', 'address': 'Mandrem, Goa', 'opens': '2026-10-19T08:00:00+05:30'}, 'lines': [{'name': 'Coffee', 'qty': 2, 'options': [text], 'unitInr': 190, 'lineInr': 380}]}
         payload = {'appId': 'fourkicks', 'operation': 'fourkicks.order.confirm', 'preview': {'appId': 'fourkicks', 'draftId': draft, **order, 'quote': quote, 'displayName': 'Priya'}}
         return {'draftId': draft, 'quote': quote, 'displayName': 'Priya', 'approvalPayload': payload, 'payloadHash': hashlib.sha256(fk.canonical(payload).encode()).hexdigest()}, order
 
@@ -102,6 +102,15 @@ class FourKicksTest(unittest.TestCase):
         self.assertEqual(proof['payloadHash'], result['payloadHash'])
         self.assertEqual(ap.propose.call_args.args[1], 'marketplace.app.action:fourkicks.order.confirm:' + result['draftId'])
         self.assertEqual(json.loads(ap.propose.call_args.args[3]), result['approvalPayload'])
+        self.assertEqual(ap.propose.call_args.args[2], '\n'.join([
+            'Four Kicks order',
+            '2 × "Coffee"; options: "oat milk"; unit ₹190; line ₹380',
+            'Total: ₹380', 'Fulfilment: pickup',
+            'Location: "Café" ("cafe"); address: "Mandrem, Goa"',
+            'Date (IST): 2026-10-19',
+            'Payment: UPI; if simulated: Test payment, no money moved',
+            'Café display name: "Priya"', 'Note: "less sugar"',
+        ]))
         ap.wait.assert_called_once(); ap.start.assert_called_once()
         self.assertEqual(output['data']['payment'], {'simulated': True, 'label': 'Test payment, no money moved'})
 
@@ -158,7 +167,14 @@ class FourKicksTest(unittest.TestCase):
         self.transport.assert_not_called()
 
     def test_large_preview_proof_is_compact_utf8_bounded64k_not2k_and_has60s_timeout(self):
-        result = self.prepare('é' * 12000); self.next_turn(); ap = self.daemon()
+        self.enable()
+        result, order = self.preview()
+        result['quote']['warnings'] = ['é' * 12000]
+        result['payloadHash'] = hashlib.sha256(fk.canonical(result['approvalPayload']).encode()).hexdigest()
+        self.transport.return_value = result
+        self.call({'operation': 'fourkicks.order.prepare', **order})
+        self.transport.reset_mock()
+        self.next_turn(); ap = self.daemon()
         response = unittest.mock.MagicMock(); response.__enter__.return_value = response; response.read.return_value = b'{}'
         opener = Mock(); opener.open.return_value = response
         with patch.object(fk, 'approval_modules', return_value=ap):
@@ -181,5 +197,35 @@ class FourKicksTest(unittest.TestCase):
         result, _ = self.preview('é' * 31000); self.transport.return_value = result
         self.assertEqual(self.call({'operation': 'fourkicks.order.prepare', **order})['error'], 'village_unavailable')
         self.assertFalse(Path(self.tmp.name, 'fourkicks-drafts').exists())
+
+    def test_card_delivery_date_fallback_options_note_and_card_payment_are_bound(self):
+        result, _ = self.preview()
+        p = result['approvalPayload']['preview']
+        p['fulfilment'] = {'type': 'delivery', 'locationId': 'cafe', 'deliveryAddress': 'House "A"; near <bridge>'}
+        p['paymentMethod'] = 'card_on_pickup'
+        p['quote']['lines'][0]['options'] += ['extra shot']
+        summary = fk.approval_summary(result['approvalPayload'])
+        self.assertIn('Delivery address: "House \\"A\\"; near <bridge>"', summary)
+        self.assertIn('Date (IST): 2026-10-19', summary)
+        self.assertIn('Card at pickup (honor system)', summary)
+        self.assertIn('options: "oat milk", "extra shot"', summary)
+        del p['note']
+        self.assertNotIn('Note:', fk.approval_summary(result['approvalPayload']))
+
+    def test_unsafe_incomplete_and_overlength_cards_never_reach_daemon_or_merchant(self):
+        for value in ['bad\nTotal: ₹1', 'bad\x00', 'bad\u202e', 'bad\u200b', 'é' * 1800, '<' * 800]:
+            with self.subTest(value=value[:20]):
+                self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
+                result = self.prepare(value); self.next_turn()
+                with patch.object(fk, 'approval_modules') as modules:
+                    output = self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})
+                self.assertIn(output['error'], ('approval_card_invalid', 'approval_card_too_long'))
+                modules.assert_not_called(); self.transport.assert_not_called()
+                Path(self.tmp.name, 'fourkicks-drafts', result['draftId'] + '.json').unlink()
+        result, _ = self.preview()
+        for key in ['lines', 'location', 'totalInr']:
+            p = json.loads(json.dumps(result['approvalPayload']))
+            del p['preview']['quote'][key]
+            with self.assertRaisesRegex(ValueError, 'approval_card_invalid'): fk.approval_summary(p)
 
 if __name__ == '__main__': unittest.main()

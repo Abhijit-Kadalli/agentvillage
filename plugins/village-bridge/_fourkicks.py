@@ -5,10 +5,67 @@ import json
 import os
 import re
 import stat
+import unicodedata
 from pathlib import Path
 from ._mini_apps import approval_modules, ORDER_APPROVE_IN_BOT
 
 MAX_PAYLOAD_BYTES = 60000
+SUMMARY_MAX_BYTES = 4096
+# Telegram technical cards reserve the rest of a 3600-character segment for labels.
+SUMMARY_HTML_MAX_BYTES = 3000
+
+def approval_summary(payload):
+    """Mirrored by CP fourkicksSummary; never shorten the order the human approves."""
+    def text(value, allow_empty=False):
+        if not isinstance(value, str) or (not allow_empty and not value.strip()) or any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in value):
+            raise ValueError("approval_card_invalid")
+        return json.dumps(value, ensure_ascii=False)
+
+    def money(value):
+        if type(value) is not int or not 0 <= value <= 1000000000:
+            raise ValueError("approval_card_invalid")
+        return str(value)
+
+    try:
+        p = payload["preview"]
+        quote, fulfilment = p["quote"], p["fulfilment"]
+        lines, items = quote["lines"], p["items"]
+        if not isinstance(lines, list) or not lines or len(lines) != len(items):
+            raise ValueError("approval_card_invalid")
+        card = ["Four Kicks order"]
+        for line, item in zip(lines, items):
+            qty = line["qty"]
+            if type(qty) is not int or not 1 <= qty <= 1000000000 or qty != item["qty"] or not isinstance(line["options"], list):
+                raise ValueError("approval_card_invalid")
+            options = ", ".join(text(option) for option in line["options"]) or "none"
+            card.append(f'{qty} × {text(line["name"])}; options: {options}; unit ₹{money(line["unitInr"])}; line ₹{money(line["lineInr"])}')
+        card.append("Total: ₹" + money(quote["totalInr"]))
+        kind = fulfilment["type"]
+        if kind not in ("pickup", "delivery"):
+            raise ValueError("approval_card_invalid")
+        location = quote["location"]
+        card.append("Fulfilment: " + kind)
+        card.append(f'Location: {text(location["name"])} ({text(fulfilment["locationId"])}); address: {text(location["address"])}')
+        date = fulfilment.get("date") or location["opens"][:10]
+        if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date, flags=re.ASCII):
+            raise ValueError("approval_card_invalid")
+        card.append("Date (IST): " + date)
+        if kind == "delivery":
+            card.append("Delivery address: " + text(fulfilment["deliveryAddress"]))
+        method = p["paymentMethod"]
+        if method not in ("upi", "card_on_pickup"):
+            raise ValueError("approval_card_invalid")
+        card.append("Payment: " + ("UPI" if method == "upi" else "Card at pickup (honor system)") + "; if simulated: Test payment, no money moved")
+        card.append("Café display name: " + text(p["displayName"]))
+        if "note" in p:
+            card.append("Note: " + text(p["note"], allow_empty=True))
+        summary = "\n".join(card)
+        escaped = summary.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if len(summary.encode("utf-8")) > SUMMARY_MAX_BYTES or len(escaped.encode("utf-8")) > SUMMARY_HTML_MAX_BYTES:
+            raise ValueError("approval_card_too_long")
+        return summary
+    except (KeyError, TypeError, IndexError, AttributeError) as error:
+        raise ValueError("approval_card_invalid") from error
 
 def canonical(payload):
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
@@ -71,9 +128,11 @@ def authorize_order(record, draft_id):
     payload = record["payload"]
     held = checked_payload(payload, draft_id, record["payloadHash"])
     key = "marketplace.app.action:fourkicks.order.confirm:" + draft_id
+    try:
+        summary = approval_summary(payload)
+    except ValueError as error:
+        return None, {"error": str(error)}
     ap = approval_modules()
-    preview = payload["preview"]
-    summary = "Four Kicks order: ₹" + str(preview["quote"].get("totalInr")) + "; café name: " + str(preview["displayName"])
     answer = ap.propose("marketplace.app.action", key, summary, held)
     task = answer.doc.get("task")
     # Purchases ALWAYS require a human grant, even when Gold Stars uses autonomous policy.

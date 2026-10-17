@@ -62,6 +62,20 @@ do not evade it by changing locations or silently substituting items.
    same draft with its actual proof. Never fabricate `approval`, `taskId`, hashes
    or an execution record. A changed item, option, fulfilment, name, note or
    payment method needs a new exact preview and approval, not a patched draft.
+   The native approval card is derived from the saved canonical payload, not
+   agent-written preview text: quantity, items/options, unit/line prices, ₹ total,
+   fulfilment, café name/id/address, IST date, delivery destination, payment,
+   display name and note when present. A date omitted in the request comes from
+   the quoted location's opening date, not the clock at confirmation. CP checks
+   the daemon's logged card summary against the same derivation before accepting
+   the resident's grant. It refuses missing fields, control/bidi characters or
+   a card over 4096 UTF-8 bytes / 3000 HTML-escaped UTF-8 bytes; order content is
+   never shortened to fit. Explain `approval_card_invalid` or
+   `approval_card_too_long` as a refused approval, not a placed order. Do not
+   remove requested options or notes silently to get a card accepted.
+   The canonical preview does not identify the payment provider, so the card
+   says “if simulated: Test payment, no money moved”. This is conditional, not
+   proof a payment is simulated; use the actual returned payment label below.
 5. Only a returned successful order receipt means it was placed. Report its
    number and returned state. An uncertain confirm is not permission to create
    another order: check the same order/draft outcome and reuse that draft for an
