@@ -115,12 +115,33 @@ function runtimePath(home: string): string {
   return join(home, "plugins", "index-network", "runtime", "dist", "negotiator.js");
 }
 /**
+ * The loader's startup catch (lead L9870): one stderr JSON line naming the error, then exit 1.
+ * `error_name` (whitespace runs collapsed to one space, 64 chars); `error_message`, masked: whitespace
+ * collapsed, then `Bearer <token>`, runs of 32+ hex, uuids, `key=` / `token=` / `secret=` /
+ * `credential=` / `password=` values (up to a space or `&`), `://user:pass@` userinfo and `?query`
+ * strings replaced by placeholders, then cut to 200; `stage`; and `code` (a string, cut to 64, or a
+ * finite number) and `http_status` (`status` or `http_status`, a finite number) only when the error
+ * carries them. Never the stack, the error object itself, the environment or the config. Anything
+ * that throws while building the line (a hostile getter, an unprintable value) leaves the bare
+ * event with its stage.
+ * The control plane's `loader_source()` (moralmod-box.py) holds these exact bytes.
+ */
+const startupCatch =
+  "} catch (e) { let d={level:'warn',event:'moralmod_startup_unready',stage:'startup'}; try { " +
+  "const w=v=>String(v).replace(/\\s+/g,' ').trim(),t=(v,m)=>w(v).slice(0,m),n=e?.name??e?.constructor?.name,c=e?.code,s=e?.status??e?.http_status; " +
+  "d={level:'warn',event:'moralmod_startup_unready',error_name:typeof n==='string'&&n?t(n,64):'unknown'," +
+  "error_message:w(e?.message??e).replace(/Bearer [^ ]+/gi,'Bearer <redacted>').replace(/[0-9a-f]{32,}/gi,'<hex>')" +
+  ".replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,'<uuid>')" +
+  ".replace(/(key|token|secret|credential|password)=[^ &]*/gi,'$1=<redacted>').replace(/:\\/\\/[^\\/ @]+@/g,'://<redacted>@')" +
+  ".replace(/\\?[^ ]+/g,'?<redacted>').slice(0,200),stage:'startup'}; " +
+  "if(typeof c==='string'||Number.isFinite(c))d.code=typeof c==='string'?t(c,64):c; if(Number.isFinite(s))d.http_status=s; } catch {} console.error(JSON.stringify(d));process.exit(1); }\n";
+/**
  * The loader a managed activation writes over the plugin's `runtime/dist/negotiator.js`; it imports
  * the release installed at `directory` (`index/moralmod/<release.json sha256>`).
  */
 export function managedLoaderSource(home: string, directory: string): string {
   const configFile = join(home, "index", "moralmod", "resident.json");
-  return `${marker}\nimport {readFileSync} from 'node:fs';\nimport {startResident} from ${JSON.stringify(join(directory, "negotiator-runtime.js"))};\nconst config=JSON.parse(readFileSync(${JSON.stringify(configFile)},'utf8'));\ntry {\n const resident=await startResident({...process.env,...config,DECISION_JOURNAL_PATH:${JSON.stringify(join(home,"index","moralmod","fallback.sqlite"))}});\n const stop=()=>void resident.stop().finally(()=>process.exit(0));\n process.on('SIGTERM',stop);process.on('SIGINT',stop);\n console.log(JSON.stringify({ready:true,port:resident.port}));\n} catch { console.error(JSON.stringify({level:'warn',event:'moralmod_startup_unready'}));process.exit(1); }\n`;
+  return `${marker}\nimport {readFileSync} from 'node:fs';\nimport {startResident} from ${JSON.stringify(join(directory, "negotiator-runtime.js"))};\nconst config=JSON.parse(readFileSync(${JSON.stringify(configFile)},'utf8'));\ntry {\n const resident=await startResident({...process.env,...config,DECISION_JOURNAL_PATH:${JSON.stringify(join(home,"index","moralmod","fallback.sqlite"))}});\n const stop=()=>void resident.stop().finally(()=>process.exit(0));\n process.on('SIGTERM',stop);process.on('SIGINT',stop);\n console.log(JSON.stringify({ready:true,port:resident.port}));\n${startupCatch}`;
 }
 /**
  * The plugin's own `runtime/dist/negotiator.js` from its checkout's `HEAD`, or null. With `revision`,
