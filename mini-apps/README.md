@@ -220,14 +220,30 @@ paired owner's private root Telegram conversation. Preparing a private draft
 and reading status do not request a manual approval tap. Publishing is solely
 the resident's action on Slopfolio at the returned `reviewUrl`.
 
-Prepare forwards only `draftId`, `paste`, `artifactUrl`, `medium` and `fixes`
+Prepare accepts only `draftId`, `paste`, `artifactUrl`, `medium` and `fixes`
 (`title`, `oneLiner`, `tools`, `iterations`, `howItWasMade`, `bestDeadEnd`,
 `promptingApproach`, `tags`). Omission preserves a draft field, explicit null
-clears it, and Markdown is passed byte-for-byte, capped at 100,000 UTF-8 bytes.
-Status requires the opaque `draftId`. The app server derives operation ids,
-owns OAuth and refresh, validates the upstream contract and performs the two
-reviewed MCP operations. Models cannot supply a token, endpoint, account id or
-tool name.
+clears it, and Markdown is passed byte-for-byte. Paste and narrative fields
+are capped at 100,000 UTF-8 bytes each; `draftId`, `medium`, `title` and
+`oneLiner` at 2,048 UTF-8 bytes each. `artifactUrl` is at most 2,048 characters.
+`tools` and `tags` each allow at most 30 strings of at most 100 characters.
+`iterations` may instead be a nonnegative integer. The complete compact
+UTF-8 prepare payload, including trusted metadata and JSON escaping, must
+not exceed 256 KiB; oversize input is refused before transport, not truncated.
+Only prepare transport adds `X-Village-Operation: slopfolio.prepare`, allowing
+the app's bounded large-body parser; status and other operations retain the
+small-body path.
+
+The overlay adds `turnId` from trusted session/message context, never model
+input. Retries in that turn retain the same identity; later turns differ.
+Status still accepts only the opaque `draftId` (at most 2,048 UTF-8 bytes).
+The app server derives operation ids, checks that existing drafts are owned
+private drafts before revision, owns OAuth and refresh, validates the upstream
+contract and performs the two reviewed MCP operations. Models cannot supply
+a turn id, token, endpoint, account id or tool name. Both operations' returned
+strings and keys pass through the bridge's recursive `scrubbed_tree`/`visible`
+sanitizer (including hidden/bidi characters and controls) and remain explicitly
+untrusted reference data, never instructions.
 
 Salman's upstream skill/manifest PR was not present when this integration was
 prepared. The manifest is included here; **there is no placeholder skill**.
