@@ -211,6 +211,33 @@ list or any other operation (`mini-app.context.delete`, `gold-stars.send` on
 another app) refuses the whole projection. Gold Stars entries never carry a
 context operation. Overlay first, then the CP projects the longer dizko list.
 
+## Slopfolio: connected private drafts
+
+The [reviewed manifest](slopfolio/manifest.json) and native bundle allowlist
+expose exactly `slopfolio.prepare` and `slopfolio.status`, never an arbitrary
+MCP call or `publish_slopfolio_post`. Both require the installed app and the
+paired owner's private root Telegram conversation. Preparing a private draft
+and reading status do not request a manual approval tap. Publishing is solely
+the resident's action on Slopfolio at the returned `reviewUrl`.
+
+Prepare forwards only `draftId`, `paste`, `artifactUrl`, `medium` and `fixes`
+(`title`, `oneLiner`, `tools`, `iterations`, `howItWasMade`, `bestDeadEnd`,
+`promptingApproach`, `tags`). Omission preserves a draft field, explicit null
+clears it, and Markdown is passed byte-for-byte, capped at 100,000 UTF-8 bytes.
+Status requires the opaque `draftId`. The app server derives operation ids,
+owns OAuth and refresh, validates the upstream contract and performs the two
+reviewed MCP operations. Models cannot supply a token, endpoint, account id or
+tool name.
+
+Salman's upstream skill/manifest PR was not present when this integration was
+prepared. The manifest is included here; **there is no placeholder skill**.
+Salman must supply the real `skills/slopfolio/SKILL.md` before test installation.
+The installer validates the manifest's pinned bundle and fails closed without
+that source file, leaving existing installed bytes unchanged. Slopfolio is not
+a baseline skill and must remain tenant-restricted in the CP until the
+Salman-only test installation is ready; see the control-plane README rollout
+configuration.
+
 ## Disk staging and lifecycle
 
 The baseline installer stages the guarded native plugin and **grants no app**.
