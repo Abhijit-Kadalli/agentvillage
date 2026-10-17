@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const tests = join(import.meta.dir, "../../plugins/village-bridge/tests");
@@ -39,4 +40,23 @@ test("Four Kicks card refuses controls, missing prices and UTF-8/HTML overflow w
   const { unitInr: _unit, ...missingPrice } = payload.preview.quote.lines[0];
   const changed = { ...payload, preview: { ...payload.preview, quote: { ...payload.preview.quote, lines: [missingPrice] } } };
   expect(summary(changed).stderr).toContain("approval_card_invalid");
+});
+
+test("Four Kicks skill uses returned UPI-at-pickup details without claiming payment", () => {
+  const skill = readFileSync(join(import.meta.dir, "../../skills/fourkicks/SKILL.md"), "utf8");
+  expect(skill).toContain("version: 1.0.2");
+  expect(skill).toContain('paymentStatus: "upi_at_pickup"');
+  expect(skill).toContain('payment.method: "upi"');
+  expect(skill).toContain('payment.confirmation: "at_pickup"');
+  expect(skill).toContain("`payment.url`, `payment.amountInr`");
+  expect(skill).toContain("`payment.noteRef` exactly");
+  expect(skill).toContain("> Pay ₹{amountInr} to SWISSDESI (Four Kicks' UPI) with note {noteRef}: {exact returned URL}. They'll check it at pickup.");
+  expect(skill).toContain("This UPI order is queued immediately, before payment is checked.");
+  expect(skill).toContain("UPI at pickup is **not already paid**: never claim payment was verified");
+  expect(skill).toContain('`payment.label` (**“Test payment, no money moved”**)');
+  expect(skill).toContain("Never embed a VPA, generate a `upi://` link");
+  expect(skill).not.toMatch(/[a-z0-9._+-]+@[a-z0-9.-]+/i);
+  expect(skill).not.toContain("UPI now");
+  expect(skill).not.toContain("As soon as it clears");
+  expect(skill).not.toContain("only verified paid/queued states enter");
 });
