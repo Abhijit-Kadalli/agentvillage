@@ -10,6 +10,8 @@ across unchanged:
 Written against upstream commit `944244c31d257fc561130208cdc8c594f2ac3a1d`,
 modelled on its Gold Stars mini-app. Slopfolio maintains these files: changes
 start on Slopfolio's side and reach `Edge-City/agentvillage` as pull requests.
+The first, adding these files, is
+https://github.com/Edge-City/agentvillage/pull/389.
 
 ## The contract Edge City's app server implements
 
@@ -56,29 +58,64 @@ Every call also carries these fixed values:
 | `capture.schema_id` | `urn:slopfolio:schema:capture:process-summary:v1` |
 | `schema_id` (status) | `urn:slopfolio:schema:get-slopfolio-draft-status-input:v1` |
 
-Pass through
-only what the agent sent. A field the call leaves out is kept
-on the draft; an explicit `null` clears it. Return the MCP result's
-`structuredContent` to the agent with keys in camelCase (`reviewUrl`,
-`draftId`, `postUrl`), plus `code`, `missing` and `findings` as they are.
+**Arguments.** `paste` is required on every prepare, revisions included,
+as a string of 1 to 100,000 bytes; it is never `null` or omitted, and
+`fixes`, when sent, is never `null`. A `null` clears only an individual
+member: one field of `fixes`, or `artifactUrl` or `medium`. `draftId` is a
+lowercase v1 to v5 UUID returned by an earlier prepare, omitted or `null`
+for a new draft. `artifactUrl` is an `https://` URL of at most 2,048
+characters with no credentials. `medium` is one of `code`, `image`,
+`video`, `audio`, `workflow` or `null`; `fixes.iterations` is one of
+`one_shot`, `a_few_tries`, `many_attempts` or `null`. Text and list bounds
+are in the skill. Pass through only what the agent sent. On a revision,
+`artifactUrl` and `medium` left out are kept on the draft; the other fields
+come from the paste unless `fixes` overrides them, which is why the skill
+re-sends every fix the owner has made.
 
-**`operation_id` (safe retries).** The agent does not send one. The app
-server derives it from the owner and the canonical arguments, for example
-`av-` plus the first 40 hex characters of
-`sha256(owner_id + "\n" + canonical_json(arguments))`. The skill tells the
-agent to retry a timed-out call with identical arguments, so a retry reuses
-the same `operation_id` and Slopfolio replays the first result instead of
-creating a second draft. A deliberate change has different arguments and
-therefore a new id. Slopfolio rejects one `operation_id` with a different
-payload as `OPERATION_ID_CONFLICT`, which this derivation cannot produce.
-The id must match `^[A-Za-z0-9][A-Za-z0-9._~-]{7,127}$`.
+**Results.** The app server returns the MCP result's `structuredContent`
+with keys in camelCase:
+
+| Key | Shape |
+|---|---|
+| `code` | prepare: `PREPARED`, `INPUT_REQUIRED`, `PRIVACY_BLOCKED`, `UNSUPPORTED_POST_SHAPE`, `CAPABILITY_NOT_GRANTED`, `INVALID_ARGUMENT`, `UNSUPPORTED_CAPTURE_SCHEMA`, `CAPTURE_VERSION_MISMATCH`, `DRAFT_NOT_FOUND`, `DRAFT_NOT_EDITABLE`, `OPERATION_ID_CONFLICT`, `RATE_LIMITED`, `TEMPORARY_UNAVAILABLE`, `INTERNAL_ERROR`; status: `STATUS`, `CAPABILITY_NOT_GRANTED`, `INVALID_ARGUMENT`, `TEMPORARY_UNAVAILABLE` |
+| `draftId` | lowercase UUID, or `null` |
+| `reviewUrl`, `postUrl` | URL on the exact origin `https://slopfolio.com`, when present |
+| `status` | status only, on `STATUS`: `draft`, `published`, `deleted`, `not_found`. A status error may omit it. A nonexistent id returns `STATUS` with `not_found`. |
+| `missing` | string list from `title`, `one_liner`, `artifact_url`, `medium`, `tools` |
+| `findings`, `warnings` | lists of `{code, message, severity}`: `code` 1 to 80 characters, `message` 1 to 240, `severity` `block` or `warn` |
+
+Agent Village caps each list at 20 items. Its own validation and upstream
+failures are not MCP codes: they reach the agent as
+`connection_or_request_refused` with HTTP 422 or 502. `DRAFT_NOT_FOUND` and
+`DRAFT_NOT_EDITABLE` reach the agent with `retryable: false`.
+
+**Draft ownership.** Slopfolio lets a connection revise any draft on the
+owner's account. Agent Village narrows that: it revises only drafts its
+agent created under the current connection grant, and checks the draft's
+status before each revision, so a revision costs two operations. Drafts
+made on the website or before a reconnect are edited on Slopfolio.
+
+**`operation_id` (safe retries).** The agent does not send one. Agent
+Village derives it as `av-` plus the first 40 hex characters of
+`sha256(canonical_json([owner_id, grant_generation, trusted_originating_turn_id, arguments]))`.
+A retry in the same turn, on the same connection, with identical arguments
+reuses the id, so Slopfolio replays the first result instead of creating a
+second draft. A later message or a reconnect changes the id and is a new
+request; Agent Village's local receipts also expire after 24 hours. The
+skill therefore retries only within the turn and never re-sends a new
+post's prepare later. Slopfolio rejects one `operation_id` with a
+different payload as `OPERATION_ID_CONFLICT`, which this derivation cannot
+produce. The id must match `^[A-Za-z0-9][A-Za-z0-9._~-]{7,127}$`.
 
 **Timing.** Measured over the last 30 days of production prepares (n=7):
 0.10 s typical, 0.17 s slowest, database time only. Both operations fit
 the 25 s read/staging timeout comfortably.
 
-**Limits.** 100 MCP operations per account per day; beyond that the tool
-returns `RATE_LIMITED`. The paste is capped at 100,000 bytes.
+**Limits.** Slopfolio allows 100 MCP operations per account in any rolling
+24 hours, counted across all of the account's connections; Agent Village
+also allows 100 per UTC day. Beyond either, the result is `RATE_LIMITED`, a
+daily quota that the skill never retries. The paste is capped at 100,000
+bytes.
 
 ## Changing these files
 
