@@ -524,7 +524,7 @@ describe("each line ends with the event's portal link (B-138 EVENT-LINKS)", () =
     const section = skill.slice(skill.indexOf("\n## 3. Reading events\n"), skill.indexOf("All event-read recipes use"));
     expect(section).toContain("Each event line ends with `link <url>`, its portal page: when asked for an event's link, give that one exactly as printed and never build one");
     expect(section).toContain("if a line has no `link`, send them to the Edge City portal's events page");
-    expect(section).toContain("attendees join at https://agents.edgecity.live/constitution/join");
+    expect(section).not.toContain("constitution/join");
     const tools = readFileSync(join(import.meta.dir, "../../../index-network/tools.md"), "utf8");
     expect(tools).toContain("You may also give an event link the edgeos schedule script printed, copied exactly as printed.");
     expect(tools).toContain("this never covers an event whose schedule line printed a `link`");

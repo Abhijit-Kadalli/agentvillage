@@ -72,8 +72,6 @@ bun skills/edgeos/scripts/events.ts --when today --days 7 --rsvped
 
 Each event line ends with `link <url>`, its portal page: when asked for an event's link, give that one exactly as printed and never build one; if a line has no `link`, send them to the Edge City portal's events page (`$AV_PORTAL_URL` when set).
 
-For the GODCONST constitution session (God Agent (ODIN) Constitution Writing), attendees join at https://agents.edgecity.live/constitution/join.
-
 **Take the day from the script, never from your prompt.** For "today", "tomorrow" and "this weekend", pass the word (`--when today`, `--when tomorrow`, `--when weekend`), never a date you worked out. The script's first line, `Today is <Wkd YYYY-MM-DD> (IST)`, is today in the village, the second, `Now: <Wkd YYYY-MM-DD HH:MM> IST`, is the village clock, and the third, `Listing: ...`, names the days it listed: take the day from them and say it in your answer ("Today, Wed 14 Oct: ..."). Never take today's date from the conversation's start line in your prompt ("Conversation started: ..."): that is the day this chat began, which can be days ago.
 
 **Check the Now line before offering a session; never offer one that has ended.** For today the script leaves out events that already ended and says how many; a cron run's prompt has no time of day, so take it from Now.
