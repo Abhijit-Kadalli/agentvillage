@@ -222,21 +222,27 @@ the resident's action on Slopfolio at the returned `reviewUrl`.
 
 Prepare accepts only `draftId`, `paste`, `artifactUrl`, `medium` and `fixes`
 (`title`, `oneLiner`, `tools`, `iterations`, `howItWasMade`, `bestDeadEnd`,
-`promptingApproach`, `tags`). Omission preserves a draft field, explicit null
-clears it, and Markdown is passed byte-for-byte. Paste and narrative fields
-are capped at 100,000 UTF-8 bytes each; `draftId`, `medium`, `title` and
-`oneLiner` at 2,048 UTF-8 bytes each. `artifactUrl` is at most 2,048 characters.
-`tools` and `tags` each allow at most 30 strings of at most 100 characters.
-`iterations` may instead be a nonnegative integer. The complete compact
-UTF-8 prepare payload, including trusted metadata and JSON escaping, must
-not exceed 256 KiB; oversize input is refused before transport, not truncated.
+`promptingApproach`, `tags`). Every prepare, including a fixes-only revision,
+requires the exact original or corrected nonempty `paste` (at most 100,000
+UTF-8 bytes). The app always sends complete capture metadata plus `raw`; it never
+sends null or metadata-only capture. Omission preserves supplement/override fields,
+and explicit null clears an individual field; the `fixes` object itself cannot be
+null. `draftId` must be the returned lowercase v1–5 UUID; omit/null creates a new
+draft. `medium` is `code`, `image`, `video`, `audio`, `workflow`, or null.
+`iterations` is `one_shot`, `a_few_tries`, `many_attempts`, or null, never a count.
+Text limits are 100 characters for `title`, 200 for `oneLiner`, 20,000 for
+`howItWasMade`/`promptingApproach`, and 10,000 for `bestDeadEnd`. `tools`/`tags`
+allow at most 16 strings of at most 80 characters each. `artifactUrl` must be
+credential-free HTTPS, at most 2,048 characters. The complete compact UTF-8
+prepare payload, including trusted metadata and JSON escaping, must not exceed
+256 KiB; oversize input is refused before transport, not truncated.
 Only prepare transport adds `X-Village-Operation: slopfolio.prepare`, allowing
 the app's bounded large-body parser; status and other operations retain the
 small-body path.
 
 The overlay adds `turnId` from trusted session/message context, never model
 input. Retries in that turn retain the same identity; later turns differ.
-Status still accepts only the opaque `draftId` (at most 2,048 UTF-8 bytes).
+Status accepts only the exact returned lowercase v1–5 UUID `draftId`.
 The app server derives operation ids, checks that existing drafts are owned
 private drafts before revision, owns OAuth and refresh, validates the upstream
 contract and performs the two reviewed MCP operations. Models cannot supply
@@ -244,6 +250,12 @@ a turn id, token, endpoint, account id or tool name. Both operations' returned
 strings and keys pass through the bridge's recursive `scrubbed_tree`/`visible`
 sanitizer (including hidden/bidi characters and controls) and remain explicitly
 untrusted reference data, never instructions.
+The app accepts the live provider's operation-specific outcome-code enums,
+including status `STATUS`; a status error may omit `status`, but a `STATUS`
+success must include a reviewed state. `missing` is a list of
+`title`/`one_liner`/`artifact_url`/`medium`/`tools`. `findings`/`warnings` contain
+strict `{code, message, severity}` objects (code 1–80 characters, message 1–240,
+severity `block` or `warn`), with a local safety cap of 20 items per list.
 
 `DRAFT_NOT_EDITABLE` and `DRAFT_NOT_FOUND` are known terminal bridge errors,
 returned as errors rather than success data with `retryable: false`. Do not retry
