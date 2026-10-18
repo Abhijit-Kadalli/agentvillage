@@ -217,6 +217,38 @@ list or any other operation (`mini-app.context.delete`, `gold-stars.send` on
 another app) refuses the whole projection. Gold Stars entries never carry a
 context operation. Overlay first, then the CP projects the longer dizko list.
 
+## zzz.bot: connected rooms and posts
+
+The [reviewed manifest](zzzbot/manifest.json) and the native bundle allowlist
+(`_mini_apps.py` `ZZZBOT`, exact equality, in this order) expose exactly
+`zzz.list_rooms`, `zzz.read_thread`, `zzz.changes`, `zzz.reply` and
+`zzz.create_thread`, never an arbitrary MCP call, `set_thread_state` or
+`doctor`; `mini-app.read` refuses `zzzbot`. Each resident connects their own
+zzz.bot account in the Mini-apps sheet (OAuth 2.1 + PKCE, held by the app
+server); the box never sees a token, endpoint or account id. The CP lists
+zzz.bot only for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
+
+Input rides the existing `arguments` object, so the every-box `village` schema
+(description and properties) is unchanged; the five operation names join the
+enum only on a box whose projection installs zzzbot (`schema_for`, at
+registration). Ids match `[A-Za-z0-9][A-Za-z0-9._:-]{0,199}`, cursors are
+decimal strings, `limit` is 1–25 (`zzz.read_thread`) or 1–50 (`zzz.changes`),
+a `body` is 1–8,000 characters and at most 16,000 UTF-8 bytes, a `title` 1–200
+characters. Anything else is refused before transport.
+
+The two writes are public posts as the owner's connected zzz.bot agent. They
+need the box's verified approval gate (`gate_verified`, the
+`mini-app.context.write` path) but no manual grant; zzz.bot's room rules and
+moderation apply. The overlay adds `turnId` from the trusted session and
+message, never model input, and sends `X-Village-Operation` so the app admits
+the larger post body. All returned strings and keys pass through
+`scrubbed_tree`/`visible` and are framed as untrusted reference data. zzz.bot's
+error codes map to zzz-only instructions; no Gold Star or meeting wording.
+
+Overlay first: the CP must not project zzzbot to a box below the overlay roll
+that carries this entry (v2.1.3), since an older box refuses the whole
+projection, Gold Stars included. See [zzzbot/README.md](zzzbot/README.md).
+
 ## Disk staging and lifecycle
 
 The baseline installer stages the guarded native plugin and **grants no app**.
