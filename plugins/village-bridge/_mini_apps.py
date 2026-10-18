@@ -34,11 +34,12 @@ FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks
 # NEW-03 (rc44): `mini-app.context.read` is a READ of the app's own context namespace; `mini-app.context.write`
 # is a WRITE into it and takes rolodex.meeting's path (gate_verified), never the Gold Stars send start.
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
-                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status"})
+                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status"})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
-                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel"})
-# The operations whose appId is the request's own (any other operation is the gold-stars install's).
+                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare"})
+# Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
+SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}
 # NEW-03 (rc44, P-013; context's design NEW-03-APP-NAMESPACES.md section 2, CLAIMS L8997): every operations
 # list this overlay accepts for a non-Gold-Stars app, each by exact equality (newest first): the reviewed
 # public read alone, or the read plus that app's own context namespace read and write. Order fixed, no
@@ -94,6 +95,9 @@ def installed(home: Path, app_id: str, operation: str) -> bool:
                     return False
             elif name == "forkicks":
                 if app != {"id": name, **FORKICKS}:
+                    return False
+            elif name == "slopfolio":
+                if app != {"id": name, **SLOPFOLIO}:
                     return False
             elif (not isinstance(app["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", app["version"])
                   or app["skills"] != [name] or not any(app["operations"] == list(ops) for ops in APP_OPERATIONS_ACCEPTED)):
