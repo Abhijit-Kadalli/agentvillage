@@ -29,6 +29,9 @@ class ForKicksTest(unittest.TestCase):
 
     def enable(self):
         Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'forkicks', **mini.FORKICKS}]}))
+        # The approval gate is on and verified unless a test says otherwise (order.prepare is a gated write).
+        if not hasattr(self, 'gate'):
+            gate = patch.object(bridge, 'gate_verified', return_value=None); self.gate = gate.start(); self.addCleanup(gate.stop)
 
     def preview(self, text='oat milk'):
         draft = '550e8400-e29b-41d4-a716-446655440000'
@@ -66,6 +69,26 @@ class ForKicksTest(unittest.TestCase):
                 self.assertIn('data', self.call(request))
                 self.transport.assert_called_with(self.config, request)
         self.assertEqual(self.transport.call_count, 4)
+
+    def test_order_prepare_takes_the_sibling_writes_gate_and_reads_cancel_do_not(self):
+        self.enable()
+        result, order = self.preview()
+        self.transport.return_value = result
+        self.assertEqual(self.call({'operation': 'forkicks.order.prepare', **order})['data'], result)
+        self.gate.assert_called_once()
+        self.transport.assert_called_once()
+        self.gate.reset_mock(); self.transport.reset_mock()
+        self.gate.side_effect = ValueError('approval_unavailable')
+        response = self.call({'operation': 'forkicks.order.prepare', **order})
+        self.assertEqual(response['error'], 'approval_unavailable')
+        self.assertIn('Do not claim an order was prepared.', response['instruction'])
+        self.assertNotIn('data', response)
+        self.transport.assert_not_called()
+        # Menu, schedule, status and cancel are not gated.
+        self.gate.reset_mock()
+        for request in (dict(operation='forkicks.menu'), dict(operation='forkicks.schedule'), dict(operation='forkicks.order.status', orderId='order-1'), dict(operation='forkicks.order.cancel', orderId='order-1')):
+            self.assertIn('data', self.call(request))
+        self.gate.assert_not_called()
 
     def test_all_six_operations_require_exact_reviewed_projection(self):
         self.enable()

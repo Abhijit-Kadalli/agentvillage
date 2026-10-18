@@ -767,6 +767,13 @@ def handle(args, **kwargs):
                 gate_verified()
             except Exception:
                 return json.dumps({"error": "approval_unavailable", "instruction": "Saving to this app needs this agent's verified approval gate, which is unavailable now. Do not claim anything was saved."})
+        if op == "forkicks.order.prepare":
+            # A WRITE (WRITE_OPERATIONS) that sends the whole order to the provider: the same gated-write path as
+            # the sibling writes (no card, no manual grant; confirm keeps its own manual grant).
+            try:
+                gate_verified()
+            except Exception:
+                return json.dumps({"error": "approval_unavailable", "instruction": "Preparing an order needs this agent's verified approval gate, which is unavailable now. Do not claim an order was prepared."})
         if op == "gold-stars.send":
             status = transport(config, {"operation": "gold-stars.status", "draftId": payload["draftId"]})
             if not isinstance(status, dict) or status.get("error"):
