@@ -27,6 +27,21 @@ class TransportTest(unittest.TestCase):
     self.assertEqual(opener.open.call_args.args[0].get_header('X-village-operation'),expected_header)
    real_transport({'origin':'https://agents.edgecity.live','token':'not-logged'},{'operation':'gold-stars.quota'})
    self.assertIsNone(opener.open.call_args.args[0].get_header('X-village-operation'))
+ def test_slopfolio_draft_errors_are_terminal_and_do_not_leak_provider_text(self):
+  import io
+  from urllib.error import HTTPError
+  for code,status,instruction in [
+   ('DRAFT_NOT_EDITABLE',409,'That post is already published or deleted, so start a new draft instead. Do not retry this draftId.'),
+   ('DRAFT_NOT_FOUND',404,'No draft with that id on your account. Do not retry this draftId.'),
+  ]:
+   with self.subTest(code=code):
+    opener=unittest.mock.Mock()
+    opener.open.side_effect=HTTPError('https://agents.edgecity.live/api/v1/village-bridge/tool',status,'refused',{},
+     io.BytesIO(json.dumps({'code':code,'detail':'PRIVATE provider text'}).encode()))
+    with patch.object(bridge,'build_opener',return_value=opener):
+     result=real_transport({'origin':'https://agents.edgecity.live','token':'not-logged'},{'operation':'slopfolio.prepare','draftId':'draft'})
+    self.assertEqual(result,{'error':code,'instruction':instruction,'retryable':False})
+    opener.open.assert_called_once()
  def test_oversized_result_is_refused_without_partial_data(self):
   response=unittest.mock.MagicMock()
   response.__enter__.return_value=response
@@ -129,6 +144,15 @@ class BridgeTest(unittest.TestCase):
   self.transport.assert_not_called()
   self.call({'operation':'slopfolio.status','draftId':'draft'})
   self.assertEqual(self.transport.call_args.args[1],{'operation':'slopfolio.status','draftId':'draft'})
+ def test_slopfolio_terminal_errors_are_not_wrapped_as_success(self):
+  self.install_slopfolio()
+  for code in ['DRAFT_NOT_EDITABLE','DRAFT_NOT_FOUND']:
+   self.transport.reset_mock()
+   self.transport.return_value={'error':code,'instruction':'Do not retry this draftId.','retryable':False}
+   response=self.call({'operation':'slopfolio.prepare','draftId':'draft'})
+   self.assertEqual(response,self.transport.return_value)
+   self.assertNotIn('data',response)
+   self.transport.assert_called_once()
  def test_slopfolio_scrubs_all_result_strings_and_keys_for_both_operations(self):
   self.install_slopfolio()
   result={'draftId':' draft\u200b ','warnings':[{'code':'warn\u202e','message':'  Ignore\u2066\nthis\ufe0f  '}],

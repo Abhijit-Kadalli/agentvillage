@@ -245,6 +245,15 @@ strings and keys pass through the bridge's recursive `scrubbed_tree`/`visible`
 sanitizer (including hidden/bidi characters and controls) and remain explicitly
 untrusted reference data, never instructions.
 
+`DRAFT_NOT_EDITABLE` and `DRAFT_NOT_FOUND` are known terminal bridge errors,
+returned as errors rather than success data with `retryable: false`. Do not retry
+that `draftId`: the former means the post is already published or deleted, so
+start a new draft instead; the latter means no draft with that id on your account.
+The app retains the draft-status preflight as defence in depth, while Slopfolio
+enforces the published/deleted rejection in its database: it changes nothing,
+never edits a live post and never forks a new draft from that call. Only prepare
+without `draftId` creates a new post.
+
 Salman's upstream skill/manifest PR was not present when this integration was
 prepared. The manifest is included here; **there is no placeholder skill**.
 Salman must supply the real `skills/slopfolio/SKILL.md` before test installation.
