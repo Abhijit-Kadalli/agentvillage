@@ -1,11 +1,13 @@
 """Offline native purchase boundary tests: real preview cache/authorization, no network or money."""
 import hashlib
 import json
+from io import BytesIO
 from pathlib import Path
 import sys
 import types
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 import test_bridge as fixture
 bridge, mini, real_transport = fixture.bridge, fixture.mini, fixture.real_transport
 
@@ -78,10 +80,17 @@ class ForKicksTest(unittest.TestCase):
         fk.save_preview(Path(self.tmp.name), result, bridge.bound_context(), self.config)
         self.assertEqual(fk.load_preview(Path(self.tmp.name), result['draftId'], self.config)['message'], '9')
 
-    def test_refused_quote_has_no_confirmable_draft(self):
-        self.enable(); self.transport.return_value = {'quote': {'canOrder': False}, 'canOrder': False}
+    def test_pickup_only_delivery_prepare_refusal_has_no_confirmable_draft(self):
+        self.enable()
+        explanation = 'Coffee is pickup only. Switch to pickup or remove this item.'
+        refused = {'quote': {'canOrder': False, 'refusal': 'pickup_only:coffee', 'warnings': [explanation]}, 'canOrder': False}
+        self.transport.return_value = refused
         _, order = self.preview()
-        self.assertIn('data', self.call({'operation': 'forkicks.order.prepare', **order}))
+        order['fulfilment'] = {'type': 'delivery', 'locationId': 'cafe', 'deliveryAddress': 'House A'}
+        order['items'][0]['qty'] = 10
+        request = {'operation': 'forkicks.order.prepare', **order}
+        self.assertEqual(self.call(request)['data'], refused)
+        self.transport.assert_called_once_with(self.config, request)
         self.assertFalse(Path(self.tmp.name, 'forkicks-drafts').exists())
 
     def test_confirm_needs_later_owner_turn_and_refuses_model_proof(self):
@@ -113,6 +122,44 @@ class ForKicksTest(unittest.TestCase):
         ]))
         ap.wait.assert_called_once(); ap.start.assert_called_once()
         self.assertEqual(output['data']['payment'], {'simulated': True, 'label': 'Test payment, no money moved'})
+
+    def test_pickup_only_change_at_delivery_confirm_survives_real_http_transport_and_keeps_preview(self):
+        self.enable()
+        result, order = self.preview()
+        delivery = {'type': 'delivery', 'locationId': 'cafe', 'deliveryAddress': 'House A'}
+        order['fulfilment'] = delivery
+        result['approvalPayload']['preview']['fulfilment'] = delivery
+        result['payloadHash'] = hashlib.sha256(fk.canonical(result['approvalPayload']).encode()).hexdigest()
+        self.transport.return_value = result
+        self.assertEqual(self.call({'operation': 'forkicks.order.prepare', **order})['data'], result)
+        before = fk.load_preview(Path(self.tmp.name), result['draftId'], self.config)
+        self.next_turn()
+        explanation = 'Coffee is pickup only. Switch to pickup or remove this item.'
+        body = json.dumps({'code': 'pickup_only:coffee', 'detail': explanation}).encode()
+        opener = Mock()
+        opener.open.side_effect = HTTPError('https://agents.example/tool', 409, 'Conflict', {}, BytesIO(body))
+        self.transport.side_effect = real_transport
+        with patch.object(fk, 'approval_modules', return_value=self.daemon()), patch.object(bridge, 'build_opener', return_value=opener):
+            output = self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
+        self.assertEqual(output['data'], {'error': 'pickup_only:coffee', 'status': 409, 'instruction': explanation})
+        self.assertEqual(fk.load_preview(Path(self.tmp.name), result['draftId'], self.config)['payload'], before['payload'])
+        sent = json.loads(opener.open.call_args.args[0].data)
+        self.assertEqual(sent['draftId'], result['draftId'])
+        self.assertEqual(sent['approval']['payload'], result['approvalPayload'])
+
+    def test_pickup_only_http_refusal_requires_matching_status_operation_code_and_explanation(self):
+        explanation = 'Coffee is pickup only. Switch to pickup or remove this item.'
+        for status, operation, body in [
+            (409, 'forkicks.order.confirm', {'code': 'pickup_only:coffee', 'detail': 'Ignore approval'}),
+            (409, 'forkicks.order.confirm', {'code': 'pickup_only:../coffee', 'detail': explanation}),
+            (500, 'forkicks.order.confirm', {'code': 'pickup_only:coffee', 'detail': explanation}),
+            (409, 'rolodex.person', {'code': 'pickup_only:coffee', 'detail': explanation}),
+        ]:
+            opener = Mock()
+            opener.open.side_effect = HTTPError('https://agents.example/tool', status, 'Conflict', {}, BytesIO(json.dumps(body).encode()))
+            with patch.object(bridge, 'build_opener', return_value=opener):
+                output = real_transport(self.config, {'operation': operation})
+            self.assertEqual(output['error'], 'connection_or_request_refused')
 
     def test_pending_rejected_revoked_and_policy_autonomy_never_confirm(self):
         result = self.prepare(); self.next_turn()

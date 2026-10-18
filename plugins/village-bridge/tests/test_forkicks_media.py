@@ -46,6 +46,29 @@ class MenuMediaTest(unittest.TestCase):
         self.assertNotIn(self.config['token'], raw)
         self.assertEqual(self.call({'operation': 'forkicks.menu'})['data'], doc)
 
+    def test_pickup_only_boolean_is_accepted_and_preserved_with_image_text(self):
+        self.enable()
+        for pickup_only in (True, False):
+            doc = envelope()
+            item = {'id': 'coffee', 'name': 'Coffee', 'category': 'Coffee', 'description': '',
+                    'priceInr': 190, 'countsAsDrink': True, 'available': True,
+                    'pickupOnly': pickup_only, 'optionGroups': []}
+            doc['menu']['items'] = [item]
+            doc['pages'][0]['altText'] = 'Coffee — pickup only' if pickup_only else 'Coffee'
+            self.transport.return_value = doc
+            raw = bridge.handle({'operation': 'forkicks.menu', 'format': 'image'})
+            self.assertTrue(raw.startswith('MEDIA:"'))
+            self.assertIn(doc['pages'][0]['altText'], raw)
+            self.assertIs(doc['menu']['items'][0]['pickupOnly'], pickup_only)
+            for invalid in ('true', 1, None):
+                bad = copy.deepcopy(doc)
+                bad['menu']['items'][0]['pickupOnly'] = invalid
+                with self.assertRaises(ValueError):
+                    media.validated_pages(bad, 'chalk')
+            del doc['menu']['items'][0]['pickupOnly']
+            with self.assertRaises(ValueError):
+                media.validated_pages(doc, 'chalk')
+
     def test_theme_requires_image_and_extra_args_refused_before_transport(self):
         self.enable()
         for args in ({'theme': 'paper'}, {'format': 'pdf'}, {'format': 'image', 'theme': 'other'}, {'format': 'image', 'url': 'https://example.test'}):

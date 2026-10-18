@@ -633,7 +633,14 @@ def transport(config, payload):
         }
         try:
             raw = error.read(4097)
-            code = json.loads(raw).get("code") if len(raw) <= 4096 else None
+            refusal = json.loads(raw, object_pairs_hook=no_duplicate_keys) if len(raw) <= 4096 else {}
+            code = refusal.get("code")
+            detail = refusal.get("detail")
+            if (error.code == 409 and payload.get("operation") == "forkicks.order.confirm" and
+                    isinstance(code, str) and re.fullmatch(r"pickup_only:[A-Za-z0-9_-]{1,128}", code) and
+                    isinstance(detail, str) and len(detail) <= 1000 and
+                    re.fullmatch(r".+ is pickup only\. Switch to pickup or remove this item\.", detail)):
+                return {"error": code, "status": 409, "instruction": detail}
             if code in codes:
                 return {"error": code, "instruction": codes[code]}
         except Exception:

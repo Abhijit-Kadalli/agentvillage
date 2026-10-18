@@ -49,11 +49,11 @@ def menu_shape(menu):
         if type(location["isOpenNow"]) is not bool:
             raise ValueError("invalid_menu_image")
     for item in menu["items"]:
-        exact(item, ("id", "name", "category", "description", "priceInr", "countsAsDrink", "available", "optionGroups"))
+        exact(item, ("id", "name", "category", "description", "priceInr", "countsAsDrink", "available", "pickupOnly", "optionGroups"))
         for key, maximum in (("id", 128), ("name", 240), ("category", 240), ("description", 500)):
             text(item[key], maximum)
         integer(item["priceInr"], 0, 1000000)
-        if any(type(item[key]) is not bool for key in ("available", "countsAsDrink")) or not isinstance(item["optionGroups"], list) or len(item["optionGroups"]) > 32:
+        if any(type(item[key]) is not bool for key in ("available", "countsAsDrink", "pickupOnly")) or not isinstance(item["optionGroups"], list) or len(item["optionGroups"]) > 32:
             raise ValueError("invalid_menu_image")
         for group in item["optionGroups"]:
             exact(group, ("id", "name", "required", "max", "options"))
