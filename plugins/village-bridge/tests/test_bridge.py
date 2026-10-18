@@ -131,7 +131,7 @@ class BridgeTest(unittest.TestCase):
   self.assertIn('skylight.status',mini.READ_OPERATIONS);self.assertNotIn('skylight.status',mini.WRITE_OPERATIONS)
   self.assertFalse(mini.READ_OPERATIONS&mini.WRITE_OPERATIONS)
   self.assertEqual(mini.READ_OPERATIONS|mini.WRITE_OPERATIONS,set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
-  self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write','fourkicks.order.prepare','fourkicks.order.confirm','fourkicks.order.cancel'})
+  self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
   # The gate is off, unverified or absent: the write is refused before any network call.
@@ -191,7 +191,7 @@ class BridgeTest(unittest.TestCase):
   # No new tool name: both operations go through `village`, the 36th gated tool (exact full-match matcher).
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FOURKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write'})
+  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write'})
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()

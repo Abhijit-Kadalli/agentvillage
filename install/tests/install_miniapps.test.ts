@@ -47,12 +47,12 @@ test("reviewed skills are optional, disk-only staging has deterministic receipts
   // gold-stars is a baseline skill the installer ships to every box; dizko only ever arrives this way.
   expect(EDGE_SKILL_NAMES).toContain("gold-stars");
   expect(EDGE_SKILL_NAMES).not.toContain("dizko");
-  expect(EDGE_SKILL_NAMES).not.toContain("fourkicks");
+  expect(EDGE_SKILL_NAMES).not.toContain("forkicks");
   const receipt = reconcileMiniApps(all, root);
   expect(receipt).toEqual(reconcileMiniApps(all, root));
   expect(receipt).toEqual(reconcileMiniApps(all, root, undefined, true));
   expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(all)).digest("hex"));
-  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/fourkicks/SKILL.md"]);
+  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md"]);
   expect(receipt).not.toHaveProperty("active");
   writeFileSync(join(root, "skills", "gold-stars", "SKILL.md"), "tampered");
   expect(() => reconcileMiniApps(all, root, undefined, true)).toThrow("mini_apps_skill_mismatch");
@@ -75,7 +75,7 @@ test("uninstall revokes the projection and removes only exact managed files, nev
   expect(existsSync(join(root, "village-bridge.json"))).toBe(false);
   expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({ version: 1, apps: [] });
   expect(existsSync(join(root, "skills", "dizko", "SKILL.md"))).toBe(false);
-  expect(existsSync(join(root, "skills", "fourkicks", "SKILL.md"))).toBe(false);
+  expect(existsSync(join(root, "skills", "forkicks", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
   expect(reconcileMiniApps({ version: 1, apps: [] }, root, undefined, true).apps).toEqual([]);
 });
@@ -95,7 +95,7 @@ test("the helper never removes an installer-shipped skill, for any desired set",
       expect(reconcileMiniApps({ version: 1, apps }, root, undefined, true)).toEqual(receipt);
     }
     expect(existsSync(join(root, "skills", "dizko", "SKILL.md"))).toBe(second.some((a) => a.id === "dizko"));
-    expect(existsSync(join(root, "skills", "fourkicks", "SKILL.md"))).toBe(second.some((a) => a.id === "fourkicks"));
+    expect(existsSync(join(root, "skills", "forkicks", "SKILL.md"))).toBe(second.some((a) => a.id === "forkicks"));
   }
 });
 
@@ -225,12 +225,12 @@ test("verify is read-only and refuses an absent or removed projection", () => {
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
 });
 
-test("Four Kicks stages its exact reviewed skill and revokes only its permission and managed file", () => {
+test("For Kicks stages its exact reviewed skill and revokes only its permission and managed file", () => {
   const app = REVIEWED_MINI_APPS[2];
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps/fourkicks/manifest.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps/forkicks/manifest.json"), "utf8"));
   expect([app.id, app.version, [...app.skills], [...app.operations]]).toEqual([
-    "fourkicks", "1.0.0", ["fourkicks"],
-    ["fourkicks.menu", "fourkicks.schedule", "fourkicks.order.prepare", "fourkicks.order.confirm", "fourkicks.order.status", "fourkicks.order.cancel"],
+    "forkicks", "1.0.0", ["forkicks"],
+    ["forkicks.menu", "forkicks.schedule", "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.status", "forkicks.order.cancel"],
   ]);
   expect(manifest.operations).toEqual(app.operations);
   expect(manifest.skills).toEqual(app.skills);
@@ -238,14 +238,14 @@ test("Four Kicks stages its exact reviewed skill and revokes only its permission
   expect(manifest).not.toHaveProperty("credit");
   const root = home(), projection = { version: 1, apps: [app] };
   reconcileMiniApps(projection, root);
-  const path = join(root, "skills/fourkicks/SKILL.md");
-  expect(readFileSync(path)).toEqual(readFileSync(join(REPO, "skills/fourkicks/SKILL.md")));
+  const path = join(root, "skills/forkicks/SKILL.md");
+  expect(readFileSync(path)).toEqual(readFileSync(join(REPO, "skills/forkicks/SKILL.md")));
   expect(statSync(path).mode & 0o777).toBe(0o600);
-  expect(reconcileMiniApps(projection, root, undefined, true).apps).toEqual([{ id: "fourkicks", version: "1.0.0" }]);
-  writeFileSync(join(root, "skills/fourkicks/resident-note.txt"), "keep");
+  expect(reconcileMiniApps(projection, root, undefined, true).apps).toEqual([{ id: "forkicks", version: "1.0.0" }]);
+  writeFileSync(join(root, "skills/forkicks/resident-note.txt"), "keep");
   reconcileMiniApps({ version: 1, apps: [] }, root);
   expect(existsSync(path)).toBe(false);
-  expect(readFileSync(join(root, "skills/fourkicks/resident-note.txt"), "utf8")).toBe("keep");
+  expect(readFileSync(join(root, "skills/forkicks/resident-note.txt"), "utf8")).toBe("keep");
   for (const operations of [app.operations.slice(0, -1), [...app.operations].reverse(), [...app.operations, "mini-app.read"]]) {
     expect(() => validateProjection({ version: 1, apps: [{ ...app, operations }] })).toThrow("mini_apps_unreviewed_bundle");
   }

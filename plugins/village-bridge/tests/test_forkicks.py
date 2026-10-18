@@ -9,30 +9,30 @@ from unittest.mock import Mock, patch
 import test_bridge as fixture
 bridge, mini, real_transport = fixture.bridge, fixture.mini, fixture.real_transport
 
-fk = sys.modules['village_bridge._fourkicks']
+fk = sys.modules['village_bridge._forkicks']
 
 def answer(**doc):
     return types.SimpleNamespace(ok=doc.get('ok') is True, doc=doc, exit_code=0, status=doc.get('status'))
 
-class FourKicksTest(unittest.TestCase):
+class ForKicksTest(unittest.TestCase):
     setUp = fixture.BridgeTest.setUp
     call = fixture.BridgeTest.call
 
     def enable(self):
-        Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'fourkicks', **mini.FOURKICKS}]}))
+        Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'forkicks', **mini.FORKICKS}]}))
 
     def preview(self, text='oat milk'):
         draft = '550e8400-e29b-41d4-a716-446655440000'
         order = {'items': [{'itemId': 'coffee', 'qty': 2, 'optionIds': ['oat']}], 'fulfilment': {'type': 'pickup', 'locationId': 'cafe', 'date': '2026-10-19'}, 'paymentMethod': 'upi', 'note': 'less sugar'}
         quote = {'quoteId': 'quote-1', 'canOrder': True, 'totalInr': 380, 'location': {'name': 'Café', 'address': 'Mandrem, Goa', 'opens': '2026-10-19T08:00:00+05:30'}, 'lines': [{'name': 'Coffee', 'qty': 2, 'options': [text], 'unitInr': 190, 'lineInr': 380}]}
-        payload = {'appId': 'fourkicks', 'operation': 'fourkicks.order.confirm', 'preview': {'appId': 'fourkicks', 'draftId': draft, **order, 'quote': quote, 'displayName': 'Priya'}}
+        payload = {'appId': 'forkicks', 'operation': 'forkicks.order.confirm', 'preview': {'appId': 'forkicks', 'draftId': draft, **order, 'quote': quote, 'displayName': 'Priya'}}
         return {'draftId': draft, 'quote': quote, 'displayName': 'Priya', 'approvalPayload': payload, 'payloadHash': hashlib.sha256(fk.canonical(payload).encode()).hexdigest()}, order
 
     def prepare(self, text='oat milk'):
         self.enable()
         result, order = self.preview(text)
         self.transport.return_value = result
-        response = self.call({'operation': 'fourkicks.order.prepare', **order})
+        response = self.call({'operation': 'forkicks.order.prepare', **order})
         self.assertEqual(response['data'], result)
         self.transport.reset_mock()
         self.transport.return_value = {'orderId': 'order-1', 'number': '#042', 'payment': {'simulated': True, 'label': 'Test payment, no money moved'}}
@@ -48,10 +48,10 @@ class FourKicksTest(unittest.TestCase):
     def next_turn(self):
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
 
-    def test_menu_schedule_status_and_cancel_use_only_fourkicks_install(self):
+    def test_menu_schedule_status_and_cancel_use_only_forkicks_install(self):
         self.enable()
         ap = Mock(side_effect=AssertionError('no purchase grant for read/cancel'))
-        inputs = [dict(operation='fourkicks.menu', date='2026-10-19', locationId='cafe'), dict(operation='fourkicks.schedule', **{'from': '2026-10-20', 'days': 7}), dict(operation='fourkicks.order.status', orderId='order-1'), dict(operation='fourkicks.order.cancel', orderId='order-1')]
+        inputs = [dict(operation='forkicks.menu', date='2026-10-19', locationId='cafe'), dict(operation='forkicks.schedule', **{'from': '2026-10-20', 'days': 7}), dict(operation='forkicks.order.status', orderId='order-1'), dict(operation='forkicks.order.cancel', orderId='order-1')]
         with patch.object(bridge, 'authorize_order', ap):
             for request in inputs:
                 self.assertIn('data', self.call(request))
@@ -61,17 +61,17 @@ class FourKicksTest(unittest.TestCase):
     def test_all_six_operations_require_exact_reviewed_projection(self):
         self.enable()
         path = Path(self.tmp.name, 'mini-apps.json')
-        for change in ({'operations': mini.FOURKICKS['operations'][:-1]}, {'operations': mini.FOURKICKS['operations'][::-1]}, {'version': '9.0.0'}, {'id': 'imposter'}, {'operations': mini.FOURKICKS['operations'] + ['gold-stars.send']}):
-            path.write_text(json.dumps({'version': 1, 'apps': [{'id': 'fourkicks', **mini.FOURKICKS, **change}]}))
-            for op in mini.FOURKICKS['operations']:
-                self.assertFalse(mini.installed(Path(self.tmp.name), 'fourkicks', op))
+        for change in ({'operations': mini.FORKICKS['operations'][:-1]}, {'operations': mini.FORKICKS['operations'][::-1]}, {'version': '9.0.0'}, {'id': 'imposter'}, {'operations': mini.FORKICKS['operations'] + ['gold-stars.send']}):
+            path.write_text(json.dumps({'version': 1, 'apps': [{'id': 'forkicks', **mini.FORKICKS, **change}]}))
+            for op in mini.FORKICKS['operations']:
+                self.assertFalse(mini.installed(Path(self.tmp.name), 'forkicks', op))
         self.transport.assert_not_called()
 
     def test_prepare_caches_exact_server_envelope_and_replay_keeps_original_turn(self):
         result = self.prepare()
         record = fk.load_preview(Path(self.tmp.name), result['draftId'], self.config)
         self.assertEqual(record['payload'], result['approvalPayload'])
-        path = Path(self.tmp.name, 'fourkicks-drafts', result['draftId'] + '.json')
+        path = Path(self.tmp.name, 'forkicks-drafts', result['draftId'] + '.json')
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(self.config['token'], path.read_text())
         self.next_turn()
@@ -81,29 +81,29 @@ class FourKicksTest(unittest.TestCase):
     def test_refused_quote_has_no_confirmable_draft(self):
         self.enable(); self.transport.return_value = {'quote': {'canOrder': False}, 'canOrder': False}
         _, order = self.preview()
-        self.assertIn('data', self.call({'operation': 'fourkicks.order.prepare', **order}))
-        self.assertFalse(Path(self.tmp.name, 'fourkicks-drafts').exists())
+        self.assertIn('data', self.call({'operation': 'forkicks.order.prepare', **order}))
+        self.assertFalse(Path(self.tmp.name, 'forkicks-drafts').exists())
 
     def test_confirm_needs_later_owner_turn_and_refuses_model_proof(self):
         result = self.prepare()
         with patch.object(bridge, 'authorize_order') as authorize:
-            self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})['error'], 'fourkicks_confirmation_required')
+            self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'forkicks_confirmation_required')
             self.next_turn()
-            self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId'], 'approval': {'approved': True}})['error'], 'village_unavailable')
+            self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId'], 'approval': {'approved': True}})['error'], 'village_unavailable')
             authorize.assert_not_called()
         self.transport.assert_not_called()
 
     def test_confirm_uses_real_manual_daemon_hash_and_preserves_simulation_label(self):
         result = self.prepare(); self.next_turn(); ap = self.daemon()
         with patch.object(fk, 'approval_modules', return_value=ap):
-            output = self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})
+            output = self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
         proof = self.transport.call_args.args[1]['approval']
         self.assertEqual(proof['payload'], result['approvalPayload'])
         self.assertEqual(proof['payloadHash'], result['payloadHash'])
-        self.assertEqual(ap.propose.call_args.args[1], 'marketplace.app.action:fourkicks.order.confirm:' + result['draftId'])
+        self.assertEqual(ap.propose.call_args.args[1], 'marketplace.app.action:forkicks.order.confirm:' + result['draftId'])
         self.assertEqual(json.loads(ap.propose.call_args.args[3]), result['approvalPayload'])
         self.assertEqual(ap.propose.call_args.args[2], '\n'.join([
-            'Four Kicks order',
+            'For Kicks order',
             '2 × "Coffee"; options: "oat milk"; unit ₹190; line ₹380',
             'Total: ₹380', 'Fulfilment: pickup',
             'Location: "Café" ("cafe"); address: "Mandrem, Goa"',
@@ -119,22 +119,22 @@ class FourKicksTest(unittest.TestCase):
         for decision in ('autonomous', 'supervised', None):
             ap = self.daemon(decision=decision)
             with patch.object(fk, 'approval_modules', return_value=ap):
-                self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_refused')
+                self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_refused')
             ap.start.assert_not_called()
         for status in ('requested', 'rejected', 'revoked', 'expired'):
             ap = self.daemon(); ap.wait.return_value = answer(status=status)
             with patch.object(fk, 'approval_modules', return_value=ap):
-                output = self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})
+                output = self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
             self.assertEqual(output['error'], 'approval_required'); self.assertIn('SAME draftId', output['instruction']); ap.start.assert_not_called()
         ap = self.daemon(); ap.start.return_value = answer(ok=True, authorization='policy')
         with patch.object(fk, 'approval_modules', return_value=ap):
-            self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_not_started')
+            self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_not_started')
         self.transport.assert_not_called()
 
     def test_ambiguous_confirm_replays_same_preview_and_executed_proof_after_reload(self):
         result = self.prepare(); self.next_turn(); ap = self.daemon()
         self.transport.side_effect = TimeoutError()
-        request = {'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']}
+        request = {'operation': 'forkicks.order.confirm', 'draftId': result['draftId']}
         with patch.object(fk, 'approval_modules', return_value=ap):
             self.assertEqual(self.call(request)['error'], 'village_unavailable')
         original = self.transport.call_args.args[1]
@@ -152,18 +152,18 @@ class FourKicksTest(unittest.TestCase):
             return answer(ok=True, authorization='grant')
         ap.start.side_effect = withdraw
         with patch.object(fk, 'approval_modules', return_value=ap):
-            self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})['error'], 'mini_app_not_installed')
+            self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'mini_app_not_installed')
         self.transport.assert_not_called()
 
     def test_changed_hash_missing_cache_owner_change_or_symlink_cannot_confirm(self):
         result = self.prepare(); self.next_turn()
-        path = Path(self.tmp.name, 'fourkicks-drafts', result['draftId'] + '.json')
+        path = Path(self.tmp.name, 'forkicks-drafts', result['draftId'] + '.json')
         original = path.read_text(); record = json.loads(original); record['payload']['preview']['displayName'] = 'Sam'; path.write_text(json.dumps(record))
-        self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_preview_unavailable')
+        self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_preview_unavailable')
         path.write_text(original); changed = dict(self.config, ownerTelegramId='99')
         with self.assertRaises(ValueError): fk.load_preview(Path(self.tmp.name), result['draftId'], changed)
         path.unlink(); target = Path(self.tmp.name, 'secret'); target.write_text(original); path.symlink_to(target)
-        self.assertEqual(self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_preview_unavailable')
+        self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_preview_unavailable')
         self.transport.assert_not_called()
 
     def test_large_preview_proof_is_compact_utf8_bounded64k_not2k_and_has60s_timeout(self):
@@ -172,13 +172,13 @@ class FourKicksTest(unittest.TestCase):
         result['quote']['warnings'] = ['é' * 12000]
         result['payloadHash'] = hashlib.sha256(fk.canonical(result['approvalPayload']).encode()).hexdigest()
         self.transport.return_value = result
-        self.call({'operation': 'fourkicks.order.prepare', **order})
+        self.call({'operation': 'forkicks.order.prepare', **order})
         self.transport.reset_mock()
         self.next_turn(); ap = self.daemon()
         response = unittest.mock.MagicMock(); response.__enter__.return_value = response; response.read.return_value = b'{}'
         opener = Mock(); opener.open.return_value = response
         with patch.object(fk, 'approval_modules', return_value=ap):
-            self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})
+            self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
         payload = self.transport.call_args.args[1]
         with patch.object(bridge, 'build_opener', return_value=opener):
             real_transport(self.config, payload)
@@ -192,11 +192,11 @@ class FourKicksTest(unittest.TestCase):
     def test_forged_prepare_hash_and_oversized_payload_never_cache(self):
         self.enable(); result, order = self.preview(); result['payloadHash'] = 'f' * 64
         self.transport.return_value = result
-        self.assertEqual(self.call({'operation': 'fourkicks.order.prepare', **order})['error'], 'village_unavailable')
-        self.assertFalse(Path(self.tmp.name, 'fourkicks-drafts').exists())
+        self.assertEqual(self.call({'operation': 'forkicks.order.prepare', **order})['error'], 'village_unavailable')
+        self.assertFalse(Path(self.tmp.name, 'forkicks-drafts').exists())
         result, _ = self.preview('é' * 31000); self.transport.return_value = result
-        self.assertEqual(self.call({'operation': 'fourkicks.order.prepare', **order})['error'], 'village_unavailable')
-        self.assertFalse(Path(self.tmp.name, 'fourkicks-drafts').exists())
+        self.assertEqual(self.call({'operation': 'forkicks.order.prepare', **order})['error'], 'village_unavailable')
+        self.assertFalse(Path(self.tmp.name, 'forkicks-drafts').exists())
 
     def test_card_delivery_date_fallback_options_note_and_card_payment_are_bound(self):
         result, _ = self.preview()
@@ -218,10 +218,10 @@ class FourKicksTest(unittest.TestCase):
                 self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
                 result = self.prepare(value); self.next_turn()
                 with patch.object(fk, 'approval_modules') as modules:
-                    output = self.call({'operation': 'fourkicks.order.confirm', 'draftId': result['draftId']})
+                    output = self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
                 self.assertIn(output['error'], ('approval_card_invalid', 'approval_card_too_long'))
                 modules.assert_not_called(); self.transport.assert_not_called()
-                Path(self.tmp.name, 'fourkicks-drafts', result['draftId'] + '.json').unlink()
+                Path(self.tmp.name, 'forkicks-drafts', result['draftId'] + '.json').unlink()
         result, _ = self.preview()
         for key in ['lines', 'location', 'totalInr']:
             p = json.loads(json.dumps(result['approvalPayload']))

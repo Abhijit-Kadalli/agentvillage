@@ -15,7 +15,7 @@ SUMMARY_MAX_BYTES = 4096
 SUMMARY_HTML_MAX_BYTES = 3000
 
 def approval_summary(payload):
-    """Mirrored by CP fourkicksSummary; never shorten the order the human approves."""
+    """Mirrored by CP forkicksSummary; never shorten the order the human approves."""
     def text(value, allow_empty=False):
         if not isinstance(value, str) or (not allow_empty and not value.strip()) or any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in value):
             raise ValueError("approval_card_invalid")
@@ -32,7 +32,7 @@ def approval_summary(payload):
         lines, items = quote["lines"], p["items"]
         if not isinstance(lines, list) or not lines or len(lines) != len(items):
             raise ValueError("approval_card_invalid")
-        card = ["Four Kicks order"]
+        card = ["For Kicks order"]
         for line, item in zip(lines, items):
             qty = line["qty"]
             if type(qty) is not int or not 1 <= qty <= 1000000000 or qty != item["qty"] or not isinstance(line["options"], list):
@@ -71,11 +71,11 @@ def canonical(payload):
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 def checked_payload(payload, draft_id, expected_hash):
-    if not isinstance(payload, dict) or set(payload) != {"appId", "operation", "preview"} or payload["appId"] != "fourkicks" or payload["operation"] != "fourkicks.order.confirm":
+    if not isinstance(payload, dict) or set(payload) != {"appId", "operation", "preview"} or payload["appId"] != "forkicks" or payload["operation"] != "forkicks.order.confirm":
         raise ValueError("approval_preview_unavailable")
     preview = payload["preview"]
     keys = {"appId", "draftId", "quote", "displayName", "items", "fulfilment", "paymentMethod"}
-    if not isinstance(preview, dict) or set(preview) not in (keys, keys | {"note"}) or preview["appId"] != "fourkicks" or preview["draftId"] != draft_id:
+    if not isinstance(preview, dict) or set(preview) not in (keys, keys | {"note"}) or preview["appId"] != "forkicks" or preview["draftId"] != draft_id:
         raise ValueError("approval_preview_unavailable")
     held = canonical(payload)
     if len(held.encode("utf-8")) > MAX_PAYLOAD_BYTES or hashlib.sha256(held.encode("utf-8")).hexdigest() != expected_hash:
@@ -85,7 +85,7 @@ def checked_payload(payload, draft_id, expected_hash):
 def cache_path(home: Path, draft_id):
     if not isinstance(draft_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", draft_id):
         raise ValueError("invalid_draft")
-    folder = home / "fourkicks-drafts"
+    folder = home / "forkicks-drafts"
     path = folder / (draft_id + ".json")
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise ValueError("approval_preview_unavailable")
@@ -127,7 +127,7 @@ def load_preview(home, draft_id, config):
 def authorize_order(record, draft_id):
     payload = record["payload"]
     held = checked_payload(payload, draft_id, record["payloadHash"])
-    key = "marketplace.app.action:fourkicks.order.confirm:" + draft_id
+    key = "marketplace.app.action:forkicks.order.confirm:" + draft_id
     try:
         summary = approval_summary(payload)
     except ValueError as error:

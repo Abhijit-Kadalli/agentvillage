@@ -24,7 +24,7 @@ GOLD_STARS_RESTORED = {"version": "1.1.0", "skills": ["gold-stars"], "operations
 GOLD_STARS_PREVIOUS = {"version": "1.1.0", "skills": ["gold-stars"], "operations": ["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel"]}
 # Every gold-stars entry this overlay accepts, each by exact equality (newest first).
 GOLD_STARS_ACCEPTED = (GOLD_STARS, GOLD_STARS_RESTORED, GOLD_STARS_PREVIOUS)
-FOURKICKS = {"version": "1.0.0", "skills": ["fourkicks"], "operations": ["fourkicks.menu", "fourkicks.schedule", "fourkicks.order.prepare", "fourkicks.order.confirm", "fourkicks.order.status", "fourkicks.order.cancel"]}
+FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks.menu", "forkicks.schedule", "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.status", "forkicks.order.cancel"]}
 
 # Every `village` operation, classified. A write changes the owner's account state; a read does not.
 # `rolodex.meeting` (mark/undo) is a WRITE: it rides the `village` tool's existing gate entry (no preview
@@ -34,9 +34,9 @@ FOURKICKS = {"version": "1.0.0", "skills": ["fourkicks"], "operations": ["fourki
 # NEW-03 (rc44): `mini-app.context.read` is a READ of the app's own context namespace; `mini-app.context.write`
 # is a WRITE into it and takes rolodex.meeting's path (gate_verified), never the Gold Stars manual grant.
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
-                             "mini-app.context.read", "fourkicks.menu", "fourkicks.schedule", "fourkicks.order.status"})
+                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status"})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
-                              "fourkicks.order.prepare", "fourkicks.order.confirm", "fourkicks.order.cancel"})
+                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel"})
 # The operations whose appId is the request's own (any other operation is the gold-stars install's).
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # NEW-03 (rc44, P-013; context's design NEW-03-APP-NAMESPACES.md section 2, CLAIMS L8997): every operations
@@ -52,8 +52,8 @@ APP_OPERATIONS_ACCEPTED = (("mini-app.read", "mini-app.context.read", "mini-app.
 APPROVE_IN_BOT = ("Ask the owner to approve this exact Gold Star on its card in the approvals bot, then retry "
                   "gold-stars.send with this SAME draftId. Never prepare a new preview to retry. Chat consent alone "
                   "cannot authorize sending.")
-ORDER_APPROVE_IN_BOT = ("Ask the owner to approve this exact Four Kicks order on its card in the approvals bot, then retry "
-                        "fourkicks.order.confirm with this SAME draftId. Never prepare another order to retry an uncertain confirm.")
+ORDER_APPROVE_IN_BOT = ("Ask the owner to approve this exact For Kicks order on its card in the approvals bot, then retry "
+                        "forkicks.order.confirm with this SAME draftId. Never prepare another order to retry an uncertain confirm.")
 
 
 def installed(home: Path, app_id: str, operation: str) -> bool:
@@ -79,8 +79,8 @@ def installed(home: Path, app_id: str, operation: str) -> bool:
             if name == "gold-stars":
                 if not any(app == {"id": name, **entry} for entry in GOLD_STARS_ACCEPTED):
                     return False
-            elif name == "fourkicks":
-                if app != {"id": name, **FOURKICKS}:
+            elif name == "forkicks":
+                if app != {"id": name, **FORKICKS}:
                     return False
             elif (not isinstance(app["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", app["version"])
                   or app["skills"] != [name] or not any(app["operations"] == list(ops) for ops in APP_OPERATIONS_ACCEPTED)):

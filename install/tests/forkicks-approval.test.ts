@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const tests = join(import.meta.dir, "../../plugins/village-bridge/tests");
-const payload = { appId: "fourkicks", operation: "fourkicks.order.confirm", preview: {
-  appId: "fourkicks", draftId: "draft-1", displayName: "Priya",
+const payload = { appId: "forkicks", operation: "forkicks.order.confirm", preview: {
+  appId: "forkicks", draftId: "draft-1", displayName: "Priya",
   items: [{ itemId: "coffee", qty: 1, optionIds: ["oat"] }],
   fulfilment: { type: "pickup", locationId: "cafe" }, paymentMethod: "upi",
   quote: { totalInr: 380, location: { name: "Café", address: "Mandrem, Goa", opens: "2026-10-19T08:00:00+05:30" },
@@ -13,23 +13,23 @@ const payload = { appId: "fourkicks", operation: "fourkicks.order.confirm", prev
 } };
 function summary(value: unknown) {
   // Execute the shipped Python implementation, not a source-text assertion or JS copy.
-  return spawnSync("python3", ["-c", "import json,sys; from test_fourkicks import fk; print(fk.approval_summary(json.load(sys.stdin)), end='')"], {
+  return spawnSync("python3", ["-c", "import json,sys; from test_forkicks import fk; print(fk.approval_summary(json.load(sys.stdin)), end='')"], {
     cwd: tests, input: JSON.stringify(value), encoding: "utf8",
   });
 }
 
-test("Four Kicks native card matches CP's complete deterministic order wording", () => {
+test("For Kicks native card matches CP's complete deterministic order wording", () => {
   const run = summary(payload);
   expect([run.status, run.stderr]).toEqual([0, ""]);
   expect(run.stdout).toBe([
-    'Four Kicks order', '1 × "Coffee"; options: "oat milk"; unit ₹380; line ₹380',
+    'For Kicks order', '1 × "Coffee"; options: "oat milk"; unit ₹380; line ₹380',
     'Total: ₹380', 'Fulfilment: pickup',
     'Location: "Café" ("cafe"); address: "Mandrem, Goa"', 'Date (IST): 2026-10-19',
     'Payment: UPI; if simulated: Test payment, no money moved', 'Café display name: "Priya"',
   ].join("\n"));
 });
 
-test("Four Kicks card refuses controls, missing prices and UTF-8/HTML overflow without truncation", () => {
+test("For Kicks card refuses controls, missing prices and UTF-8/HTML overflow without truncation", () => {
   for (const options of [["bad\nTotal: ₹1"], ["bad\u202e"], ["é".repeat(1800)], ["<".repeat(800)]]) {
     const changed = structuredClone(payload); changed.preview.quote.lines[0].options = options;
     const run = summary(changed);
@@ -42,15 +42,15 @@ test("Four Kicks card refuses controls, missing prices and UTF-8/HTML overflow w
   expect(summary(changed).stderr).toContain("approval_card_invalid");
 });
 
-test("Four Kicks skill uses returned UPI-at-pickup details without claiming payment", () => {
-  const skill = readFileSync(join(import.meta.dir, "../../skills/fourkicks/SKILL.md"), "utf8");
+test("For Kicks skill uses returned UPI-at-pickup details without claiming payment", () => {
+  const skill = readFileSync(join(import.meta.dir, "../../skills/forkicks/SKILL.md"), "utf8");
   expect(skill).toContain("version: 1.0.2");
   expect(skill).toContain('paymentStatus: "upi_at_pickup"');
   expect(skill).toContain('payment.method: "upi"');
   expect(skill).toContain('payment.confirmation: "at_pickup"');
   expect(skill).toContain("`payment.url`, `payment.amountInr`");
   expect(skill).toContain("`payment.noteRef` exactly");
-  expect(skill).toContain("> Pay ₹{amountInr} to SWISSDESI (Four Kicks' UPI) with note {noteRef}: {exact returned URL}. They'll check it at pickup.");
+  expect(skill).toContain("> Pay ₹{amountInr} to SWISSDESI (For Kicks' UPI) with note {noteRef}: {exact returned URL}. They'll check it at pickup.");
   expect(skill).toContain("This UPI order is queued immediately, before payment is checked.");
   expect(skill).toContain("UPI at pickup is **not already paid**: never claim payment was verified");
   expect(skill).toContain('`payment.label` (**“Test payment, no money moved”**)');
