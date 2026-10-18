@@ -7,6 +7,7 @@
     "consent_scope says how data should keep it: all = ops security monitoring for every tenant (to be on the ops allowlist, kept without research consent only when consent_scope is all, as cron.run is kept only for installer jobs); research_consented = research consent only, like tool.call.",
     "Held to plugins/av-events/_code_run.py by tests/test_code_run.py; agentvillage-data mirrors it when it registers the type."
   ],
+  "patterns": "every regex below is applied with fullmatch (Python re.fullmatch, TypeScript ^...$ without the m flag): a trailing newline never passes",
   "type": "code.run",
   "version": 1,
   "actor": "agent",
@@ -14,7 +15,7 @@
   "envelope_ids": ["session_id", "turn_id", "run_id", "tool_call_id"],
   "scan_limit_chars": 262144,
   "switch": {"env": "AV_EVENTS_CODE_RUN", "on": ["1", "true", "yes", "on"], "default": "off", "read": "per execute_code call"},
-  "scope_switch": {"env": "AV_EVENTS_CODE_RUN_SCOPE", "values": ["all", "research_consented"], "default": "all", "unknown": "all"},
+  "scope_switch": {"env": "AV_EVENTS_CODE_RUN_SCOPE", "values": ["all", "research_consented"], "default": "all", "blank": "all", "unknown": "research_consented", "unknown_log": "one WARNING per process naming the variable, never the value"},
   "fields": {
     "consent_scope": {"kind": "enum", "enum": ["all", "research_consented"], "nullable": false},
     "code_hmac": {"kind": "regex", "regex": "^[0-9a-f]{64}$", "nullable": true, "null_when": "metadata capture, no hash key, or no string code"},

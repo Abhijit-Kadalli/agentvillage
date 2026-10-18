@@ -33,8 +33,9 @@ but the ones `tool.call` carries. Nothing here reads `.env` beyond the plugin's 
 switch reader (`_core.env`), opens a file or touches the network.
 
 Switches (`flag_on`, `scope`): `AV_EVENTS_CODE_RUN` (`1|true|yes|on`, `_core.env_flag_on`,
-default off: off builds nothing) and `AV_EVENTS_CODE_RUN_SCOPE` (`all` |
-`research_consented`; unset, blank or anything else is `all`). The scope rides in the
+default off: off builds nothing) and `AV_EVENTS_CODE_RUN_SCOPE` (unset or blank:
+`all`; exactly `all` or `research_consented`: itself; any other set value fails narrow
+to `research_consented`, logged once per process by name). The scope rides in the
 payload; the plugin sends the same event either way and agentvillage-data's worker
 decides what it keeps (the `cron.run` precedent: an ops-allowlisted type kept without
 research consent only when its payload says so).
@@ -44,14 +45,19 @@ Python 3.11, standard library only.
 
 from __future__ import annotations
 
+import bisect
 import json
+import logging
 import os
 import re
+import threading
 import urllib.parse
 from typing import Any, Callable, Iterable, Optional
 
 from ._core import env, env_flag_on
-from ._tools import TOOL_CATEGORIES, TOOL_CATEGORY_VERSION, _ERROR_TYPE, normalise_status
+from ._tools import TOOL_CATEGORIES, TOOL_CATEGORY_VERSION, normalise_status
+
+logger = logging.getLogger("av-events")
 
 TYPE = "code.run"
 TOOL_NAME = "execute_code"
@@ -90,77 +96,224 @@ MAX_COUNT = 10000
 MAX_TOOL_NAMES = 16
 OTHER_TOOL = "other"
 
+#: The contract's shapes, applied with `fullmatch` only (never a bare `$`, which in
+#: Python also accepts a trailing newline that data's door refuses). `error_type` is
+#: `_tools._ERROR_TYPE`'s shape, checked here on its own so `tool.call` is unchanged.
+_ERROR_TYPE_SHAPE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,63}")
+_HMAC_SHAPE = re.compile(r"[0-9a-f]{64}")
+_LABEL_SHAPE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_TOOL_NAME_SHAPE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
 #: Hermes's refusal for a tool outside the kernel's RPC allowlist
 #: (`tools/code_execution_rpc.py`, `_handle_rpc_request`).
 _REFUSAL = re.compile(r"Tool '([^'\n]{0,128})' is not available in execute_code")
 
 # --------------------------------------------------------------------------
-# Static tags. Every pattern is bounded (no nested or unbounded repeats before a
-# literal), so a scan is linear in the program's length.
+# Static tags.
+#
+# Every rule starts with a literal, and any word-boundary check comes after it as a
+# fixed-width lookbehind, so `re` finds candidates with its fast literal-prefix
+# search instead of trying the rule at every position. The rules that relate two
+# places in the text (an `open(` and its mode, an `import` and a module, a
+# `from os import` and a name) run in linear time (`_head_then_word`). The tag
+# rules are those of rules_version code_run_tags_v1, unchanged: a test holds them
+# to the round-1 regexes over every case and a seeded fuzz corpus.
 # --------------------------------------------------------------------------
 
-_I = re.IGNORECASE
 
-#: `.env` as a path segment (not `os.environ`, not `self.env`), or the dotenv package.
-_DOTENV = re.compile(r"(?<![A-Za-z0-9_])\.env(?![A-Za-z0-9_])|\b(?:dotenv|load_dotenv|dotenv_values)\b")
+def _rx(*patterns: str) -> tuple:
+    return tuple(re.compile(p) for p in patterns)
 
-#: `/proc/<pid>/environ` written out, the same built with a join, or psutil's `.environ()`.
-_PROC_ENVIRON = re.compile(r"/proc/[^\s'\"]{0,64}environ\b|\.environ\s*\(\s*\)")
-_PROC_LITERAL = re.compile(r"['\"]/proc/?['\"]")
-_ENVIRON_LITERAL = re.compile(r"['\"]environ['\"]")
 
-#: The process's own environment.
-_OS_ENVIRON = re.compile(
-    r"\bos\.environb?\b|\bgetenv\s*\(|\bposix\.environ\b"
-    r"|\bfrom\s+os\s+import\s+[\w ,()]{0,200}\b(?:environ|environb|getenv)\b"
+def _word(literal: str) -> str:
+    """`\\b<literal>\\b` for a literal that starts and ends with a word character,
+    written literal-first."""
+    escaped = re.escape(literal)
+    return escaped + r"(?<!\w" + escaped + r")(?!\w)"
+
+
+def _any(rules: tuple, code: str) -> bool:
+    return any(rule.search(code) for rule in rules)
+
+
+#: `.env` as a path segment (not `os.environ`, not `self.env`, not `.venv`), or the dotenv package.
+_DOTENV = _rx(
+    r"\.env(?<![A-Za-z0-9_]\.env)(?![A-Za-z0-9_])",
+    _word("dotenv"),
+    _word("load_dotenv"),
+    _word("dotenv_values"),
 )
 
+#: `/proc/<pid>/environ` (linear, `_proc_environ`), or psutil's `.environ()`;
+#: or `'/proc'` together with `'environ'` (a join).
+_PSUTIL_ENVIRON = _rx(r"\.environ\s*\(\s*\)")
+_PROC_LITERAL = _rx(r"'/proc/?['\"]", r"\"/proc/?['\"]")
+_ENVIRON_LITERAL = _rx(r"'environ['\"]", r"\"environ['\"]")
+_PROC_HEAD = re.compile(r"/proc/")
+_ENVIRON_TAIL = re.compile(r"environ(?!\w)")
+_NO_SPACE_OR_QUOTE = re.compile(r"[^\s'\"]*")
+
+#: The process's own environment; and `from os import ... environ` (linear).
+_OS_ENVIRON = _rx(
+    r"os(?<!\wos)\.environb?(?!\w)",
+    r"getenv(?<!\wgetenv)\s*\(",
+    r"posix(?<!\wposix)\.environ(?!\w)",
+)
+_FROM_OS_IMPORT = re.compile(r"from(?<!\wfrom)\s+os\s+import\s+")
+_ENV_NAMES = re.compile(r"(?:environb|environ|getenv)(?!\w)")
+_IMPORT_LIST = re.compile(r"[\w ,()]*")
+
 #: A child process.
-_SUBPROCESS = re.compile(
-    r"\bsubprocess\b"
-    r"|\bos\.(?:system|popen|exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?|fork|forkpty)\s*\("
-    r"|\bpty\.spawn\b|\basyncio\.create_subprocess_(?:exec|shell)\b"
+_SUBPROCESS = _rx(
+    _word("subprocess"),
+    r"os(?<!\wos)\.(?:system|popen|exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?|fork|forkpty)\s*\(",
+    r"pty(?<!\wpty)\.spawn(?!\w)",
+    r"asyncio(?<!\wasyncio)\.create_subprocess_(?:exec|shell)(?!\w)",
 )
 
 _NET_MODULES = (
     r"socket|ssl|urllib|urllib3|http|requests|httpx|aiohttp|websocket|websockets"
     r"|ftplib|smtplib|telnetlib|pycurl|xmlrpc"
 )
-#: A socket or an HTTP client: imported, imported dynamically, or used by name.
-_NET = re.compile(
-    rf"\bimport\s+[\w ,.]{{0,200}}?\b(?:{_NET_MODULES})\b"
-    rf"|\bfrom\s+(?:{_NET_MODULES})\b"
-    rf"|(?:__import__|import_module)\s*\(\s*['\"](?:{_NET_MODULES})\b"
-    r"|\b(?:socket|urllib\.request|urllib3|requests|httpx|aiohttp|http\.client)\.[A-Za-z_]\w*"
-    r"|\basyncio\.open_connection\b"
+#: A socket or an HTTP client: imported (linear, `_head_then_word`), imported from,
+#: imported dynamically, or used by name.
+_NET = _rx(
+    rf"from(?<!\wfrom)\s+(?:{_NET_MODULES})(?!\w)",
+    rf"__import__\s*\(\s*['\"](?:{_NET_MODULES})(?!\w)",
+    rf"import_module\s*\(\s*['\"](?:{_NET_MODULES})(?!\w)",
+    r"asyncio(?<!\wasyncio)\.open_connection(?!\w)",
 )
+#: `\b(?:socket|urllib.request|...)\.<letter>`: the leading boundary is checked by hand.
+_NET_ATTR = re.compile(r"(?:socket|urllib\.request|urllib3|requests|httpx|aiohttp|http\.client)\.[A-Za-z_]")
+_IMPORT_HEAD = re.compile(r"import(?<!\wimport)\s+")
+_NET_MODULE = re.compile(rf"(?:{_NET_MODULES})(?!\w)")
+_DOTTED_LIST = re.compile(r"[\w ,.]*")
 
-#: Something that writes, creates, moves or deletes a file.
-_WRITE = re.compile(
-    r"\bopen\s*\([^\n]{0,512}?,\s*(?:mode\s*=\s*)?['\"][rbt]*[wax+][rbt+]*['\"]"
-    r"|\.(?:write_text|write_bytes|touch|symlink_to|hardlink_to|mkdir|unlink)\s*\("
-    r"|\bshutil\.(?:copy|copy2|copyfile|copytree|copyfileobj|move|rmtree)\s*\("
-    r"|\bos\.(?:rename|renames|replace|symlink|link|makedirs|mkdir|chmod|remove|unlink|truncate)\s*\("
-    r"|\bO_(?:WRONLY|RDWR|CREAT|APPEND|TRUNC)\b"
-    r"|(?<![>=<\-!])>>?\s*(?:~/|\$\{?HERMES_HOME|/[A-Za-z])"
-    r"|\btee\s+(?:-a\s+)?[~$/]"
+#: Something that writes, creates, moves or deletes a file; and an `open(` with a
+#: write mode within 512 characters on its line (linear).
+_WRITE = _rx(
+    r"\.(?:write_text|write_bytes|touch|symlink_to|hardlink_to|mkdir|unlink)\s*\(",
+    r"shutil(?<!\wshutil)\.(?:copy|copy2|copyfile|copytree|copyfileobj|move|rmtree)\s*\(",
+    r"os(?<!\wos)\.(?:rename|renames|replace|symlink|link|makedirs|mkdir|chmod|remove|unlink|truncate)\s*\(",
+    r"O(?<!\wO)_(?:WRONLY|RDWR|CREAT|APPEND|TRUNC)(?!\w)",
+    r">(?<![>=<\-!]>)>?\s*(?:~/|\$\{?HERMES_HOME|/[A-Za-z])",
+    r"tee(?<!\wtee)\s+(?:-a\s+)?[~$/]",
 )
+_OPEN_HEAD = re.compile(r"open(?<!\wopen)\s*\(")
+_WRITE_MODE = re.compile(r",\s*(?:mode\s*=\s*)?['\"][rbt]*[wax+][rbt+]*['\"]")
+_ONE_LINE = re.compile(r"[^\n]*")
+
 #: Where the write lands, matched anywhere in the program (a co-occurrence).
-_HERMES_HOME = re.compile(r"HERMES_HOME|(?<![A-Za-z0-9_])\.hermes(?![A-Za-z0-9_])")
-_SCRIPTS_DIR = re.compile(r"(?<![A-Za-z0-9_])scripts/|['\"]scripts['\"]")
-_CRON = re.compile(r"(?<![A-Za-z0-9_])cron/|\bjobs\.json\b|\bcrontab\b|/etc/cron|['\"]cron['\"]")
+_HERMES_HOME = _rx(r"HERMES_HOME", r"\.hermes(?<![A-Za-z0-9_]\.hermes)(?![A-Za-z0-9_])")
+_SCRIPTS_DIR = _rx(r"scripts/(?<![A-Za-z0-9_]scripts/)", r"'scripts['\"]", r"\"scripts['\"]")
+_CRON = _rx(
+    r"cron/(?<![A-Za-z0-9_]cron/)",
+    r"jobs(?<!\wjobs)\.json(?!\w)",
+    _word("crontab"),
+    r"/etc/cron",
+    r"'cron['\"]",
+    r"\"cron['\"]",
+)
 
 #: Decoding or running text as code.
-_BASE64_EVAL = re.compile(
-    r"\bbase64\b|\b(?:b64decode|b32decode|b16decode|b85decode|a85decode|urlsafe_b64decode)\b"
-    r"|(?<![\w.])(?:eval|exec|compile)\s*\(|\b__import__\s*\(|\bmarshal\.loads\b"
+_BASE64_EVAL = _rx(
+    _word("base64"),
+    *(_word(name) for name in ("b64decode", "b32decode", "b16decode", "b85decode", "a85decode", "urlsafe_b64decode")),
+    r"eval(?<![\w.]eval)\s*\(",
+    r"exec(?<![\w.]exec)\s*\(",
+    r"compile(?<![\w.]compile)\s*\(",
+    r"__import__(?<!\w__import__)\s*\(",
+    r"marshal(?<!\wmarshal)\.loads(?!\w)",
 )
+
+_WORD_CHAR = re.compile(r"\w")
+
+
+def _boundary_before(code: str, index: int) -> bool:
+    """`\\b` before a word character at `index`: no word character just before it."""
+    return index == 0 or _WORD_CHAR.match(code, index - 1) is None
+
+
+def _bounded_attr(code: str) -> bool:
+    """`_NET_ATTR` at a word boundary. A hit without one moves on by one character."""
+    pos = 0
+    while True:
+        match = _NET_ATTR.search(code, pos)
+        if match is None:
+            return False
+        if _boundary_before(code, match.start()):
+            return True
+        pos = match.start() + 1
+
+
+def _head_then_word(code: str, heads: "re.Pattern[str]", words: "re.Pattern[str]",
+                    span: "re.Pattern[str]", max_span: int, word_boundary: bool) -> bool:
+    """Some `heads` match ends at `e`, a later `words` match starts at `p`, with
+    `p - e <= max_span` and every character of `code[e:p]` in `span`.
+
+    Linear: only the latest head before `p` can qualify (an earlier one has a longer,
+    containing gap), and a head whose gap failed fails for every later word too, so
+    each head's gap is read at most once."""
+    ends = []
+    start = 0
+    while True:  # every head, overlapping ones included (`/proc/proc/`)
+        head = heads.search(code, start)
+        if head is None:
+            break
+        ends.append(head.end())
+        start = head.start() + 1
+    if not ends:
+        return False
+    failed: set[int] = set()
+    pos = 0
+    while True:
+        match = words.search(code, pos)
+        if match is None:
+            return False
+        p = match.start()
+        pos = p + 1
+        if word_boundary and not _boundary_before(code, p):
+            continue
+        i = bisect.bisect_right(ends, p) - 1
+        if i < 0:
+            continue
+        e = ends[i]
+        if p - e > max_span or e in failed:
+            continue
+        if span.fullmatch(code, e, p) is not None:
+            return True
+        failed.add(e)
+
+
+def _proc_environ(code: str) -> bool:
+    return (
+        _head_then_word(code, _PROC_HEAD, _ENVIRON_TAIL, _NO_SPACE_OR_QUOTE, 64, False)
+        or _any(_PSUTIL_ENVIRON, code)
+        or (_any(_PROC_LITERAL, code) and _any(_ENVIRON_LITERAL, code))
+    )
+
+
+def _os_environ(code: str) -> bool:
+    return _any(_OS_ENVIRON, code) or _head_then_word(code, _FROM_OS_IMPORT, _ENV_NAMES, _IMPORT_LIST, 200, True)
+
+
+def _net(code: str) -> bool:
+    return (
+        _any(_NET, code)
+        or _bounded_attr(code)
+        or _head_then_word(code, _IMPORT_HEAD, _NET_MODULE, _DOTTED_LIST, 200, True)
+    )
+
+
+def _write(code: str) -> bool:
+    return _any(_WRITE, code) or _head_then_word(code, _OPEN_HEAD, _WRITE_MODE, _ONE_LINE, 512, False)
+
 
 #: Hosts the program may not reach around the gate, whatever the env says.
 #: Telegram's Bot API and OpenRouter are not in the plugin's env (the agent's own
 #: keys reach them), so they are named here; the others are the plugin's own pins.
 FIXED_GATED_HOSTS = ("index.network", "edgeos.world", "api.telegram.org", "openrouter.ai")
-_HOSTNAME = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
+_HOSTNAME = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+")
 
 
 def flag_on() -> bool:
@@ -169,10 +322,28 @@ def flag_on() -> bool:
     return env_flag_on(FLAG)
 
 
+_SCOPE_LOCK = threading.Lock()
+#: How many reads found the scope variable set to something unrecognised (this process).
+SCOPE_UNRECOGNISED = [0]
+
+
 def scope() -> str:
-    """`AV_EVENTS_CODE_RUN_SCOPE`: `research_consented` (`-` read as `_`), else `all`."""
-    value = env(SCOPE_ENV).strip().lower().replace("-", "_")
-    return value if value in SCOPES else SCOPE_ALL
+    """`AV_EVENTS_CODE_RUN_SCOPE`, read as every av-events variable is (`_core.env`,
+    stripped). Unset or blank: `all`, the lead's default (CLAIMS L12710). Exactly `all`
+    or `research_consented`: itself. Anything else that is set (a typo, `research`, a
+    different case, a homoglyph) fails NARROW to `research_consented`, with one
+    WARNING per process that names the variable and a count, never its value."""
+    value = env(SCOPE_ENV).strip()
+    if not value:
+        return SCOPE_ALL
+    if value in SCOPES:
+        return value
+    with _SCOPE_LOCK:
+        SCOPE_UNRECOGNISED[0] += 1
+        first = SCOPE_UNRECOGNISED[0] == 1
+    if first:
+        logger.warning("av-events: %s unrecognised=1, read as %s", SCOPE_ENV, SCOPE_RESEARCH)
+    return SCOPE_RESEARCH
 
 
 def _host_of(url: Any) -> Optional[str]:
@@ -182,7 +353,7 @@ def _host_of(url: Any) -> Optional[str]:
         host = (urllib.parse.urlsplit(url.strip()).hostname or "").lower()
     except ValueError:
         return None
-    return host if _HOSTNAME.match(host) else None
+    return host if _HOSTNAME.fullmatch(host) else None
 
 
 def gated_hosts() -> frozenset:
@@ -194,7 +365,7 @@ def gated_hosts() -> frozenset:
     try:
         from . import _edgeos
 
-        hosts.update(h for h in _edgeos.ALLOWLIST.hosts if _HOSTNAME.match(h))
+        hosts.update(h for h in _edgeos.ALLOWLIST.hosts if _HOSTNAME.fullmatch(h))
         # Process environment only, as `_edgeos._base_value` reads it.
         host = _host_of(os.environ.get("EDGEOS_API_BASE"))
         if host:
@@ -204,7 +375,7 @@ def gated_hosts() -> frozenset:
     try:
         from . import _pray
 
-        hosts.update(h for h in _pray.CP_HOSTS if _HOSTNAME.match(h))
+        hosts.update(h for h in _pray.CP_HOSTS if _HOSTNAME.fullmatch(h))
         host = _host_of(env(_pray.URL_ENV))
         if host:
             hosts.add(host)
@@ -222,14 +393,24 @@ def gated_hosts() -> frozenset:
     return frozenset(hosts)
 
 
+_HOST_EDGE = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
 def _mentions_host(lowered: str, hosts: Iterable[str]) -> bool:
     """A host named as a whole host or a subdomain of it (`api.index.network` names
-    `index.network`; `myindex.network` does not). One alternation, one linear scan."""
-    names = sorted({h for h in hosts if isinstance(h, str) and _HOSTNAME.match(h)}, key=len, reverse=True)
-    if not names:
-        return False
-    pattern = r"(?<![a-z0-9-])(?:" + "|".join(re.escape(h) for h in names) + r")(?![a-z0-9-])"
-    return re.search(pattern, lowered) is not None
+    `index.network`; `myindex.network` does not). `str.find` per host: linear."""
+    for host in hosts:
+        if not (isinstance(host, str) and _HOSTNAME.fullmatch(host)):
+            continue
+        index = lowered.find(host)
+        while index != -1:
+            end = index + len(host)
+            if (index == 0 or lowered[index - 1] not in _HOST_EDGE) and (
+                end == len(lowered) or lowered[end] not in _HOST_EDGE
+            ):
+                return True
+            index = lowered.find(host, index + 1)
+    return False
 
 
 #: Literals every match of a pattern contains: a pattern runs only when one of its
@@ -255,37 +436,35 @@ def _has(code: str, literals: tuple) -> bool:
 def risk_tags(code: str, hosts: Iterable[str] = ()) -> list[str]:
     """The sorted tags `code` carries; [] for empty code. Never raises on a str.
 
-    The caller caps `code` at `SCAN_LIMIT`; this function reads all it is given."""
+    The caller caps `code` at `SCAN_LIMIT`; this function reads all it is given, in
+    time linear in its length."""
     if not code:
         return []
     hosts = tuple(hosts)
     tags: set[str] = set()
-    if _has(code, _GATE_DOTENV) and _DOTENV.search(code):
+    if _has(code, _GATE_DOTENV) and _any(_DOTENV, code):
         tags.add("dotenv_path")
-    if _has(code, _GATE_ENVIRON) and (
-        _PROC_ENVIRON.search(code) or (_PROC_LITERAL.search(code) and _ENVIRON_LITERAL.search(code))
-    ):
+    if _has(code, _GATE_ENVIRON) and _proc_environ(code):
         tags.add("proc_environ")
-    if _has(code, _GATE_OS_ENVIRON) and _OS_ENVIRON.search(code):
+    if _has(code, _GATE_OS_ENVIRON) and _os_environ(code):
         tags.add("os_environ")
-    if _has(code, _GATE_SUBPROCESS) and _SUBPROCESS.search(code):
+    if _has(code, _GATE_SUBPROCESS) and _any(_SUBPROCESS, code):
         tags.add("subprocess")
-    if _has(code, _GATE_NET) and _NET.search(code):
+    if _has(code, _GATE_NET) and _net(code):
         tags.add("socket_or_http_client")
     # Where a write would land first (cheap, rare), and only then whether there is a write.
     places = []
-    if _has(code, _GATE_HERMES_HOME) and _HERMES_HOME.search(code):
+    if _has(code, _GATE_HERMES_HOME) and _any(_HERMES_HOME, code):
         places.append("hermes_home_write")
-    if _has(code, _GATE_SCRIPTS) and _SCRIPTS_DIR.search(code):
+    if _has(code, _GATE_SCRIPTS) and _any(_SCRIPTS_DIR, code):
         places.append("scripts_dir_write")
-    if _has(code, _GATE_CRON) and _CRON.search(code):
+    if _has(code, _GATE_CRON) and _any(_CRON, code):
         places.append("cron_write")
-    if places and _has(code, _GATE_WRITE) and _WRITE.search(code):
+    if places and _has(code, _GATE_WRITE) and _write(code):
         tags.update(places)
-    lowered = code.lower()
-    if any(isinstance(h, str) and h in lowered for h in hosts) and _mentions_host(lowered, hosts):
+    if _mentions_host(code.lower(), hosts):
         tags.add("gated_host")
-    if _has(code, _GATE_BASE64_EVAL) and _BASE64_EVAL.search(code):
+    if _has(code, _GATE_BASE64_EVAL) and _any(_BASE64_EVAL, code):
         tags.add("base64_or_eval")
     return sorted(tags)
 
@@ -321,7 +500,8 @@ def refusals(texts: Iterable[str]) -> tuple[int, list[str]]:
         for match in _REFUSAL.finditer(text):
             count += 1
             name = match.group(1)
-            names.add(name if name in TOOL_CATEGORIES else OTHER_TOOL)
+            listed = name in TOOL_CATEGORIES and _TOOL_NAME_SHAPE.fullmatch(name) is not None
+            names.add(name if listed else OTHER_TOOL)
             if count >= MAX_COUNT:
                 break
         if count >= MAX_COUNT:
@@ -364,19 +544,21 @@ def code_run_payload(
     refused, refused_names = refusals(t[:SCAN_LIMIT] for t in texts)
     raw_error = error_type if isinstance(error_type, str) else None
     keyed = capture != "metadata" and code is not None
+    digest = hasher(code) if keyed else None
+    category = TOOL_CATEGORY_VERSION
     return {
         "consent_scope": consent_scope if consent_scope in SCOPES else SCOPE_ALL,
-        "code_hmac": hasher(code) if keyed else None,
+        "code_hmac": digest if isinstance(digest, str) and _HMAC_SHAPE.fullmatch(digest) else None,
         "code_bytes": len(code.encode("utf-8", errors="surrogatepass")) if keyed else None,
         "status": normalise_status(status),
-        "error_type": raw_error if raw_error and _ERROR_TYPE.match(raw_error) else None,
+        "error_type": raw_error if raw_error and _ERROR_TYPE_SHAPE.fullmatch(raw_error) else None,
         "tool_calls_made": _bounded_count(parsed.get("tool_calls_made")) if parsed is not None else None,
         "unavailable_tool_refusals": refused,
         "unavailable_tools": refused_names,
         "risk_tags": risk_tags((code or "")[:SCAN_LIMIT], hosts),
         "scan_truncated": truncated,
         "rules_version": RULES_VERSION,
-        "category_version": TOOL_CATEGORY_VERSION,
+        "category_version": category if isinstance(category, str) and _LABEL_SHAPE.fullmatch(category) else None,
     }
 
 

@@ -61,7 +61,7 @@ plugins/av-events/
 | `AV_PLUGIN_EVENTS` | *(off)* | `1`, `true`, `yes` or `on` emits `plugin.inventory@1` and `plugin.unknown@1` from av-approval's plugin inventory (SEC-3; see "Events from other plugins"). **Off until the data release that registers both types is live**; while off each delivery is counted `plugin_dropped_switch_off` (a counter only: unlike the other drop reasons it never logs a line) and nothing is emitted. Read like the other switches (process environment, then `.env`), on every delivery. |
 | `AV_MODEL_EVENTS` | *(off)* | `1`, `true`, `yes` or `on` emits `model.observed@1` and `model.offlist@1` from av-approval's model observer (SEC-6 half 2; see "Events from other plugins"). A switch of its own, separate from `AV_PLUGIN_EVENTS`. **Off until agentvillage-data's DATA-477 release that registers both types is live**; while off each delivery is counted `model_dropped_switch_off` (a counter only, never a log line) and nothing is emitted. Rollback is this switch off. Read like the other switches (process environment, then `.env`), on every delivery. |
 | `AV_EVENTS_CODE_RUN` | *(off)* | `1`, `true`, `yes` or `on` emits `code.run@1` for every `execute_code` call (see "Code runs (P10-P1)"). Unset, blank, `0` or any other value is off, and then nothing is built. **Off until agentvillage-data registers `code.run@1`**: ingest quarantines an unknown type. Read like the other switches (process environment, then `.env`), on every `execute_code` call. |
-| `AV_EVENTS_CODE_RUN_SCOPE` | `all` | `all` or `research_consented` (`-` read as `_`, case-insensitive); unset, blank or anything else is `all`. Sent as the event's `consent_scope`; agentvillage-data decides what it keeps from it (see "Code runs (P10-P1)"). It changes nothing on the box. |
+| `AV_EVENTS_CODE_RUN_SCOPE` | `all` | Unset or blank: `all` (the lead's default). Exactly `all` or `research_consented` (surrounding whitespace ignored): itself. **Any other value that is set** (a typo, `research`, another case, a homoglyph) **fails narrow to `research_consented`**, with one WARNING per process that names the variable and a count, never the value. Sent as the event's `consent_scope`; agentvillage-data decides what it keeps from it (see "Code runs (P10-P1)"). It changes nothing on the box. |
 | `AV_TERMINAL_ARGS_FIX` | `1` | Any of `0`, `false`, `no`, `off` turns off the foreground `terminal` argument fix (see "Foreground `terminal` calls (DATA-312)"). **Process environment only**, read on every `pre_tool_call`; a `.env` line reaches it through Hermes's own load at gateway start. Independent of every telemetry switch. |
 | `AV_EDGEOS_CURL_GUARD` | `1` | Any of `0`, `false`, `no`, `off` turns off the refusal of hand-written calls to EdgeOS's directory and `/humans/me` (see "Hand-written EdgeOS directory and profile calls (EDGEOS-CURL-GUARD)"). **Process environment only**, read on every `pre_tool_call`. Independent of every telemetry switch. |
 | `AV_PROMPT_REFRESH` | `team` | F1 (see "Prompt refresh (F1)"). `team` (also unset or blank): on only where `AV_TEAM_TENANT` is exactly `1` once trimmed, the line the control plane writes into a team tenant's `$HERMES_HOME/.env` (control-plane `team-tenant-env.js`). `1`, `true`, `yes` or `on`: on everywhere. `0`, `false`, `no` or `off`: off. Any other value (`disabled`, `none`, a typo): off, with one WARNING per process that names the variable, not the value, like the other av-events switches, so a mistyped off never leaves it on. `prompt_refresh` in `AV_HOOKS_DISABLED` wins over all of these. Read like the other switches (process environment, then `.env`), at every turn start. Independent of every telemetry switch. |
@@ -1151,7 +1151,7 @@ and nothing is sent.
 
 | Key | Value |
 |---|---|
-| `consent_scope` | `all` \| `research_consented`, from `AV_EVENTS_CODE_RUN_SCOPE` |
+| `consent_scope` | `all` \| `research_consented`, from `AV_EVENTS_CODE_RUN_SCOPE` (an unrecognised set value is `research_consented`) |
 | `code_hmac` | the keyed hash (HMAC-SHA256 under the tenant key, see "Keyed hashes") of the program text `args.code`; null in `metadata`, without a key, or with no string `code` |
 | `code_bytes` | the program's UTF-8 byte length; null as `code_hmac` (except without a key) |
 | `status`, `error_type` | the same closed values `tool.call` sends |
@@ -1167,7 +1167,12 @@ The envelope carries the same `session_id`, `turn_id`, `run_id` and `tool_call_i
 `tool.call`, a fresh event id, actor `agent`, `evidence_class: agent_report`.
 
 **Risk tags.** Computed on the box from the program text by plain regex checks, never sent as
-text. A tag says the text *could* do the thing, not that it did: the checks are static, they
+text, in time linear in the scanned text: every rule starts with a literal (word-boundary checks
+come after it), and the three rules that relate two places (an `open(` and its write mode within
+512 characters on its line, an `import` and a module within 200, a `from os import` and a name
+within 200) and `/proc/…environ` (within 64) use a linear two-place check. A test holds the tags to
+the round-1 regexes over every case and a seeded fuzz corpus, and review-b's dense shapes at the
+cap take under 30 ms. A tag says the text *could* do the thing, not that it did: the checks are static, they
 over-fire on a comment or a co-occurrence (a one-letter file name such as `'x'` reads as a write
 mode), and string building evades them.
 
@@ -1183,6 +1188,11 @@ mode), and string building evades them.
 | `cron_write` | a write, in a program that names `cron/`, `jobs.json`, `crontab` or `/etc/cron` |
 | `gated_host` | a host the plugin already holds, as a whole host or a subdomain: `index.network`, `edgeos.world` and the EdgeOS seed hosts, the control plane's `CP_HOSTS`, `api.telegram.org`, `openrouter.ai`, and the hosts of `INDEX_API_URL`/`INDEX_MCP_URL` (as `record_intention` reads them), `EDGEOS_API_BASE` (process environment) and `CONTROL_PLANE_URL` |
 | `base64_or_eval` | `base64`, a `b64decode`-style decoder, a bare `eval(`, `exec(` or `compile(`, `__import__(`, `marshal.loads` (not `ast.literal_eval`, `re.compile`) |
+
+**Shapes.** Every value the contract checks by pattern (`code_hmac`, `error_type`,
+`rules_version`, `category_version`, a listed tool name) is checked here with `re.fullmatch`, never
+a bare `$` (which in Python also accepts a trailing newline that data's door refuses); a value off
+its shape is null. `tool.call`'s own `error_type` check in `_tools.py` is unchanged.
 
 **What is never sent.** The program, its output, its error text, a path, a host, an env name or
 value, a refused tool's name unless the allowlist lists it, and any id `tool.call` does not
