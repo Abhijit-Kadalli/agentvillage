@@ -779,7 +779,7 @@ def handle(args, **kwargs):
             if not isinstance(status, dict) or status.get("error"):
                 return json.dumps({"error": "approval_preview_unavailable"})
             if status.get("status") == "sent":
-                return json.dumps({"data": status})
+                return json.dumps({"data": status, "handling": HANDLING}, ensure_ascii=False)
             authorization, refusal = authorize_send(status.get("approvalPayload"), payload["draftId"])
             if refusal:
                 return json.dumps(refusal)
