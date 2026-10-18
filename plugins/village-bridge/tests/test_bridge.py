@@ -394,7 +394,7 @@ class BridgeTest(unittest.TestCase):
   self.assertIn('skylight.status',mini.READ_OPERATIONS);self.assertNotIn('skylight.status',mini.WRITE_OPERATIONS)
   self.assertFalse(mini.READ_OPERATIONS&mini.WRITE_OPERATIONS)
   self.assertEqual(mini.READ_OPERATIONS|mini.WRITE_OPERATIONS,set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
-  self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write','slopfolio.prepare'})
+  self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
   # The gate is off, unverified or absent: the write is refused before any network call.
@@ -454,7 +454,7 @@ class BridgeTest(unittest.TestCase):
   # No new tool name: both operations go through `village`, the 36th gated tool (exact full-match matcher).
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status'})
+  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status'})
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()
@@ -542,6 +542,9 @@ class BridgeTest(unittest.TestCase):
   self.assertTrue(all(request['draftId']==draft for request in requests))
   self.assertEqual(requests[1],requests[3])
   self.assertEqual(ap.propose.call_args_list[0],ap.propose.call_args_list[1])
+  # B-133: both proposes carry the member class and its derived key, so the retry finds the same task.
+  self.assertEqual(ap.propose.call_args.args[:2],('marketplace.app.action.gold-stars.send','marketplace.app.action.gold-stars.send:'+draft))
+  self.assertEqual(ap.start.call_args.args[1],'marketplace.app.action.gold-stars.send:'+draft)
   ap.wait.assert_called_once_with('propose:'+'a'*32)
   ap.start.assert_called_once()
  # ov#370 round 1 (review-b S1): handle()-level sends with a fake daemon.
@@ -603,6 +606,19 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(requests[1]['approval'],requests[3]['approval'])
   # The retry replays the executed proposal: one start in all.
   ap.start.assert_called_once();ap.wait.assert_called_once()
+ def test_unconfirmed_preview_never_proposes_the_member_class(self):
+  # B-133: the chat confirmation is the app's, not the bridge's. A status answer refusing the draft
+  # (star_confirmation_required, or any other error) ends the send before authorize_send: no propose,
+  # no start, no send request.
+  draft,_=self.star()
+  ap=self.fake_daemon('autonomous','policy')
+  for status in ({'error':'star_confirmation_required','instruction':'Show the exact preview and wait for a new reply confirming it.'},{'error':'star_preview_expired'}):
+   self.transport.reset_mock();self.transport.side_effect=None;self.transport.return_value=status
+   with patch.object(mini,'approval_modules',return_value=ap),patch.object(bridge,'authorize_send',wraps=bridge.authorize_send) as approve:
+    self.assertEqual(self.call({'operation':'gold-stars.send','draftId':draft}),{'error':'approval_preview_unavailable'})
+   approve.assert_not_called()
+   self.transport.assert_called_once_with(self.config,{'operation':'gold-stars.status','draftId':draft})
+  ap.propose.assert_not_called();ap.start.assert_not_called()
  def test_sent_receipt_does_not_request_another_approval(self):
   self.transport.return_value={'status':'sent'}
   with patch.object(bridge,'authorize_send') as approve:
@@ -631,6 +647,7 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(mini.APP_SCOPED_OPERATIONS,set(self.CONTEXT_OPS))
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
   self.assertEqual([op for op in enum if op in mini.APP_SCOPED_OPERATIONS],self.CONTEXT_OPS);self.assertEqual(len(enum),len(set(enum)))
+  self.assertEqual([op for op in enum if op.startswith('mini-app.')],self.CONTEXT_OPS)
   # In the appId description, not the tool description (av-events test_ask_village_findable: tool_search ranks on the latter).
   app_id=bridge.SCHEMA['parameters']['properties']['appId']['description']
   self.assertIn('mini-app.context.write (a write',app_id);self.assertIn('mini-app.context.read (a read)',app_id)
