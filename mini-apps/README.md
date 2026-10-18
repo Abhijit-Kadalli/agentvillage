@@ -221,6 +221,82 @@ by the app, never invented by the model. A simulated receipt preserves
 claim mock funds arrived. Later test-paid notifications use CP's distinct
 `forkicks.paid_test` template.
 
+#### On-request menu board attachments
+
+The same installed **read** operation `forkicks.menu` accepts optional
+`format: "image"` and `theme: "chalk" | "paper"` (theme requires image format;
+default chalk, paper provisional). Omitting format leaves the text call unchanged.
+No operation, install projection, bundle version, CP sender or purchase gate changes.
+AV uses its existing merchant bearer for `GET /api/agent/menu-image`, forwarding
+date/location filters and theme. The exact response is
+`{kind:"forkicks-menu-image",revision,theme,provisional,menu,pages}` with pages
+`{mimeType:"image/png",filename,width,height,altText,base64}`. The full canonical
+menu snapshot and page alternatives carry the same revision; no public asset URL.
+
+Both bridge and native client enforce bounded envelopes: 24 MiB JSON, at most
+12 pages, 4 MiB PNG per page, 16 MiB decoded total, dimensions at most 4096 each
+and 12 million pixels. Unknown keys, duplicate filenames, malformed base64,
+wrong MIME/signature/IHDR dimensions or theme are refused. Native additionally
+checks every PNG chunk boundary and CRC before writing any page. Excess menus
+fail explicitly rather than truncating or shrinking text. A media failure
+returns `forkicks_menu_image_unavailable` and current text where available,
+otherwise explicitly offers the text menu read; never claims an image was sent.
+
+The native plugin writes 0600 files inside private 0700 request directories in
+`$HERMES_HOME/cache/images/forkicks/`, opening each cache component without
+following symlinks and ignoring merchant filenames for filesystem paths.
+This is a fresh render per request, not a stale poster cache. Files remain local
+until cache cleanup; this feature adds no retention timer. Uninstall revokes
+future reads, not prior files.
+No private merchant bearer or browser/session token reaches the returned text.
+Success returns **raw** `MEDIA:"<absolute PNG path>"` lines plus accessible text;
+the skill instructs the agent to repeat all lines verbatim in its final reply.
+
+Transport evidence: actual Hermes source at local runtime pin
+[`118984d7a02f8a8baec11255002cbbab7c202e06`](https://github.com/NousResearch/hermes-agent/tree/118984d7a02f8a8baec11255002cbbab7c202e06),
+`gateway/platforms/base.py:3023–3082` masks markers inside JSON string values
+and parses raw lines; `:674–679` allows the cache image root; `:4002–4038`
+dispatches images and reports failed attachments; `:4162–4175` extracts final
+response media. `gateway/run.py:1313–1410` auto-appends only speech/image-generation
+producer results, **not village**, so tool success alone is not a delivery receipt.
+The reviewed v2026.9.24 tag has the same convention. No Telegram send is added.
+
+Opt-in isolated local fixture smoke, run only after preview integration:
+
+```sh
+python3 scripts/forkicks-menu-media-smoke.py \
+  --fixture-home "$HOME/.local/state/sdj/agentvillage-local/fake-agents/8b3aa9f5-79f4-4a1e-adcc-3ed800c1c105/.hermes" \
+  --origin https://jmill-desktop.tail587341.ts.net:8472 \
+  --theme chalk --evidence-dir /absolute/private/evidence/chalk
+```
+
+Repeat with paper and a distinct evidence directory. It copies only the fixture
+credential/install projection into a temporary `HERMES_HOME`, changes the origin
+only in that copy (native HTTP remains forbidden), binds an explicit simulated
+private-owner session, and calls the actual native handler/HTTPS transport to
+the existing AV preview and configured merchant. It asserts raw attachment
+extraction, real private PNG bytes and the JSON-string masking regression.
+Without `--hermes-source`, it downloads the pinned source above, records its
+SHA-256, and AST-executes the exact PNG extraction methods/helpers: this is
+**source-derived parser proof, not a running Hermes or full path-policy proof**.
+With a prepared Hermes checkout/dependencies, pass `--hermes-source /opt/hermes`
+to import the actual runtime parser and validate media path policy too.
+Neither mode starts a model, gateway, Telegram sender, order or payment.
+
+Preview integration: AV's declared frontend is `wt-mini-apps-canary` on :8472,
+local CP/tools are `wt-mini-apps-canary-runtime/control-plane` and
+`wt-mini-apps-canary-tools`, merchant preview is the separate For Kicks service
+on :8478. Integrate app feature changes into the existing local preview branch,
+overlay plugin/skill into its tools preview, and canonical renderer into the
+merchant preview; use each declared service lifecycle, not an ad hoc server.
+Re-stage the existing installed skill through mini-app reconciliation and reload
+the managed agent plugin normally. Do not merge/push main or promote production.
+The local fake CP has no model/Hermes Telegram receipt; the smoke cannot prove
+model forwarding or Telegram acceptance. Unit entry points:
+`pytest plugins/village-bridge/tests/test_forkicks_media.py` (optional real parser
+half with `HERMES_AGENT_SRC`) and AV's `forkicks.test.ts` Vitest suite.
+
+
 ### Per-app context: `mini-app.context.read` and `mini-app.context.write`
 
 NEW-03 (rc44, P-013): an app whose CP catalog entry carries them may read and

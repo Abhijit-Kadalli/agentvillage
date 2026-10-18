@@ -21,6 +21,7 @@ from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit
 from ._mini_apps import installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT
 from ._forkicks import save_preview, load_preview, authorize_order, ORDER_APPROVE_IN_BOT
+from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
 
 SETTINGS = "https://agents.edgecity.live/connections/village"
 SIGNIN = "https://agents.edgecity.live/signin"
@@ -41,6 +42,8 @@ SCHEMA = {
         "arguments": {"type": "object", "description": "Arguments matching the reviewed app tool schema, or the installed skill's context read/write input. No URL, credentials or arbitrary MCP tools."},
         "date": {"type": "string", "description": "For Kicks menu date, YYYY-MM-DD in IST."},
         "locationId": {"type": "string", "description": "Exact For Kicks location id returned by menu/schedule."},
+        "format": {"type": "string", "enum": ["image"], "description": "forkicks.menu only: on explicit request, prepare the live menu as image attachments. Omit for the unchanged text menu."},
+        "theme": {"type": "string", "enum": ["chalk", "paper"], "description": "forkicks.menu with format:image only; default chalk. Paper is a provisional concept."},
         "from": {"type": "string", "description": "For Kicks schedule start date, YYYY-MM-DD in IST."},
         "days": {"type": "integer", "minimum": 1, "maximum": 31},
         "items": {"type": "array", "maxItems": 50, "items": {"type": "object", "properties": {
@@ -605,11 +608,12 @@ def transport(config, payload):
         with opener.open(request, timeout=60 if payload.get("operation") in ("gold-stars.send", "forkicks.order.confirm") else 25) as response:
             # rolodex.person: a tighter overall byte bound (the largest legitimate answer is about 30 KB), applied
             # before any parse, and a duplicate key at any depth refuses the whole answer.
-            limit = 65536 if payload.get("operation") == "rolodex.person" else 262144
+            image_request = payload.get("operation") == "forkicks.menu" and payload.get("format") == "image"
+            limit = MENU_IMAGE_JSON_BYTES if image_request else 65536 if payload.get("operation") == "rolodex.person" else 262144
             data = response.read(limit + 1)
             if len(data) > limit:
                 return {"error": "response_too_large", "instruction": "Narrow the query or reduce the result limit; no partial result was returned."}
-            if payload.get("operation") == "rolodex.person":
+            if payload.get("operation") == "rolodex.person" or image_request:
                 return json.loads(data, object_pairs_hook=no_duplicate_keys)
             return json.loads(data)
     except HTTPError as error:
@@ -722,8 +726,11 @@ def handle(args, **kwargs):
             if op == "gold-stars.send":
                 payload["turnId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["gold-star-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))
         elif op in ("forkicks.menu", "forkicks.schedule"):
-            allowed = {"date", "locationId"} if op == "forkicks.menu" else {"from", "days"}
+            allowed = {"date", "locationId", "format", "theme"} if op == "forkicks.menu" else {"from", "days"}
             if set(args) - (allowed | {"operation"}):
+                raise ValueError("invalid_arguments")
+            if op == "forkicks.menu" and (("format" in args and args["format"] != "image") or
+                    ("theme" in args and (args.get("format") != "image" or args["theme"] not in ("chalk", "paper")))):
                 raise ValueError("invalid_arguments")
             payload.update({key: value for key, value in args.items() if key != "operation"})
         elif op == "forkicks.order.prepare":
@@ -778,7 +785,29 @@ def handle(args, **kwargs):
             if not installed(home, "forkicks", op):
                 return json.dumps({"error": "mini_app_not_installed"})
             payload["approval"] = authorization
-        result = transport(config, payload)
+        try:
+            result = transport(config, payload)
+        except Exception:
+            if op != "forkicks.menu" or payload.get("format") != "image":
+                raise
+            result = {"error": "forkicks_menu_image_unavailable"}
+        if op == "forkicks.menu" and payload.get("format") == "image":
+            try:
+                return materialize(home, result, payload.get("theme", "chalk"))
+            except Exception:
+                # Do not serialize MEDIA tags inside JSON: Hermes deliberately masks
+                # those. On failure there are no directives and no delivery claim.
+                menu = result.get("menu") if isinstance(result, dict) else None
+                try:
+                    if menu is None:
+                        menu = transport(config, {key: value for key, value in payload.items() if key not in ("format", "theme")})
+                    menu_shape(menu)
+                except Exception:
+                    menu = None
+                return json.dumps({"error": "forkicks_menu_image_unavailable", **({"menu": menu} if menu is not None else {}),
+                    "instruction": "The image could not be fetched, validated or saved; no attachment was created. " +
+                    ("Use this current text menu, or retry the image only on request." if menu is not None else "Offer forkicks.menu without format for the current text menu.") +
+                    " Do not claim image delivery."}, ensure_ascii=False)
         if op == "forkicks.order.prepare":
             save_preview(home, result, context, config)
         if op == "rolodex.person":
