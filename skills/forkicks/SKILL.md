@@ -115,8 +115,9 @@ an item, change fulfilment or add drinks to evade this restriction.
    authorized retry; its idempotency key is fixed. Do not spend again to recover
    a missing response. An expired quote needs a fresh preview and approval.
    If confirm returns `forkicks_confirm_in_progress`, that order is already being
-   confirmed: wait a few seconds and check it with `forkicks.order.status`, or
-   confirm the SAME draft again; never prepare a new order for it.
+   confirmed. Wait about two minutes, then confirm the SAME draft again: if it
+   went through you get the same receipt. Never prepare a new order for it, and
+   never tell the owner it was placed until a confirm returns the receipt.
    If confirmation explicitly refuses with `pickup_only:<itemId>`, the merchant
    changed the restriction after the preview: relay the switch-to-pickup-or-remove
    explanation. Nothing was placed. Ask which correction the resident wants,

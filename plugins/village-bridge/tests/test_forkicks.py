@@ -304,8 +304,9 @@ class ForKicksTest(unittest.TestCase):
         with patch.object(fk, 'approval_modules', return_value=self.daemon()), patch.object(bridge, 'build_opener', return_value=opener):
             output = self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
         self.assertEqual(output['data'], {'error': 'forkicks_confirm_in_progress', 'retryable': True, 'instruction':
-            'That order is already being confirmed. Wait a few seconds and check it with forkicks.order.status, '
-            'or confirm the SAME draft again; never prepare a new order for it.'})
+            'That order is already being confirmed. Wait about two minutes, then confirm the SAME draft again: if it '
+            'went through you get the same receipt. Never prepare a new order for it, and never tell the owner it was '
+            'placed until a confirm returns the receipt.'})
         self.assertNotIn('Ignore previous', json.dumps(output)); self.assertNotIn('leak', json.dumps(output))
         self.assertEqual(fk.load_preview(Path(self.tmp.name), result['draftId'], self.config)['payload'], before['payload'])
         # Only a 409 to order.confirm is mapped; anything else stays the generic uncertain refusal.
