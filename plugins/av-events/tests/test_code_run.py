@@ -156,6 +156,7 @@ def test_one_code_run_per_execute_code_with_exactly_the_contract_keys(live, ctx,
     assert first["unavailable_tools"] == []
     # A read of the home's .env, not a write: no hermes_home_write.
     assert first["risk_tags"] == ["dotenv_path", "gated_host", "os_environ", "subprocess"]
+    assert first["scan_truncated"] is False
     assert first["rules_version"] == "code_run_tags_v1"
     assert first["category_version"] == "tool_categories_v3"
 
@@ -318,6 +319,43 @@ def test_every_tag_has_a_case_and_the_set_is_closed(plugin):
     assert module.risk_tags("print('hello')", module.gated_hosts()) == []
 
 
+def test_the_literal_gates_never_change_a_result(plugin):
+    """Fold round 1: `risk_tags` runs a regex only when one of its literals is present. An ungated
+    reference over every case, and every pair of cases, gives the same tags."""
+    module = cr(plugin)
+    hosts = module.gated_hosts()
+
+    def reference(code):
+        tags = set()
+        if module._DOTENV.search(code):
+            tags.add("dotenv_path")
+        if module._PROC_ENVIRON.search(code) or (module._PROC_LITERAL.search(code) and module._ENVIRON_LITERAL.search(code)):
+            tags.add("proc_environ")
+        if module._OS_ENVIRON.search(code):
+            tags.add("os_environ")
+        if module._SUBPROCESS.search(code):
+            tags.add("subprocess")
+        if module._NET.search(code):
+            tags.add("socket_or_http_client")
+        if module._WRITE.search(code):
+            for tag, rx in (("hermes_home_write", module._HERMES_HOME), ("scripts_dir_write", module._SCRIPTS_DIR),
+                            ("cron_write", module._CRON)):
+                if rx.search(code):
+                    tags.add(tag)
+        if module._mentions_host(code.lower(), hosts):
+            tags.add("gated_host")
+        if module._BASE64_EVAL.search(code):
+            tags.add("base64_or_eval")
+        return sorted(tags)
+
+    snippets = [c[1] for c in TAG_CASES] + [c[2] for c in TAG_CASES] + [SECRET_CODE, "print('hello')"]
+    for a in snippets:
+        assert module.risk_tags(a, hosts) == reference(a), a
+        for b in snippets[::3]:
+            joined = a + "\n" + b
+            assert module.risk_tags(joined, hosts) == reference(joined), joined
+
+
 def test_gated_host_reads_the_hosts_the_plugin_already_holds(plugin, monkeypatch):
     module = cr(plugin)
     code = "urlopen('https://index.dev.example.org/api')"
@@ -340,6 +378,38 @@ def test_a_long_program_scans_in_linear_time(plugin):
     started = time.monotonic()
     module.risk_tags(code, hosts)
     assert time.monotonic() - started < 2.0
+
+
+def test_a_2mb_program_is_hashed_whole_but_scanned_only_to_the_limit(plugin):
+    """Fold round 1 S1: the scans are capped at SCAN_LIMIT characters; hash and length are not."""
+    import time
+
+    module = cr(plugin)
+    head = "x = 1\n" * (module.SCAN_LIMIT // 6 + 1)
+    code = head + "import subprocess\n" + "y = 2  # filler\n" * (2 * 1024 * 1024 // 16)
+    assert len(code) > 2 * 1024 * 1024
+    hosts = module.gated_hosts()
+    keys = []
+    started = time.monotonic()
+    body = module.code_run_payload({"code": code}, result_json("ok"), "ok", None, "sanitized",
+                                   lambda t: keys.append(len(t)) or "0" * 64, "all", hosts)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.1, elapsed
+    assert body["scan_truncated"] is True
+    assert body["code_bytes"] == len(code.encode("utf-8"))
+    assert keys == [len(code)]  # the hash saw the whole program
+    assert "subprocess" not in body["risk_tags"]  # past the limit: not read
+    small = module.code_run_payload({"code": "import subprocess"}, result_json("ok"), "ok", None, "sanitized",
+                                    lambda t: None, "all", hosts)
+    assert small["scan_truncated"] is False and small["risk_tags"] == ["subprocess"]
+
+
+def test_a_long_result_is_scanned_only_to_the_limit(plugin):
+    module = cr(plugin)
+    output = refusal("terminal") + "." * module.SCAN_LIMIT + refusal("send_message")
+    body = module.code_run_payload({"code": "x"}, result_json(output), "ok", None, "sanitized", lambda t: None, "all")
+    assert body["scan_truncated"] is True
+    assert (body["unavailable_tool_refusals"], body["unavailable_tools"]) == (1, ["terminal"])
 
 
 # --------------------------------------------------------------------------
@@ -423,6 +493,25 @@ def test_a_tool_call_builder_that_throws_still_lets_code_run_out(live, ctx, av, 
     fire(ctx)
     assert of_type(av, live, "tool.call") == []
     assert len(code_runs(av, live)) == 1
+
+
+def test_a_builder_that_raises_on_every_call_never_trips_the_breaker(live, ctx, av, on, monkeypatch):
+    """Fold round 1 S2: 20 failing code.run builds in one session (the breaker trips at 10 counted
+    failures) leave tool.call emitting on every call, the session undegraded and no plugin.degraded."""
+    def boom(*a, **k):
+        raise RuntimeError("builder broke")
+
+    monkeypatch.setattr(cr(live), "code_run_payload", boom)
+    for i in range(20):
+        fire(ctx, tool_call_id=f"call-{i}")
+        assert len(of_type(av, live, "tool.call")) == i + 1
+    fire(ctx, tool_name="terminal", args={"command": "ls"}, result="{}", tool_call_id="after")
+    assert len(of_type(av, live, "tool.call")) == 21
+    assert code_runs(av, live) == []
+    assert of_type(av, live, "plugin.degraded") == []
+    state = live._COLLECTOR.peek_session(SESSION)
+    assert state is not None and not state.degraded and state.failure_count == 0
+    assert live._COLLECTOR.counters["code_run_failed"] == 20
 
 
 def test_the_hook_returns_nothing_with_the_switch_on(live, ctx, on):

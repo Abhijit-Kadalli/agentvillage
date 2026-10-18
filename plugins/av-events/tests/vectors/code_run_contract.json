@@ -12,6 +12,7 @@
   "actor": "agent",
   "evidence_class": "agent_report",
   "envelope_ids": ["session_id", "turn_id", "run_id", "tool_call_id"],
+  "scan_limit_chars": 262144,
   "switch": {"env": "AV_EVENTS_CODE_RUN", "on": ["1", "true", "yes", "on"], "default": "off", "read": "per execute_code call"},
   "scope_switch": {"env": "AV_EVENTS_CODE_RUN_SCOPE", "values": ["all", "research_consented"], "default": "all", "unknown": "all"},
   "fields": {
@@ -24,6 +25,7 @@
     "unavailable_tool_refusals": {"kind": "int", "range": [0, 10000], "nullable": false},
     "unavailable_tools": {"kind": "array", "items": "a tool_categories name, or other", "max_items": 16, "sorted": true, "distinct": true, "nullable": false},
     "risk_tags": {"kind": "array", "enum": ["base64_or_eval", "cron_write", "dotenv_path", "gated_host", "hermes_home_write", "os_environ", "proc_environ", "scripts_dir_write", "socket_or_http_client", "subprocess"], "sorted": true, "distinct": true, "nullable": false},
+    "scan_truncated": {"kind": "bool", "nullable": false, "true_when": "the tags or the refusal count read only the first 262144 characters of the program or of a result text; code_hmac and code_bytes always cover the whole program"},
     "rules_version": {"kind": "regex", "regex": "^[a-z][a-z0-9_]{0,63}$", "nullable": false, "current": "code_run_tags_v1"},
     "category_version": {"kind": "regex", "regex": "^[a-z][a-z0-9_]{0,63}$", "nullable": true, "current": "tool_categories_v3"}
   },

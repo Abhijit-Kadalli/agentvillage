@@ -247,7 +247,7 @@ backlog can differ from `emitted_at` by minutes. Every `marts` time series is bu
 | `message.in` | `pre_llm_call` (`user_message`) | `channel`, `length`, `content_hash`, `flags` {`is_ask`, `is_recommendation`, `sentiment`}, `flags_rule`, `cron_job_id`, `silent` — see "Messages" |
 | `message.out` | `post_llm_call` (`assistant_response`) | as above; `silent` is set on a cron run's reply |
 | `tool.call` | `post_tool_call` | `tool_name`, `tool_category`, `args_hash`, `result_hash`, `ok`, `status`, `latency_ms`, `receipt`, `error_type`, `operation`, `target_system`, `category_version`, plus `args_length` / `result_length` above `metadata` — see "Tool calls" |
-| `code.run` | `post_tool_call` on `execute_code`, after its `tool.call`, behind `AV_EVENTS_CODE_RUN` (default off) | closed, every key required, in this order, no text: `consent_scope`, `code_hmac`, `code_bytes`, `status`, `error_type`, `tool_calls_made`, `unavailable_tool_refusals`, `unavailable_tools`, `risk_tags`, `rules_version`, `category_version`; the envelope ids of the call's `tool.call` — see "Code runs (P10-P1)" |
+| `code.run` | `post_tool_call` on `execute_code`, after its `tool.call`, behind `AV_EVENTS_CODE_RUN` (default off) | closed, every key required, in this order, no text: `consent_scope`, `code_hmac`, `code_bytes`, `status`, `error_type`, `tool_calls_made`, `unavailable_tool_refusals`, `unavailable_tools`, `risk_tags`, `scan_truncated`, `rules_version`, `category_version`; the envelope ids of the call's `tool.call` — see "Code runs (P10-P1)" |
 | `action.attempted` / `action.failed` | `post_tool_call` on an EdgeOS RSVP or cancellation | `action_class`, `target_system`, `receipt`, `execution_token_id`, `error`, `reverses_action_id`, `reversal`, `supersedes_action_id`, `operation`, `edgeos_event_id`, `occurrence_start`, `allowlist_version` — see "EdgeOS actions" |
 | `action.receipted` | `post_tool_call` on the EdgeOS read that confirms it | as above, with `receipt` {`kind: edgeos_confirming_read`, `id`: the participant id's keyed hash} |
 | `cron.run` | the cron tail, on the flusher thread | `job_id`, `job_name`, `execution_id`, `status`, `input_tokens`, `output_tokens`, `claimed_at`, `started_at`, `finished_at`, `delivery_outcome` — see "Cron capture" |
@@ -1129,8 +1129,9 @@ tool, before any `action.*` or `intention.*` the same call implies.
   `llm.call`; `occurred_at` is when the call returned and `occurred_at_earliest` that minus
   `duration_ms`.
 - **Isolation.** The `tool.call`, the EdgeOS path, `code.run` and intention capture are isolated
-  from one another inside the hook: an exception in one is counted against the breaker like any
-  hook failure and does not cost the others their events.
+  from one another inside the hook: an exception in one does not cost the others their events. It
+  is counted against the breaker like any hook failure, except in `code.run`, which only bumps the
+  `code_run_failed` counter (see "Code runs (P10-P1)").
 
 ## Code runs (P10-P1)
 
@@ -1158,6 +1159,7 @@ and nothing is sent.
 | `unavailable_tool_refusals` | how many `Tool '<x>' is not available in execute_code` refusals (Hermes's kernel RPC allowlist) the result's `output` and `error` hold (the whole result when it is not JSON), capped at 10000 |
 | `unavailable_tools` | the distinct `<x>`, sorted, at most 16: a name only when `tool_categories.json` lists it, any other name as `other` |
 | `risk_tags` | sorted, from the closed set below |
+| `scan_truncated` | true when the tags or the refusal count read only the first 262144 characters of the program or of a result text (`SCAN_LIMIT`: the scans run synchronously in the hook); `code_hmac` and `code_bytes` always cover the whole program |
 | `rules_version` | `code_run_tags_v1`, bumped whenever a tag rule changes |
 | `category_version` | the `tool_categories` version the names were checked against |
 
@@ -1200,6 +1202,11 @@ off, edit it or forge its rows, so `code.run` ranks as `agent_report` evidence a
 that a program did or did not do something. The witnesses the agent cannot reach are the control
 plane's root integrity sweep (P2) and the cross-witness alarms (P5) of the CODE-RUN-GATE research;
 `code.run` is what they compare against.
+
+**Never at the cost of `tool.call`.** `code.run` runs after the call's `tool.call` and is isolated
+*uncounted* (`_quiet` in `__init__.py`): a failure bumps the `code_run_failed` counter (one log line
+per process, a name and a count) and never reaches the session breaker, so no `code.run` failure can
+silence `tool.call` or any other event.
 
 ## Foreground `terminal` calls (DATA-312)
 

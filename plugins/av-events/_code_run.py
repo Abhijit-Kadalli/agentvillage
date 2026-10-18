@@ -23,6 +23,9 @@ return) from values that call already carries, and nothing else:
   that it did: the checks are static, can over-fire (a comment, a co-occurrence) and
   can be evaded (string building). `gated_host` matches the hosts the plugin already
   knows (`gated_hosts`); no host ever leaves.
+* `scan_truncated`: true when the tags or the refusal count read only the first
+  `SCAN_LIMIT` characters of the program or of a result text (the hash and the byte
+  length always cover the whole program).
 * `consent_scope`, `rules_version`, `category_version`: labels.
 
 Never sent: the program, its output, a path, a host, an env name or value, any id
@@ -74,6 +77,12 @@ RISK_TAGS = (
     "gated_host",
     "base64_or_eval",
 )
+
+#: How much of the program, and of each result text, the tags and the refusal count
+#: read (characters). The scans run synchronously in `post_tool_call`, at roughly
+#: 250 ms per MB, so they are capped; the hash and the byte length still cover the
+#: whole program, and `scan_truncated` says when a scan stopped short.
+SCAN_LIMIT = 262144
 
 #: Every count is capped here, so a pathological output cannot grow a field.
 MAX_COUNT = 10000
@@ -223,31 +232,60 @@ def _mentions_host(lowered: str, hosts: Iterable[str]) -> bool:
     return re.search(pattern, lowered) is not None
 
 
+#: Literals every match of a pattern contains: a pattern runs only when one of its
+#: literals is in the text (a C-speed `in`), so the common program pays for a few
+#: substring checks, not a dozen regex scans. A gate never changes a result.
+_GATE_DOTENV = (".env", "dotenv")
+_GATE_ENVIRON = ("environ",)
+_GATE_OS_ENVIRON = ("environ", "getenv")
+_GATE_SUBPROCESS = ("subprocess", "os.", "pty.spawn")
+_GATE_NET = ("socket", "ssl", "urllib", "http", "requests", "aiohttp", "ftplib", "smtplib", "telnetlib", "pycurl",
+             "xmlrpc", "open_connection")
+_GATE_WRITE = ("open", "write_", "touch", "link", "mkdir", "shutil.", "os.", "O_", ">", "tee")
+_GATE_HERMES_HOME = ("HERMES_HOME", ".hermes")
+_GATE_SCRIPTS = ("scripts",)
+_GATE_CRON = ("cron", "jobs.json")
+_GATE_BASE64_EVAL = ("base64", "decode", "eval", "exec", "compile", "__import__", "marshal")
+
+
+def _has(code: str, literals: tuple) -> bool:
+    return any(literal in code for literal in literals)
+
+
 def risk_tags(code: str, hosts: Iterable[str] = ()) -> list[str]:
-    """The sorted tags `code` carries; [] for empty code. Never raises on a str."""
+    """The sorted tags `code` carries; [] for empty code. Never raises on a str.
+
+    The caller caps `code` at `SCAN_LIMIT`; this function reads all it is given."""
     if not code:
         return []
+    hosts = tuple(hosts)
     tags: set[str] = set()
-    if _DOTENV.search(code):
+    if _has(code, _GATE_DOTENV) and _DOTENV.search(code):
         tags.add("dotenv_path")
-    if _PROC_ENVIRON.search(code) or (_PROC_LITERAL.search(code) and _ENVIRON_LITERAL.search(code)):
+    if _has(code, _GATE_ENVIRON) and (
+        _PROC_ENVIRON.search(code) or (_PROC_LITERAL.search(code) and _ENVIRON_LITERAL.search(code))
+    ):
         tags.add("proc_environ")
-    if _OS_ENVIRON.search(code):
+    if _has(code, _GATE_OS_ENVIRON) and _OS_ENVIRON.search(code):
         tags.add("os_environ")
-    if _SUBPROCESS.search(code):
+    if _has(code, _GATE_SUBPROCESS) and _SUBPROCESS.search(code):
         tags.add("subprocess")
-    if _NET.search(code):
+    if _has(code, _GATE_NET) and _NET.search(code):
         tags.add("socket_or_http_client")
-    if _WRITE.search(code):
-        if _HERMES_HOME.search(code):
-            tags.add("hermes_home_write")
-        if _SCRIPTS_DIR.search(code):
-            tags.add("scripts_dir_write")
-        if _CRON.search(code):
-            tags.add("cron_write")
-    if _mentions_host(code.lower(), hosts):
+    # Where a write would land first (cheap, rare), and only then whether there is a write.
+    places = []
+    if _has(code, _GATE_HERMES_HOME) and _HERMES_HOME.search(code):
+        places.append("hermes_home_write")
+    if _has(code, _GATE_SCRIPTS) and _SCRIPTS_DIR.search(code):
+        places.append("scripts_dir_write")
+    if _has(code, _GATE_CRON) and _CRON.search(code):
+        places.append("cron_write")
+    if places and _has(code, _GATE_WRITE) and _WRITE.search(code):
+        tags.update(places)
+    lowered = code.lower()
+    if any(isinstance(h, str) and h in lowered for h in hosts) and _mentions_host(lowered, hosts):
         tags.add("gated_host")
-    if _BASE64_EVAL.search(code):
+    if _has(code, _GATE_BASE64_EVAL) and _BASE64_EVAL.search(code):
         tags.add("base64_or_eval")
     return sorted(tags)
 
@@ -322,7 +360,8 @@ def code_run_payload(
     """`code.run@1`: every key always present, in this order, null when unknown."""
     code = code_of(args)
     texts, parsed = _result_texts(result)
-    refused, refused_names = refusals(texts)
+    truncated = (code is not None and len(code) > SCAN_LIMIT) or any(len(t) > SCAN_LIMIT for t in texts)
+    refused, refused_names = refusals(t[:SCAN_LIMIT] for t in texts)
     raw_error = error_type if isinstance(error_type, str) else None
     keyed = capture != "metadata" and code is not None
     return {
@@ -334,7 +373,8 @@ def code_run_payload(
         "tool_calls_made": _bounded_count(parsed.get("tool_calls_made")) if parsed is not None else None,
         "unavailable_tool_refusals": refused,
         "unavailable_tools": refused_names,
-        "risk_tags": risk_tags(code or "", hosts),
+        "risk_tags": risk_tags((code or "")[:SCAN_LIMIT], hosts),
+        "scan_truncated": truncated,
         "rules_version": RULES_VERSION,
         "category_version": TOOL_CATEGORY_VERSION,
     }
@@ -351,6 +391,7 @@ FIELD_NAMES = (
     "unavailable_tool_refusals",
     "unavailable_tools",
     "risk_tags",
+    "scan_truncated",
     "rules_version",
     "category_version",
 )
