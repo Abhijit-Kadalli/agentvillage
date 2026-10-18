@@ -46,7 +46,7 @@ overlay sends each to the resident as a proposal and acts only on their tap.
   policy opens `exec.code` (approval.md 0.4.6 or later). `bash -c`, `sh -c`,
   `eval` and a pipe into an interpreter stay refused whatever the policy says.
   A refusal naming `hook-opaque` or `hook-exec-code-custody-unattested` means
-  this box's policy has not opened it yet: do that work with `execute_code`
+  this form is not open on this box: do that work with `execute_code`
   instead, and do not retry it on `terminal`.
 
 When a refusal names its repair, make that repair and call again once.
