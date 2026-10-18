@@ -24,6 +24,7 @@ GOLD_STARS_RESTORED = {"version": "1.1.0", "skills": ["gold-stars"], "operations
 GOLD_STARS_PREVIOUS = {"version": "1.1.0", "skills": ["gold-stars"], "operations": ["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel"]}
 # Every gold-stars entry this overlay accepts, each by exact equality (newest first).
 GOLD_STARS_ACCEPTED = (GOLD_STARS, GOLD_STARS_RESTORED, GOLD_STARS_PREVIOUS)
+FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks.menu", "forkicks.schedule", "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.status", "forkicks.order.cancel"]}
 
 # Every `village` operation, classified. A write changes the owner's account state; a read does not.
 # `rolodex.meeting` (mark/undo) is a WRITE: it rides the `village` tool's existing gate entry (no preview
@@ -37,9 +38,9 @@ GOLD_STARS_ACCEPTED = (GOLD_STARS, GOLD_STARS_RESTORED, GOLD_STARS_PREVIOUS)
 ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")
 ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
-                             "mini-app.context.read", *ZZZ_READ_OPERATIONS})
+                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", *ZZZ_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
-                              *ZZZ_WRITE_OPERATIONS})
+                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", *ZZZ_WRITE_OPERATIONS})
 # The operations whose appId is the request's own (any other operation is the gold-stars install's).
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
@@ -72,6 +73,8 @@ def send_key(draft_id: str) -> str:
 APPROVE_IN_BOT = ("Ask the owner to approve this exact Gold Star on its card in the approvals bot, then retry "
                   "gold-stars.send with this SAME draftId. Never prepare a new preview to retry. Chat consent alone "
                   "cannot authorize sending.")
+ORDER_APPROVE_IN_BOT = ("Ask the owner to approve this exact For Kicks order on its card in the approvals bot, then retry "
+                        "forkicks.order.confirm with this SAME draftId. Never prepare another order to retry an uncertain confirm.")
 
 
 def installed(home: Path, app_id: str, operation: str) -> bool:
@@ -96,6 +99,9 @@ def installed(home: Path, app_id: str, operation: str) -> bool:
                 return False
             if name == "gold-stars":
                 if not any(app == {"id": name, **entry} for entry in GOLD_STARS_ACCEPTED):
+                    return False
+            elif name == "forkicks":
+                if app != {"id": name, **FORKICKS}:
                     return False
             elif name == "zzzbot":
                 if app != {"id": name, **ZZZBOT}:

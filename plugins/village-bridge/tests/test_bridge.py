@@ -159,9 +159,12 @@ class BridgeTest(unittest.TestCase):
   self.assertIn('skylight.status',mini.READ_OPERATIONS);self.assertNotIn('skylight.status',mini.WRITE_OPERATIONS)
   self.assertFalse(mini.READ_OPERATIONS&mini.WRITE_OPERATIONS)
   # P-6: zzzbot's operations are classified here but enter the registered enum only on a box that installs it (schema_for).
+  # For Kicks' operations are in the every-box enum as main has them.
   self.assertEqual(mini.READ_OPERATIONS|mini.WRITE_OPERATIONS,set(bridge.SCHEMA['parameters']['properties']['operation']['enum'])|mini.ZZZ_OPERATIONS)
   self.assertFalse(mini.ZZZ_OPERATIONS&set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
-  self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write','zzz.reply','zzz.create_thread'})
+  self.assertTrue({'forkicks.menu','forkicks.schedule','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.status','forkicks.order.cancel'}<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
+  self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write',
+                                          'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','zzz.reply','zzz.create_thread'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
   # The gate is off, unverified or absent: the write is refused before any network call.
@@ -221,7 +224,7 @@ class BridgeTest(unittest.TestCase):
   # No new tool name: both operations go through `village`, the 36th gated tool (exact full-match matcher).
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write'})
+  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write'})
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()
@@ -389,7 +392,9 @@ class BridgeTest(unittest.TestCase):
  def test_sent_receipt_does_not_request_another_approval(self):
   self.transport.return_value={'status':'sent'}
   with patch.object(bridge,'authorize_send') as approve:
-   self.assertEqual(self.call({'operation':'gold-stars.send','draftId':'550e8400-e29b-41d4-a716-446655440000'})['data']['status'],'sent')
+   receipt=self.call({'operation':'gold-stars.send','draftId':'550e8400-e29b-41d4-a716-446655440000'})
+   self.assertEqual(receipt['data']['status'],'sent')
+   self.assertEqual(receipt['handling'],bridge.HANDLING)
    approve.assert_not_called()
  def test_public_read_transport_checks_shape_and_installed_app(self):
   args={'operation':'mini-app.read','appId':'dizko','tool':'list_cities','arguments':{}}
@@ -413,7 +418,7 @@ class BridgeTest(unittest.TestCase):
   self.assertIn('mini-app.context.write',mini.WRITE_OPERATIONS);self.assertNotIn('mini-app.context.write',mini.READ_OPERATIONS)
   self.assertEqual(mini.APP_SCOPED_OPERATIONS,set(self.CONTEXT_OPS))
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(enum[-3:],self.CONTEXT_OPS);self.assertEqual(len(enum),len(set(enum)))
+  self.assertEqual([op for op in enum if op.startswith('mini-app.')],self.CONTEXT_OPS);self.assertEqual(len(enum),len(set(enum)))
   # In the appId description, not the tool description (av-events test_ask_village_findable: tool_search ranks on the latter).
   app_id=bridge.SCHEMA['parameters']['properties']['appId']['description']
   self.assertIn('mini-app.context.write (a write',app_id);self.assertIn('mini-app.context.read (a read)',app_id)
