@@ -359,7 +359,9 @@ class BridgeTest(unittest.TestCase):
  def test_sent_receipt_does_not_request_another_approval(self):
   self.transport.return_value={'status':'sent'}
   with patch.object(bridge,'authorize_send') as approve:
-   self.assertEqual(self.call({'operation':'gold-stars.send','draftId':'550e8400-e29b-41d4-a716-446655440000'})['data']['status'],'sent')
+   receipt=self.call({'operation':'gold-stars.send','draftId':'550e8400-e29b-41d4-a716-446655440000'})
+   self.assertEqual(receipt['data']['status'],'sent')
+   self.assertEqual(receipt['handling'],bridge.HANDLING)
    approve.assert_not_called()
  def test_public_read_transport_checks_shape_and_installed_app(self):
   args={'operation':'mini-app.read','appId':'dizko','tool':'list_cities','arguments':{}}
