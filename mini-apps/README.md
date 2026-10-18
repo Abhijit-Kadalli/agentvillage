@@ -253,15 +253,17 @@ The app retains the draft-status preflight as defence in depth, while Slopfolio
 enforces the published/deleted rejection in its database: it changes nothing,
 never edits a live post and never forks a new draft from that call. Only prepare
 without `draftId` creates a new post.
+`CAPABILITY_NOT_GRANTED` and `RATE_LIMITED` are also preserved as named errors
+without provider text: reconnect through Mini-apps for the former, and try later
+or use the manual Slopfolio page for the latter rather than retrying immediately.
 
-Salman's upstream skill/manifest PR was not present when this integration was
-prepared. The manifest is included here; **there is no placeholder skill**.
-Salman must supply the real `skills/slopfolio/SKILL.md` before test installation.
-The installer validates the manifest's pinned bundle and fails closed without
-that source file, leaving existing installed bytes unchanged. Slopfolio is not
-a baseline skill and must remain tenant-restricted in the CP until the
-Salman-only test installation is ready; see the control-plane README rollout
-configuration.
+The provider-authored skill and manifest from
+[PR #389](https://github.com/Edge-City/agentvillage/pull/389) are integrated here.
+The installer stages `skills/slopfolio/SKILL.md` byte for byte only from the validated
+installed projection, with parity coverage against the catalog and standalone skills
+mirror. Slopfolio is not a baseline skill and remains tenant-restricted in the CP;
+see the control-plane README rollout configuration. The provider guide's retry and
+authority wording remains subject to the integration review on #389.
 
 ## Disk staging and lifecycle
 

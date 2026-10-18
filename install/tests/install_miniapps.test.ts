@@ -40,9 +40,7 @@ function home() {
   roots.push(root);
   return root;
 }
-// Slopfolio's reviewed manifest/operations are ready; its real skill must come from Salman.
-// Exercise that absent-source refusal separately rather than synthesizing a placeholder skill.
-const all = { version: 1, apps: REVIEWED_MINI_APPS.filter(app => app.id !== "slopfolio") };
+const all = { version: 1, apps: REVIEWED_MINI_APPS };
 
 test("reviewed skills are optional, disk-only staging has deterministic receipts and verify", () => {
   const root = home();
@@ -53,7 +51,7 @@ test("reviewed skills are optional, disk-only staging has deterministic receipts
   expect(receipt).toEqual(reconcileMiniApps(all, root));
   expect(receipt).toEqual(reconcileMiniApps(all, root, undefined, true));
   expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(all)).digest("hex"));
-  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md"]);
+  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/slopfolio/SKILL.md"]);
   expect(receipt).not.toHaveProperty("active");
   writeFileSync(join(root, "skills", "gold-stars", "SKILL.md"), "tampered");
   expect(() => reconcileMiniApps(all, root, undefined, true)).toThrow("mini_apps_skill_mismatch");
@@ -76,6 +74,7 @@ test("uninstall revokes the projection and removes only exact managed files, nev
   expect(existsSync(join(root, "village-bridge.json"))).toBe(false);
   expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({ version: 1, apps: [] });
   expect(existsSync(join(root, "skills", "dizko", "SKILL.md"))).toBe(false);
+  expect(existsSync(join(root, "skills", "slopfolio", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
   expect(reconcileMiniApps({ version: 1, apps: [] }, root, undefined, true).apps).toEqual([]);
 });
@@ -95,6 +94,7 @@ test("the helper never removes an installer-shipped skill, for any desired set",
       expect(reconcileMiniApps({ version: 1, apps }, root, undefined, true)).toEqual(receipt);
     }
     expect(existsSync(join(root, "skills", "dizko", "SKILL.md"))).toBe(second.some((a) => a.id === "dizko"));
+    expect(existsSync(join(root, "skills", "slopfolio", "SKILL.md"))).toBe(second.some((a) => a.id === "slopfolio"));
   }
 });
 
@@ -224,7 +224,7 @@ test("verify is read-only and refuses an absent or removed projection", () => {
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
 });
 
-test("Slopfolio manifest and native allowlist pin only private draft operations; absent author skill fails closed", () => {
+test("Slopfolio manifest and native allowlist pin only private draft operations and stage the author skill", () => {
   const app = REVIEWED_MINI_APPS.find(app => app.id === "slopfolio")!;
   const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps", "slopfolio", "manifest.json"), "utf8"));
   expect(app).toEqual({ id: "slopfolio", version: "1.0.0", operations: ["slopfolio.prepare", "slopfolio.status"], skills: ["slopfolio"] });
@@ -245,15 +245,10 @@ test("Slopfolio manifest and native allowlist pin only private draft operations;
   expect(plugin).toContain('SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}');
   const root = installedBox();
   reconcileMiniApps(all, root);
-  const before = snapshot(root);
   const source = join(REPO, "skills", "slopfolio", "SKILL.md");
-  if (!existsSync(source)) {
-    expect(() => reconcileMiniApps(projection, root)).toThrow("ENOENT");
-    expect(snapshot(root)).toEqual(before);
-  } else {
-    const receipt = reconcileMiniApps(projection, root);
-    expect(receipt.files.map(file => file.path)).toEqual(["skills/slopfolio/SKILL.md"]);
-    expect(readFileSync(join(root, "skills", "slopfolio", "SKILL.md"))).toEqual(readFileSync(source));
-    expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(receipt);
-  }
+  const receipt = reconcileMiniApps(projection, root);
+  expect(receipt.files.map(file => file.path)).toEqual(["skills/slopfolio/SKILL.md"]);
+  expect(readFileSync(join(root, "skills", "slopfolio", "SKILL.md"))).toEqual(readFileSync(source));
+  expect(statSync(join(root, "skills", "slopfolio", "SKILL.md")).mode & 0o777).toBe(0o600);
+  expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(receipt);
 });

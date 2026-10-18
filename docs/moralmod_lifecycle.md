@@ -48,7 +48,7 @@ The plugin's original Python sidecar retains its per-home lock, process supervis
 
 `index/moralmod/active.json` records installation only: `selected: "unverified", ready: false`. Installation is not proof of Index seat ownership; current signed evidence checks the selected agent and executor fence before each decision effect. No automatic selection or real resident activation is performed by the installer.
 
-Morning discovery uses the existing Hermes scheduling callback and signed per-intent wake authority. The diagnostics candidate records safe exception details before saving an unknown outcome; it adds no timer and does not automatically retry uncertain work. OFF residents do not run this runtime. Hosted Index and fresh scientific acceptance remain separate live gates.
+Morning discovery uses the existing Hermes scheduling callback and signed per-intent wake authority. The managed runtime records safe exception details before saving an unknown outcome; it adds no timer and does not automatically retry uncertain work. OFF residents do not run this runtime. Hosted Index and fresh scientific acceptance remain separate live gates.
 
 ## The release pin
 
@@ -61,9 +61,13 @@ A `release.json` with any other sha256 is refused before it is parsed, however c
 - nothing under the plugin is replaced, other than a managed loader taken out with the marker and the managed `morning.py` (below), and nothing is written under `index/moralmod/`;
 - the install reports `index_plugin_failed=release_unpinned`.
 
-The constant pins [the diagnostics candidate](https://github.com/Edge-City/agentvillage/releases/tag/moralmod-a7515c6-fbf4b832afe3): `release.json` sha256 `fbf4b832afe33fdb6f25615feef4d2271de795eb824c7b39012c1b709dae7896`, built with Bun 1.4.2 from Decision Studio source `a7515c63bac481ca0afb0b2e120bcd0f68111993` for the unchanged plugin `04d833b8`. The installed files are exactly `release.json`, `negotiator-core.js`, `negotiator-runtime.js` and `INDEX-LICENSE`. A value that is not a sha256 matches no `release.json`, so under it no bundle activates on any resident. The Control Plane must supply this matching release URL, manifest digest and source commit before residents are rewired. Rollback requires restoring the previous reviewed installer pin and matching profile together; the new installer does not accept the old release.
+The constant pins the reviewed tool-recovery and per-tool-attribution bundle `moralmod-0586c2f-ce30a04f937b`: `release.json` sha256 `ce30a04f937b3a6f5fc067e04e510dd0be025ec2ba755f0cb4ffaea7bb24bb74`, built with Bun 1.4.2 from Decision Studio source `0586c2f435c737a0be7a7469699a8274a457acd7` for the unchanged plugin `04d833b8`. The installed files are exactly `release.json`, `negotiator-core.js`, `negotiator-runtime.js` and `INDEX-LICENSE`. A value that is not a sha256 matches no `release.json`, so under it no bundle activates on any resident. The Control Plane must supply this matching release URL, manifest digest and source commit before residents are rewired. Installer rollback requires restoring the previous reviewed installer pin and matching profile together; the new installer does not accept the old release.
 
-This pin is prepared for coordinated review. Publish and verify the four candidate assets before shipping it; a draft release is not downloadable by the production provisioner. Decision Studio must deploy its compatibility bridge, additive `a018_wake_diagnostics` migration and final service before the instrumented bundle. Coordinate CP `release_url`/`release_sha256`/`source_commit`/`runtime_revision` with the service's experiment runtime revision and the five resident configs. No CP source change is needed. Preserve uncertain wakes; inspect Index/journal evidence and use existing reconciliation, never reset them blindly. The rollout and rollback order is documented in Decision Studio's `docs/reviews/village_runtime_diagnostics.md`.
+The exact four assets are published as the [reviewed prerelease](https://github.com/Edge-City/agentvillage/releases/tag/moralmod-0586c2f-ce30a04f937b) for CI and coordinated review; publication does not deploy residents. Anonymous downloads of all four files were verified against the reviewed hashes. Before shipping, coordinate CP `release_url`/`release_sha256`/`source_commit`/`runtime_revision` with the service's experiment runtime revision and each resident's configuration. This release selection needs matching CP configuration, not a CP source change. Installed-revision readback and a connected resident canary remain separate rollout gates.
+
+For the service rollout from `a018_wake_diagnostics`, deploy the compatible service on all three roles before applying `a019_central_policy`. Use an `a018` deployment manifest before migration and an `a019` manifest with a new journal afterward; every process must report the exact schema revision in its manifest. The migration changes the policy-settings constraint without resetting data or rewriting saved assessments, decisions or policy hashes. Do not activate median welfare for legacy consumers. Numerical questions remain diagnostic/off until a separately reviewed activation.
+
+Application rollback must retain `a019` and recorded policy versions, using a qualified image that supports both revisions and the retained records, with a new manifest and journal. An old exact-`a018` image is not a valid rollback target after migration. Reverting a policy uses an audited policy-version activation for new work, without rewriting existing work bindings or downgrading the database. Preserve uncertain wakes; inspect Index/journal evidence and use existing reconciliation, never reset them blindly. Follow Decision Studio's [deployment runbook](https://github.com/Sydney-Levine-Lab/decision-studio/blob/ca406eacfd7523c84690aa601fae84cee8f59504/docs/runbooks/deployment.md) for the complete rollout and rollback checks.
 
 The pin holds on every ON run, not only a keyed run handed a release (ov#277 refute S1). A `--skip-index` run, a run with no Index key, and a keyed run with no `MORALMOD_*` and no `active.json` never install a release, but a loader an earlier run wrote may still be in the plugin's `runtime/dist/negotiator.js`. Each of them keeps that loader only when it is exactly the loader for the pinned release and `index/moralmod/<pin>/` still holds that release (its `release.json` hashes to the pin, every file to its listed digest). Otherwise the loader is taken out as on OFF, together with the marker in `index/negotiator.ts` and the managed `morning.py` (the plugin's own negotiator.js cannot load the marker), the plugin is not enabled, its morning job is removed and the install reports `index_plugin_failed=release_unpinned`. A keyed run handed a release takes the loader out the same way, then holds that release to the pin as above. So moving the pin, or setting it to a value that is not a sha256, stops an activated release on the next install of any kind.
 
@@ -85,3 +89,30 @@ To pin a release (or move the pin):
 Any rebuild that changes a byte of `release.json` or of a file it lists needs a new PR. Tests pass their own pin through the `releasePin` / `pin` parameters, computed from a fixture; the installer passes none.
 
 Verification: `bun test install/tests/moralmod_release.test.ts install/tests/moralmod_host.test.ts install/tests/moralmod_arm_pin.test.ts install/tests/moralmod_activation.test.ts`. The activation fault tests use the pinned plugin checkout from `AV_INDEX_PLUGIN_TEST_DIR` and synthetic verified releases, and are skipped without it. The connected installer test consumes the sibling pinned `index-hermes-plugin` checkout and the sibling `decision-studio/custom-negotiator/dist/village` release (build with `bun run build:village`). It is explicitly skipped when those integration prerequisites are absent; it is not a substitute for installed-host acceptance. The Decision Studio `test_village_lifecycle.py` proof starts the installed executable against real local signing, HTTP and PostgreSQL boundaries with controlled Index/model fixtures.
+
+## 18 October candidate: tool correction and safe validation diagnostics
+
+Decision Studio source `0586c2f435c737a0be7a7469699a8274a457acd7` restores
+bounded Index-compatible tool correction and valid no-question policy holds.
+Bridge envelopes and scientific selection remain strict; rejected tool calls
+cannot save a selection or publish. Choices bind to each executing handler; a later refused resolution cannot contaminate an earlier brief. Brief-only batches record one accepted product, and policy questions retain their declared 2000-code-point bound. Always-on sanitized `model_response` and
+`tool_recovery` events classify correction/exhaustion with available stage/run
+UUIDs. No new debug environment flag or CP source change is required. The
+separately scoped freshness redesign is deferred.
+
+Coordinate these exact existing profile/configuration values; the release URL
+requires its trailing slash:
+
+| Setting | Value |
+|---|---|
+| CP `runtime_revision`; box `DECISION_RUNTIME_REVISION`; DS experiment revision | `moralmod-0586c2f-ce30a04f937b` |
+| CP `release_url` | `https://github.com/Edge-City/agentvillage/releases/download/moralmod-0586c2f-ce30a04f937b/` |
+| CP `release_sha256` | `ce30a04f937b3a6f5fc067e04e510dd0be025ec2ba755f0cb4ffaea7bb24bb74` |
+| CP `source_commit` (Decision Studio bundle source) | `0586c2f435c737a0be7a7469699a8274a457acd7` |
+
+Retain existing live input kind, credentials and identities. A service revision
+change affects the experiment, so coordinate all affected boxes; do not switch
+only one side. Merge, install, read-back and resident canary remain separate
+gates. Require a saved selection tied to the assessment and an Index-acknowledged
+outgoing turn before claiming recovery. Restore the previous matching release,
+profile and service label together for rollback; preserve uncertain effects.

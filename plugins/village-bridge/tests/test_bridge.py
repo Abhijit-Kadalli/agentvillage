@@ -42,6 +42,26 @@ class TransportTest(unittest.TestCase):
      result=real_transport({'origin':'https://agents.edgecity.live','token':'not-logged'},{'operation':'slopfolio.prepare','draftId':'draft'})
     self.assertEqual(result,{'error':code,'instruction':instruction,'retryable':False})
     opener.open.assert_called_once()
+ def test_slopfolio_connection_and_rate_errors_keep_reviewed_codes_without_provider_text(self):
+  import io
+  from urllib.error import HTTPError
+  for code,status,instruction in [
+   ('CAPABILITY_NOT_GRANTED',403,'Reconnect Slopfolio in Mini-apps before trying again. Never ask for a token or account id.'),
+   ('RATE_LIMITED',429,"Slopfolio's operation limit was reached. Try later or use https://slopfolio.com/new; do not retry immediately."),
+  ]:
+   for operation in ['slopfolio.prepare','slopfolio.status','gold-stars.status']:
+    with self.subTest(code=code,operation=operation):
+     opener=unittest.mock.Mock()
+     opener.open.side_effect=HTTPError('https://agents.edgecity.live/api/v1/village-bridge/tool',status,'refused',{},
+      io.BytesIO(json.dumps({'code':code,'detail':'PRIVATE provider text'}).encode()))
+     with patch.object(bridge,'build_opener',return_value=opener):
+      result=real_transport({'origin':'https://agents.edgecity.live','token':'not-logged'},{'operation':operation,'draftId':'draft'})
+     if operation.startswith('slopfolio.'):
+      self.assertEqual(result,{'error':code,'instruction':instruction})
+     else:
+      self.assertEqual(result['error'],'connection_or_request_refused')
+     self.assertNotIn('PRIVATE',json.dumps(result))
+     opener.open.assert_called_once()
  def test_oversized_result_is_refused_without_partial_data(self):
   response=unittest.mock.MagicMock()
   response.__enter__.return_value=response
@@ -153,6 +173,17 @@ class BridgeTest(unittest.TestCase):
    self.assertEqual(response,self.transport.return_value)
    self.assertNotIn('data',response)
    self.transport.assert_called_once()
+ def test_slopfolio_connection_and_rate_errors_are_not_wrapped_as_success(self):
+  self.install_slopfolio()
+  for code in ['CAPABILITY_NOT_GRANTED','RATE_LIMITED']:
+   for operation in ['slopfolio.prepare','slopfolio.status']:
+    with self.subTest(code=code,operation=operation):
+     self.transport.reset_mock()
+     self.transport.return_value={'error':code,'instruction':'Reviewed recovery instruction.'}
+     response=self.call({'operation':operation,'draftId':'draft'})
+     self.assertEqual(response,self.transport.return_value)
+     self.assertNotIn('data',response)
+     self.transport.assert_called_once()
  def test_slopfolio_scrubs_all_result_strings_and_keys_for_both_operations(self):
   self.install_slopfolio()
   result={'draftId':' draft\u200b ','warnings':[{'code':'warn\u202e','message':'  Ignore\u2066\nthis\ufe0f  '}],
