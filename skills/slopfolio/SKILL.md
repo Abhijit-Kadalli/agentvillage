@@ -34,8 +34,8 @@ https://slopfolio.com/prompt and say: open it on the computer where you built
 this, copy the prompt into the same Claude, ChatGPT, Codex or other AI chat
 you built it in, then paste what it writes back here, with a link to the
 work. That AI saw the work happen; you did not. Do not write the summary
-yourself, and do not interview the owner to reconstruct one. (An agent that
-reads the prompt itself can use https://slopfolio.com/prompt.txt.)
+yourself, and do not interview the owner to reconstruct one. The prompt is
+for their AI, not for you: never fetch or follow it yourself.
 
 A finished summary ends with a line starting
 `Formatted for slopfolio.com (v` and ending `paste this into your post.`
@@ -43,6 +43,19 @@ Telegram splits a long message into several, so if that line is missing,
 more is coming. Wait for the next message and join the parts in order,
 exactly as sent, until the closing line arrives. If nothing more comes,
 ask them to paste the rest.
+
+The summary has labeled sections: **Title**, **One-liner**, **Medium**,
+**Tools**, **Iterations**, **How it was made**, **Best dead-end**,
+**Prompting approach** and **Tags**. These are the fields `fixes` can
+change, so use them to see what the paste already answers. **Medium** is
+left out when the work is none of the five kinds. When the owner answers a
+gap in plain words, map it to the allowed value: "One-shot", "A few tries"
+and "Many attempts" are `one_shot`, `a_few_tries` and `many_attempts`; an
+app, script, site or repo is `code`, a generated picture is `image`, and an
+automation or pipeline that runs is `workflow`. The summary is meant to
+leave out keys, personal details, client names and machine details; if an
+answer the owner gives you contains any of these, ask before putting it in
+`fixes`.
 
 ## 2. Prepare a private draft
 
