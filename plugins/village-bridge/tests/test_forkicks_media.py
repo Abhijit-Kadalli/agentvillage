@@ -1,6 +1,7 @@
 """Offline native boundary tests; real Hermes parser half requires HERMES_AGENT_SRC."""
 import base64
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zlib
-import test_bridge as fixture
+# pytest.ini's --import-mode=importlib keeps tests/ off sys.path, so load the shared fixture by path (once).
+fixture = sys.modules.get('village_bridge_test_fixture')
+if fixture is None:
+    _spec = importlib.util.spec_from_file_location('village_bridge_test_fixture', Path(__file__).with_name('test_bridge.py'))
+    fixture = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = fixture
+    _spec.loader.exec_module(fixture)
 
 bridge, mini = fixture.bridge, fixture.mini
 media = sys.modules['village_bridge._forkicks_media']

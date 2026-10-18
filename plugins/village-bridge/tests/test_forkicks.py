@@ -1,5 +1,6 @@
 """Offline native purchase boundary tests: real preview cache/authorization, no network or money."""
 import hashlib
+import importlib.util
 import json
 from io import BytesIO
 from pathlib import Path
@@ -8,7 +9,13 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
-import test_bridge as fixture
+# pytest.ini's --import-mode=importlib keeps tests/ off sys.path, so load the shared fixture by path (once).
+fixture = sys.modules.get('village_bridge_test_fixture')
+if fixture is None:
+    _spec = importlib.util.spec_from_file_location('village_bridge_test_fixture', Path(__file__).with_name('test_bridge.py'))
+    fixture = importlib.util.module_from_spec(_spec)
+    sys.modules[_spec.name] = fixture
+    _spec.loader.exec_module(fixture)
 bridge, mini, real_transport = fixture.bridge, fixture.mini, fixture.real_transport
 
 fk = sys.modules['village_bridge._forkicks']
