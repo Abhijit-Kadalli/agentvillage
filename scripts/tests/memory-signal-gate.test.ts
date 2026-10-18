@@ -270,6 +270,18 @@ describe("evidence: the model wakes only on the resident's new material", () => 
     expect(lastRun(dir).stated_goals).toBe(2);
   });
 
+  test("P-5 (grammar e3): the same goals with their sections and the note are no change; a marked guess or chat line is never a stated goal", () => {
+    const dir = home();
+    writeTags(dir, "Here to:\n- Finding a hardware cofounder (you)\nWants to meet:\n- Soil scientists (setup)");
+    expect(runGate(dir).json).toMatchObject({ wakeAgent: true, evidence: { goalsChanged: true } });
+    expect(lastRun(dir).stated_goals).toBe(2);
+    complete(dir);
+    const NOTE = "Card items marked public may be shown to people; marked village may reach other residents' agents; marked private are for you alone. An item with no mark: treat it as private. Gift lines are offers the person chose to share.";
+    writeTags(dir, `${NOTE}\nHere to:\n- Finding a hardware cofounder (you, private)\n- Something the app guessed (guess, public)\n- A chat reading (chat, guess, village)\nWants to meet:\n- Soil scientists (setup, village)`);
+    expect(runGate(dir).json).toMatchObject({ wakeAgent: false, reason: "no_evidence" });
+    expect(lastRun(dir).stated_goals).toBe(2);
+  });
+
   test("the agent's housekeeping (names, tool notes, GitHub auth) and the profile entries never wake it; a changed want in memory does", () => {
     const dir = home();
     const want = "User is raising a seed round for the seed library.";
