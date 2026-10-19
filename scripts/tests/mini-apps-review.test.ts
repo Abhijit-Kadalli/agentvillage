@@ -91,7 +91,7 @@ describe("paths: the lane classifier", () => {
     expect(c(MP, "mini-apps/other/manifest.json").id).toBeNull();
     expect(c(SP, "skills/other/SKILL.md").id).toBeNull();
     const r = pr(patch, { extra: { "skills/other/SKILL.md": "x\n" } });
-    expect([r.lane, r.verdict, has(r, "core_path", "S")]).toEqual(["core", "NEEDS_HUMAN", true]);
+    expect([r.lane, r.verdict, has(r, "multiple_apps", "S")]).toEqual(["core", "NEEDS_HUMAN", true]);
   });
   test("a skills/ change only is the app's lane (and its hash then has to match)", () => {
     expect(c(SP)).toEqual({ id: "tinyshop", core: [] });
@@ -196,7 +196,7 @@ describe("schema: the shared validator", () => {
     });
     expect(has(wrongId, "catalog_dropped", "M")).toBe(true);
     const r = R.evaluate(source({ ...baseFiles(), "mini-apps/catalog.json": json({ catalog: 2, apps: ["dizko"] }) }, { [MP]: json({ ...manifest(), version: "1.0.1" }) }), V);
-    expect(has(r, "catalog_unlisted", "N")).toBe(true);
+    expect([has(r, "catalog_unlisted", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
   });
 });
 
@@ -525,9 +525,103 @@ describe("the five real manifests, as a no-change pull request", () => {
       expect(["PASS", "NEEDS_HUMAN"]).toContain(r.verdict);
       expect([id, noM(r)]).toEqual([id, []]);
       expect(r.lane).not.toBe("core");
-      expect(r.checked).toEqual([...R.CHECKED]);
+      // Every required check ran; only the advisory conformance (P0-5 not on this base) is listed as not run.
+      expect(r.checked).toEqual(R.CHECKED.filter(c => c !== "conformance"));
+      expect(r.not_run.map(n => n.check)).toEqual(["conformance"]);
+      for (const c of R.REQUIRED_CHECKS) expect(r.checked).toContain(c);
     });
   }
+});
+
+describe("fail closed: an error, a missing input or an unknown state is never a PASS", () => {
+  const ch = (path: string, status = "M", newMode = "100644"): R.Change => ({ path, status, oldMode: "100644", newMode });
+  test("an empty diff is core and NEEDS_HUMAN, with every manifest check listed as not run", () => {
+    const r = R.evaluate(source(baseFiles(), {}), V);
+    expect([r.lane, r.verdict, codes(r)]).toEqual(["core", "NEEDS_HUMAN", ["empty_diff"]]);
+    expect(r.checked).toEqual(["paths", "secrets"]);
+    expect(r.not_run.map(n => n.check)).toEqual(R.CHECKED.filter(c => c !== "paths" && c !== "secrets"));
+  });
+  test("a diff that cannot be attributed to one id is core (two ids, a top-level file, a bad id)", () => {
+    for (const extra of [{ "skills/other/SKILL.md": "x\n" }, { "mini-apps/README.md": "x\n" }, { "skills/Bad_Id/SKILL.md": "x\n" }]) {
+      const r = pr(patch, { extra });
+      expect([Object.keys(extra)[0], r.lane, r.verdict]).toEqual([Object.keys(extra)[0], "core", "NEEDS_HUMAN"]);
+    }
+  });
+  test("a rename counts as both paths: moved out of mini-apps/<id>/ into core is core, either direction", () => {
+    const raw = (from: string, to: string) => `:100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} R100\0${from}\0${to}\0`;
+    const out = R.parseRawDiff(raw("mini-apps/tinyshop/README.md", "docs/x.md"));
+    expect(out.map(f => [f.status, f.path])).toEqual([["R", "mini-apps/tinyshop/README.md"], ["R", "docs/x.md"]]);
+    expect(R.classify(out).id).toBeNull();
+    expect(R.classify(R.parseRawDiff(raw("scripts/x.ts", "skills/tinyshop/SKILL.md"))).id).toBeNull();
+    const mixed = R.parseRawDiff(`:100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} M\0${MP}\0` + raw("x.md", SP).replace(/^:/, ":"));
+    expect(mixed.map(f => f.path)).toEqual([MP, "x.md", SP]);
+    expect(() => R.parseRawDiff(`:100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} R100\0only-one\0`)).toThrow(R.BotError);
+    expect(() => R.parseRawDiff("garbage\0x\0")).toThrow(R.BotError);
+  });
+  test("a rename inside one lane, a type change or an unmerged entry: the human read, even in sandbox", () => {
+    for (const status of ["R", "C", "T", "U", "X"]) {
+      const src = source(baseFiles(), { [MP]: json({ ...manifest(), version: "1.0.1" }) });
+      src.files.push(ch("mini-apps/tinyshop/README.md", status));
+      const r = R.evaluate(src, V);
+      expect([status, has(r, "path_status_unknown", "S"), r.verdict]).toEqual([status, true, "NEEDS_HUMAN"]);
+    }
+  });
+  test("an executable or other odd mode on a catalog file: the human read", () => {
+    const r = pr(patch, { modes: { [MP]: "100755" } });
+    expect([has(r, "path_mode_unusual", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+  });
+  test("a binary file cannot be scanned: FAIL in a catalog path, the human read elsewhere", () => {
+    const src = source(baseFiles(), { [MP]: json({ ...manifest(), version: "1.0.1" }), "mini-apps/tinyshop/README.md": "x" });
+    src.added = path => (path.endsWith("README.md") ? "binary" : []);
+    expect(has(R.evaluate(src, V), "binary_file", "M")).toBe(true);
+    const core = source(baseFiles(), { "docs/logo.png": "x" });
+    core.added = () => "binary";
+    const r = R.evaluate(core, V);
+    expect([has(r, "binary_unscanned", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+  });
+  test("the base manifest missing when the pull request edits it: the human read; the base checks are not run", () => {
+    const src = source(baseFiles(), { [MP]: json({ ...manifest(), version: "1.0.1" }) });
+    src.base = path => (path === MP ? null : Buffer.from(baseFiles()[path] ?? ""));
+    const r = R.evaluate(src, V);
+    expect([has(r, "base_manifest_missing", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+    expect(r.not_run.map(n => n.check)).toEqual(expect.arrayContaining(["version_bump", "approval_classes", "lane_rules"]));
+    expect(r.findings.filter(f => f.code === "check_not_run").map(f => f.text.split(" ")[3])).toEqual(["approval_classes", "lane_rules"]);
+  });
+  test("an added manifest that already exists at the base, a base that is not JSON, a base that is not v2: the human read", () => {
+    const added = R.evaluate({ ...source(baseFiles(), { [MP]: json({ ...manifest(), version: "1.0.1" }) }), files: [ch(MP, "A")] }, V);
+    expect([has(added, "base_manifest_unexpected", "S"), added.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+    const notJson = R.evaluate(source({ ...baseFiles(), [MP]: "{ nope" }, { [MP]: json({ ...manifest(), version: "1.0.1" }) }), V);
+    expect([has(notJson, "base_unparseable", "S"), has(notJson, "check_not_run"), notJson.verdict]).toEqual([true, true, "NEEDS_HUMAN"]);
+    const v1 = manifest(); v1.manifest = 1;
+    const invalid = R.evaluate(source(baseFiles(v1), { [MP]: json({ ...manifest(), version: "1.0.1" }) }), V);
+    expect([has(invalid, "base_invalid", "S"), invalid.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+  });
+  test("catalog.json missing or not JSON at head: the human read", () => {
+    for (const body of [null, "{ nope"]) {
+      // The diff stays a manifest lane; only the head read of catalog.json comes back missing or broken.
+      const src = source(baseFiles(), { [MP]: json({ ...manifest(), version: "1.0.1" }) });
+      const head = src.head;
+      src.head = path => (path === "mini-apps/catalog.json" ? (body === null ? null : Buffer.from(body)) : head(path));
+      const r = R.evaluate(src, V);
+      expect([String(body), r.lane, has(r, "catalog_unreadable", "S"), r.verdict]).toEqual([String(body), "sandbox", true, "NEEDS_HUMAN"]);
+    }
+  });
+  test("a skills[] entry without a skills/<name>/SKILL.md path fails, never skipped", () => {
+    const r = pr(m => { m.skills[0].path = "elsewhere.md"; patch(m); });
+    expect([has(r, "skill_path_invalid", "M"), r.verdict]).toEqual([true, "FAIL"]);
+  });
+  test("a manifest with no skills: hashes did not run, never a PASS", () => {
+    const r = pr(m => { m.skills = []; patch(m); });
+    expect([r.not_run.map(n => n.check).includes("hashes"), r.verdict]).toEqual([true, "FAIL"]);
+    expect(r.findings.some(f => f.code === "check_not_run" && f.text.includes("hashes"))).toBe(true);
+  });
+  test("a validator that refuses without a reason is still a FAIL", () => {
+    const quiet: R.Validator = { ...V, validateManifest: () => ({ ok: false, errors: [] }) };
+    expect(R.evaluate(source(baseFiles(), { [MP]: json({ ...manifest(), version: "1.0.1" }) }), quiet).verdict).toBe("FAIL");
+  });
+  test("verdictOf: a check_not_run finding blocks PASS in every lane", () => {
+    for (const lane of ["sandbox", "admins", "everyone"] as const) expect(R.verdictOf(lane, [{ code: "check_not_run", severity: "S", text: "t" }])).toBe("NEEDS_HUMAN");
+  });
 });
 
 // ---- The git layer and the CLI, on a throwaway repository ------------------------------------------
@@ -650,6 +744,47 @@ describe("git and the CLI", () => {
       expect(s2.report.findings[0].text).toMatch(/^partial_clone/);
     } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(shallow, { recursive: true, force: true }); }
   });
+  test("real git: a file moved out of the lane with git mv is both paths, so core", () => {
+    const g = gitRepo();
+    try {
+      const base = g.commit({ ...baseFiles(), "mini-apps/tinyshop/README.md": "# Tiny Shop\nA readme long enough to be found as a rename.\n" }, "base");
+      g.run("mv", "mini-apps/tinyshop/README.md", "docs-tinyshop.md");
+      g.run("commit", "-q", "-m", "move");
+      const head = g.run("rev-parse", "HEAD");
+      const r = R.review({ repo: g.dir, base, head });
+      expect(r.findings.filter(f => f.code === "core_path").map(f => f.file)).toEqual(["docs-tinyshop.md"]);
+      expect([r.lane, r.verdict]).toEqual(["core", "NEEDS_HUMAN"]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
+  test("real git: a file that is listed but unreadable is a git failure (exit 2), never \"missing\"", () => {
+    const g = gitRepo();
+    try {
+      const base = g.commit(baseFiles(), "base");
+      const m = manifest(); m.version = "1.0.1";
+      const head = g.commit({ [MP]: json(m) }, "pr");
+      // catalog.json is unchanged, so only the bot's own read (blobAt) touches its blob, not git diff.
+      const blob = g.run("rev-parse", `${base}:mini-apps/catalog.json`);
+      rmSync(join(g.dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)), { force: true });
+      const { code, report } = cli(["--base", base, "--head", head, "--repo", g.dir]);
+      expect([code, report.verdict, report.findings[0].code]).toEqual([2, "FAIL", "bot_error"]);
+      expect(report.findings[0].text).toMatch(/^git_failed/);
+      expect(report.not_run.map(n => n.check)).toEqual([...R.CHECKED]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
+  test("a throw inside a check is exit 2 and FAIL, never caught into a PASS", () => {
+    const g = gitRepo();
+    try {
+      const base = g.commit(baseFiles(), "base");
+      const m = manifest(); m.version = "1.0.1";
+      const head = g.commit({ [MP]: json(m) }, "pr");
+      const boom: R.Validator = { ...V, validateManifest: () => { throw new Error("boom"); } };
+      let out = "";
+      const code = R.main(["--base", base, "--head", head, "--repo", g.dir], { validator: boom, stdout: s => { out += s; }, stderr: () => {} });
+      const report = JSON.parse(out);
+      expect([code, report.verdict, report.findings[0].code, report.checked]).toEqual([2, "FAIL", "bot_error", []]);
+      expect(report.findings[0].text).toMatch(/^bot_crashed: Error: boom/);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
   test("this repository, base = head: an empty diff is core, never a crash", () => {
     const { code, report } = cli(["--base", "HEAD", "--head", "HEAD", "--repo", REPO]);
     expect([code, report.verdict, report.lane]).toEqual([0, "NEEDS_HUMAN", "core"]);
@@ -676,5 +811,8 @@ describe("the workflow", () => {
     expect(wf).toContain("persist-credentials: false");
     expect(wf).toMatch(/GITHUB_STEP_SUMMARY/);
     expect(wf).toContain("name: mini-apps-review");
+    // Exit 2 (the bot could not judge) must fail the job: nothing hides it.
+    expect(code).not.toMatch(/continue-on-error|\|\|\s*true|\|\|\s*:|set \+e/);
+    expect(wf).toContain("**FAIL** (bot_error)");
   });
 });

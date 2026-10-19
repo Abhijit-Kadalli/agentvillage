@@ -72,7 +72,7 @@ jobs:
           if [ -f "$RUNNER_TEMP/mini-apps-review.json" ]; then
             { echo; echo '```json'; cat "$RUNNER_TEMP/mini-apps-review.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "The review wrote no report: the bot could not run." >> "$GITHUB_STEP_SUMMARY"
+            echo "**FAIL** (bot_error): the bot could not run and wrote no report; the Review step failed with exit 2." >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

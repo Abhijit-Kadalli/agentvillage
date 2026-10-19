@@ -54,12 +54,20 @@ export const GATE_FILES = Object.freeze([
 ]);
 export const CHECKED = Object.freeze(["paths", "author", "schema", "hashes", "version_bump", "secrets", "data_context",
   "approval_classes", "conformance", "lane_rules"]);
+/**
+ * The checks a PASS needs to have RUN (fail closed: a required check that did not run is check_not_run, the
+ * human read). author (no owner.github yet), version_bump (S2 open) and conformance (P0-5 not on this base)
+ * are advisory in Phase 0: when they do not run they are listed in not_run but do not block.
+ */
+export const REQUIRED_CHECKS = Object.freeze(["paths", "schema", "hashes", "secrets", "data_context", "approval_classes", "lane_rules"]);
 export const VISIBILITY = Object.freeze(["sandbox", "admins", "everyone"]);
 export const CEILINGS = Object.freeze(["private", "village", "public"]);
 /** The widest data.context ceiling each lane may declare without the human lane (design §1.3, §7). */
 export const LANE_CEILING: Readonly<Record<string, string>> = Object.freeze({ sandbox: "public", admins: "public", everyone: "village" });
 /** The §5 rules: a finding with one of these codes needs the human read in every lane. */
-export const HUMAN_CODES = Object.freeze(new Set(["core_path", "gate_changed", "manifest_deleted", "no_manifest", "needs_card_downgrade",
+export const HUMAN_CODES = Object.freeze(new Set(["core_path", "empty_diff", "multiple_apps", "gate_changed", "manifest_deleted", "no_manifest",
+  "path_status_unknown", "path_mode_unusual", "binary_unscanned", "base_manifest_missing", "base_manifest_unexpected", "base_unparseable",
+  "base_invalid", "catalog_unreadable", "catalog_unlisted", "check_not_run", "needs_card_downgrade",
   "needs_card_replaced", "needs_card_review", "oauth_review", "context_ceiling_above_private", "events_review",
   "events_entering_everyone", "visibility_raise_multi_step", "visibility_raise_with_major", "author_not_owner"]));
 /**
@@ -82,7 +90,7 @@ export type Lane = "sandbox" | "admins" | "everyone" | "core";
 export type Verdict = "PASS" | "FAIL" | "NEEDS_HUMAN";
 export type Report = {
   bot: string; version: string; manifest: string | null; head: string; verdict: Verdict; lane: Lane;
-  findings: Finding[]; checked: string[];
+  findings: Finding[]; checked: string[]; not_run: { check: string; reason: string }[];
 };
 export type Change = { status: string; path: string; oldMode: string; newMode: string };
 export type Bytes = Buffer | null;
@@ -168,17 +176,28 @@ function git(repo: string, args: string[], allowFail = false): Buffer | null {
   }
   return r.stdout as Buffer;
 }
-/** `git diff --raw --no-renames -z base...head`: status, path and both modes of every changed file. */
-export function changedFiles(repo: string, base: string, head: string): Change[] {
-  const out = git(repo, ["diff", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv", "-z", `${base}...${head}`])!;
-  const parts = out.toString("utf8").split("\0");
+/**
+ * Parse `git diff --raw -z`. A rename or copy (R/C: only if renames were on) has two paths, and BOTH are
+ * changes: a file moved out of mini-apps/<id>/ into core is core. Anything unparseable is a BotError.
+ */
+export function parseRawDiff(out: Buffer | string): Change[] {
+  const parts = out.toString().split("\0");
+  if (parts[parts.length - 1] === "") parts.pop();
   const files: Change[] = [];
-  for (let i = 0; i + 1 < parts.length; i += 2) {
+  for (let i = 0; i < parts.length;) {
     const meta = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z])\d*$/.exec(parts[i]);
     if (!meta) throw new BotError(`git_diff_unparseable: ${parts[i].slice(0, 80)}`);
-    files.push({ oldMode: meta[1], newMode: meta[2], status: meta[3], path: parts[i + 1] });
+    const n = meta[3] === "R" || meta[3] === "C" ? 2 : 1;
+    const paths = parts.slice(i + 1, i + 1 + n);
+    if (paths.length !== n || paths.some(p => !p)) throw new BotError("git_diff_unparseable: a path is missing");
+    for (const path of paths) files.push({ oldMode: meta[1], newMode: meta[2], status: meta[3], path });
+    i += 1 + n;
   }
   return files;
+}
+/** `git diff --raw --no-renames -z base...head`: status, path and both modes of every changed file. */
+export function changedFiles(repo: string, base: string, head: string): Change[] {
+  return parseRawDiff(git(repo, ["diff", "--raw", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv", "-z", `${base}...${head}`])!);
 }
 /** The lines `head` adds to one file since the merge base, with their head line numbers. */
 export function addedLines(repo: string, base: string, head: string, path: string): { line: number; text: string }[] | "binary" {
@@ -195,10 +214,17 @@ export function addedLines(repo: string, base: string, head: string, path: strin
   }
   return added;
 }
+/**
+ * The file at `rev:path`, or null when no file is there (absent, or a directory or submodule at that path).
+ * A file that is listed but cannot be read is a git failure (BotError, exit 2), never "missing": an unread
+ * base manifest must not look like a new app.
+ */
 function blobAt(repo: string, rev: string, path: string): Bytes {
-  const type = git(repo, ["cat-file", "-t", `${rev}:${path}`], true);
-  if (!type || type.toString("utf8").trim() !== "blob") return null;
-  return git(repo, ["cat-file", "blob", `${rev}:${path}`]);
+  const listing = git(repo, ["--literal-pathspecs", "ls-tree", "-z", rev, "--", path])!.toString("utf8");
+  const entry = listing.split("\0").find(e => e.endsWith(`\t${path}`));
+  if (!entry) return null;
+  if (entry.split(/\s/)[1] !== "blob") return null;
+  return git(repo, ["cat-file", "blob", `${rev}:${path}`])!;
 }
 export const CONFORMANCE_PATH = "scripts/mini-apps-conformance.ts";
 /**
@@ -433,14 +459,24 @@ export function evaluate(src: Source, validator: Validator): Report {
     else if (n === MAX_PER_CODE + 1) findings.push({ code: f.code, severity: f.severity, text: `more ${f.code} findings not listed` });
   };
 
+  // Which checks ran: PASS needs every REQUIRED check to have run (fail closed); the rest are listed in not_run.
+  const ran = new Set<string>(), skipped = new Map<string, string>();
+  const skip = (check: string, reason: string) => { if (!skipped.has(check)) skipped.set(check, reason); };
+
   // paths
   const { id, core } = classify(src.files);
   let lane: Lane = "core";
+  ran.add("paths");
   for (const path of core) {
-    const why = path.startsWith("(") || / app ids: /.test(path) ? `${path.replace(/^\((.*)\)$/, "$1")}: a manifest lane is exactly one app id` : `${path} is outside one app's mini-apps/<id>/ and skills/<id>/`;
-    add({ code: "core_path", severity: "S", file: path.startsWith("(") || / app ids: /.test(path) ? undefined : path, text: `${why}: core, the human gate` });
+    if (path === "(no changed files)") add({ code: "empty_diff", severity: "S", text: "the pull request changes no file: nothing to judge, so core (never a PASS on nothing)" });
+    else if (/ app ids: /.test(path)) add({ code: "multiple_apps", severity: "S", text: `${path}: a manifest lane is exactly one app id, so core` });
+    else add({ code: "core_path", severity: "S", file: path, text: `${path} is outside one app's mini-apps/<id>/ and skills/<id>/: core, the human gate` });
   }
   for (const f of src.files) {
+    if (!["A", "M", "D"].includes(f.status)) add({ code: "path_status_unknown", severity: "S", file: f.path, text: `git status ${f.status} (a rename, copy, type change or unmerged entry) is not a plain add, edit or delete: the human read` });
+    else if (f.status !== "D" && LANE_PATH.test(f.path) && f.newMode !== "100644" && f.newMode !== "120000" && f.newMode !== "160000") {
+      add({ code: "path_mode_unusual", severity: "S", file: f.path, text: `mode ${f.newMode}: a catalog file is a plain 100644 file` });
+    }
     if (GATE_FILES.includes(f.path)) add({ code: "gate_changed", severity: "S", file: f.path, text: "this pull request changes the review gate itself (script, validator, pins, catalog index or workflow); its own result is advisory only" });
     if (f.newMode === "120000" || f.newMode === "160000") add({ code: "path_symlink", severity: "M", file: f.path, text: `${f.newMode === "120000" ? "a symlink" : "a submodule"} is never a reviewed catalog file` });
     const m = LANE_PATH.exec(f.path);
@@ -453,6 +489,9 @@ export function evaluate(src: Source, validator: Validator): Report {
   const manifestPath = id ? `mini-apps/${id}/manifest.json` : null;
   const headBytes = manifestPath ? src.head(manifestPath) : null;
   const baseBytes = manifestPath ? src.base(manifestPath) : null;
+  // A base manifest is expected unless the pull request adds the manifest; either surprise is "could not check".
+  const manifestChange = manifestPath ? src.files.find(f => f.path === manifestPath) : undefined;
+  const expectBase = manifestChange?.status !== "A";
   if (id && !headBytes) add({ code: baseBytes ? "manifest_deleted" : "no_manifest", severity: "S", file: manifestPath!, text: baseBytes ? "the pull request removes this app's manifest: unpublishing is core" : `${id} has no manifest at head: skills/${id}/ is a baseline skill or a new app without one, core` });
   const laneId = id && headBytes ? id : null;
 
@@ -462,11 +501,20 @@ export function evaluate(src: Source, validator: Validator): Report {
   const hm: any = head.ok ? head.value : null;
   const bm: any = baseParsed.ok ? baseParsed.value : null;
   if (laneId && !head.ok) add({ code: "manifest_unparseable", severity: "M", file: manifestPath!, text: "the manifest is not JSON" });
-  if (laneId && baseBytes && !baseParsed.ok) add({ code: "base_unparseable", severity: "N", file: manifestPath!, text: "the base manifest is not JSON: the base comparisons are skipped" });
+  if (laneId && expectBase && !baseBytes) add({ code: "base_manifest_missing", severity: "S", file: manifestPath!, text: "the pull request edits this manifest but there is none at the merge base: the base comparisons could not run" });
+  if (laneId && !expectBase && baseBytes) add({ code: "base_manifest_unexpected", severity: "S", file: manifestPath!, text: "git says the manifest is added, yet the merge base has one: the base comparisons are not trusted" });
+  if (laneId && baseBytes && !baseParsed.ok) add({ code: "base_unparseable", severity: "S", file: manifestPath!, text: "the base manifest is not JSON: the base comparisons could not run" });
+  if (laneId && bm && !validator.validateManifest(bm).ok) add({ code: "base_invalid", severity: "S", file: manifestPath!, text: "the base manifest is not a valid v2 manifest: the base comparisons are not trusted" });
+  // The base is known: a parsed base manifest, or a manifest this pull request genuinely adds.
+  const baseKnown = !!laneId && head.ok && (bm !== null || (!expectBase && !baseBytes));
+  const baseWhy = "the base manifest is missing or unreadable";
+  if (!laneId) for (const c of CHECKED.filter(c => c !== "paths" && c !== "secrets")) skip(c, id && !headBytes ? "the app has no manifest at head (core)" : "no single app manifest: core");
+  else if (!head.ok) for (const c of ["author", "schema", "hashes", "version_bump", "data_context", "approval_classes", "lane_rules"]) skip(c, "the manifest is not JSON");
   if (laneId) lane = VISIBILITY.includes(hm?.visibility) ? hm.visibility : "core";
 
   // author: owner.github is not filled in any manifest yet (P0-1), so this never passes on its own.
-  if (laneId) {
+  if (laneId && head.ok) {
+    ran.add("author");
     const owners = ownerLogins(hm);
     if (!owners || !LOGIN.test(src.author)) add({ code: "author_unverified", severity: "N", file: manifestPath!, text: owners ? "the pull request author is missing or not a user login: not checked" : "the manifest names no owner.github yet: the author is not checked" });
     else if (owners.some(o => o.toLowerCase() === src.author.toLowerCase())) add({ code: "author_is_owner", severity: "N", file: manifestPath!, text: `${src.author} is a listed owner` });
@@ -476,12 +524,15 @@ export function evaluate(src: Source, validator: Validator): Report {
   // schema: the one validator, and the catalog it builds.
   let schemaOk = false;
   if (laneId && head.ok) {
+    ran.add("schema");
     const r = validator.validateManifest(hm);
     schemaOk = r.ok;
+    if (!r.ok && !(r.errors ?? []).length) add({ code: "schema_invalid", severity: "M", file: manifestPath!, text: "the validator refused the manifest without a reason" });
     for (const e of r.errors ?? []) add({ code: "schema_invalid", severity: "M", file: manifestPath!, text: `${e.path} ${e.reason}` });
     const index = parseJson(src.head(CATALOG_PATH));
     const listed = index.ok && Array.isArray(index.value?.apps) && index.value.apps.includes(laneId);
-    if (!listed) add({ code: "catalog_unlisted", severity: "N", file: CATALOG_PATH, text: `${laneId} is not in mini-apps/catalog.json at head, so the cp does not serve it; listing it is a core change` });
+    if (!index.ok) add({ code: "catalog_unreadable", severity: "S", file: CATALOG_PATH, text: "mini-apps/catalog.json at head is missing or not JSON: the catalog check could not run" });
+    else if (!listed) add({ code: "catalog_unlisted", severity: "S", file: CATALOG_PATH, text: `${laneId} is not in mini-apps/catalog.json at head: an id the catalog does not know (listing it is a core change)` });
     else if (schemaOk) {
       const byId: Record<string, unknown> = {};
       for (const other of index.value.apps) {
@@ -497,9 +548,14 @@ export function evaluate(src: Source, validator: Validator): Report {
   }
 
   // hashes: each skill's sha256 and frontmatter version, at head.
-  if (laneId && head.ok && Array.isArray(hm.skills)) {
-    for (const skill of hm.skills.filter(isObject)) {
-      if (typeof skill.path !== "string" || !/^skills\/[a-z][a-z0-9-]{0,63}\/SKILL\.md$/.test(skill.path)) continue;
+  if (laneId && head.ok && !(Array.isArray(hm.skills) && hm.skills.length)) skip("hashes", "the manifest lists no skills");
+  if (laneId && head.ok && Array.isArray(hm.skills) && hm.skills.length) {
+    ran.add("hashes");
+    for (const skill of hm.skills) {
+      if (!isObject(skill) || typeof skill.path !== "string" || !/^skills\/[a-z][a-z0-9-]{0,63}\/SKILL\.md$/.test(skill.path)) {
+        add({ code: "skill_path_invalid", severity: "M", file: manifestPath!, text: "a skills[] entry has no skills/<name>/SKILL.md path: its hash could not be checked" });
+        continue;
+      }
       const bytes = src.head(skill.path);
       if (!bytes) { add({ code: "skill_missing", severity: "M", file: skill.path, text: "the manifest names a skill file that is not at head" }); continue; }
       if (sha256(bytes) !== skill.sha256) add({ code: "skill_hash_mismatch", severity: "M", file: skill.path, text: `skills[].sha256 is not the file's sha256 (${sha256(bytes).slice(0, 12)}…)` });
@@ -514,7 +570,9 @@ export function evaluate(src: Source, validator: Validator): Report {
   // informational). Turning it on is that one constant.
   let bump: { level: Level; reasons: string[] } = { level: "none", reasons: [] };
   let actual: Level | "down" | null = null;
+  if (laneId && head.ok && !baseKnown) skip("version_bump", baseWhy);
   if (laneId && head.ok && bm) {
+    ran.add("version_bump");
     bump = requiredBump(bm, hm, validator.operationBudgets);
     actual = bumpOf(bm.version, hm.version);
     if (actual === "down") add({ code: "version_not_monotonic", severity: BUMP_SEVERITY, file: manifestPath!, text: `version ${bm.version} -> ${hm.version} goes down` });
@@ -522,13 +580,19 @@ export function evaluate(src: Source, validator: Validator): Report {
       add({ code: actual === "none" ? "version_not_bumped" : "version_bump_too_small", severity: BUMP_SEVERITY, file: manifestPath!,
         text: `version ${bm.version} -> ${hm.version} is ${actual}; the change needs ${bump.level}: ${bump.reasons.slice(0, 3).join("; ")}` });
     } else if (bump.level !== "none") add({ code: "version_bump", severity: "N", file: manifestPath!, text: `version ${bm.version} -> ${hm.version} (${actual}); the change needs ${bump.level}` });
-  } else if (laneId && head.ok && !baseBytes) add({ code: "version_new_manifest", severity: "N", file: manifestPath!, text: "a new manifest: no bump to check" });
+  } else if (baseKnown) { ran.add("version_bump"); add({ code: "version_new_manifest", severity: "N", file: manifestPath!, text: "a new manifest: no bump to check" }); }
 
   // secrets: credential shapes on every added line of every file; data: URIs and big base64 in catalog files.
+  // A binary file cannot be scanned: in a catalog path that is FAIL (catalog files are text), elsewhere the human read.
+  ran.add("secrets");
   for (const f of src.files) {
     if (f.status === "D") continue;
     const added = src.added(f.path);
-    if (added === "binary") { add({ code: "binary_file", severity: "N", file: f.path, text: "a binary file: not scanned" }); continue; }
+    if (added === "binary") {
+      if (LANE_PATH.test(f.path)) add({ code: "binary_file", severity: "M", file: f.path, text: "a binary file in a catalog path: catalog files are text, and this one could not be scanned" });
+      else add({ code: "binary_unscanned", severity: "S", file: f.path, text: "a binary file: not scanned for secrets" });
+      continue;
+    }
     for (const { line, text } of added) {
       for (const name of secretHits(text)) add({ code: "secret_in_diff", severity: "M", file: f.path, line, text: `an added line matches the ${name} shape (value not shown)` });
     }
@@ -541,6 +605,7 @@ export function evaluate(src: Source, validator: Validator): Report {
   }
 
   // data_context: maxEntries, the lane's ceiling, and no other data block.
+  if (laneId && head.ok) ran.add("data_context");
   if (laneId && head.ok && hm.data !== undefined) {
     const data = hm.data;
     if (!isObject(data)) add({ code: "data_block_invalid", severity: "M", file: manifestPath!, text: "data is not an object" });
@@ -558,7 +623,9 @@ export function evaluate(src: Source, validator: Validator): Report {
   }
 
   // approval_classes: needs-card ↔ prepare; no downgrade; the template render is not run yet.
+  if (laneId && head.ok && !baseKnown) skip("approval_classes", `${baseWhy}: the needs-card downgrade check could not run`);
   if (laneId && head.ok) {
+    if (baseKnown) ran.add("approval_classes");
     const ho = byName(hm), bo = byName(bm);
     for (const op of ho.values()) {
       if (op.class !== "needs-card") continue;
@@ -590,10 +657,14 @@ export function evaluate(src: Source, validator: Validator): Report {
   if (laneId && headBytes) {
     const run: ConformanceRun = src.conformance ? src.conformance(manifestPath!) : { status: "unavailable" };
     for (const f of judgeConformance(run, manifestPath!, headBytes)) add(f);
+    if (run.status === "ran") ran.add("conformance");
+    else skip("conformance", run.status === "unavailable" ? `${CONFORMANCE_PATH} is not in the checkout` : run.status === "not_at_head" ? "the checkout is not at head" : "the suite refused");
   }
 
   // lane_rules (§5): visibility one step at a time and never with a major bump; oauth and events read by a human.
-  if (laneId && head.ok) {
+  if (laneId && head.ok && !baseKnown) skip("lane_rules", `${baseWhy}: the one-step visibility rule could not run`);
+  if (laneId && head.ok && baseKnown) {
+    ran.add("lane_rules");
     const from = bm ? VISIBILITY.indexOf(bm.visibility) : -1, to = VISIBILITY.indexOf(hm.visibility);
     if (to >= 0 && to - from > 1) add({ code: "visibility_raise_multi_step", severity: "S", file: manifestPath!, text: `visibility ${bm?.visibility ?? "(new)"} -> ${hm.visibility} is more than one step` });
     if (to >= 0 && to > from && from >= 0 && (bump.level === "major" || actual === "major")) add({ code: "visibility_raise_with_major", severity: "S", file: manifestPath!, text: `visibility raised to ${hm.visibility} in the same pull request as a major bump` });
@@ -605,9 +676,13 @@ export function evaluate(src: Source, validator: Validator): Report {
     }
   }
 
+  const notRun = CHECKED.filter(c => !ran.has(c)).map(check => ({ check, reason: skipped.get(check) ?? "did not run" }));
+  if (laneId) for (const { check, reason } of notRun) {
+    if (REQUIRED_CHECKS.includes(check)) add({ code: "check_not_run", severity: "S", text: `the required check ${check} did not run (${reason}): never a PASS` });
+  }
   return {
     bot: BOT, version: BOT_VERSION, manifest: laneId && hm ? `${laneId}@${typeof hm.version === "string" ? hm.version : "?"}` : (id ?? null),
-    head: src.headSha, verdict: verdictOf(lane, findings), lane, findings, checked: [...CHECKED],
+    head: src.headSha, verdict: verdictOf(lane, findings), lane, findings, checked: CHECKED.filter(c => ran.has(c)), not_run: notRun,
   };
 }
 
@@ -643,8 +718,8 @@ export function judgeConformance(run: ConformanceRun, manifestPath: string, head
 }
 
 /** Review a real pull request. */
-export function review(opts: { repo: string; base: string; head: string; author?: string; validatorRoot?: string; conformanceDir?: string }): Report {
-  const validator = loadValidator(opts.validatorRoot ?? REPO_ROOT);
+export function review(opts: { repo: string; base: string; head: string; author?: string; validatorRoot?: string; conformanceDir?: string; validator?: Validator }): Report {
+  const validator = opts.validator ?? loadValidator(opts.validatorRoot ?? REPO_ROOT);
   return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? "", { conformanceDir: opts.conformanceDir }), validator);
 }
 
@@ -653,6 +728,7 @@ export function errorReport(message: string, head = ""): Report {
   return {
     bot: BOT, version: BOT_VERSION, manifest: null, head, verdict: "FAIL", lane: "core",
     findings: [{ code: "bot_error", severity: "M", text: message.slice(0, 500) }], checked: [],
+    not_run: CHECKED.map(check => ({ check, reason: "the bot could not run" })),
   };
 }
 
@@ -666,7 +742,8 @@ export function summary(r: Report): string {
     "",
     ...(rows.length ? ["| sev | code | where | note |", "|---|---|---|---|", ...rows] : ["No findings."]),
     "",
-    `Checked: ${r.checked.join(", ") || "nothing (the bot could not run)"}. M = FAIL; S = PASS in sandbox, NEEDS_HUMAN in admins/everyone; N = note. Phase 0: not a required check.`,
+    `Checked: ${r.checked.join(", ") || "nothing (the bot could not run)"}.${r.not_run.length ? ` Not run (never a pass): ${r.not_run.map(n => `${n.check} (${cell(n.reason)})`).join(", ")}.` : ""}`,
+    "M = FAIL; S = PASS in sandbox, NEEDS_HUMAN in admins/everyone; N = note. Phase 0: not a required check.",
     "",
   ].join("\n");
 }
@@ -684,14 +761,14 @@ function parseArgs(argv: string[]): Record<string, string> {
 }
 
 /** The CLI. 0: reviewed (any verdict). 2: the bot is broken; a FAIL report is still written. */
-export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?: (s: string) => void; validatorRoot?: string } = {}): number {
+export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?: (s: string) => void; validatorRoot?: string; validator?: Validator } = {}): number {
   const stdout = io.stdout ?? (s => process.stdout.write(s));
   const stderr = io.stderr ?? (s => process.stderr.write(s));
   let args: Record<string, string> = {};
   let report: Report, code = 0;
   try {
     args = parseArgs(argv);
-    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, author: args.author ?? "", validatorRoot: io.validatorRoot, conformanceDir: args["conformance-dir"] });
+    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, author: args.author ?? "", validatorRoot: io.validatorRoot, validator: io.validator, conformanceDir: args["conformance-dir"] });
   } catch (e) {
     const message = e instanceof BotError ? e.message : `bot_crashed: ${(e as Error)?.stack ?? String(e)}`;
     report = errorReport(message);
