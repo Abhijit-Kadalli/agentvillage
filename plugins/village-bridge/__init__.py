@@ -49,7 +49,7 @@ SCHEMA = {
         "id": {"type": "string", "description": "rolodex.person: the exact lowercase id rolodex.search returned, never guessed. Give id or query, not both."},
         "attendeeId": {"type": "string", "description": "Exact attendee id returned by Rolodex search, never guessed."},
         "met": {"type": "boolean", "description": "rolodex.meeting: true to mark met; false to undo, only at the owner's request."},
-        "note": {"type": "string", "description": "Exact user-provided or reviewed note: Gold Stars max500 characters; For Kicks max140 characters. Empty string for no note."},
+        "note": {"type": "string", "description": "Exact user-provided or reviewed plain-text note: Gold Stars max500 characters; For Kicks max140 characters. For Kicks requests not exact menu options (e.g. less ice, decaf if possible) belong here verbatim, never invented optionIds. Show in preview; the café may not be able to honour it. Empty string for no note."},
         "visibility": {"type": "string", "enum": ["named", "anonymous"], "description": "Explicit sharing choice for the preview. Named posts both names and note to Telegram. Anonymous hides both names and note there; recipient and admins still know identities."},
         "draftId": {"type": ["string", "null"], "description": "Exact prepared draft id. Slopfolio requires the returned lowercase UUID; omit or null only for a new private draft. Gold Stars send and For Kicks order.confirm require later-turn confirmation AND real manual daemon approval; Gold Stars status safely checks uncertain delivery."},
         "appId": {"type": "string", "description": "Installed reviewed app id for mini-app.read, or, when its entry carries them, for mini-app.context.read (a read) or mini-app.context.write (a write: saves the owner's notes in that app's own context namespace, only when the owner asks); use the installed skill's contract."},
@@ -932,6 +932,8 @@ def handle(args, **kwargs):
             if set(args) not in ({"operation", "items", "fulfilment", "paymentMethod"}, {"operation", "items", "fulfilment", "paymentMethod", "note"}):
                 raise ValueError("invalid_arguments")
             if not isinstance(args["items"], list) or not 1 <= len(args["items"]) <= 50 or not isinstance(args["fulfilment"], dict) or args["paymentMethod"] not in ("upi", "card_on_pickup"):
+                raise ValueError("invalid_arguments")
+            if "note" in args and (not isinstance(args["note"], str) or len(args["note"]) > 140):
                 raise ValueError("invalid_arguments")
             payload.update({key: value for key, value in args.items() if key != "operation"})
         elif op == "forkicks.order.confirm" and set(args) == {"operation", "draftId"}:
