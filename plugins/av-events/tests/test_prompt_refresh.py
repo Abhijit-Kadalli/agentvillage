@@ -1733,3 +1733,70 @@ def test_the_manifest_names_the_switch():
 
     manifest = yaml.safe_load((Path(__file__).resolve().parents[1] / "plugin.yaml").read_text(encoding="utf-8"))
     assert "AV_MINIAPP_REFRESH" in manifest["optional_env"]
+
+
+# ---- fold round 1 (ov#410 review-b S1): a fingerprint failure never fails a turn or stops F1 -------
+
+
+def nested_projection():
+    """A projection nested deep enough that json raises RecursionError, still under the 16 KiB cap."""
+    depth = 7000
+    text = '{"version":1,"apps":[{"id":"a","x":' + "[" * depth + "]" * depth + "}]}"
+    assert len(text.encode()) < 16384
+    return text
+
+
+def test_a_deeply_nested_projection_is_no_verdict_and_the_turn_proceeds(apps, caplog):
+    epoch = epoch_module(apps.plugin)
+    agent = started(apps)
+    stored = agent._cached_system_prompt
+    write("mini-apps.json", nested_projection())
+    assert epoch.fingerprint() is None and epoch.digest() == "?" and epoch.stale(stored) is False
+    assert epoch.section_text() == ""
+    builds = HERMES["build_attempts"]
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        for turn_agent in (agent, FakeAgent(apps.db)):
+            assert run_turn(apps.loop, turn_agent, "hi", HISTORY)["system"] == stored
+        restart(apps)
+        assert run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)["system"] == stored
+    assert HERMES["build_attempts"] == builds and not refresh_lines(caplog)
+    assert "gate failed" not in caplog.text and not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_nested_projection_does_not_stop_f1_on_a_team_box(apps, monkeypatch, caplog):
+    monkeypatch.setenv("AV_PROMPT_REFRESH", "1")
+    agent = started(apps)
+    write("mini-apps.json", nested_projection())
+    write("memories/USER.md", "Name: Test Resident\n§\nVote note: the weekly theme closes Friday")
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        got = run_turn(apps.loop, agent, "hi", HISTORY)
+    assert "Vote note" in got["system"] and reasons_logged(caplog) == ["user_md"]
+    assert "gate failed" not in caplog.text
+
+
+def test_a_failure_after_the_stale_verdict_never_fails_the_turn(apps, monkeypatch, caplog):
+    """The two calls after the verdict (the fingerprint before the rebuild, the confirm after it) sit
+    outside the refresh's own try: either one raising leaves the rebuilt turn standing."""
+    epoch = epoch_module(apps.plugin)
+    agent = started(apps)
+    stage_apps(FORKICKS)
+    monkeypatch.setattr(epoch, "confirm_rebuilt", lambda *a, **k: (_ for _ in ()).throw(RecursionError()))
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        got = run_turn(apps.loop, agent, "hi", HISTORY)
+    assert "- forkicks:" in got["system"] and reasons_logged(caplog) == ["miniapps"]
+    assert "av-events: prompt_refresh miniapps confirm failed (RecursionError); left as is" in caplog.text
+    # The fingerprint raising from its third call in a turn on (the pre-filter and the verdict pass).
+    second = started(apps, "tg-dm-2")
+    stage_apps(FORKICKS, ZZZBOT)
+    real, calls = epoch._fingerprint, {"n": 0}
+
+    def flaky(home=None):
+        calls["n"] += 1
+        if calls["n"] >= 3:
+            raise RecursionError()
+        return real(home)
+
+    monkeypatch.setattr(epoch, "_fingerprint", flaky)
+    monkeypatch.setattr(epoch, "fingerprint", lambda home=None: flaky(home))
+    got = run_turn(apps.loop, second, "hi", HISTORY)
+    assert "- zzzbot:" in got["system"] and calls["n"] >= 3
