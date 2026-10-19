@@ -23,9 +23,9 @@ import { validateProjection } from "../../install/install_miniapps";
 // Nothing on a box reads these files yet (no skill, plugin or installer step): data only, no roll.
 //   bun test scripts/tests/mini-app-manifests.test.ts
 
-const MODULE_SHA256 = "4e881ff8a43db95cbc5a721fd6378ce623c0913be8560d4fa3215f736c569cf6";
-const SCHEMA_SHA256 = "ff2e958db499c33150851224bd20cbcf4e02ed9a0789ccc407c940ffb27871b7";
-const PINS_SHA256 = "cacba113dc2d1ced3d6ae8bf78c6b569a0620190f7a6d924be9fa20a04ecc901";
+const MODULE_SHA256 = "0ef8aad53dbe3fb59c60ea93fbdfac0031df58432d7feb94af6e925055846657";
+const SCHEMA_SHA256 = "8d349a4356a066d1deb7f4284e1146f013e3602548a0bc799c546cdd140a13e3";
+const PINS_SHA256 = "2831f6c6008cc262879d616940346c6fe5507ae6239e002346e8c38beed093b9";
 const REPO = join(import.meta.dir, "..", "..");
 const DIR = join(REPO, "mini-apps");
 const m = createRequire(import.meta.url)("../mini-apps-manifests.cjs");
@@ -295,5 +295,172 @@ describe("the validator: secretRef, baseUrl hosts, nesting depth", () => {
     const built = m.buildCatalog(index, byId);
     expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "dizko", "slopfolio", "forkicks"]);
     expect(built.dropped).toEqual([{ id: "zzzbot", code: m.CODE, errors: [{ path: "/", reason: "unvalidatable" }] }]);
+  });
+});
+
+// Fold 2 (release S1 and N1, review-a N-a and N-c): the two catalog marks, every fetched endpoint, linear text scan.
+describe("the validator, fold 2: staff and listed, every endpoint field, linear text scan", () => {
+  const at = (x: any, pointer: string, value: unknown) => {
+    const keys = pointer.split("/").slice(1);
+    const parent = keys.slice(0, -1).reduce((o, k) => o[k], x);
+    parent[keys[keys.length - 1]!] = value;
+    return x;
+  };
+  const json = (value: unknown) => JSON.stringify(value);
+  // S-d1: every base below is a real manifest with both marks STRIPPED, so a correct rebase that marks a real
+  // manifest (ov#411: gold-stars "staff": true) leaves these tests passing; what a real manifest may say is pinned below.
+  const plain = (id: string) => { const { staff: _s, listed: _l, ...rest } = manifest(id); return rest; };
+
+  test("S1: staff: true and listed: false validate and reach the v1 entry (after restricted), never the box projection", () => {
+    for (const opts of [{}, { person: true }, { person: true, context: true }]) {
+      const base = m.v1Entry(plain("gold-stars"), opts);
+      const staff = { ...plain("gold-stars"), staff: true };
+      expect(reasons(m.validateManifest(staff))).toEqual([]);
+      const entry = m.v1Entry(staff, opts);
+      expect(Object.keys(entry).slice(0, 6)).toEqual(["id", "name", "description", "version", "homepage", "staff"]);
+      expect(entry.staff).toBe(true);
+      const { staff: _s, ...rest } = entry;
+      expect(json(rest)).toBe(json(base));
+      const listed = { ...plain("zzzbot"), listed: false };
+      expect(reasons(m.validateManifest(listed))).toEqual([]);
+      const unlisted = m.v1Entry(listed, opts);
+      expect(Object.keys(unlisted).slice(5, 9)).toEqual(["provenance", "auth", "restricted", "listed"]);
+      expect(unlisted.listed).toBe(false);
+      const { listed: _l, ...kept } = unlisted;
+      expect(json(kept)).toBe(json(m.v1Entry(plain("zzzbot"), opts)));
+      // The box projection is id, version, operations, skills: the installer takes it, and neither mark rides it.
+      const projection = { version: 1, apps: [entry, unlisted].map(({ id, version, operations, skills }: any) => ({ id, version, operations, skills })) };
+      expect(validateProjection(projection)).toEqual(projection);
+    }
+  });
+
+  test("S1: absent (or the default value) changes nothing; anything but a boolean is refused by the schema", () => {
+    for (const id of index.apps) {
+      const today = json(m.v1Entry(plain(id), { person: true, context: true }));
+      for (const marks of [{ staff: false }, { listed: true }, { staff: false, listed: true }])
+        expect([id, json(m.v1Entry({ ...plain(id), ...marks }, { person: true, context: true }))]).toEqual([id, today]);
+      // Only gold-stars may say staff, and only staff: true (the pinned grant); listed, if present, is false.
+      const real = manifest(id);
+      if (Object.hasOwn(real, "staff")) expect([id, real.staff]).toEqual(["gold-stars", true]);
+      if (Object.hasOwn(real, "listed")) expect([id, real.listed]).toEqual([id, false]);
+      expect(reasons(m.validateManifest(real))).toEqual([]);
+    }
+    for (const value of ["true", 1, 0, null, {}, [], "false"])
+      for (const key of ["staff", "listed"])
+        expect([key, json(value), reasons(m.validateManifest({ ...plain("gold-stars"), [key]: value }))]).toEqual([key, json(value), [`/${key} type`]]);
+  });
+
+  test("S1 (security finding): staff comes from the pinned grant alone; listed: false is open to any app and never raises visibility", () => {
+    expect(Object.entries(m.FIRST_PARTY).filter(([, grant]: [string, any]) => grant.staff === true).map(([id]) => id)).toEqual(["gold-stars"]);
+    const acme = plain("forkicks");
+    acme.id = "acme";
+    for (const op of acme.operations) { op.name = op.name.replace(/^forkicks\./, "acme."); if (op.approval) op.approval.prepare = op.approval.prepare.replace(/^forkicks\./, "acme."); }
+    acme.skills = [{ ...acme.skills[0], name: "acme", path: "skills/acme/SKILL.md" }];
+    acme.service.auth.secretRef = "MINI_APP_ACME_TOKEN";
+    expect(reasons(m.validateManifest(acme))).toEqual([]);
+    expect(reasons(m.validateManifest({ ...acme, staff: true }))).toEqual(["/staff staff_reserved"]);
+    for (const id of index.apps.filter((id: string) => id !== "gold-stars"))
+      expect([id, reasons(m.validateManifest({ ...plain(id), staff: true }))]).toEqual([id, ["/staff staff_reserved"]]);
+    expect(m.v1Entry({ ...plain("gold-stars"), staff: true }).staff).toBe(true);
+    expect(Object.hasOwn(m.v1Entry(plain("gold-stars")), "staff")).toBe(false);
+    expect(Object.hasOwn(m.v1Entry(manifest("gold-stars")), "staff")).toBe(manifest("gold-stars").staff === true);
+    // Nothing adds it: v1Entry on a manifest that never passed the validator writes no staff either.
+    for (const x of [{ ...acme, staff: true }, { ...plain("forkicks"), staff: true }]) expect(Object.hasOwn(m.v1Entry(x), "staff")).toBe(false);
+    for (const x of [{ ...acme, listed: false }, ...index.apps.map((id: string) => ({ ...plain(id), listed: false }))])
+      expect([x.id, reasons(m.validateManifest(x)), m.v1Entry(x).listed]).toEqual([x.id, [], false]);
+    for (const visibility of ["sandbox", "admins"]) {
+      const x = { ...plain("forkicks"), visibility, listed: true };
+      expect(reasons(m.validateManifest(x))).toEqual([]);
+      expect(json(m.v1Entry(x))).toBe(json(m.v1Entry({ ...plain("forkicks"), visibility })));
+      expect([m.v1Entry(x).restricted, Object.hasOwn(m.v1Entry(x), "listed")]).toEqual([true, false]);
+    }
+  });
+
+  test("N-a: the schema's URL fields are homepage plus ENDPOINT_FIELDS, and every endpoint field goes through endpointRefusal", () => {
+    const urls: string[] = [];
+    const walk = (schema: any, where: string) => {
+      if (!schema || typeof schema !== "object") return;
+      if (typeof schema.pattern === "string" && schema.pattern.startsWith("^https://")) urls.push(where);
+      for (const [key, child] of Object.entries(schema.properties || {})) walk(child, `${where}/${key}`);
+    };
+    walk(m.SCHEMA, "");
+    expect(urls).toEqual(["/homepage", "/service/baseUrl", "/service/auth/oauth/resource", "/service/auth/oauth/discovery"]);
+    expect([...m.ENDPOINT_FIELDS]).toEqual(urls.slice(1));
+    // The real values pass: zzz.bot and Slopfolio carry all three.
+    for (const id of ["zzzbot", "slopfolio"]) expect([id, reasons(m.validateManifest(manifest(id)))]).toEqual([id, []]);
+    for (const field of m.ENDPOINT_FIELDS as string[]) {
+      for (const host of ["127.0.0.1", "[::1]", "169.254.169.254", "localhost"]) {
+        const x = at(manifest("zzzbot"), field, `https://${host}/mcp`);
+        expect([field, host, reasons(m.validateManifest(x))]).toEqual([field, host, [`${field} internal_host`]]);
+      }
+      for (const [url, want] of ENDPOINTS) {
+        const x = at(manifest("zzzbot"), field, url);
+        if (m.checkSchema(x).length) { expect([url, want]).not.toEqual([url, null]); continue; }
+        expect([field, url, reasons(m.validateManifest(x))]).toEqual([field, url, want ? [`${field} ${want}`] : []]);
+      }
+    }
+  });
+
+  test("review-b N7: a target path never changes the host or leaves the base: every refused form, and new URL(P, B).origin is B's", () => {
+    const tp = (p: string) => {
+      const x = manifest("forkicks");
+      x.service.baseUrl = "https://api.acme.example/agent/";
+      x.operations[0].target = { method: "GET", path: p };
+      return reasons(m.validateManifest(x));
+    };
+    const refused: [string, string][] = [
+      ["//evil.example/x", "path_escape"], ["//169.254.169.254/", "path_escape"], ["/a//b", "path_escape"], ["//", "path_escape"],
+      ["/../admin", "path_escape"], ["/a/../b", "path_escape"], ["/..", "path_escape"], ["/a..b", "path_escape"], ["/./a", "path_escape"],
+      ["/a/./b", "path_escape"], ["/.", "path_escape"], ["/a/.", "path_escape"],
+      ["/\\evil.example/x", "path_chars"], ["\\evil", "path_chars"], ["/a\\b", "path_chars"], ["/%2f/evil", "path_chars"], ["/%2F", "path_chars"],
+      ["/%5c", "path_chars"], ["/%5C", "path_chars"], ["/u@evil.example", "path_chars"], ["/a:b", "path_chars"], ["https:evil", "path_chars"],
+      ["https://evil.example/", "path_escape"], ["javascript:x", "path_chars"], ["/a b", "path_chars"], ["/a\tb", "path_chars"], ["/a\nb", "path_chars"],
+      ["/a?x=1", "path_chars"], ["/a#f", "path_chars"], ["/é", "path_chars"], ["/a~b", "path_chars"], ["a/b", "path_chars"], ["", "path_chars"],
+    ];
+    for (const [p, why] of refused) {
+      expect([p, m.targetPathRefusal(p)]).toEqual([p, why]);
+      // Through the validator: refused by the schema pattern, or past it by targetPathRefusal (never accepted).
+      expect([p, tp(p).length > 0]).toEqual([p, true]);
+    }
+    expect(tp("//evil.example/x")).toEqual(["/operations/0/target/path path_escape"]);
+    for (const p of ["/", "/menu", "/api/v1/menu.json", "/.well-known/x", "/a.", "/a/", "/A-b_C.9"]) expect([p, m.targetPathRefusal(p), tp(p)]).toEqual([p, null, []]);
+    // The five real manifests pass, and any target path they carry is accepted (none carries one today).
+    for (const x of index.apps.map((id: string) => manifest(id))) {
+      expect([x.id, reasons(m.validateManifest(x))]).toEqual([x.id, []]);
+      for (const op of x.operations) if (op.target?.path) expect([op.name, m.targetPathRefusal(op.target.path)]).toEqual([op.name, null]);
+    }
+    // Property: for every accepted P and every accepted B, new URL(P, B).origin === new URL(B).origin; on the
+    // real baseUrls plus fixed ones, over a fuzzed set built from the forms above (a fixed seed).
+    const bases = [...index.apps.map((id: string) => manifest(id).service.baseUrl).filter(Boolean), "https://api.acme.example/agent/", "https://example.com/", "https://a.example/b/c"].filter((b: string) => m.endpointRefusal(b) === null);
+    expect(bases.length).toBeGreaterThanOrEqual(6);
+    const tokens = ["/", "//", "\\", ".", "..", "./", "%2f", "%5C", "@", ":", "?", "#", " ", "\t", "a", "B", "0", "_", "-", "~", "http:", "evil.example", "169.254.169.254", "é"];
+    let seed = 20261020;
+    const next = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+    let accepted = 0;
+    for (let i = 0; i < 20000; i++) {
+      let p = next() % 2 ? "/" : "";
+      for (let n = 1 + (next() % 8); n > 0; n--) p += tokens[next() % tokens.length];
+      if (m.targetPathRefusal(p) !== null) continue;
+      accepted++;
+      for (const b of bases) expect([p, b, new URL(p, b).origin]).toEqual([p, b, new URL(b).origin]);
+    }
+    expect(accepted).toBeGreaterThan(500);
+  });
+  test("N1 / N-c: the text scan is linear: an adversarial eyJ- run at the 16 KiB input cap and at 1 MB, with a generous bound", () => {
+    const adversarial = (n: number) => "eyJ-".repeat(Math.ceil(n / 4)).slice(0, n);
+    const ms = (f: () => unknown) => { const t = performance.now(); f(); return performance.now() - t; };
+    // At the cap, through the validator (the quadratic form took about 100 ms here; 32 such ops about 3 s).
+    const x = manifest("dizko");
+    for (const op of x.operations) if (op.input) op.input = { type: "object", description: adversarial(16000) };
+    let out: string[] = [];
+    expect(ms(() => { out = reasons(m.validateManifest(x)); })).toBeLessThan(500);
+    expect(out).toEqual([]);
+    // 64 KiB first: the quadratic form takes over a second here, so it fails before the 1 MB run.
+    expect(ms(() => m.textRefusal(adversarial(65536)))).toBeLessThan(250);
+    expect(ms(() => m.textRefusal(adversarial(1 << 20)))).toBeLessThan(1000);
+    // Still a secret where a token starts a run of its class.
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2ln";
+    for (const before of ["", " ", '"', "Bearer ", "token=", "\n"]) expect([before, m.textRefusal(before + jwt)]).toEqual([before, "secret"]);
+    expect(m.textRefusal(adversarial(1 << 20))).toBe(null);
   });
 });
