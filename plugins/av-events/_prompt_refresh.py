@@ -683,7 +683,10 @@ def check_and_refresh(agent: Any, loop: Any, system_message: Any, history: Any, 
             _mark_unpersisted(session_id, False)
         _record(session_id, digests)
         return
-    apps_before = _miniapp_epoch.fingerprint() if MINIAPPS in reasons else None
+    try:
+        apps_before = _miniapp_epoch.fingerprint() if MINIAPPS in reasons else None
+    except Exception:  # noqa: BLE001 - never fails the turn (fold round 1, S1)
+        apps_before = None
     try:
         persisted = refresh(agent, loop, system_message, history, clear_skills=MINIAPPS in reasons)
     except BaseException as exc:  # noqa: BLE001
@@ -694,7 +697,10 @@ def check_and_refresh(agent: Any, loop: Any, system_message: Any, history: Any, 
         return
     if MINIAPPS in reasons:
         # The rebuilt prompt must carry the current stamp, or the next turn would rebuild again.
-        _miniapp_epoch.confirm_rebuilt(agent._cached_system_prompt, apps_before)
+        try:
+            _miniapp_epoch.confirm_rebuilt(agent._cached_system_prompt, apps_before)
+        except Exception as exc:  # noqa: BLE001 - the rebuild landed; never fail the turn (fold round 1, S1)
+            _warn("miniapps confirm", exc)
     _mark_unpersisted(session_id, not persisted)
     if persisted:
         _record(session_id, digests)

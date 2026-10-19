@@ -191,7 +191,7 @@ class BridgeTest(unittest.TestCase):
   self.install_slopfolio()
   prepare={'operation':'slopfolio.prepare','paste':'summary'}
   for key in ['token','endpoint','url','accountId','ownerId','appId','operation_id','tool','approval','arguments']:
-   self.assertEqual(self.call({**prepare,key:'untrusted'})['error'],'village_unavailable')
+   self.assertEqual(self.call({**prepare,key:'untrusted'})['error'],'invalid_arguments')
   for request in [
    {**prepare,'fixes':{'endpoint':'https://evil.test'}},
    {**prepare,'fixes':[]},{**prepare,'paste':42},{**prepare,'paste':'é'*50001},
@@ -200,7 +200,7 @@ class BridgeTest(unittest.TestCase):
    {'operation':'slopfolio.status','draftId':None},
    {'operation':'slopfolio.status','draftId':'draft','token':'secret'},
    {'operation':'slopfolio.publish','draftId':'draft'},
-  ]:self.assertEqual(self.call(request)['error'],'village_unavailable')
+  ]:self.assertEqual(self.call(request)['error'],'invalid_arguments')
   self.transport.assert_not_called()
   self.assertIn('data',self.call({**prepare,'paste':'é'*50000}))
  def test_slopfolio_prepare_turn_is_trusted_stable_and_changes_with_context(self):
@@ -214,7 +214,7 @@ class BridgeTest(unittest.TestCase):
   self.sc._VAR_MAP['HERMES_SESSION_KEY'].set('telegram:42:new')
   self.call(request);self.assertNotEqual(second,self.transport.call_args.args[1]['turnId'])
   self.transport.reset_mock()
-  self.assertEqual(self.call({**request,'turnId':'forged'})['error'],'village_unavailable')
+  self.assertEqual(self.call({**request,'turnId':'forged'})['error'],'invalid_arguments')
   self.transport.assert_not_called()
   self.call({'operation':'slopfolio.status','draftId':SLOP_DRAFT})
   self.assertEqual(self.transport.call_args.args[1],{'operation':'slopfolio.status','draftId':SLOP_DRAFT})
@@ -275,25 +275,25 @@ class BridgeTest(unittest.TestCase):
      request={'operation':'slopfolio.prepare','paste':'summary','fixes':{key:'é'*count}}
      self.transport.reset_mock();response=self.call(request)
      if accepted:self.assertIn('data',response);self.transport.assert_called_once()
-     else:self.assertEqual(response.get('error'),'village_unavailable');self.transport.assert_not_called()
+     else:self.assertEqual(response.get('error'),'invalid_arguments');self.transport.assert_not_called()
  def test_slopfolio_enums_and_lowercase_uuid_match_provider(self):
   self.install_slopfolio()
   for medium in ['code','image','video','audio','workflow',None,'web',42,[]]:
    with self.subTest(medium=medium):
     self.transport.reset_mock();response=self.call({'operation':'slopfolio.prepare','paste':'summary','medium':medium})
     if medium in ['code','image','video','audio','workflow',None]:self.assertIn('data',response);self.transport.assert_called_once()
-    else:self.assertEqual(response.get('error'),'village_unavailable');self.transport.assert_not_called()
+    else:self.assertEqual(response.get('error'),'invalid_arguments');self.transport.assert_not_called()
   for iterations in ['one_shot','a_few_tries','many_attempts',None,'many passes',3,True,[],{}]:
    with self.subTest(iterations=iterations):
     self.transport.reset_mock();response=self.call({'operation':'slopfolio.prepare','paste':'summary','fixes':{'iterations':iterations}})
     if iterations in ['one_shot','a_few_tries','many_attempts',None]:self.assertIn('data',response);self.transport.assert_called_once()
-    else:self.assertEqual(response.get('error'),'village_unavailable');self.transport.assert_not_called()
+    else:self.assertEqual(response.get('error'),'invalid_arguments');self.transport.assert_not_called()
   for draft_id in ['draft','AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA','11111111-1111-7111-8111-111111111111']:
    for operation in ['slopfolio.prepare','slopfolio.status']:
     self.transport.reset_mock()
     request={'operation':operation,'draftId':draft_id}
     if operation=='slopfolio.prepare':request['paste']='summary'
-    self.assertEqual(self.call(request).get('error'),'village_unavailable');self.transport.assert_not_called()
+    self.assertEqual(self.call(request).get('error'),'invalid_arguments');self.transport.assert_not_called()
  def test_slopfolio_model_schema_exposes_provider_types_and_bounds(self):
   fields=bridge.SCHEMA['parameters']['properties']
   self.assertEqual(fields['paste']['type'],'string')
@@ -314,16 +314,16 @@ class BridgeTest(unittest.TestCase):
     with self.subTest(key=key,labels=str(labels)[:30]):
      self.transport.reset_mock();response=self.call({'operation':'slopfolio.prepare','paste':'summary','fixes':{key:labels}})
      if accepted:self.assertIn('data',response);self.transport.assert_called_once()
-     else:self.assertEqual(response.get('error'),'village_unavailable');self.transport.assert_not_called()
+     else:self.assertEqual(response.get('error'),'invalid_arguments');self.transport.assert_not_called()
  def test_slopfolio_artifact_url_length_is_bounded(self):
   self.install_slopfolio();prefix='https://example.com/'
   for size,accepted in [(2048,True),(2049,False)]:
    self.transport.reset_mock();response=self.call({'operation':'slopfolio.prepare','paste':'summary','artifactUrl':prefix+'x'*(size-len(prefix))})
    if accepted:self.assertIn('data',response);self.transport.assert_called_once()
-   else:self.assertEqual(response.get('error'),'village_unavailable');self.transport.assert_not_called()
+   else:self.assertEqual(response.get('error'),'invalid_arguments');self.transport.assert_not_called()
   for artifact in ['', 'http://example.com/work', 'https://user:password@example.com/work']:
    self.transport.reset_mock()
-   self.assertEqual(self.call({'operation':'slopfolio.prepare','paste':'summary','artifactUrl':artifact}).get('error'),'village_unavailable')
+   self.assertEqual(self.call({'operation':'slopfolio.prepare','paste':'summary','artifactUrl':artifact}).get('error'),'invalid_arguments')
    self.transport.assert_not_called()
  def test_slopfolio_fix_value_types_match_reviewed_projection(self):
   self.install_slopfolio()
@@ -331,7 +331,7 @@ class BridgeTest(unittest.TestCase):
                 {'promptingApproach':3},{'iterations':True},{'iterations':-1},{'iterations':1.5}]:
    with self.subTest(fixes=fixes):
     self.transport.reset_mock()
-    self.assertEqual(self.call({'operation':'slopfolio.prepare','paste':'summary','fixes':fixes}).get('error'),'village_unavailable')
+    self.assertEqual(self.call({'operation':'slopfolio.prepare','paste':'summary','fixes':fixes}).get('error'),'invalid_arguments')
     self.transport.assert_not_called()
  def test_slopfolio_aggregate_budget_counts_json_escaping(self):
   self.install_slopfolio()
@@ -340,7 +340,7 @@ class BridgeTest(unittest.TestCase):
             'fixes':{'howItWasMade':char*20000,'bestDeadEnd':char*10000,'promptingApproach':char*20000}}
    self.transport.reset_mock();response=self.call(request)
    if accepted:self.assertIn('data',response);self.transport.assert_called_once()
-   else:self.assertEqual(response.get('error'),'village_unavailable');self.transport.assert_not_called()
+   else:self.assertEqual(response.get('error'),'invalid_arguments');self.transport.assert_not_called()
  def test_slopfolio_install_is_exact_and_never_a_generic_mcp_grant(self):
   request={'operation':'slopfolio.prepare','paste':'summary'}
   self.assertRefused(self.call(request))
@@ -458,7 +458,7 @@ class BridgeTest(unittest.TestCase):
  def test_unclassified_operation_is_refused_before_install_lookup(self):
   with patch.object(bridge,'installed',return_value=True) as inst:
    for op in ['rolodex.delete','skylight.move','gold-stars.grant',None,['rolodex.meeting']]:
-    with self.subTest(op=op):self.assertEqual(self.call({'operation':op})['error'],'village_unavailable')
+    with self.subTest(op=op):self.assertEqual(self.call({'operation':op})['error'],'invalid_arguments')
    inst.assert_not_called()
   self.transport.assert_not_called()
  def test_meeting_arguments_are_exact(self):
@@ -469,7 +469,7 @@ class BridgeTest(unittest.TestCase):
        {**base,'requestId':attendee},{**base,'humanId':'other'},{**base,'tenantId':'other'},{**base,'ownerTelegramId':'99'},{**base,'query':'Naman'},
        {**base,'confirmed':True},{**base,'draftId':attendee}]
   for args in bad:
-   with self.subTest(args=args):self.assertEqual(self.call(args)['error'],'village_unavailable')
+   with self.subTest(args=args):self.assertEqual(self.call(args)['error'],'invalid_arguments')
   self.transport.assert_not_called()
  def test_skylight_status_reads_only_the_owners_own_status(self):
   self.assertIn('data',self.call({'operation':'skylight.status'}))
@@ -477,7 +477,7 @@ class BridgeTest(unittest.TestCase):
   self.transport.reset_mock()
   other='550e8400-e29b-41d4-a716-446655440000'
   for extra in [{'attendeeId':other},{'humanId':'other'},{'tenantId':'other'},{'userId':'99'},{'ownerTelegramId':'99'},{'agentId':other},{'query':'Naman'},{'appId':'skylight'},{'arguments':{}}]:
-   with self.subTest(extra=extra):self.assertEqual(self.call({'operation':'skylight.status',**extra})['error'],'village_unavailable')
+   with self.subTest(extra=extra):self.assertEqual(self.call({'operation':'skylight.status',**extra})['error'],'invalid_arguments')
   self.transport.assert_not_called()
   # Another person's chat, a group, cron or a delegated child cannot read it either.
   self.sc._VAR_MAP['HERMES_SESSION_USER_ID'].set('99');self.sc._VAR_MAP['HERMES_SESSION_CHAT_ID'].set('99')
@@ -528,7 +528,7 @@ class BridgeTest(unittest.TestCase):
    self.assertEqual(sorted((p.name,p.read_bytes()) for p in Path(self.tmp.name).iterdir()),before)
   self.transport.assert_not_called()
  def test_unknown_actions_and_actor_injection_refused(self):
-  for args in [{'operation':'gold-stars.send'},{'operation':'gold-stars.quota','humanId':'other'}, {'operation':'gold-stars.prepare','attendeeId':'bad','note':'x','visibility':'named'}]:self.assertEqual(self.call(args)['error'],'village_unavailable')
+  for args in [{'operation':'gold-stars.send'},{'operation':'gold-stars.quota','humanId':'other'}, {'operation':'gold-stars.prepare','attendeeId':'bad','note':'x','visibility':'named'}]:self.assertEqual(self.call(args)['error'],'invalid_arguments')
   self.transport.assert_not_called()
  def test_no_secret_in_error(self):
   self.transport.side_effect=RuntimeError(self.config['token']);self.assertNotIn(self.config['token'],json.dumps(self.call()))
@@ -753,7 +753,7 @@ class BridgeTest(unittest.TestCase):
   for args in [{**base,'turnId':'forged'},{**base,'visibility':'private'},{**base,'note':'x'*501},
                {**base,'confirmed':True},{'operation':'gold-stars.send','draftId':base['attendeeId'],'turnId':'forged'},
                {'operation':'gold-stars.send','draftId':base['attendeeId'],'note':'changed'}]:
-   self.assertEqual(self.call(args)['error'],'village_unavailable')
+   self.assertEqual(self.call(args)['error'],'invalid_arguments')
   self.transport.assert_not_called()
  def test_status_and_cancel_use_only_exact_draft_id_and_star_calls_refuse_cron(self):
   for op in ['gold-stars.status','gold-stars.cancel']:
@@ -789,7 +789,7 @@ class BridgeTest(unittest.TestCase):
        {'operation':'rolodex.person','id':person,'ownerTelegramId':'99'},{'operation':'rolodex.person','id':person,'appId':'gold-stars'},{'operation':'rolodex.person','query':'Naman','met':True},
        {'operation':'rolodex.person','query':'Naman','fields':['email']},{'operation':'rolodex.person','id':person,'arguments':{}}]
   for args in bad:
-   with self.subTest(args=args):self.assertEqual(self.call(args)['error'],'village_unavailable')
+   with self.subTest(args=args):self.assertEqual(self.call(args)['error'],'invalid_arguments')
   self.transport.assert_not_called()
   self.assertIn('rolodex.person',bridge.SCHEMA['parameters']['properties']['operation']['enum'])
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['id']['type'],'string')

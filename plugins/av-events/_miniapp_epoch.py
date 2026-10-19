@@ -178,7 +178,16 @@ def _skill_digest(home: Path, name: Any) -> str:
 def fingerprint(home: Optional[Path] = None) -> Optional[str]:
     """12 hex of the installed apps (sorted ids, each whole entry and its SKILL.md digests); `""`
     when none is installed or the file is absent; None when the file exists but cannot be read (a
-    symlink, not a regular file, over 16 KiB, not JSON, not `{"apps": [{"id": ...}, ...]}`)."""
+    symlink, not a regular file, over 16 KiB, not JSON, not `{"apps": [{"id": ...}, ...]}`). Never
+    raises: any other failure (a `RecursionError` from a deeply nested file under the cap) is None
+    too, no verdict, so it can neither fail a turn nor stop F1 at the gate (fold round 1, S1)."""
+    try:
+        return _fingerprint(home)
+    except Exception:  # noqa: BLE001 - no verdict
+        return None
+
+
+def _fingerprint(home: Optional[Path]) -> Optional[str]:
     home = Path(home) if home is not None else Path(hermes_home())
     path = home / PROJECTION
     try:

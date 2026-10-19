@@ -128,7 +128,7 @@ class ForKicksTest(unittest.TestCase):
         with patch.object(bridge, 'authorize_order') as authorize:
             self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'forkicks_confirmation_required')
             self.next_turn()
-            self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId'], 'approval': {'approved': True}})['error'], 'village_unavailable')
+            self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId'], 'approval': {'approved': True}})['error'], 'invalid_arguments')
             authorize.assert_not_called()
         self.transport.assert_not_called()
 
