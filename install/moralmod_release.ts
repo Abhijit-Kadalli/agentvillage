@@ -13,10 +13,10 @@ export const INDEX_PLUGIN_REVISION = "04d833b840541fedabe78cbdad306c18853d784a";
  * as `INDEX_PLUGIN_REF` pins the plugin. `release.json` lists the sha256 of every bundle file, so
  * this one digest pins the whole bundle. A release whose `release.json` hashes to anything else is
  * refused before it is parsed (`MoralmodReleaseUnpinned`), however consistent its own hashes are.
- * Prepared lean continuation candidate moralmod-310c82e-a92816c34096: Decision Studio source
- * 310c82e808445c80743ab6c2266a8bd0e89ee8a5, built with Bun 1.4.2 for plugin 04d833b8.
+ * Prepared lean continuation candidate moralmod-6ed124d-a92816c34096: Decision Studio source
+ * 6ed124de0e9930d7360ced9d0bd588cf9d2afb97, built with Bun 1.4.2 for plugin 04d833b8.
  * Exact local assets are prepared for independent review; publication/CI/merge/installation remain separate gates.
- * (https://github.com/Edge-City/agentvillage/releases/tag/moralmod-310c82e-a92816c34096).
+ * (https://github.com/Edge-City/agentvillage/releases/tag/moralmod-6ed124d-a92816c34096).
  * Moving it is a PR that changes this constant (docs/moralmod_lifecycle.md, "The release pin"); a
  * value that is not a sha256 matches no file, so no bundle activates under it.
  */
