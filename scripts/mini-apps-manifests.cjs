@@ -44,10 +44,12 @@ const PROVENANCE = 'first-party-reviewed-external';
 // app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `prefixes`: the op
 // namespaces it owns beyond its id; `provenance`, `personOnly`: its exact Phase 0 legacy block;
 // `secretRef`: the one app-server env var outside MINI_APP_<ID>_ it may name (the token the app sends
-// today, forkicks-client.ts). Any other manifest's ops sit under its own id, it is never `internal`, it
-// carries no `legacy` block, and its secretRef is MINI_APP_<ID>_<NAME> (review-b S1, design §2).
+// today, forkicks-client.ts); `staff`: it may say `"staff": true` (fold 2: kept installed for every agent,
+// never removable, so it widens exposure; cp#322 and ov#411 mark Gold Stars alone). Any other manifest's ops
+// sit under its own id, it is never `internal` or staff, it carries no `legacy` block, and its secretRef is
+// MINI_APP_<ID>_<NAME> (review-b S1, design §2).
 const FIRST_PARTY = deepFreeze({
-  'gold-stars': { internal: true, prefixes: ['rolodex', 'skylight'], personOnly: true },
+  'gold-stars': { internal: true, prefixes: ['rolodex', 'skylight'], personOnly: true, staff: true },
   dizko: {},
   zzzbot: { provenance: PROVENANCE, prefixes: ['zzz'] },
   slopfolio: { provenance: PROVENANCE },
@@ -95,6 +97,8 @@ const SCHEMA = {
       },
     },
     visibility: { enum: ['sandbox', 'admins', 'everyone'] },
+    staff: { description: 'Comes with every agent: kept installed, never removable (cp catalog staff: true). Absent means false.', type: 'boolean' },
+    listed: { description: 'false keeps a reviewed app off every install and discovery surface. Absent means true.', type: 'boolean' },
     permissions: {
       type: 'array', minItems: 1, maxItems: 32,
       items: {
@@ -296,17 +300,26 @@ function checkSchema(value, schema = SCHEMA) {
 
 // ---- The checks beyond the schema (design §1.1 field rules, §1.3) ---------------------------------
 // The secret shapes the PR-review bot also scans (§6.1), and any http: URL or data: URI, in any key or string.
-const FORBIDDEN_TEXT = [
+// Every pattern is linear in the string's length (fold 2: release N1, review-a N-c): a quantified run is
+// never followed by a token its own class can match, except the JWT's, which may start only where a run
+// of its class starts (the lookbehind, P0-5's form), so `\b` no longer restarts it inside "eyJ-eyJ-...".
+const FORBIDDEN_TEXT = Object.freeze([
   ['http_url', /\bhttp:\/\//i], ['data_uri', /\bdata:[a-z]+\/[a-z0-9.+-]+[;,]/i],
   ['secret', /\bsk-[A-Za-z0-9_-]{16,}/], ['secret', /\b(?:ghp|gho|ghs|ghu|github_pat)_[A-Za-z0-9_]{20,}/],
-  ['secret', /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./], ['secret', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ['secret', /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./], ['secret', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ['secret', /\bAKIA[0-9A-Z]{16}\b/], ['secret', /\bxox[abposr]-[A-Za-z0-9-]{10,}/], ['secret', /password\s*[=:]/i],
-];
+].map(Object.freeze));
+/** Why a string may not appear anywhere in a manifest (a FORBIDDEN_TEXT reason), or null. */
+function textRefusal(value) {
+  for (const [reason, pattern] of FORBIDDEN_TEXT) if (pattern.test(value)) return reason;
+  return null;
+}
 // Containers deeper than this fail `too_deep` rather than recursing (review-b N2: the real five reach 7).
 const MAX_DEPTH = 64;
 function scanText(value, at, fail, skip, depth = 0) {
   if (typeof value === 'string') {
-    for (const [reason, pattern] of FORBIDDEN_TEXT) if (pattern.test(value)) return fail(at, reason);
+    const reason = textRefusal(value);
+    if (reason) return fail(at, reason);
   } else if (value !== null && typeof value === 'object') {
     if (skip.has(value)) return;
     if (depth >= MAX_DEPTH) return fail(at, 'too_deep');
@@ -314,17 +327,22 @@ function scanText(value, at, fail, skip, depth = 0) {
     else for (const key of Object.keys(value)) { scanText(key, `${at}/${key}`, fail, skip, depth + 1); scanText(value[key], `${at}/${key}`, fail, skip, depth + 1); }
   }
 }
-function httpsUrl(value, { bare = false } = {}) {
+// The homepage rule (a link the resident opens, never fetched by the platform): https, no userinfo.
+function httpsUrl(value) {
   let url;
   try { url = new URL(value); } catch { return false; }
-  return url.protocol === 'https:' && !url.username && !url.password && (!bare || (!url.search && !url.hash && !value.includes('?') && !value.includes('#')));
+  return url.protocol === 'https:' && !url.username && !url.password;
 }
-// The only baseUrl form accepted (security review "ssrf-parser-differential"): lower-case ASCII DNS labels,
+// The only endpoint form accepted (security review "ssrf-parser-differential"): lower-case ASCII DNS labels,
 // at least two, no port, no userinfo, an optional path of these characters, no query, no fragment.
+// ENDPOINT_FIELDS: every URL a manifest names that the platform fetches; each goes through endpointRefusal
+// (fold 2, review-a N-a). `homepage` is not one: it is only rendered, as a link the resident opens.
+const ENDPOINT_FIELDS = Object.freeze(['/service/baseUrl', '/service/auth/oauth/resource', '/service/auth/oauth/discovery']);
 const STRICT_BASE_URL = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%\/-]*)?$/;
 /**
  * Why an endpoint may not be pointed at (review-b N8; security reviews "ssrf-denylist-incomplete" and
- * "ssrf-parser-differential"), or null. Checked in this order, so each refusal names its cause:
+ * "ssrf-parser-differential"; applied to every ENDPOINT_FIELDS URL), or null. Checked in this order, so
+ * each refusal names its cause:
  *   'url_chars'     a non-ASCII, whitespace or control character (tab, CR, LF included) or a backslash
  *                   anywhere, or a `%` in the authority: forms other URL parsers read differently;
  *   'url'           not `https://`, an empty host, or unparseable; 'userinfo': an `@` before the path;
@@ -360,6 +378,29 @@ function endpointRefusal(value) {
   if (refused) return refused;
   if (host.split('.').some(label => label.startsWith('xn--'))) return 'idn';
   if (!STRICT_BASE_URL.test(value) || url.href !== value) return 'not_canonical';
+  return null;
+}
+// The only target.path form accepted: "/" alone, or "/" then a character other than "/", from the schema's
+// set (letters, digits, "/", "_", ".", "-": inside baseUrl's path set, with no "%", "@", ":", "~" or sub-delims).
+const STRICT_TARGET_PATH = /^\/(?:[A-Za-z0-9_.-][A-Za-z0-9\/_.-]{0,198})?$/;
+/**
+ * Why an op's target.path may not be joined to its baseUrl (fold 2: review-b N7, with review-a N-a), or null.
+ * The path is fetched against the reviewed baseUrl, so it must never change the host or leave the base:
+ *   'path_chars'  not a string, or anything outside STRICT_TARGET_PATH: a backslash, "%" (so no %2f or %5c
+ *                 in any case), "@", ":" (so no scheme and no host:port), "?", "#", whitespace or a control
+ *                 character, a non-ASCII character, or a first character other than "/";
+ *   'path_escape' "//" anywhere (a leading "//" is another host to `new URL(path, base)`), ".." anywhere,
+ *                 "./" anywhere, or a final "/." (a dot segment leaves the reviewed base path);
+ *   'path_origin' belt and braces: resolved against a fixed base it lands on another origin.
+ * This is checked here, never only by the schema pattern, so loosening that pattern alone opens nothing.
+ */
+function targetPathRefusal(value) {
+  if (typeof value !== 'string') return 'path_chars';
+  if (value.includes('//') || value.includes('..') || value.includes('./') || value.endsWith('/.')) return 'path_escape';
+  if (!STRICT_TARGET_PATH.test(value)) return 'path_chars';
+  let url;
+  try { url = new URL(value, 'https://base.example/'); } catch { return 'path_origin'; }
+  if (url.origin !== 'https://base.example') return 'path_origin';
   return null;
 }
 function hostRefusal(parsed) {
@@ -426,10 +467,10 @@ function semantics(m, compileInput) {
   scanText(m, '', fail, oversized);
   if (!httpsUrl(m.homepage)) fail('/homepage', 'url');
   const service = m.service, auth = service.auth;
-  if (own(service, 'baseUrl')) {
-    const refused = endpointRefusal(service.baseUrl);
-    if (refused) fail('/service/baseUrl', refused);
-  }
+  // Every endpoint the platform fetches, by the one rule (ENDPOINT_FIELDS: baseUrl, the OAuth resource and
+  // its discovery document).
+  const endpoint = (where, value) => { const refused = endpointRefusal(value); if (refused) fail(where, refused); };
+  if (own(service, 'baseUrl')) endpoint('/service/baseUrl', service.baseUrl);
   if (service.kind === 'internal') {
     if (own(service, 'baseUrl')) fail('/service/baseUrl', 'internal_has_endpoint');
     if (auth) fail('/service/auth', 'internal_has_auth');
@@ -438,8 +479,8 @@ function semantics(m, compileInput) {
     if ((auth.mode === 'oauth') !== own(auth, 'oauth')) fail('/service/auth', 'oauth_mismatch');
     if ((auth.mode === 'app-token') !== own(auth, 'secretRef')) fail('/service/auth', 'secret_ref_mismatch');
     if (auth.oauth) {
-      if (!httpsUrl(auth.oauth.resource, { bare: true })) fail('/service/auth/oauth/resource', 'url');
-      if (!httpsUrl(auth.oauth.discovery, { bare: true })) fail('/service/auth/oauth/discovery', 'url');
+      endpoint('/service/auth/oauth/resource', auth.oauth.resource);
+      endpoint('/service/auth/oauth/discovery', auth.oauth.discovery);
     }
   }
   // Reserved names and first-party grants, from the pinned table only (a manifest field never widens them).
@@ -453,6 +494,9 @@ function semantics(m, compileInput) {
     if (!auth.secretRef.startsWith(prefix) || !/^[A-Z0-9]+$/.test(auth.secretRef.slice(prefix.length))) fail('/service/auth/secretRef', 'not_granted');
   }
   if (service.kind === 'internal' && !grant?.internal) fail('/service/kind', 'internal_first_party_only');
+  // `staff: true` installs the app on every agent for good: only the pinned grant may say it. `listed: false`
+  // only hides an app, so any app may say it; `listed: true` is the default and widens nothing.
+  if (m.staff === true && !grant?.staff) fail('/staff', 'staff_reserved');
   if (m.legacy) {
     if (!grant) fail('/legacy', 'first_party_only');
     else {
@@ -472,6 +516,10 @@ function semantics(m, compileInput) {
     if (service.kind === 'internal' && target) fail(`${at}/target`, 'internal_has_target');
     if (service.kind === 'mcp' && target && !own(target, 'tool')) fail(`${at}/target`, 'target_kind');
     if (service.kind === 'https-json' && target && !own(target, 'path')) fail(`${at}/target`, 'target_kind');
+    if (target && own(target, 'path')) {
+      const refused = targetPathRefusal(target.path);
+      if (refused) fail(`${at}/target/path`, refused);
+    }
     const card = op.class === 'needs-card';
     const value = key => own(op, key) ? op[key] : DEFAULTS[key];
     if (card && value('maxRequestBytes') > 65536) fail(`${at}/maxRequestBytes`, 'ceiling');
@@ -553,7 +601,12 @@ function buildCatalog(index, byId, options = {}) {
 const v1Unrepresentable = reason => Object.assign(new Error(V1_CODE), { code: V1_CODE, reason });
 /**
  * The v1 entry a valid manifest serves, as today's constants hold it: id, name, description, version,
- * homepage, [provenance, auth, restricted], [credit], permissions, skills, operations, [data], [mcp].
+ * homepage, [provenance, auth, restricted], [staff, listed], [credit], permissions, skills, operations, [data], [mcp].
+ * `staff` and `listed` (fold 2, release S1) are written only at their non-default value (staff: true, cp#322,
+ * and only when FIRST_PARTY grants it too; listed: false, cp#325), as the cp constants hold them and the
+ * overlay's gen_install_catalog.py reads them,
+ * so a manifest without them (or with staff: false, listed: true) serves today's entry byte for byte. Neither
+ * reaches a box: the cp's projection keeps only id, version, operations and skills.
  * `person`: the per-box person entry (legacy.personOnly kept); `context`: the per-box context entry (the
  * generic context ops after the app's own, for an app that declares data.context). A public MCP app
  * (service mcp, auth none) is served as today's generic relay: `mini-app.read` plus an `mcp` block of its
@@ -570,6 +623,8 @@ function v1Entry(m, { person = false, context = false } = {}) {
   if (m.legacy?.provenance) entry.provenance = m.legacy.provenance;
   if (m.service.auth?.mode === 'oauth') entry.auth = 'oauth';
   if (m.visibility !== 'everyone') entry.restricted = true;
+  if (m.staff === true && own(FIRST_PARTY, m.id) && FIRST_PARTY[m.id].staff === true) entry.staff = true;
+  if (m.listed === false) entry.listed = false;
   if (m.credit) entry.credit = { role: m.credit.role, attendeeId: m.credit.attendeeId, name: m.credit.name };
   entry.permissions = m.permissions.filter(keepPermission).map(p => ({ kind: p.kind, label: p.label, description: p.description }));
   entry.skills = m.skills.map(skill => skill.name);
@@ -598,5 +653,6 @@ function deepFreeze(value) {
 
 module.exports = {
   MANIFEST_VERSION, CODE, V1_CODE, SCHEMA, INDEX_SCHEMA, RELAY_OPERATION, CONTEXT_OPERATIONS, DEFAULTS, FIRST_PARTY, RESERVED_IDS,
-  checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze, endpointRefusal,
+  checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze, endpointRefusal, ENDPOINT_FIELDS, textRefusal,
+  targetPathRefusal,
 };

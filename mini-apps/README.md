@@ -54,15 +54,20 @@ Use Dizko as the starting bundle for another **public read-only** service:
    today: `operations: ["mini-app.read"]` plus its tools (or the reviewed
    context list below, only with a CP namespace review and a `data.context`
    block). `bun test scripts/tests/mini-app-manifests.test.ts` checks it; a
-   skill edit changes its sha256, so it is also a manifest edit. A `baseUrl`
-   must be canonical (`new URL(s).href === s` exactly, so a bare origin is
+   skill edit changes its sha256, so it is also a manifest edit. Two optional
+   booleans mark the catalog entry: `"staff": true` (the app comes with every
+   agent and is never removable) and `"listed": false` (kept off every install
+   and discovery surface); absent means `false` and `true`, and any other type
+   is refused. A `baseUrl`, and an OAuth `resource` and `discovery` (every URL
+   the platform fetches), must be canonical (`new URL(s).href === s` exactly, so a bare origin is
    written with its `/`) lower-case ASCII `https://` with no port, userinfo,
    query, fragment, `%` in the host, `xn--` label, backslash or whitespace, and
    name a public DNS host: any IP literal, a single-label name, `localhost` and
    `*.localhost`, `*.internal`, `*.local`, `*.lan`, `*.home.arpa`, `*.intranet`
    and `*.corp` are refused. This static check cannot stop DNS rebinding or a
    public name that resolves to a private address: the fetcher must re-check
-   the resolved IP at connect time. An `app-token` `secretRef` must be
+   the resolved IP at connect time. A `target.path` has no empty (`//`) or
+   dot (`.`, `..`) segment. An `app-token` `secretRef` must be
    `MINI_APP_<ID>_<NAME>` (`-` as `_`, no `_` in NAME); nesting deeper than 64
    is refused; a relay app must have only `read` ops; and each file must be
    canonical JSON (`JSON.stringify(value, null, 2)` plus a newline, so no

@@ -109,6 +109,14 @@
         "everyone"
       ]
     },
+    "staff": {
+      "description": "Comes with every agent: kept installed, never removable (cp catalog staff: true). Absent means false.",
+      "type": "boolean"
+    },
+    "listed": {
+      "description": "false keeps a reviewed app off every install and discovery surface. Absent means true.",
+      "type": "boolean"
+    },
     "permissions": {
       "type": "array",
       "minItems": 1,
