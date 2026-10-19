@@ -250,7 +250,7 @@
         "tenant"
       ],
       "nullable": false,
-      "source": "moralmod when the bridge's client was built with MORALMOD_LLM_API_KEY (AV_MORALMOD_OWN_KEY on), else tenant (the tenant's own OpenRouter key, today's behaviour)"
+      "source": "moralmod when the bridge's client was built with MORALMOD_LLM_API_KEY (AV_MORALMOD_OWN_KEY on), else tenant (the switch off: the tenant's own OpenRouter key, today's behaviour)"
     },
     "consent_scope": {
       "kind": "enum",
@@ -295,9 +295,12 @@
     ],
     "default": "off",
     "key_env": "MORALMOD_LLM_API_KEY",
-    "key_shape": "^sk-or-[A-Za-z0-9_-]{8,256}$",
-    "read": "on every step (the bridge's _main_agent call)",
-    "missing_key": "the tenant's key, as today; counted moralmod_key_missing; key_source tenant",
-    "invalid_or_out_of_credit": "the step fails as a failed step fails today (the SDK error, the bridge's 502); never retried on the tenant's key; key_source moralmod with the HTTP status"
+    "key_shape": "^sk-or-[A-Za-z0-9_-]{16,256}$",
+    "read": "on every step (the bridge's _main_agent call); the seam is installed only when this switch or AV_EVENTS_NEGOTIATOR_LLM is on at plugin load (armed later: a gateway restart)",
+    "missing_key": "the step fails (MoralmodKeyUnavailable from _main_agent, the bridge's 502), counted moralmod_key_missing; never the tenant's key (CLAIMS L13060)",
+    "invalid_or_out_of_credit": "the step fails as a failed step fails today (the SDK error, the bridge's 502); never retried on the tenant's key; key_source moralmod with the HTTP status",
+    "not_applicable": "not OpenRouter over https, a custom Authorization or X-Api-Key header, no Hermes factory, the factory raising or returning another key: the step fails, counted moralmod_key_failed (and moralmod_key_unsupported for the shapes refused); never the tenant's key",
+    "sanitiser": "a present key is registered as a literal secret at plugin load, whatever the switches",
+    "unload": "with the switch on the bridge agent keeps its MoralMod client; with it off the tenant client goes back"
   }
 }

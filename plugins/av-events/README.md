@@ -65,8 +65,8 @@ plugins/av-events/
 | `AV_EVENTS_CODE_RUN_SCOPE` | `all` | Unset or blank: `all` (the lead's default). Exactly `all` or `research_consented` (surrounding whitespace ignored): itself. **Any other value that is set** (a typo, `research`, another case, a homoglyph) **fails narrow to `research_consented`**, with one WARNING per process that names the variable and a count, never the value. Sent as the event's `consent_scope`; agentvillage-data decides what it keeps from it (see "Code runs (P10-P1)"). It changes nothing on the box. |
 | `AV_EVENTS_NEGOTIATOR_LLM` | *(off)* | `1`, `true`, `yes` or `on` emits one `llm.call` with `caller: "moralmod_negotiator"` for every model step the Index plugin's loopback bridge makes for the MoralMod negotiator (see "The MoralMod negotiator's model steps (MM-INFER-VIS)"). Read like the other switches (process environment, then `.env`): **at plugin load**, which installs the wrap (off then: nothing is wrapped and no thread starts, so turning it on takes a gateway restart), and **on every step**, so turning it off stops the events at once. A valid `llm.call@1` today: nothing quarantines. |
 | `AV_EVENTS_NEGOTIATOR_LLM_SCOPE` | `all` | `AV_EVENTS_CODE_RUN_SCOPE`'s semantics on a sibling variable: unset or blank `all`; exactly `all` or `research_consented` itself; any other set value fails narrow to `research_consented`, with one WARNING per process naming the variable and a count, never the value. Sent as the event's `consent_scope`; agentvillage-data decides what it keeps from it. |
-| `AV_MORALMOD_OWN_KEY` | *(off)* | `1`, `true`, `yes` or `on`, with `MORALMOD_LLM_API_KEY` set: the Index plugin bridge's dedicated client (the MoralMod negotiator's model steps only) is built with that key instead of the tenant's (see "The MoralMod key"). Read on every step; the seam itself is installed only when this switch or `AV_EVENTS_NEGOTIATOR_LLM` is on at plugin load. Off, or the key missing: the tenant's key, as today. Never touches the resident's chat client. |
-| `MORALMOD_LLM_API_KEY` | *(unset)* | The MoralMod OpenRouter key (`sk-or-…`; anything else counts as missing), written by the control plane. Read like the other variables (process environment, then `.env`), registered with the sanitiser, never logged or sent. |
+| `AV_MORALMOD_OWN_KEY` | *(off)* | `1`, `true`, `yes` or `on`: the Index plugin bridge's dedicated client (the MoralMod negotiator's model steps only) runs on `MORALMOD_LLM_API_KEY` instead of the tenant's key, **or the step fails** (key missing, malformed or not applicable): never the tenant's key (see "The MoralMod key"). Read on every step; the seam itself is installed only when this switch or `AV_EVENTS_NEGOTIATOR_LLM` is on at plugin load, so a switch armed later does nothing until the gateway restarts (the control plane must restart the gateway when it writes the key). Off: the tenant's key, as today. Never touches the resident's chat client. |
+| `MORALMOD_LLM_API_KEY` | *(unset)* | The MoralMod OpenRouter key (`sk-or-` and 16 to 256 of `[A-Za-z0-9_-]`, as long as the sanitiser's `openrouter_key` pattern needs; anything else counts as missing), written by the control plane. Read like the other variables (process environment, then `.env`); registered with the sanitiser at plugin load whatever the switches say; never logged or sent. |
 | `AV_TERMINAL_ARGS_FIX` | `1` | Any of `0`, `false`, `no`, `off` turns off the foreground `terminal` argument fix (see "Foreground `terminal` calls (DATA-312)"). **Process environment only**, read on every `pre_tool_call`; a `.env` line reaches it through Hermes's own load at gateway start. Independent of every telemetry switch. |
 | `AV_EDGEOS_CURL_GUARD` | `1` | Any of `0`, `false`, `no`, `off` turns off the refusal of hand-written calls to EdgeOS's directory and `/humans/me` (see "Hand-written EdgeOS directory and profile calls (EDGEOS-CURL-GUARD)"). **Process environment only**, read on every `pre_tool_call`. Independent of every telemetry switch. |
 | `AV_PROMPT_REFRESH` | `team` | F1 (see "Prompt refresh (F1)"). `team` (also unset or blank): on only where `AV_TEAM_TENANT` is exactly `1` once trimmed, the line the control plane writes into a team tenant's `$HERMES_HOME/.env` (control-plane `team-tenant-env.js`). `1`, `true`, `yes` or `on`: on everywhere. `0`, `false`, `no` or `off`: off. Any other value (`disabled`, `none`, a typo): off, with one WARNING per process that names the variable, not the value, like the other av-events switches, so a mistyped off never leaves it on. `prompt_refresh` in `AV_HOOKS_DISABLED` wins over all of these. Read like the other switches (process environment, then `.env`), at every turn start. Independent of every telemetry switch. |
@@ -1239,8 +1239,12 @@ inside `AIAgent`'s own request path, not on a raw client call, so none of those 
 **How** (`_negotiator_llm.py`). Behind `AV_EVENTS_NEGOTIATOR_LLM`, read at plugin load. Hermes
 loads plugins in directory order, so the Index plugin loads after av-events: `register()` tries
 once and a daemon poller (every 2 s for five minutes, then every 30 s) looks the speaker up in
-`sys.modules` as Hermes names it, `hermes_plugins.index_network.speaker` (with av-events' own
-`__home_<digest>` suffix in a multi-home process). It never imports it. It rebinds
+`sys.modules` as Hermes names it: `hermes_plugins.index_network.speaker`, bare for whichever home
+claims the slug first and `__home_<digest>` for any other (`plugins_loader.py:605-614`), so the name
+does not say whose it is. Only a speaker whose plugin directory sits beside this av-events (the
+same `<home>/plugins`, where install.ts and `hermes plugins install` put both) is wrapped; any other,
+or one without a `__file__`, is counted `negotiator_llm_foreign_home` and left alone. `$HERMES_HOME`
+is not the test: in a multi-home gateway it is one value for every home. It never imports it. It rebinds
 `speaker._main_agent` (one module attribute, as `_village_visible` rebinds `_core_tool_names`); the
 wrapper calls the plugin's own function, returns its agent unchanged, lets anything it raises
 through unchanged, and wraps that agent's `client.chat.completions.create` once (a marker on the
@@ -1297,17 +1301,28 @@ Behind `AV_MORALMOD_OWN_KEY` (default off), with `MORALMOD_LLM_API_KEY` an OpenR
 seam gives the bridge's dedicated agent a client from Hermes's own factory
 (`agent._create_openai_client`, the path every primary client takes) on a copy of that agent's
 client kwargs with only `api_key` replaced: same base URL, attribution headers, timeout, retries,
-model and provider. It is built once per key (a sha256 fingerprint on the client, never the key),
-the agent's stored kwargs and the tenant's client object are left as they are, and switching off
-or removing the key puts the tenant's client back on the next step. Only an OpenRouter base URL is
-switched (anything else is `moralmod_key_unsupported`, on the tenant's key). Failure semantics:
-the key **missing or off its shape** keeps the tenant's key, as today (counted
-`moralmod_key_missing`; the step's `llm.call` says `key_source: tenant`), because a config gap must
-not stop negotiations; a MoralMod key that is **invalid or out of credit** fails the step exactly as
-a failed step fails today (the SDK's error to `speaker.complete`, the bridge's 502 to the runtime),
-with no retry on the tenant's key: no hidden second request, no wait, no silent bill to the tenant.
-Its `llm.call` carries `key_source: moralmod`, `finish_reason: error` and the HTTP status
-(401/402), which is the alarm.
+model and provider. It is built once per key under a lock (a sha256 fingerprint on the client, never
+the key), wrapped for metering before any step can see it, and the agent's stored kwargs and the
+tenant's client object are left as they are; switching off puts the tenant's client back on the
+next step. **With the switch on, the step runs on the MoralMod key or fails, never on the tenant's
+key** (Carter, CLAIMS L13060):
+- the key **missing or off its shape**: `MoralmodKeyUnavailable` from `_main_agent`, counted
+  `moralmod_key_missing`;
+- the switch **cannot apply it** (the base URL is not OpenRouter over https, a custom
+  `Authorization` / `X-Api-Key` header would beat it, no Hermes factory, the factory raising or
+  returning another key): the same error, counted `moralmod_key_failed` (and
+  `moralmod_key_unsupported` for the shapes refused here);
+- the key **invalid or out of credit**: the SDK's error, with no retry on the tenant's key. Its
+  `llm.call` carries `key_source: moralmod`, `finish_reason: error` and the HTTP status (401/402).
+
+`MoralmodKeyUnavailable` is raised inside `speaker.complete`, as the plugin's own "Hermes has no
+gateway model configured." is, so the bridge answers its 502 to the runtime; its text names no key
+and nothing is chained onto it. A present key is registered with the sanitiser at plugin load. On
+av-events unload the bridge agent keeps its MoralMod client while the switch is on (a reloaded
+av-events adopts it) and gets the tenant's back only when the switch is off. The seam is pinned to
+the real `speaker.py` at `INDEX_PLUGIN_REF` by a CI parity test (`test_negotiator_llm.py`, the
+pytest job's own checkout of the plugin): a bump that changes `_main_agent` or `complete` fails CI
+until the seam is re-reviewed.
 
 ## Foreground `terminal` calls (DATA-312)
 

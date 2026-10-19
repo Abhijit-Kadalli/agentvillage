@@ -13,8 +13,10 @@ module global `_main`. A raw `client.chat.completions.create` fires none of Herm
 
 How. `install()` finds the Index plugin's `speaker` module in `sys.modules` (it never imports it):
 Hermes imports a directory plugin as `hermes_plugins.<slug>` (`hermes_cli/plugins_loader.py:605-660`
-at v2026.9.24), so `index-network`'s is `hermes_plugins.index_network.speaker`, with the same
-`__home_<digest>` suffix av-events itself carries in a multi-home process. It rebinds
+at v2026.9.24), so `index-network`'s is `hermes_plugins.index_network.speaker`, bare for whichever
+home claims the slug first and `__home_<digest>` for any other. The name therefore does not say
+whose it is: only a speaker whose plugin directory sits beside this av-events (the same
+`<home>/plugins`) is wrapped, and any other is counted `negotiator_llm_foreign_home`. It rebinds
 `speaker._main_agent` (one module attribute, as `_village_visible` rebinds `_core_tool_names`):
 the wrapper calls the plugin's own function, returns its agent unchanged (and lets anything it
 raises through unchanged), and before returning wraps that agent's
@@ -44,7 +46,10 @@ bridge has none, and a null `session_id` keeps the row out of every session, run
 model downstream (it joins only by tenant and day).
 
 Never at the cost of the step. The original `create` is called with the same arguments and its
-result returned (or its exception re-raised) unchanged; nothing runs before it but a clock read.
+result returned (or its exception re-raised) unchanged; inside the create wrapper nothing runs
+before it but a clock read. The `_main_agent` wrapper runs before the step too: switch reads, and
+with the key switch on a sha256 and, once per key, a local client build (review-b measured +169 us
+median per step against a model call of seconds).
 Everything after it is `_quiet` (a counter, never the session breaker), local and synchronous like
 every av-events emit: one buffered line, no network (the flusher sends). The flag is re-read on
 every step, so off stops events at once; the wrap itself is installed only when the flag is on at
@@ -56,11 +61,14 @@ The MoralMod key (Carter, CLAIMS L12977). Behind `AV_MORALMOD_OWN_KEY` (default 
 client from Hermes's own factory (`agent._create_openai_client`) on a copy of that agent's client
 kwargs with only `api_key` replaced (`_apply_key`), so the negotiator's spend lands on that key and
 never on the tenant's. The resident's chat client, the agent's stored kwargs and the tenant client
-object are untouched; switching off puts the tenant client back. A missing key is the tenant's
-client (today's behaviour, counted, `key_source: tenant`); an invalid or exhausted MoralMod key
-fails the step exactly as a failed step fails today (the SDK error, the bridge's 502), with no
-retry on the tenant's key. `key_source` (`moralmod` | `tenant`) rides on every negotiator
-`llm.call`.
+object are untouched; switching off puts the tenant client back. With the switch on the step
+runs on the MoralMod key or fails, never on the tenant's (Carter, CLAIMS L13060): a missing or
+malformed key, or one the switch cannot apply (not OpenRouter over https, a custom Authorization
+header, no factory, the factory failing), raises `MoralmodKeyUnavailable` from `_main_agent`, which
+the bridge answers with its 502 as for any step it cannot run (counted `moralmod_key_missing` /
+`moralmod_key_failed`); an invalid or exhausted key fails as the SDK error, with no retry on the
+tenant's key. The key is registered with the sanitiser at plugin load. `key_source` (`moralmod` |
+`tenant`) rides on every negotiator `llm.call`.
 
 Python 3.11, standard library only.
 """
@@ -71,6 +79,7 @@ import functools
 import hashlib
 import logging
 import math
+import os
 import re
 import sys
 import threading
@@ -95,6 +104,8 @@ HOOK_NAME = "negotiator_llm"
 FAILED = "negotiator_llm_failed"
 NO_SEAM = "negotiator_llm_no_seam"
 CLIENT_UNSUPPORTED = "negotiator_llm_client_unsupported"
+#: A speaker module that cannot be proven to be this av-events' own home's (S1).
+FOREIGN_HOME = "negotiator_llm_foreign_home"
 
 #: The own-key switch (Carter, CLAIMS L12977: a significant new cost must not land on the tenant's
 #: key). With `AV_MORALMOD_OWN_KEY` on and `MORALMOD_LLM_API_KEY` an OpenRouter key, the bridge's
@@ -108,8 +119,9 @@ KEY_SOURCES = (KEY_MORALMOD, KEY_TENANT)
 KEY_MISSING = "moralmod_key_missing"
 KEY_UNSUPPORTED = "moralmod_key_unsupported"
 KEY_FAILED = "moralmod_key_failed"
-#: An OpenRouter key's shape; anything else in the variable counts as missing.
-_OWN_KEY_SHAPE = re.compile(r"sk-or-[A-Za-z0-9_-]{8,256}")
+#: An OpenRouter key's shape, as long as the sanitiser's `openrouter_key` pattern needs (16+ after
+#: `sk-or-`, `_core._SECRET_PATTERNS`); anything else in the variable counts as missing.
+_OWN_KEY_SHAPE = re.compile(r"sk-or-[A-Za-z0-9_-]{16,256}")
 OPENROUTER_HOST = "openrouter.ai"
 _KEY_MARK = "__av_moralmod_key__"
 _TENANT_CLIENT = "__av_tenant_client__"
@@ -443,13 +455,13 @@ def _observe(provider: Any, api_mode: Any, key_source: str, kwargs: dict, respon
              error: Optional[BaseException], started: float, elapsed_s: float) -> None:
     """Build and buffer one `llm.call`. Runs inside `_quiet`, after the step has its result."""
     collector = _collector()
-    if collector is None:
+    if collector is None or not flag_on():
         return
     try:
         collector.begin(None)  # the kill switches' TTL re-read, as `guarded` does for a hook
     except Exception:  # noqa: BLE001
         pass
-    if not flag_on() or not collector.hook_allowed(HOOK_NAME, None) or not collector.config.active:
+    if not collector.hook_allowed(HOOK_NAME, None) or not collector.config.active:
         return
     model = kwargs.get("model")
     payload = negotiator_llm_payload(
@@ -505,12 +517,8 @@ def _is_openai_client(client: Any) -> bool:
     return str(getattr(type(client), "__module__", "") or "").split(".", 1)[0] == "openai"
 
 
-def _wrap_client(agent: Any) -> None:
-    """Wrap `agent.client.chat.completions.create` once. Flag off: nothing (a live kill switch:
-    an already-wrapped client then passes straight through `_observe`'s flag check)."""
-    if not flag_on():
-        return
-    client = getattr(agent, "client", None)
+def _wrap_completions_of(client: Any, provider: Any, api_mode: Any) -> None:
+    """Wrap `client.chat.completions.create` once (an instance attribute on that one object)."""
     if client is None:
         return
     if not _is_openai_client(client):
@@ -536,8 +544,7 @@ def _wrap_client(agent: Any) -> None:
             else "create" not in getattr(completions, "__dict__", {})
         )
         key_source = KEY_MORALMOD if getattr(client, _KEY_MARK, None) else KEY_TENANT
-        wrapper = _wrap_create(original, getattr(agent, "provider", None), getattr(agent, "api_mode", None),
-                               key_source, restore_by_delete)
+        wrapper = _wrap_create(original, provider, api_mode, key_source, restore_by_delete)
         setattr(completions, "create", wrapper)
         if getattr(completions, "create", None) is not wrapper:
             # A property or a fresh object per access: the wrap would not hold.
@@ -547,6 +554,35 @@ def _wrap_client(agent: Any) -> None:
             _STATE.wrapped_completions.add(completions)
         except TypeError:
             pass
+
+
+def _wrap_client(agent: Any) -> None:
+    """Wrap `agent.client.chat.completions.create` once. Flag off: nothing (a live kill switch:
+    an already-wrapped client then passes straight through `_observe`'s flag check)."""
+    if not flag_on():
+        return
+    _wrap_completions_of(getattr(agent, "client", None), getattr(agent, "provider", None),
+                         getattr(agent, "api_mode", None))
+
+
+# --------------------------------------------------------------------------
+# The MoralMod key
+# --------------------------------------------------------------------------
+
+
+class MoralmodKeyUnavailable(RuntimeError):
+    """`AV_MORALMOD_OWN_KEY` is on and the bridge's client could not be put on the MoralMod key.
+
+    Raised from the `_main_agent` wrapper, inside `speaker.complete`, so the step fails the way
+    the bridge already fails a step it cannot run (`_main_agent` raising "Hermes has no gateway
+    model configured."): `bridge.py` answers 502 with this text, which names no key. Never the
+    tenant's key instead (Carter, CLAIMS L13060)."""
+
+
+KEY_UNAVAILABLE_TEXT = "The MoralMod key is not available for this step."
+
+#: Serialises the key switch, so two first steps build one client between them.
+_KEY_LOCK = threading.Lock()
 
 
 def own_key_on() -> bool:
@@ -564,12 +600,31 @@ def _own_key() -> Optional[str]:
     return value
 
 
-def _host_is_openrouter(base_url: Any) -> bool:
+def register_key_at_load() -> None:
+    """Plugin load: register a MoralMod key that is present with the sanitiser now, whatever the
+    switches say, so no event can carry it even before the first bridge step. Never raises."""
     try:
-        host = (urlparse(str(base_url or "")).hostname or "").lower()
+        _own_key()
+    except Exception:  # noqa: BLE001 - a broken .env never stops the load
+        pass
+
+
+def _base_url_ok(base_url: Any) -> bool:
+    """`https://openrouter.ai` or a subdomain of it, nothing else (never plain http)."""
+    try:
+        parsed = urlparse(str(base_url or ""))
+        host = (parsed.hostname or "").lower()
     except ValueError:
         return False
-    return host == OPENROUTER_HOST or host.endswith("." + OPENROUTER_HOST)
+    return parsed.scheme == "https" and (host == OPENROUTER_HOST or host.endswith("." + OPENROUTER_HOST))
+
+
+def _headers_carry_auth(kwargs: dict) -> bool:
+    """A custom `Authorization` (or `X-Api-Key`) header would beat the swapped key in the SDK."""
+    headers = kwargs.get("default_headers")
+    if not isinstance(headers, dict):
+        return False
+    return any(str(name).strip().lower() in ("authorization", "x-api-key") for name in headers)
 
 
 def _bump(counter: str) -> None:
@@ -581,65 +636,99 @@ def _bump(counter: str) -> None:
             pass
 
 
-def _apply_key(agent: Any) -> None:
-    """Point the bridge's dedicated agent at the MoralMod key, or back at the tenant's.
+def _apply_own_key(agent: Any) -> Optional[str]:
+    """Put the bridge's dedicated agent on the MoralMod key. None when it is on it now, else the
+    counter that says why not (the caller fails the step).
 
-    Switch on and an OpenRouter key present: a client from Hermes's own factory
-    (`agent._create_openai_client`, the path every primary client takes) on a copy of the agent's
-    own client kwargs with `api_key` replaced. Same base URL, headers, timeout, model and
-    provider; built once per key (a sha256 fingerprint on the client, never the key). The
-    agent's `_client_kwargs`, `api_key` and the tenant's client object are left as they are; the
-    tenant client is kept on the new one so switching off puts it back. Switch on and the key
-    missing or off its shape: the tenant's client, counted `moralmod_key_missing` (the step runs as
-    today and its `llm.call` says `key_source: tenant`). A base URL that is not OpenRouter, or a
-    Hermes without the factory: the tenant's client, counted `moralmod_key_unsupported`."""
-    client = getattr(agent, "client", None)
-    if client is None:
-        return
-    fingerprint = getattr(client, _KEY_MARK, None)
-    tenant_client = getattr(client, _TENANT_CLIENT, None) if fingerprint else client
-    key = None
-    if own_key_on():
+    A client from Hermes's own factory (`agent._create_openai_client`, the path every primary
+    client takes) on a copy of the agent's own client kwargs with `api_key` replaced: same base
+    URL, headers, timeout, model and provider; built once per key (a sha256 fingerprint on the
+    client, never the key). The agent's `_client_kwargs`, `api_key` and the tenant's client object
+    are left as they are; the tenant client is kept on the new one, so switching off puts it back.
+    With metering on, the new client is wrapped before any step can see it."""
+    with _KEY_LOCK:
+        client = getattr(agent, "client", None)
+        if client is None:
+            return KEY_FAILED
+        fingerprint = getattr(client, _KEY_MARK, None)
+        tenant_client = getattr(client, _TENANT_CLIENT, None) if fingerprint else client
         key = _own_key()
         if key is None:
-            _bump(KEY_MISSING)
-    if key is None:
-        if fingerprint and tenant_client is not None:
-            agent.client = tenant_client
-        return
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
-    if fingerprint == digest:
-        return
-    kwargs = getattr(agent, "_client_kwargs", None)
-    factory = getattr(agent, "_create_openai_client", None)
-    if (
-        not isinstance(kwargs, dict)
-        or not callable(factory)
-        or not _is_openai_client(tenant_client)
-        or not _host_is_openrouter(kwargs.get("base_url") or getattr(agent, "base_url", None))
-    ):
-        _bump(KEY_UNSUPPORTED)
-        if fingerprint and tenant_client is not None:
-            agent.client = tenant_client
-        return
-    fresh = factory(dict(kwargs, api_key=key), reason="av_moralmod_own_key", shared=True)
-    if not _is_openai_client(fresh) or getattr(fresh, "api_key", None) != key:
-        _bump(KEY_UNSUPPORTED)
-        return
-    setattr(fresh, _KEY_MARK, digest)
-    setattr(fresh, _TENANT_CLIENT, tenant_client)
-    agent.client = fresh
+            return KEY_MISSING
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        if fingerprint == digest:
+            return None
+        kwargs = getattr(agent, "_client_kwargs", None)
+        factory = getattr(agent, "_create_openai_client", None)
+        if (
+            not isinstance(kwargs, dict)
+            or not callable(factory)
+            or not _is_openai_client(tenant_client)
+            or not _base_url_ok(kwargs.get("base_url") or getattr(agent, "base_url", None))
+            or _headers_carry_auth(kwargs)
+        ):
+            return KEY_UNSUPPORTED
+        fresh = factory(dict(kwargs, api_key=key), reason="av_moralmod_own_key", shared=True)
+        if not _is_openai_client(fresh) or getattr(fresh, "api_key", None) != key:
+            return KEY_UNSUPPORTED
+        setattr(fresh, _KEY_MARK, digest)
+        setattr(fresh, _TENANT_CLIENT, tenant_client)
+        if flag_on():
+            _isolated(FAILED, _wrap_completions_of, fresh, getattr(agent, "provider", None),
+                      getattr(agent, "api_mode", None))
+        agent.client = fresh
+        try:
+            _STATE.keyed_agents.add(agent)
+        except TypeError:
+            pass
+        return None
+
+
+def _require_own_key(agent: Any) -> None:
+    """Switch on: the step runs on the MoralMod key or fails. Missing or off its shape:
+    `moralmod_key_missing`; anything else (not OpenRouter over https, a header that would beat the
+    key, no factory, the factory raising or returning something else): `moralmod_key_failed`
+    (and `moralmod_key_unsupported` for the shapes this module refuses). Never the tenant's key."""
     try:
-        _STATE.keyed_agents.add(agent)
-    except TypeError:
-        pass
+        reason = _apply_own_key(agent)
+    except Exception:  # noqa: BLE001 - counted, and the step fails below, outside this handler
+        reason = KEY_FAILED
+    if reason is None:
+        return
+    if reason == KEY_UNSUPPORTED:
+        _bump(KEY_UNSUPPORTED)
+        reason = KEY_FAILED
+    _bump(reason)
+    # Raised here, outside any handler, so the factory's exception (whose text could hold the key)
+    # is never chained onto the step's.
+    raise MoralmodKeyUnavailable(KEY_UNAVAILABLE_TEXT)
+
+
+def _revert_key(agent: Any) -> None:
+    """Switch off: a bridge agent on the MoralMod client gets its tenant client back."""
+    client = getattr(agent, "client", None)
+    tenant_client = getattr(client, _TENANT_CLIENT, None) if getattr(client, _KEY_MARK, None) else None
+    if tenant_client is not None:
+        with _KEY_LOCK:
+            if getattr(agent, "client", None) is client:
+                agent.client = tenant_client
+
+
+def _own_key_switch() -> bool:
+    try:
+        return own_key_on()
+    except Exception:  # noqa: BLE001 - an unreadable switch is today's behaviour
+        return False
 
 
 def _wrap_main_agent(original: Callable) -> Callable:
     @functools.wraps(original)
     def _main_agent(*args: Any, **kwargs: Any) -> Any:
         agent = original(*args, **kwargs)  # its result and its exceptions, unchanged
-        _isolated(KEY_FAILED, _apply_key, agent)
+        if _own_key_switch():
+            _require_own_key(agent)  # the MoralMod key, or the step fails
+        else:
+            _isolated(KEY_FAILED, _revert_key, agent)
         _isolated(FAILED, _wrap_client, agent)
         return agent
 
@@ -647,22 +736,58 @@ def _wrap_main_agent(original: Callable) -> Callable:
     return _main_agent
 
 
-def speaker_module_name(package: str) -> str:
-    """The Index plugin's speaker beside this av-events: same namespace, same `__home_<digest>`."""
-    own = f"{NS_PARENT}.{OWN_SLUG}"
-    suffix = package[len(own):] if package.startswith(own) else ""
-    if suffix and not re.fullmatch(r"__home_[0-9a-f]{12}", suffix):
-        suffix = ""
-    return f"{NS_PARENT}.{INDEX_SLUG}{suffix}.{SPEAKER}"
+# --------------------------------------------------------------------------
+# Finding the Index plugin of THIS home
+# --------------------------------------------------------------------------
+
+#: Hermes's names for the Index plugin's speaker: bare for the first home that claims the slug,
+#: `__home_<digest>` for any other (`_directory_module_name`, plugins_loader.py:605-614). The name
+#: alone does not say which home a module is, so the lookup compares where the plugin lives.
+_SPEAKER_NAME = re.compile(rf"{NS_PARENT}\.{INDEX_SLUG}(?:__home_[0-9a-f]{{12}})?\.{SPEAKER}")
+
+
+def _plugins_root(path: Any) -> Optional[str]:
+    """`<home>/plugins` for a file at `<home>/plugins/<plugin>/<file>.py`, resolved."""
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        return os.path.realpath(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+    except (OSError, ValueError):
+        return None
+
+
+def own_plugins_root() -> Optional[str]:
+    """Where this av-events is installed (`$HERMES_HOME/plugins`, install.ts). Not `$HERMES_HOME`
+    from the environment: in a multi-home gateway that is one value for every home."""
+    return _plugins_root(__file__)
+
+
+def find_speaker() -> Any:
+    """The loaded Index plugin speaker of this av-events' own home, or None. A speaker module
+    whose plugin directory is not beside this av-events (another home's, or one without a
+    `__file__`, which cannot be proven ours) is never wrapped: counted once per module as
+    `negotiator_llm_foreign_home`."""
+    own = own_plugins_root()
+    found = None
+    for name, module in list(sys.modules.items()):
+        if module is None or not _SPEAKER_NAME.fullmatch(name):
+            continue
+        root = _plugins_root(getattr(module, "__file__", None))
+        if own is not None and root == own:
+            found = found or module
+        else:
+            _count_once(FOREIGN_HOME, ("foreign", id(module)))
+    return found
 
 
 def install() -> bool:
-    """Wrap the loaded Index plugin's `speaker._main_agent`. True when it is wrapped now. Absent
-    (not loaded yet, or not on this box) is False and uncounted; a speaker without `_main_agent`
-    and `complete` (the plugin revision moved) is False and counted once per module. Never imports."""
+    """Wrap this home's loaded Index plugin `speaker._main_agent`. True when it is wrapped now.
+    Absent (not loaded yet, or not on this box) is False and uncounted; a speaker without
+    `_main_agent` and `complete` (the plugin revision moved) is False and counted once per
+    module. Never imports."""
     if not (flag_on() or own_key_on()) or _STATE.collector_ref is None:
         return False
-    module = sys.modules.get(speaker_module_name(_STATE.package))
+    module = find_speaker()
     if module is None:
         return False
     if not all(callable(getattr(module, name, None)) for name in REQUIRED):
@@ -697,8 +822,12 @@ def _poll(stop_event: threading.Event) -> None:
 
 
 def start(collector_ref: Callable[[], Any], package: str, quiet: Callable[..., None]) -> bool:
-    """`register()`: off unless `AV_EVENTS_NEGOTIATOR_LLM` or `AV_MORALMOD_OWN_KEY` is on now. On: try once, then a daemon poller finds the
-    Index plugin when it loads after av-events. Idempotent."""
+    """`register()`. The MoralMod key, when present, is registered with the sanitiser first,
+    whatever the switches say. Then off unless `AV_EVENTS_NEGOTIATOR_LLM` or `AV_MORALMOD_OWN_KEY`
+    is on now: a switch armed later takes a gateway restart (the control plane restarts the gateway
+    when it writes the key). On: try once, then a daemon poller finds the Index plugin when it
+    loads after av-events. Idempotent."""
+    register_key_at_load()
     if not (flag_on() or own_key_on()):
         return False
     with _STATE.lock:
@@ -718,9 +847,10 @@ def start(collector_ref: Callable[[], Any], package: str, quiet: Callable[..., N
 
 
 def stop() -> None:
-    """Plugin unload: stop the poller, put the plugin's function, each client's method and the
-    bridge agent's tenant client back.
-    Only ever removes this module's wrappers. Never raises."""
+    """Plugin unload: stop the poller, put the plugin's function and each client's method back.
+    The bridge agent's tenant client goes back only when the key switch is off: with it on, the
+    agent keeps its MoralMod client (never the tenant's key), and a reloaded av-events adopts it
+    (same fingerprint). Only ever removes this module's wrappers. Never raises."""
     try:
         with _STATE.lock:
             _STATE.stop.set()
@@ -730,12 +860,9 @@ def stop() -> None:
                 if getattr(current, _MARK, None) is _TOKEN:
                     setattr(module, WRAPPED_NAME, current.__wrapped__)
             _STATE.speakers = weakref.WeakSet()
-            # The MoralMod key goes with the plugin: the bridge agent gets the tenant's client back.
-            for keyed in list(_STATE.keyed_agents):
-                client = getattr(keyed, "client", None)
-                tenant_client = getattr(client, _TENANT_CLIENT, None) if getattr(client, _KEY_MARK, None) else None
-                if tenant_client is not None:
-                    keyed.client = tenant_client
+            if not _own_key_switch():
+                for keyed in list(_STATE.keyed_agents):
+                    _revert_key(keyed)
             _STATE.keyed_agents = weakref.WeakSet()
             for completions in list(_STATE.wrapped_completions):
                 current = getattr(completions, "create", None)
@@ -764,15 +891,18 @@ __all__ = [
     "ABOVE_METADATA",
     "SCOPE_ENV",
     "TYPE",
+    "MoralmodKeyUnavailable",
     "flag_on",
     "own_key_on",
     "OWN_KEY_FLAG",
     "OWN_KEY_ENV",
     "KEY_SOURCES",
+    "find_speaker",
     "install",
     "negotiator_llm_payload",
+    "own_plugins_root",
+    "register_key_at_load",
     "scope",
-    "speaker_module_name",
     "start",
     "stop",
 ]

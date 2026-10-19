@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -166,12 +167,14 @@ def nl(plugin):
 
 
 @pytest.fixture()
-def speaker(monkeypatch):
-    """The stand-in speaker under Hermes's name for the Index plugin, with the bridge's client."""
+def speaker(monkeypatch, av):
+    """The stand-in speaker under Hermes's name for the Index plugin, with the bridge's client,
+    installed beside this av-events (`<home>/plugins/index-network/speaker.py`), as on a box."""
     package = types.ModuleType(INDEX_PACKAGE)
     package.__path__ = []  # type: ignore[attr-defined]
     module = types.ModuleType(SPEAKER_NAME)
     exec(compile(SPEAKER_SOURCE, "speaker_standin", "exec"), module.__dict__)
+    module.__file__ = str(av.PLUGIN_DIR.parent / "index-network" / "speaker.py")
     state = SimpleNamespace(result=response(), error=None, builds=0)
 
     def behaviour(kwargs):
@@ -589,19 +592,6 @@ def test_the_poller_finds_an_index_plugin_that_loads_after_av_events(plugin, ctx
         module.stop()
 
 
-@pytest.mark.parametrize(
-    "package,expected",
-    [
-        ("hermes_plugins.av_events", "hermes_plugins.index_network.speaker"),
-        ("hermes_plugins.av_events__home_0123456789ab", "hermes_plugins.index_network__home_0123456789ab.speaker"),
-        ("hermes_plugins.av_events__home_bad", "hermes_plugins.index_network.speaker"),
-        ("something.else", "hermes_plugins.index_network.speaker"),
-    ],
-)
-def test_speaker_module_name_follows_hermes_naming(plugin, package, expected):
-    assert nl(plugin).speaker_module_name(package) == expected
-
-
 # --------------------------------------------------------------------------
 # Switches that stop it live, and unload
 # --------------------------------------------------------------------------
@@ -770,7 +760,8 @@ def test_contract_vector_matches_the_module(plugin):
 
 
 # --------------------------------------------------------------------------
-# The MoralMod key (AV_MORALMOD_OWN_KEY): the bridge's client only, never the resident's
+# The MoralMod key (AV_MORALMOD_OWN_KEY): the bridge's client only, never the resident's; with the
+# switch on, the MoralMod key or a failed step, never the tenant's key (CLAIMS L13060)
 # --------------------------------------------------------------------------
 
 
@@ -778,6 +769,10 @@ def test_contract_vector_matches_the_module(plugin):
 def own_key(monkeypatch):
     monkeypatch.setenv("AV_MORALMOD_OWN_KEY", "1")
     monkeypatch.setenv("MORALMOD_LLM_API_KEY", MORALMOD_KEY)
+
+
+def unavailable(plugin):
+    return nl(plugin).MoralmodKeyUnavailable
 
 
 def test_own_key_off_keeps_the_tenants_client(registered, ctx, av, speaker, on):
@@ -809,7 +804,8 @@ def test_own_key_builds_the_bridge_client_with_the_moralmod_key_only(registered,
     assert "create" not in vars(resident_client.chat.completions)
     (event,) = calls(av, registered)
     assert event["payload"]["key_source"] == "moralmod"
-    # Built once per key.
+    # Built once per key, and metered before any step could see it (N3).
+    assert "create" in vars(bridge.client.chat.completions)
     speaker.bridge_complete(PAYLOAD)
     assert len(bridge.built) == 1
 
@@ -818,19 +814,28 @@ def test_own_key_works_without_the_metering_switch(registered, ctx, av, speaker,
     register(registered, ctx)
     speaker.bridge_complete(PAYLOAD)
     assert speaker.agent.client.api_key == MORALMOD_KEY
+    assert "create" not in vars(speaker.agent.client.chat.completions)
     assert calls(av, registered) == []
 
 
-@pytest.mark.parametrize("value", [None, "", "not-a-key", "sk-ant-" + "a" * 40, MORALMOD_KEY + "\n x"])
-def test_a_missing_key_keeps_the_tenants_key_counted(registered, ctx, av, speaker, on, monkeypatch, value):
+@pytest.mark.parametrize("value", [None, "", "not-a-key", "sk-ant-" + "a" * 40, MORALMOD_KEY + "\n x",
+                                   "sk-or-" + "a" * 15])
+def test_a_missing_or_malformed_key_fails_the_step_never_the_tenants_key(registered, ctx, av, speaker, on, monkeypatch,
+                                                                       value):
     monkeypatch.setenv("AV_MORALMOD_OWN_KEY", "1")
     if value is not None:
         monkeypatch.setenv("MORALMOD_LLM_API_KEY", value)
     register(registered, ctx)
-    assert speaker.bridge_complete(PAYLOAD)["content"] == SECRET_REPLY
-    assert speaker.agent.client is speaker.client and speaker.agent.built == []
-    assert registered._COLLECTOR.counters["moralmod_key_missing"] == 1
-    assert calls(av, registered)[0]["payload"]["key_source"] == "tenant"
+    with pytest.raises(unavailable(registered)) as caught:
+        speaker.bridge_complete(PAYLOAD)
+    assert str(caught.value) == "The MoralMod key is not available for this step."
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert speaker.client.chat.completions.calls == [] and speaker.agent.built == []
+    assert speaker.agent.client is speaker.client  # untouched, and never called
+    collector = registered._COLLECTOR
+    assert collector.counters["moralmod_key_missing"] == 1
+    assert collector.total_failures == 0 and not collector.plugin_disabled
+    assert calls(av, registered) == []  # no model call was made
 
 
 @pytest.mark.parametrize("status", [401, 402])
@@ -853,8 +858,8 @@ def test_an_invalid_or_exhausted_key_fails_the_step_as_today_with_no_tenant_retr
         "moralmod", "error", "APIStatusError", status)
 
 
-def test_switching_off_or_removing_the_key_puts_the_tenant_client_back(registered, ctx, av, speaker, on, own_key,
-                                                                       monkeypatch):
+def test_switching_off_puts_the_tenant_client_back_and_removing_the_key_fails(registered, ctx, av, speaker, on,
+                                                                             own_key, monkeypatch):
     register(registered, ctx)
     speaker.bridge_complete(PAYLOAD)
     assert speaker.agent.client.api_key == MORALMOD_KEY
@@ -865,9 +870,11 @@ def test_switching_off_or_removing_the_key_puts_the_tenant_client_back(registere
     speaker.bridge_complete(PAYLOAD)
     assert speaker.agent.client.api_key == MORALMOD_KEY
     monkeypatch.delenv("MORALMOD_LLM_API_KEY")
-    speaker.bridge_complete(PAYLOAD)
-    assert speaker.agent.client is speaker.client
-    assert [e["payload"]["key_source"] for e in calls(av, registered)] == ["moralmod", "tenant", "moralmod", "tenant"]
+    tenant_calls = len(speaker.client.chat.completions.calls)
+    with pytest.raises(unavailable(registered)):
+        speaker.bridge_complete(PAYLOAD)
+    assert len(speaker.client.chat.completions.calls) == tenant_calls
+    assert [e["payload"]["key_source"] for e in calls(av, registered)] == ["moralmod", "tenant", "moralmod"]
 
 
 def test_a_rotated_key_rebuilds_from_the_tenant_kwargs(registered, ctx, speaker, on, own_key, monkeypatch):
@@ -879,17 +886,35 @@ def test_a_rotated_key_rebuilds_from_the_tenant_kwargs(registered, ctx, speaker,
     assert [b[0]["api_key"] for b in speaker.agent.built] == [MORALMOD_KEY, MORALMOD_KEY_2]
 
 
-@pytest.mark.parametrize("base_url", ["https://api.openai.com/v1", "https://openrouter.ai.evil.example/v1", ""])
-def test_a_base_url_that_is_not_openrouter_is_never_switched(registered, ctx, speaker, on, own_key, base_url):
+@pytest.mark.parametrize("base_url", ["https://api.openai.com/v1", "https://openrouter.ai.evil.example/v1", "",
+                                      "http://openrouter.ai/api/v1"])
+def test_a_base_url_that_is_not_openrouter_over_https_fails_the_step(registered, ctx, speaker, on, own_key, base_url):
     speaker.module.BUILD = lambda: agent(speaker.client, base_url=base_url)
     register(registered, ctx)
-    speaker.bridge_complete(PAYLOAD)
+    with pytest.raises(unavailable(registered)):
+        speaker.bridge_complete(PAYLOAD)
     bridge = speaker.module._main
     assert bridge.client is speaker.client and bridge.built == []
-    assert registered._COLLECTOR.counters["moralmod_key_unsupported"] >= 1
+    assert speaker.client.chat.completions.calls == []
+    counters = registered._COLLECTOR.counters
+    assert counters["moralmod_key_failed"] == 1 and counters["moralmod_key_unsupported"] == 1
 
 
-def test_a_hermes_without_the_factory_is_never_switched(registered, ctx, speaker, on, own_key):
+@pytest.mark.parametrize("header", ["Authorization", "authorization", "X-Api-Key"])
+def test_a_custom_auth_header_that_would_beat_the_key_fails_the_step(registered, ctx, speaker, on, own_key, header):
+    def build():
+        a = agent(speaker.client)
+        a._client_kwargs["default_headers"] = {header: "Bearer something"}
+        return a
+
+    speaker.module.BUILD = build
+    register(registered, ctx)
+    with pytest.raises(unavailable(registered)):
+        speaker.bridge_complete(PAYLOAD)
+    assert speaker.module._main.built == [] and speaker.client.chat.completions.calls == []
+
+
+def test_a_hermes_without_the_factory_fails_the_step(registered, ctx, speaker, on, own_key):
     def build():
         a = agent(speaker.client)
         a._create_openai_client = None
@@ -897,31 +922,69 @@ def test_a_hermes_without_the_factory_is_never_switched(registered, ctx, speaker
 
     speaker.module.BUILD = build
     register(registered, ctx)
-    assert speaker.bridge_complete(PAYLOAD)["content"] == SECRET_REPLY
-    assert speaker.module._main.client is speaker.client
-    assert registered._COLLECTOR.counters["moralmod_key_unsupported"] >= 1
+    with pytest.raises(unavailable(registered)):
+        speaker.bridge_complete(PAYLOAD)
+    assert speaker.module._main.client is speaker.client and speaker.client.chat.completions.calls == []
+    assert registered._COLLECTOR.counters["moralmod_key_failed"] == 1
 
 
-def test_a_failing_switch_leaves_the_step_and_the_breaker_alone(registered, ctx, speaker, on, own_key, monkeypatch):
-    register(registered, ctx)
-
+def test_a_factory_that_raises_fails_every_step_counted_and_never_chains_its_text(registered, ctx, speaker, on,
+                                                                                   own_key):
     def boom(*a, **k):
-        raise RuntimeError("factory broke")
+        raise RuntimeError(f"factory broke near {MORALMOD_KEY}")
 
     speaker.module.BUILD = lambda: _with(agent(speaker.client), _create_openai_client=boom)
-    expected = {"role": "assistant", "content": SECRET_REPLY, "tool_calls": 1}
+    register(registered, ctx)
     for _ in range(12):
-        assert speaker.bridge_complete(PAYLOAD) == expected
-    assert speaker.module._main.client is speaker.client
+        with pytest.raises(unavailable(registered)) as caught:
+            speaker.bridge_complete(PAYLOAD)
+        assert MORALMOD_KEY not in str(caught.value)
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert speaker.module._main.client is speaker.client and speaker.client.chat.completions.calls == []
     collector = registered._COLLECTOR
     assert collector.counters["moralmod_key_failed"] == 12
     assert collector.total_failures == 0 and not collector.plugin_disabled
+
+
+def test_a_factory_returning_another_key_fails_the_step(registered, ctx, speaker, on, own_key):
+    def build():
+        a = agent(speaker.client)
+        a._create_openai_client = lambda kwargs, *, reason, shared: FakeOpenAI(lambda k: response(), api_key=TENANT_KEY)
+        return a
+
+    speaker.module.BUILD = build
+    register(registered, ctx)
+    with pytest.raises(unavailable(registered)):
+        speaker.bridge_complete(PAYLOAD)
+    assert speaker.client.chat.completions.calls == []
 
 
 def _with(obj, **attrs):
     for name, value in attrs.items():
         setattr(obj, name, value)
     return obj
+
+
+def test_two_first_steps_at_once_build_one_metered_client(registered, ctx, av, speaker, on, own_key):
+    register(registered, ctx)
+    results, errors = [], []
+
+    def step():
+        try:
+            results.append(speaker.bridge_complete(PAYLOAD))
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=step) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and len(results) == 16
+    assert len(speaker.agent.built) == 1
+    assert len(calls(av, registered)) == 16
+    assert all(e["payload"]["key_source"] == "moralmod" for e in calls(av, registered))
+    assert speaker.client.chat.completions.calls == []
 
 
 def test_the_key_never_reaches_the_buffer_or_the_log(registered, ctx, av, speaker, on, own_key, caplog):
@@ -936,11 +999,184 @@ def test_the_key_never_reaches_the_buffer_or_the_log(registered, ctx, av, speake
     assert MORALMOD_KEY not in caplog.text
 
 
-def test_unload_puts_the_tenant_client_back(registered, ctx, speaker, on, own_key):
+@pytest.mark.parametrize("switches", [{}, {"AV_MORALMOD_OWN_KEY": "1"}, {"AV_EVENTS_NEGOTIATOR_LLM": "1"}])
+def test_the_key_is_registered_with_the_sanitiser_at_load(plugin, ctx, token, monkeypatch, switches):
+    """S3 / mutant K8: registered at plugin load, before any bridge step, whatever the switches."""
+    core = sys.modules[f"{plugin.__name__}._core"]
+    key = "sk-or-v1-" + "d" * 64
+    monkeypatch.setattr(core, "_LITERAL_SECRETS", set())
+    monkeypatch.setenv("MORALMOD_LLM_API_KEY", key)
+    for name, value in switches.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(nl(plugin), "FAST_S", 3600.0)
+    try:
+        plugin.register(ctx)
+        assert key in core._LITERAL_SECRETS
+        assert key not in json.dumps(core.sanitize({"note": f"x {key} y"}))
+    finally:
+        nl(plugin).stop()
+
+
+def test_the_key_shape_is_as_long_as_the_sanitisers_pattern(plugin):
+    module = nl(plugin)
+    core = sys.modules[f"{plugin.__name__}._core"]
+    pattern = dict(core._SECRET_PATTERNS)["openrouter_key"]
+    for key in ("sk-or-" + "a" * 16, MORALMOD_KEY, "sk-or-v1-" + "Z9_-" * 4):
+        assert module._OWN_KEY_SHAPE.fullmatch(key) and pattern.fullmatch(key)
+    assert not module._OWN_KEY_SHAPE.fullmatch("sk-or-" + "a" * 15)
+
+
+def test_unload_with_the_switch_on_keeps_the_moralmod_client(registered, ctx, speaker, on, own_key):
     register(registered, ctx)
     speaker.bridge_complete(PAYLOAD)
-    assert speaker.agent.client.api_key == MORALMOD_KEY
+    moralmod_client = speaker.agent.client
+    registered._on_unload()
+    assert speaker.module._main_agent is speaker.original_main_agent
+    assert speaker.agent.client is moralmod_client  # never the tenant's key
+    assert speaker.bridge_complete(PAYLOAD)["content"] == SECRET_REPLY
+    assert speaker.client.chat.completions.calls == []
+
+
+def test_unload_with_the_switch_off_puts_the_tenant_client_back(registered, ctx, speaker, on, own_key, monkeypatch):
+    register(registered, ctx)
+    speaker.bridge_complete(PAYLOAD)
+    monkeypatch.setenv("AV_MORALMOD_OWN_KEY", "0")
     registered._on_unload()
     assert speaker.agent.client is speaker.client
     assert speaker.module._main_agent is speaker.original_main_agent
-    assert speaker.bridge_complete(PAYLOAD)["content"] == SECRET_REPLY
+
+
+def test_the_key_switch_armed_after_load_does_nothing_until_restart(registered, ctx, speaker, monkeypatch):
+    """review-b N1: both switches off at load, so no seam; arming the key later changes nothing
+    until the gateway restarts (the control plane restarts it when it writes the key)."""
+    register(registered, ctx)
+    monkeypatch.setenv("AV_MORALMOD_OWN_KEY", "1")
+    monkeypatch.setenv("MORALMOD_LLM_API_KEY", MORALMOD_KEY)
+    assert nl(registered).install() is False
+    speaker.bridge_complete(PAYLOAD)
+    assert speaker.agent.client is speaker.client and speaker.agent.built == []
+
+
+# --------------------------------------------------------------------------
+# This home only (review-b S1)
+# --------------------------------------------------------------------------
+
+
+def test_a_speaker_of_another_home_is_never_wrapped_and_is_counted(registered, ctx, av, speaker, on, own_key,
+                                                                   tmp_path):
+    speaker.module.__file__ = str(tmp_path / "other-home" / "plugins" / "index-network" / "speaker.py")
+    register(registered, ctx)
+    module = nl(registered)
+    assert module.install() is False and module.install() is False
+    assert speaker.module._main_agent is speaker.original_main_agent
+    speaker.bridge_complete(PAYLOAD)
+    assert speaker.agent.client is speaker.client and calls(av, registered) == []
+    assert registered._COLLECTOR.counters["negotiator_llm_foreign_home"] == 1
+
+
+def test_a_speaker_without_a_file_cannot_be_proven_ours(registered, ctx, speaker, on):
+    del speaker.module.__file__
+    register(registered, ctx)
+    assert nl(registered).install() is False
+    assert registered._COLLECTOR.counters["negotiator_llm_foreign_home"] == 1
+
+
+def test_this_homes_speaker_under_a_suffixed_name_is_found(registered, ctx, av, speaker, on, monkeypatch):
+    """Hermes names the Index plugin bare for the first home that claims it; this home's may be
+    the suffixed one while another home's holds the bare name."""
+    suffixed = "hermes_plugins.index_network__home_0123456789ab.speaker"
+    other = types.ModuleType(SPEAKER_NAME)
+    exec(compile(SPEAKER_SOURCE, "other_home_standin", "exec"), other.__dict__)
+    other.__file__ = "/elsewhere/plugins/index-network/speaker.py"
+    original_other = other._main_agent
+    monkeypatch.setitem(sys.modules, SPEAKER_NAME, other)
+    monkeypatch.setitem(sys.modules, suffixed, speaker.module)
+    register(registered, ctx)
+    assert getattr(speaker.module._main_agent, nl(registered)._MARK, None) is nl(registered)._TOKEN
+    assert other._main_agent is original_other
+    speaker.bridge_complete(PAYLOAD)
+    assert len(calls(av, registered)) == 1
+    assert registered._COLLECTOR.counters["negotiator_llm_foreign_home"] == 1
+
+
+def test_own_plugins_root_is_where_av_events_is_installed(plugin):
+    assert nl(plugin).own_plugins_root() == os.path.realpath(str(Path(plugin.__file__).resolve().parents[1]))
+
+
+# --------------------------------------------------------------------------
+# Parity with the real Index plugin at INDEX_PLUGIN_REF (review-b S2)
+# --------------------------------------------------------------------------
+
+#: sha256 over the source text of `speaker._main_agent` and `speaker.complete` at 04d833b8.
+SEAM_SHA256 = "b4871fbe72845782239de760e8e08a5a07d0912c12d419d2732dc6c12a4abbda"
+SEAM_REF = "04d833b840541fedabe78cbdad306c18853d784a"
+INDEX_PLUGIN_DIR_ENV = "AV_INDEX_PLUGIN_TEST_DIR"
+
+
+def _seam(source: str):
+    import ast
+
+    tree = ast.parse(source)
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    return tree, functions
+
+
+def _calls(node) -> list:
+    import ast
+
+    out = []
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            out.append(ast.unparse(sub.func))
+    return out
+
+
+@pytest.fixture()
+def real_plugin():
+    root = os.environ.get(INDEX_PLUGIN_DIR_ENV, "").strip()
+    if not root or not (Path(root) / "speaker.py").is_file():
+        pytest.skip(f"{INDEX_PLUGIN_DIR_ENV} names no Index plugin checkout (CI sets it)")
+    return Path(root)
+
+
+def test_the_pin_this_parity_test_holds_is_the_installers(av):
+    source = (av.PLUGIN_DIR.parents[1] / "install" / "install_index_plugin.ts").read_text(encoding="utf-8")
+    assert f'export const INDEX_PLUGIN_REF = "{SEAM_REF}";' in source, (
+        "INDEX_PLUGIN_REF moved: re-review MM-INFER-VIS's seam on the new speaker.py (the bridge's "
+        "_main_agent must still build its own AIAgent) and move SEAM_REF and SEAM_SHA256 here with it"
+    )
+
+
+def test_the_real_speakers_main_agent_builds_its_own_agent(real_plugin):
+    """The isolation rests on this: `_main_agent` constructs a dedicated `AIAgent` and caches it in
+    `_main`, and `complete` reaches it through the module global and calls its client directly."""
+    import ast
+    import hashlib
+    import subprocess
+
+    if (real_plugin / ".git").exists():
+        head = subprocess.run(["git", "-C", str(real_plugin), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, check=False).stdout.strip()
+        assert head == SEAM_REF, f"the Index plugin checkout is at {head}, not the pinned {SEAM_REF}"
+    source = (real_plugin / "speaker.py").read_text(encoding="utf-8")
+    tree, functions = _seam(source)
+    assert {"_main_agent", "complete"} <= set(functions), "speaker.py lost _main_agent or complete"
+    main_agent, complete = functions["_main_agent"], functions["complete"]
+    assert "AIAgent" in _calls(main_agent), "_main_agent no longer constructs its own AIAgent"
+    globals_declared = [n for sub in ast.walk(main_agent) if isinstance(sub, ast.Global) for n in sub.names]
+    assert "_main" in globals_declared, "_main_agent no longer caches its agent in the module global _main"
+    imports = [alias.name for sub in ast.walk(main_agent) if isinstance(sub, ast.ImportFrom)
+               for alias in sub.names if sub.module == "run_agent"]
+    assert imports == ["AIAgent"], "_main_agent's AIAgent is no longer run_agent.AIAgent"
+    complete_calls = _calls(complete)
+    assert "_main_agent" in complete_calls, "complete no longer calls _main_agent through the module global"
+    assert "agent.client.chat.completions.create" in complete_calls, "complete no longer calls the client itself"
+    bridge = (real_plugin / "bridge.py").read_text(encoding="utf-8")
+    assert "from .speaker import complete as complete_turn" in bridge
+    seam = "".join(ast.get_source_segment(source, functions[name]) for name in ("_main_agent", "complete"))
+    digest = hashlib.sha256(seam.encode("utf-8")).hexdigest()
+    assert digest == SEAM_SHA256, (
+        "The Index plugin's speaker seam (_main_agent / complete) changed. Re-review MM-INFER-VIS: the "
+        "wrap and the MoralMod key switch assume _main_agent builds a dedicated AIAgent used only by "
+        f"the bridge. Then move SEAM_SHA256 to {digest}."
+    )
