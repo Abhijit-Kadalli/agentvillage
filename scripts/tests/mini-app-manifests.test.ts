@@ -23,9 +23,9 @@ import { validateProjection } from "../../install/install_miniapps";
 // Nothing on a box reads these files yet (no skill, plugin or installer step): data only, no roll.
 //   bun test scripts/tests/mini-app-manifests.test.ts
 
-const MODULE_SHA256 = "5086fd74c63dbf8126496980207dcf5faddc345f851a5ed6aba21f7a07c7af7c";
+const MODULE_SHA256 = "4e881ff8a43db95cbc5a721fd6378ce623c0913be8560d4fa3215f736c569cf6";
 const SCHEMA_SHA256 = "ff2e958db499c33150851224bd20cbcf4e02ed9a0789ccc407c940ffb27871b7";
-const PINS_SHA256 = "9835b6de1ba0f40c466a1dd846754158c7d81604b822a28dd721e19af1831f49";
+const PINS_SHA256 = "cacba113dc2d1ced3d6ae8bf78c6b569a0620190f7a6d924be9fa20a04ecc901";
 const REPO = join(import.meta.dir, "..", "..");
 const DIR = join(REPO, "mini-apps");
 const m = createRequire(import.meta.url)("../mini-apps-manifests.cjs");
@@ -183,6 +183,48 @@ describe("mini-apps/: the published catalog", () => {
   });
 });
 
+// baseUrl: [url, refusal or null] (review-b N8; security reviews "ssrf-denylist-incomplete" and
+// "ssrf-parser-differential"). The same table in the cp, app and overlay tests.
+const ENDPOINTS: [string, string | null][] = [
+  // IPv4 private and special space, by parsed address, and the public neighbours (any IP literal is refused).
+  ["https://0.1.2.3/", "internal_host"], ["https://10.0.0.1/", "internal_host"], ["https://100.64.0.1/", "internal_host"],
+  ["https://100.127.255.255/", "internal_host"], ["https://127.0.0.1/", "internal_host"], ["https://169.254.169.254/", "internal_host"],
+  ["https://172.16.0.1/", "internal_host"], ["https://172.31.255.255/", "internal_host"], ["https://192.0.0.8/", "internal_host"],
+  ["https://192.168.1.1/", "internal_host"], ["https://198.18.0.1/", "internal_host"], ["https://198.19.255.255/", "internal_host"],
+  ["https://224.0.0.1/", "internal_host"], ["https://240.0.0.1/", "internal_host"], ["https://255.255.255.255/", "internal_host"],
+  ["https://100.128.0.1/", "ip_literal"], ["https://172.32.0.1/", "ip_literal"], ["https://198.20.0.1/", "ip_literal"], ["https://8.8.8.8/", "ip_literal"],
+  // Every form the WHATWG parser turns into a dotted quad.
+  ["https://2130706433/", "internal_host"], ["https://0x7f.1/", "internal_host"], ["https://0177.0.0.1/", "internal_host"],
+  ["https://127.1", "internal_host"], ["https://0x7f.1", "internal_host"], ["https://0xa9fea9fe/", "internal_host"],
+  // IPv6, IPv4-mapped (by the IPv4 rules), NAT64, ULA, link-local, multicast; public literals.
+  ["https://[::]/", "internal_host"], ["https://[::1]/", "internal_host"], ["https://[::ffff:127.0.0.1]", "internal_host"],
+  ["https://[::ffff:10.1.2.3]/", "internal_host"], ["https://[::ffff:169.254.169.254]/", "internal_host"], ["https://[64:ff9b::8.8.8.8]/", "internal_host"],
+  ["https://[fc00::1]/", "internal_host"], ["https://[fd12::1]/", "internal_host"], ["https://[fe80::1]/", "internal_host"],
+  ["https://[febf::1]/", "internal_host"], ["https://[ff02::1]/", "internal_host"],
+  ["https://[::ffff:8.8.8.8]/", "ip_literal"], ["https://[2001:4860:4860::8888]/", "ip_literal"], ["https://[fec0::1]/", "ip_literal"],
+  // Names: lower-cased, one trailing dot stripped; single-label and the private suffixes.
+  ["https://localhost/mcp", "internal_host"], ["https://LOCALHOST./mcp", "internal_host"], ["https://a.localhost/", "internal_host"],
+  ["https://x.internal/", "internal_host"], ["https://controlplane.railway.internal/x", "internal_host"], ["https://printer.local/", "internal_host"],
+  ["https://nas.lan/", "internal_host"], ["https://router.home.arpa/", "internal_host"], ["https://home.arpa/", "internal_host"],
+  ["https://wiki.intranet/", "internal_host"], ["https://ad.corp/", "internal_host"], ["https://intranet/", "internal_host"],
+  ["https://a.local../", "internal_host"],
+  // Scheme, userinfo, port.
+  ["http://example.com/", "url"], ["https://", "url"], ["https:///x", "url"], ["https://u:p@example.com/", "userinfo"],
+  ["https://u@example.com/", "userinfo"], ["https://example.com:8443/", "port"],
+  // Parser differentials: what another parser (urllib, httpx, fetch) could read as another host.
+  ["https://evil.example\\@169.254.169.254/", "url_chars"], ["https://a.example%2f@127.0.0.1", "userinfo"],
+  ["https://a.exa\tmple.com/", "url_chars"], ["https://a.example.com\n/", "url_chars"], ["https://a.exa\rmple.com/", "url_chars"],
+  ["https://example.com/a b", "url_chars"], ["https://%31%32%37.0.0.1/", "url_chars"], ["https://exa%6dple.com/", "url_chars"],
+  ["https://bücher.example/", "url_chars"], ["https://xn--bcher-kva.example/", "idn"],
+  // Canonical: new URL(s).href === s exactly (an empty path is written "/").
+  ["https://MCP.dizko.app/mcp", "not_canonical"], ["https://mcp.dizko.app./mcp", "not_canonical"], ["https://example.com:443", "not_canonical"],
+  ["https://example.com:443/", "not_canonical"], ["https://example.com", "not_canonical"], ["https://example.com/a/../b", "not_canonical"],
+  ["https://example.com/%2e%2e/b", "not_canonical"], ["https://example.com/a?x=1", "not_canonical"], ["https://example.com/#f", "not_canonical"],
+  // Accepted: the real three, a bare origin, every path character the allowlist takes.
+  ["https://mcp.dizko.app/mcp", null], ["https://zzz.bot/mcp", null], ["https://slopfolio.com/mcp", null], ["https://example.com/", null],
+  ["https://example.com/a-b_c.d~e!$&'()*+,;=:@%20/", null],
+];
+
 // review-b fold 1 (S1, N2, N8): what a manifest may name beyond its own namespace.
 describe("the validator: secretRef, baseUrl hosts, nesting depth", () => {
   // 'acme': a third party of For Kicks' shape (https-json, app-token) under its own id.
@@ -209,19 +251,16 @@ describe("the validator: secretRef, baseUrl hosts, nesting depth", () => {
     }
   });
 
-  test("N8: baseUrl never names an internal host, in any form the URL parser normalizes", () => {
-    expect(index.apps.filter((id: string) => manifest(id).service.baseUrl).length).toBe(3);
-    for (const url of ["https://localhost/mcp", "https://LOCALHOST./mcp", "https://a.localhost/mcp", "https://controlplane.railway.internal/x",
-      "https://printer.local/x", "https://intranet/x", "https://169.254.169.254/latest", "https://0xa9fea9fe/latest", "https://10.0.0.1/x",
-      "https://127.0.0.1/x", "https://2130706433/x", "https://0x7f.1/x", "https://0177.0.0.1/x", "https://127.1/x", "https://%31%32%37.0.0.1/x",
-      "https://[::1]/x", "https://[fe80::1]/x", "https://[::ffff:127.0.0.1]/x"]) {
+  test("N8: baseUrl: every private or special address, internal name and parser differential is refused by its rule", () => {
+    for (const [url, want] of ENDPOINTS) expect([url, m.endpointRefusal(url)]).toEqual([url, want]);
+    for (const [url, want] of ENDPOINTS) {
       const x = manifest("dizko");
       x.service.baseUrl = url;
-      expect([url, reasons(m.validateManifest(x))]).toEqual([url, ["/service/baseUrl internal_host"]]);
+      // The schema's own https pattern refuses some first (whitespace, http:); those are never accepted.
+      if (m.checkSchema(x).length) { expect([url, want]).not.toEqual([url, null]); continue; }
+      expect([url, reasons(m.validateManifest(x))]).toEqual([url, want ? [`/service/baseUrl ${want}`] : []]);
     }
-    const x = manifest("dizko");
-    x.service.baseUrl = "https://mcp.example.org/mcp";
-    expect(reasons(m.validateManifest(x))).toEqual([]);
+    expect(index.apps.filter((id: string) => manifest(id).service.baseUrl).length).toBe(3);
   });
 
   test("N2: deep nesting is a dropped manifest with a code, never a throw; the catalog serves the rest", () => {

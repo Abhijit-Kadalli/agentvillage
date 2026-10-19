@@ -319,18 +319,96 @@ function httpsUrl(value, { bare = false } = {}) {
   try { url = new URL(value); } catch { return false; }
   return url.protocol === 'https:' && !url.username && !url.password && (!bare || (!url.search && !url.hash && !value.includes('?') && !value.includes('#')));
 }
+// The only baseUrl form accepted (security review "ssrf-parser-differential"): lower-case ASCII DNS labels,
+// at least two, no port, no userinfo, an optional path of these characters, no query, no fragment.
+const STRICT_BASE_URL = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%\/-]*)?$/;
 /**
- * Whether an endpoint names a host the platform must never be pointed at (review-b N8: SSRF once third
- * parties author manifests). Read from the URL parser's hostname, never the text: it already turns
- * decimal, hex, octal and short IPv4 forms into dotted quads and brackets IPv6. Refused: any IP literal
- * (so 169.254.169.254 and every private range), a single-label name, localhost and *.localhost, *.internal
- * and *.local. A public name that resolves inward is the fetcher's to refuse (it resolves; this cannot).
+ * Why an endpoint may not be pointed at (review-b N8; security reviews "ssrf-denylist-incomplete" and
+ * "ssrf-parser-differential"), or null. Checked in this order, so each refusal names its cause:
+ *   'url_chars'     a non-ASCII, whitespace or control character (tab, CR, LF included) or a backslash
+ *                   anywhere, or a `%` in the authority: forms other URL parsers read differently;
+ *   'url'           not `https://`, an empty host, or unparseable; 'userinfo': an `@` before the path;
+ *   'port'          any port the parser keeps (it drops :443, which 'not_canonical' then refuses);
+ * then the host, read from the WHATWG parser (it turns decimal, hex, octal and short IPv4 forms such as
+ * 2130706433, 0x7f.1, 0177.0.0.1 and 127.1 into a dotted quad, and brackets a compressed IPv6):
+ *   'internal_host' a private or special address: IPv4 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12,
+ *                   192.0.0/24, 192.168/16, 198.18/15, 224/4 and above; IPv6 ::, ::1, 64:ff9b::/96,
+ *                   fc00::/7, fe80::/10, ff00::/8, and ::ffff:0:0/96 (and the old ::/96) by the IPv4 rules
+ *                   of the address it carries; or a name that is single-label, localhost, *.localhost,
+ *                   *.internal, *.local, *.lan, *.home.arpa, *.intranet or *.corp (lower-cased, ONE
+ *                   trailing dot stripped; any other empty label is refused too);
+ *   'ip_literal'    any other IP literal: a reviewed endpoint is a public DNS name;
+ *   'idn'           a punycode (xn--) label;
+ *   'not_canonical' not STRICT_BASE_URL, or `new URL(s).href !== s` exactly (one rule: an empty path is
+ *                   written `/`; no upper-case host, trailing dot, :443, dot segment or re-encoding).
+ * A static check cannot stop DNS rebinding or a public name that resolves to a private address: the
+ * runtime fetcher must re-check the resolved IP at connect time (design §2, Phase 1; the cp and app own it).
  */
-function internalHost(value) {
-  let host;
-  try { host = new URL(value).hostname.toLowerCase().replace(/\.+$/, ''); } catch { return true; }
-  return host.startsWith('[') || /^[0-9.]+$/.test(host) || !host.includes('.') ||
-    /(?:^|\.)(?:localhost|internal|local)$/.test(host);
+function endpointRefusal(value) {
+  if (typeof value !== 'string' || /[^\x21-\x7e]|\\/.test(value)) return 'url_chars';
+  if (!value.startsWith('https://')) return 'url';
+  const authority = value.slice(8).split(/[/?#]/, 1)[0];
+  if (!authority) return 'url';
+  if (authority.includes('@')) return 'userinfo';
+  if (authority.includes('%')) return 'url_chars';
+  let url;
+  try { url = new URL(value); } catch { return 'url'; }
+  if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) return 'url';
+  if (url.port !== '') return 'port';
+  const host = url.hostname.toLowerCase();
+  const refused = hostRefusal(host);
+  if (refused) return refused;
+  if (host.split('.').some(label => label.startsWith('xn--'))) return 'idn';
+  if (!STRICT_BASE_URL.test(value) || url.href !== value) return 'not_canonical';
+  return null;
+}
+function hostRefusal(parsed) {
+  if (parsed.startsWith('[')) {
+    const words = ipv6Words(parsed.slice(1, -1));
+    if (!words) return 'ip_literal';
+    return internalV6(words) ? 'internal_host' : 'ip_literal';
+  }
+  const quad = ipv4Octets(parsed);
+  if (quad) return internalV4(quad) ? 'internal_host' : 'ip_literal';
+  if (/^[0-9.]+$/.test(parsed)) return 'ip_literal';
+  const host = parsed.endsWith('.') ? parsed.slice(0, -1) : parsed;
+  if (!host || host.split('.').some(label => !label)) return 'internal_host';
+  if (!host.includes('.') || /(?:^|\.)(?:localhost|internal|local|lan|home\.arpa|intranet|corp)$/.test(host)) return 'internal_host';
+  return null;
+}
+function ipv4Octets(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return null;
+  const octets = m.slice(1).map(Number);
+  return octets.every(n => n <= 255) ? octets : null;
+}
+function internalV4([a, b, c]) {
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 0 && c === 0) ||
+    (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19));
+}
+// The eight 16-bit words of an IPv6 address (compressed, and with a trailing dotted IPv4), or null.
+function ipv6Words(text) {
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const part = half => (half ? half.split(':') : []).flatMap(word => {
+    const quad = word.includes('.') ? ipv4Octets(word) : null;
+    if (quad) return [quad[0] * 256 + quad[1], quad[2] * 256 + quad[3]];
+    return /^[0-9a-f]{1,4}$/.test(word) ? [parseInt(word, 16)] : [NaN];
+  });
+  const head = part(halves[0]), tail = halves.length === 2 ? part(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  const words = [...head, ...Array(Math.max(fill, 0)).fill(0), ...tail];
+  return words.length === 8 && (halves.length === 1 || fill >= 1) && words.every(Number.isInteger) ? words : null;
+}
+function internalV6(w) {
+  const zero = (from, to) => w.slice(from, to).every(x => x === 0);
+  const carried = () => [w[6] >> 8, w[6] & 255, w[7] >> 8, w[7] & 255];
+  if (zero(0, 8) || (zero(0, 7) && w[7] === 1)) return true; // :: and ::1
+  if (zero(0, 5) && w[5] === 0xffff) return internalV4(carried()); // ::ffff:0:0/96, IPv4-mapped
+  if (zero(0, 6)) return internalV4(carried()); // ::/96, the deprecated IPv4-compatible form
+  if (w[0] === 0x64 && w[1] === 0xff9b && zero(2, 6)) return true; // 64:ff9b::/96, NAT64
+  return (w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xff00) === 0xff00;
 }
 const utf8Bytes = value => new TextEncoder().encode(value).length;
 const appSecretPrefix = id => `MINI_APP_${id.toUpperCase().replace(/-/g, '_')}_`;
@@ -349,8 +427,8 @@ function semantics(m, compileInput) {
   if (!httpsUrl(m.homepage)) fail('/homepage', 'url');
   const service = m.service, auth = service.auth;
   if (own(service, 'baseUrl')) {
-    if (!httpsUrl(service.baseUrl, { bare: true })) fail('/service/baseUrl', 'url');
-    else if (internalHost(service.baseUrl)) fail('/service/baseUrl', 'internal_host');
+    const refused = endpointRefusal(service.baseUrl);
+    if (refused) fail('/service/baseUrl', refused);
   }
   if (service.kind === 'internal') {
     if (own(service, 'baseUrl')) fail('/service/baseUrl', 'internal_has_endpoint');
@@ -520,5 +598,5 @@ function deepFreeze(value) {
 
 module.exports = {
   MANIFEST_VERSION, CODE, V1_CODE, SCHEMA, INDEX_SCHEMA, RELAY_OPERATION, CONTEXT_OPERATIONS, DEFAULTS, FIRST_PARTY, RESERVED_IDS,
-  checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze,
+  checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze, endpointRefusal,
 };
