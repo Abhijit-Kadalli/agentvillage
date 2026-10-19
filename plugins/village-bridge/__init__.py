@@ -253,6 +253,16 @@ def _zod_length(text):
     return len(text.strip(_JS_TRIM).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass"))
 
 
+def _note_fits(text):
+    """A For Kicks note both receivers take (ov#411 review-b S2): the app's zod check (_zod_length <= 140, code
+    points) AND the cp's approval verify, which counts the stored (trimmed) preview note in UTF-16 units
+    (control-plane/src/mini-apps-approval.js `preview.note.length > 140` refuses the approval). A note of 71-140
+    astral code points would be prepared and shown but could never be approved, so it is refused here, before
+    anything is sent. UTF-16 units >= code points, so the cp's count is the binding one."""
+    units = len(text.strip(_JS_TRIM).encode("utf-16-le", "surrogatepass")) // 2
+    return _zod_length(text) <= 140 and units <= 140
+
+
 def _uuid(value, op):
     """A model-supplied uuid, canonicalized, or _InvalidArguments (a parse failure is the model's argument)."""
     try:
@@ -1029,8 +1039,8 @@ def handle(args, **kwargs):
             if "paymentMethod" in order and order["paymentMethod"] not in ("upi", "card_on_pickup"):
                 invalid.add("paymentMethod")
             # The app trims the note, then allows at most 140 characters (ForKicksOrderInput.note: z.string().trim()
-            # .max(140)), measured exactly as the app does (N2, _zod_length).
-            if "note" in order and (not isinstance(order["note"], str) or _zod_length(order["note"]) > 140):
+            # .max(140), code points); the cp's approval verify then allows at most 140 UTF-16 units. _note_fits.
+            if "note" in order and (not isinstance(order["note"], str) or not _note_fits(order["note"])):
                 invalid.add("note")
             if invalid:
                 raise _InvalidArguments(op, fields=sorted({key if key in SCHEMA["parameters"]["properties"] else "(unknown field)" for key in invalid}))

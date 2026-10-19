@@ -123,23 +123,27 @@ class ForKicksInvalidArgumentsTest(unittest.TestCase):
                     self.assertIn('data', self.call(request))
                     self.transport.assert_called_once_with(self.config, {'operation': 'forkicks.order.prepare', **sent})
 
-    # (note, accepted) exactly as the app's ForKicksOrderInput.note = z.string().trim().max(140) answers on zod 4.6.5
-    # (checked with bun against node_modules/zod 4.6.5, 19 Oct): code points after String.prototype.trim, not UTF-16
-    # units and not Python's str.strip() set.
+    # (note, accepted): accepted only if BOTH receivers take it (review-b S2):
+    # - the app: ForKicksOrderInput.note = z.string().trim().max(140) on zod 4.6.5 (checked with bun against
+    #   node_modules/zod 4.6.5, 19 Oct): code points after String.prototype.trim, not Python's str.strip() set;
+    # - the cp's approval verify (control-plane/src/mini-apps-approval.js, `preview.note.length > 140`): UTF-16 units
+    #   of the stored, trimmed note. So an astral character counts 2 here.
     NOTES = [
         ('x' * 140, True), ('x' * 141, False),
-        ('\U0001F600' * 140, True), ('\U0001F600' * 141, False),
-        ('\U0001F600' * 70 + 'a', True),               # 141 UTF-16 units: zod counts 71 code points
-        ('\ud83d\ude00' * 140, True),                  # a pair split into two Python code points counts 1, as JSON sends it
+        ('\U0001F600' * 70, True), ('\U0001F600' * 71, False),   # 140 / 142 UTF-16 units
+        ('\U0001F600' * 140, False),                            # zod takes it, the cp approval never would
+        ('\U0001F600' * 70 + 'a', False),                       # 71 code points, 141 units
+        ('\U0001F600' * 69 + 'ab', True),                       # 140 units
+        ('\ud83d\ude00' * 70, True), ('\ud83d\ude00' * 71, False),  # a pair split into two Python code points
         (' \ufeff' + 'x' * 140 + '\ufeff\u3000\u2028', True),  # JS trim strips BOM, ideographic space, LS
         ('\x1c' + 'x' * 140, False), ('\x85' + 'x' * 140, False),  # Python's strip() would drop these; JS keeps them
-        ('\ud83d' + 'x' * 139, True), ('\ud83d' + 'x' * 140, False),  # a lone surrogate counts 1
+        ('\ud83d' + 'x' * 139, True), ('\ud83d' + 'x' * 140, False),  # a lone surrogate counts 1 either way
         ('e\u0301' * 70, True), ('e\u0301' * 70 + 'x', False),        # combining marks count
     ]
 
     def test_the_note_is_measured_as_the_app_measures_it(self):
-        # ov#412 owner read N2: the box's 140 check matches the receiving side's count, so a note the app takes is
-        # never refused and one it refuses never leaves the box.
+        # ov#412 owner read N2 + ov#411 review-b S2: a note leaves the box only if the app AND the cp's approval
+        # verify both take it, so a prepared order is never one whose approval can never verify.
         self.enable()
         for note, accepted in self.NOTES:
             with self.subTest(note=note[:3], length=len(note), accepted=accepted):
