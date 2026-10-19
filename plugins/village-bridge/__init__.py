@@ -68,7 +68,7 @@ SCHEMA = {
             "promptingApproach": {"type": ["string", "null"], "maxLength": 20000},
             "tags": {"type": ["array", "null"], "maxItems": 16, "items": {"type": "string", "maxLength": 80}},
         }, "additionalProperties": False, "description": "Slopfolio projection overrides only; this object cannot be null. Omit members to keep; null on an individual member clears it. Never credentials, endpoints or account ids."},
-        "date": {"type": "string", "description": "YYYY-MM-DD in IST. Top-level date is forkicks.menu ONLY. For forkicks.order.prepare put the date inside fulfilment.date, never at the top level."},
+        "date": {"type": "string", "description": "For Kicks menu date, YYYY-MM-DD in IST."},
         "locationId": {"type": "string", "description": "Exact For Kicks location id returned by menu/schedule."},
         "format": {"type": "string", "enum": ["image"], "description": "forkicks.menu only: use image by default when the resident asks to see the menu, including 'what is on the menu' or 'what do you have'. Omit only for explicit text-only requests or structured reads needed to prepare an order."},
         "theme": {"type": "string", "enum": ["forkicks", "chalk", "paper"], "description": "forkicks.menu with format:image only; default forkicks, the café's own menu design. Chalk and paper are earlier concepts; paper is provisional."},
@@ -78,9 +78,9 @@ SCHEMA = {
             "itemId": {"type": "string"}, "qty": {"type": "integer", "minimum": 1},
             "optionIds": {"type": "array", "items": {"type": "string"}}
         }, "required": ["itemId", "qty", "optionIds"], "additionalProperties": False}},
-        "fulfilment": {"type": "object", "description": "forkicks.order.prepare: {type,locationId,date?,deliveryAddress?}. The optional pickup/delivery date belongs HERE as fulfilment.date, not at the top level.", "properties": {
+        "fulfilment": {"type": "object", "properties": {
             "type": {"type": "string", "enum": ["pickup", "delivery"]}, "locationId": {"type": "string"},
-            "date": {"type": "string", "description": "Optional order date, YYYY-MM-DD in IST, nested inside fulfilment."}, "deliveryAddress": {"type": "string"}
+            "date": {"type": "string"}, "deliveryAddress": {"type": "string"}
         }, "required": ["type", "locationId"], "additionalProperties": False},
         "paymentMethod": {"type": "string", "enum": ["upi", "card_on_pickup"]},
         "orderId": {"type": "string", "description": "Exact For Kicks order id returned by confirm; never another resident's."},
@@ -929,23 +929,12 @@ def handle(args, **kwargs):
                 raise ValueError("invalid_arguments")
             payload.update({key: value for key, value in args.items() if key != "operation"})
         elif op == "forkicks.order.prepare":
-            required = {"operation", "items", "fulfilment", "paymentMethod"}
-            invalid = (set(args) - (required | {"note"})) | (required - set(args))
-            if "items" in args and (not isinstance(args["items"], list) or not 1 <= len(args["items"]) <= 50):
-                invalid.add("items")
-            if "fulfilment" in args and not isinstance(args["fulfilment"], dict):
-                invalid.add("fulfilment")
-            if "paymentMethod" in args and args["paymentMethod"] not in ("upi", "card_on_pickup"):
-                invalid.add("paymentMethod")
+            if set(args) not in ({"operation", "items", "fulfilment", "paymentMethod"}, {"operation", "items", "fulfilment", "paymentMethod", "note"}):
+                raise ValueError("invalid_arguments")
+            if not isinstance(args["items"], list) or not 1 <= len(args["items"]) <= 50 or not isinstance(args["fulfilment"], dict) or args["paymentMethod"] not in ("upi", "card_on_pickup"):
+                raise ValueError("invalid_arguments")
             if "note" in args and (not isinstance(args["note"], str) or len(args["note"]) > 140):
-                invalid.add("note")
-            if invalid:
-                # Report schema field names only, never user values or arbitrary unknown keys.
-                fields = sorted({key if key in SCHEMA["parameters"]["properties"] else "(unknown field)" for key in invalid})
-                return json.dumps({"error": "invalid_arguments", "fields": fields,
-                    "instruction": "Correct forkicks.order.prepare fields: " + ", ".join(fields) +
-                    ". Use items:[{itemId,qty,optionIds}], fulfilment:{type,locationId,date?}, paymentMethod and optional note (plain text, max140)."
-                    " The order date belongs inside fulfilment.date, never at the top level. No request was sent; correct the arguments, not the service configuration. Do not report the café as unavailable."})
+                raise ValueError("invalid_arguments")
             payload.update({key: value for key, value in args.items() if key != "operation"})
         elif op == "forkicks.order.confirm" and set(args) == {"operation", "draftId"}:
             payload["draftId"] = args["draftId"]
