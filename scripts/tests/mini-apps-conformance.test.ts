@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   BRIDGE_ERROR_CODES, CHECKS, GENERIC_ERROR_CODES, REQUIRED, Refusal, SECRET_PATTERNS, allowedErrorCode, bumpOf, bumpVerdict,
   loadValidator, main, parseArgs, passedOf, redact, requiredBump, runConformance, secretFindings, secretPattern, show, strictJson,
@@ -42,8 +42,11 @@ function acme(): any {
     skills: [{ name: "acme", version: "1.0.0", sha256: sha256(SKILL), path: "skills/acme/SKILL.md" }],
   };
 }
-type Catalog = { root: string; path: string; fixtures: string };
-/** A throwaway catalog root: mini-apps/<id>/manifest.json, skills/<id>/SKILL.md, and fixture files. */
+type Catalog = { root: string; path: string; fixtures: string; outDir: string; out: string };
+/**
+ * A throwaway catalog root: mini-apps/<id>/manifest.json, skills/<id>/SKILL.md, and fixture files; and,
+ * OUTSIDE it (--out is refused anywhere inside the repo), a throwaway directory for --out.
+ */
 function catalog(opts: { manifest?: any; text?: string; id?: string; skill?: string; fixtures?: Record<string, string | Buffer> } = {}): Catalog {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "conformance-")));
   const id = opts.id ?? "acme";
@@ -58,7 +61,8 @@ function catalog(opts: { manifest?: any; text?: string; id?: string; skill?: str
     mkdirSync(dirname(join(fixtures, rel)), { recursive: true });
     writeFileSync(join(fixtures, rel), body);
   }
-  return { root, path, fixtures };
+  const outDir = realpathSync(mkdtempSync(join(tmpdir(), "conformance-out-")));
+  return { root, path, fixtures, outDir, out: join(outDir, "conformance.json") };
 }
 const GOOD_FIXTURES = {
   "acme.lookup/ok.json": JSON.stringify({ items: [{ name: "a" }, { name: "b" }] }),
@@ -68,8 +72,17 @@ function run(c: Catalog, extra: { fixtures?: string | null; base?: string } = {}
   const fixtures = extra.fixtures === null ? undefined : extra.fixtures ?? c.fixtures;
   return runConformance({ manifest: c.path, fixtures, base: extra.base }, { cwd: c.root });
 }
+const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+const g = (root: string, ...args: string[]) => {
+  const p = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: root, env: gitEnv, encoding: "utf8" });
+  if (p.status !== 0) throw new Error(`git ${args[0]}: ${p.stderr}`);
+  return p.stdout;
+};
 const row = (r: Report, check: string) => r.results.find(x => x.check === check)!;
-const cleanup = (c: Catalog) => rmSync(c.root, { recursive: true, force: true });
+const cleanup = (c: Catalog) => { rmSync(c.root, { recursive: true, force: true }); rmSync(c.outDir, { recursive: true, force: true }); };
+/** A conformance.json for `rel` (this manifest's own, unless another path is named), as a stale run left it. */
+const staleReport = (rel = "mini-apps/acme/manifest.json", passed = true) =>
+  JSON.stringify({ manifest: rel, sha256: "0".repeat(64), results: [{ check: "manifest.schema", pass: passed, note: "stale" }], passed }, null, 2) + "\n";
 function withCatalog<T>(opts: Parameters<typeof catalog>[0], fn: (c: Catalog) => T): T {
   const c = catalog(opts);
   try { return fn(c); } finally { cleanup(c); }
@@ -222,6 +235,15 @@ describe("item 1: the manifest, the validator pin, the skill hashes", () => {
     });
   });
 
+  test("F17: the manifest's skills[].sha256 is echoed through show(): cut to 64 characters, a / escaped", () => {
+    const m = acme();
+    m.skills[0].sha256 = "/" + "a".repeat(200);
+    withCatalog({ manifest: m, fixtures: GOOD_FIXTURES }, c => {
+      const note = row(run(c), "skills.sha256").note;
+      expect(note).toContain(`skills/acme/SKILL.md sha256 is ${sha256(SKILL)}, the manifest says ~1${"a".repeat(59)}...`);
+      expect(note.includes("a".repeat(100))).toBe(false);
+    });
+  });
   test("skills: a skill directory symlinked outside the repo fails; one symlinked inside the repo is followed", () => {
     // skills/acme -> a directory outside the catalog root that holds a correct SKILL.md (the guard at realpath).
     const outside = realpathSync(mkdtempSync(join(tmpdir(), "conformance-outside-")));
@@ -293,7 +315,7 @@ describe("item 1: the manifest, the validator pin, the skill hashes", () => {
           let refused = "";
           try { loadValidator(tool); } catch (e) { refused = e instanceof Refusal ? e.reason : "other"; }
           expect([why, refused]).toEqual([why, reason]);
-          const out = join(c.root, "conformance.json");
+          const out = c.out;
           const warned: string[] = [];
           expect([why, main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, toolRoot: tool, print: () => {}, warn: s => warned.push(s) })]).toEqual([why, 2]);
           expect(warned.join("")).toContain(`refused: ${reason}`);
@@ -394,6 +416,60 @@ describe("item 1: the version bump class", () => {
     expect(withoutAnnotations({ type: "object", description: "d", properties: { description: { type: "string", title: "t" } }, required: ["description"] }))
       .toEqual({ type: "object", properties: { description: { type: "string" } }, required: ["description"] });
   });
+  test("S1 (review-b): a $ref into an annotation position is never an annotation-only patch; only #/$defs/<name> to an unchanged def is", () => {
+    const withInput = (version: string, input: any) => { const m = acme(); m.version = version; m.operations[0].input = input; return m; };
+    const obj = (props: any, extra: any = {}) => ({ type: "object", properties: props, ...extra });
+    // review-b's two probes: an enforced keyword reached through a $ref into examples[0] and into a def's
+    // "description". withoutAnnotations() sees no change in either, yet ajv 8.20 widens q (review-b: q="abcdef"
+    // false at the base, true at the head). Both are now major.
+    const majors: [string, any, any][] = [
+      ["review-b probe 1: $ref into examples[0], its maxLength dropped",
+        obj({ q: { $ref: "#/examples/0" } }, { examples: [{ type: "string", maxLength: 3 }] }),
+        obj({ q: { $ref: "#/examples/0" } }, { examples: [{ type: "string" }] })],
+      ["review-b probe 2: $ref into $defs/x/description, its maxLength dropped",
+        obj({ q: { $ref: "#/$defs/x/description" } }, { $defs: { x: { type: "string", description: { type: "string", maxLength: 3 } } } }),
+        obj({ q: { $ref: "#/$defs/x/description" } }, { $defs: { x: { type: "string", description: { type: "string" } } } })],
+      ["#/$defs/x, but no such def (in either)", obj({ q: { $ref: "#/$defs/x" } }), obj({ q: { $ref: "#/$defs/x", description: "q" } })],
+      ["#/$defs/x with an $id (it moves what # names)", obj({ q: { $ref: "#/$defs/x" } }, { $id: "https://acme.example/s", $defs: { x: { type: "string" } } }),
+        obj({ q: { $ref: "#/$defs/x", description: "q" } }, { $id: "https://acme.example/s", $defs: { x: { type: "string" } } })],
+      // A pointer as long as "#/$defs/" into an annotation (title), with a same-named def beside it: the
+      // ref must be #/$defs/<name> itself, never a look-alike the def lookup would also resolve.
+      ["#/title/x (an annotation, the length of #/$defs/)",
+        obj({ q: { $ref: "#/title/x" } }, { title: { x: { type: "string", maxLength: 3 } }, $defs: { x: { type: "string" } } }),
+        obj({ q: { $ref: "#/title/x" } }, { title: { x: { type: "string" } }, $defs: { x: { type: "string" } } })],
+      ["#/definitions/x (not #/$defs/<name>)", obj({ q: { $ref: "#/definitions/x" } }, { definitions: { x: { type: "string" } } }),
+        obj({ q: { $ref: "#/definitions/x", description: "q" } }, { definitions: { x: { type: "string" } } })],
+      ["a nested pointer #/$defs/x/items", obj({ q: { $ref: "#/$defs/x/items" } }, { $defs: { x: { type: "array", items: { type: "string" } } } }),
+        obj({ q: { $ref: "#/$defs/x/items", description: "q" } }, { $defs: { x: { type: "array", items: { type: "string" } } } })],
+      ["a remote $ref", obj({ q: { $ref: "https://acme.example/q.json" } }), obj({ q: { $ref: "https://acme.example/q.json", title: "Q" } })],
+      ["$dynamicRef to an anchor", obj({ q: { $dynamicRef: "#meta" } }), obj({ q: { $dynamicRef: "#meta", title: "Q" } })],
+      ["$recursiveRef", obj({ q: { $recursiveRef: "#" } }), obj({ q: { $recursiveRef: "#", title: "Q" } })],
+      ["a $ref only in the head, inside examples", obj({ q: { type: "string" } }), obj({ q: { type: "string" } }, { examples: [{ $ref: "#/$defs/x" }] })],
+      ["#/$defs/x, the def's maxLength dropped", obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string", maxLength: 3 } } }),
+        obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string" } } })],
+    ];
+    for (const [why, from, to] of majors) {
+      const a = withInput("1.0.0", from), b = withInput("1.0.1", to);
+      expect([why, requiredBump(a, b, budgets).reasons]).toEqual([why, ["major: acme.lookup input changed"]]);
+      expect([why, verdict(a, b).pass, verdict(a, withInput("2.0.0", to)).pass]).toEqual([why, false, true]);
+    }
+    // The two probes really are annotation-only to withoutAnnotations(): the $ref gate is what makes them major.
+    for (const [why, from, to] of majors.slice(0, 2)) expect([why, withoutAnnotations(from)]).toEqual([why, withoutAnnotations(to)]);
+    // Patch: every reference is #/$defs/<name> to a root def both inputs hold, unchanged beyond annotations.
+    const patches: [string, any, any][] = [
+      ["the def's description", obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string" } } }),
+        obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string", description: "the query" } } })],
+      ["the property's title beside the $ref", obj({ q: { $ref: "#/$defs/x" }, r: { $ref: "#/$defs/y-2" } }, { $defs: { x: { type: "string" }, "y-2": { type: "number" } } }),
+        obj({ q: { $ref: "#/$defs/x", title: "Q" }, r: { $ref: "#/$defs/y-2" } }, { $defs: { x: { type: "string" }, "y-2": { type: "number", $comment: "c" } } })],
+      ["$dynamicRef #/$defs/x", obj({ q: { $dynamicRef: "#/$defs/x" } }, { $defs: { x: { type: "string" } } }),
+        obj({ q: { $dynamicRef: "#/$defs/x" } }, { $defs: { x: { type: "string", examples: ["latte"] } } })],
+    ];
+    for (const [why, from, to] of patches) {
+      const a = withInput("1.0.0", from), b = withInput("1.0.1", to);
+      expect([why, requiredBump(a, b, budgets).reasons]).toEqual([why, ["patch: acme.lookup input annotations changed"]]);
+      expect([why, verdict(a, b).pass, verdict(a, withInput("1.0.0", to)).pass]).toEqual([why, true, false]);
+    }
+  });
   test("a widening needs a major bump: each one fails at minor and passes at major", () => {
     const widenings: [string, (m: any) => void][] = [
       ["an op added", m => m.operations.push({ name: "acme.extra", class: "read" })],
@@ -449,12 +525,6 @@ describe("item 1: the version bump class", () => {
     expect(requiredBump(acme(), reordered, budgets)).toEqual({ level: "none", reasons: [] });
   });
 
-  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
-  const g = (root: string, ...args: string[]) => {
-    const p = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: root, env: gitEnv, encoding: "utf8" });
-    if (p.status !== 0) throw new Error(`git ${args[0]}: ${p.stderr}`);
-    return p.stdout;
-  };
   test("--base: the diff against a local git ref (new, unchanged, widened at minor, widened at major, v1 base, bad refs)", () => {
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
       g(c.root, "init", "-q");
@@ -556,6 +626,46 @@ describe("item 1: the version bump class", () => {
         const fresh = runConformance({ manifest, fixtures: c.fixtures, base: "HEAD~2" }, { cwd: join(clones, "blob-none") });
         expect(row(fresh, "version.bump").note).toStartWith("a new manifest: none at HEAD~2");
       } finally { rmSync(clones, { recursive: true, force: true }); }
+    });
+  });
+  test("F21: a base manifest that is a symlink, a directory or a submodule REFUSES base_manifest_not_a_regular_file; the run refusal removes our own report", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const text = readFileSync(c.path, "utf8");
+      const rel = "mini-apps/acme/manifest.json";
+      g(c.root, "init", "-q");
+      g(c.root, "add", "skills");
+      g(c.root, "commit", "-q", "-m", "skill only");
+      rmSync(c.path);
+      writeFileSync(join(c.root, "real.json"), text);
+      symlinkSync("../../real.json", c.path);
+      g(c.root, "add", "-A");
+      g(c.root, "commit", "-q", "-m", "a symlinked manifest");
+      rmSync(c.path);
+      mkdirSync(c.path);
+      writeFileSync(join(c.path, "x"), "x\n");
+      g(c.root, "add", "-A");
+      g(c.root, "commit", "-q", "-m", "a directory at the manifest path");
+      g(c.root, "rm", "-q", "-r", "--cached", rel);
+      rmSync(c.path, { recursive: true });
+      g(c.root, "update-index", "--add", "--cacheinfo", `160000,${g(c.root, "rev-parse", "HEAD").trim()},${rel}`);
+      g(c.root, "commit", "-q", "-m", "a submodule at the manifest path");
+      g(c.root, "rm", "-q", "--cached", rel);
+      writeFileSync(c.path, text);
+      g(c.root, "add", "-A");
+      g(c.root, "commit", "-q", "-m", "a regular manifest again");
+      expect(g(c.root, "ls-tree", "HEAD~1", "--", rel)).toStartWith("160000 commit ");
+      expect(g(c.root, "ls-tree", "HEAD~2", "--", rel)).toStartWith("040000 tree ");
+      expect(g(c.root, "ls-tree", "HEAD~3", "--", rel)).toStartWith("120000 blob ");
+      for (const base of ["HEAD~1", "HEAD~2", "HEAD~3"]) {
+        let reason = "";
+        try { run(c, { base }); } catch (e) { reason = e instanceof Refusal ? e.reason : `other ${e}`; }
+        expect([base, reason]).toEqual([base, "base_manifest_not_a_regular_file"]);
+        writeFileSync(c.out, staleReport());
+        const warned: string[] = [];
+        expect([base, main([c.path, "--fixtures", c.fixtures, "--base", base, "--out", c.out], { cwd: c.root, print: () => {}, warn: s => warned.push(s) }),
+          warned.join("").includes("refused: base_manifest_not_a_regular_file"), existsSync(c.out)]).toEqual([base, 2, true, false]);
+      }
+      expect(row(run(c, { base: "HEAD" }), "version.bump").note).toStartWith("no change since the base");
     });
   });
 });
@@ -744,6 +854,45 @@ describe("item 5: secret patterns", () => {
       }
     }
   });
+  test("N1 residual gaps (review-b): an empty URL user (redis://:pw@), api_token / passphrase / session_id, a quoted value with spaces", () => {
+    const found: [string, string][] = [
+      ["url_userinfo", "redis://" + ":" + "hunter2pass" + "@cache.example:6379/0"],
+      ["token_assignment", "api_" + "token=" + A(20)],
+      ["token_assignment", "session_" + "id: " + A(24)],
+      ["token_assignment", "{\"api_" + "key\": \"" + "abcd efgh ijkl mnop" + "\"}"],
+      ["password_assignment", "pass" + "phrase=" + "correct-horse"],
+      ["password_assignment", "pass" + "word=\"" + "hunter 2" + "\""],
+      ["aws_secret_assignment", "aws_secret_access_key" + "='" + "two words here" + "'"],
+    ];
+    for (const [name, text] of found) {
+      expect([text, secretPattern(text)]).toEqual([text, name]);
+      expect([text, secretFindings({ t: text }).map(([, p]) => p)]).toEqual([text, [name]]);
+    }
+    for (const key of ["api_token", "apiToken", "API-Token", "passphrase", "Passphrase", "session_id", "sessionId", "SESSION-ID"])
+      expect([key, secretFindings({ h: { [key]: "plain-looking-value" } })]).toEqual([key, [[["h", key], "secret_key_name"]]]);
+    for (const text of ["redis://:6379/0", "redis://cache.example:6379", "session ids rotate daily", "a passphrase strength meter",
+      "the api token page", "session_id: 42", "api_key: \"see docs\"", "password reset", "Password: \"set it later\""])
+      expect([text, secretFindings({ text })]).toEqual([text, []]);
+    // Redaction removes the whole value: the space, the rest and the closing quote too.
+    const values: [string, string, string][] = [
+      ["pass" + "word=\"hunter 2\"", " 2", "before <redacted> after"],
+      ["api_" + "key='abcd efgh ijkl mnop'", "mnop", "before <redacted> after"],
+      ["aws_secret_access_key" + "=\"two words here\"", "words", "before <redacted> after"],
+      ["redis://" + ":" + "hunter2pass" + "@cache.example/0", "hunter2pass", "before <redacted>cache.example/0 after"],
+    ];
+    for (const [text, rest, want] of values) {
+      const r = redact(`before ${text} after`);
+      expect([text, r.includes(rest), r]).toEqual([text, false, want]);
+    }
+    const fixtures: Record<string, string> = { ...GOOD_FIXTURES };
+    found.forEach(([, text], i) => { fixtures[`acme.lookup/n${i}.json`] = JSON.stringify({ note: text }); });
+    withCatalog({ fixtures }, c => {
+      const r = run(c);
+      expect(row(r, "hygiene.secrets").pass).toBe(false);
+      for (const [, text] of found) expect([text, JSON.stringify(r).includes(text)]).toEqual([text, false]);
+      expect(found.every((_, i) => row(r, "hygiene.secrets").note.includes(`acme.lookup/n${i}.json /note`))).toBe(true);
+    });
+  });
   test("redaction removes an assignment's value too, not only its key (password=, aws_secret_access_key=)", () => {
     const values = [["pass" + "word=" + "hunter2-value", "hunter2-value"], ["PASS" + "WORD = " + "s3cr3t!x", "s3cr3t!x"],
       ["aws_secret_access_key" + " = " + A(40), A(40)], ["AWS_SECRET_ACCESS_KEY" + ":" + A(40), A(40)],
@@ -762,6 +911,9 @@ describe("item 5: secret patterns", () => {
       ["authorization: ", fill("authorization: ")], ["authorization:basic ", fill("authorization:bas" + "ic ")],
       ["-----BEGIN A A", fill("A ", "-----BEGIN ")], ["password ", fill("pass" + "word ")], ["bearer ", fill("bear" + "er ")],
       ["api_key ", fill("api_" + "key ")], ["AKIA", fill("AK" + "IA")],
+      ["redis://: then colons", fill(":", "redis://:")], ["x://: repeated", fill("x://:")], ["a://b: repeated", fill("a://b:")],
+      ["password=\" then a run", fill("a", "pass" + "word=\"")], ["api_key=\" then words", fill("a b ", "api_" + "key=\"")],
+      ["api_key=\" repeated", fill("api_" + "key=\"")], ["session_id ", fill("session_" + "id ")], ["passphrase ", fill("pass" + "phrase ")],
     ];
     for (const [name, text] of cases) {
       expect(text.length).toBe(MB);
@@ -875,7 +1027,7 @@ describe("the CLI", () => {
   });
   test("exit codes from a real process: 0 passed with conformance.json written, 1 failed, 2 refused", () => {
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
-      const out = join(c.root, "conformance.json");
+      const out = c.out;
       const ok = spawnSync("bun", [SCRIPT, c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, encoding: "utf8" });
       expect([ok.status, ok.stdout.trim().split("\n").at(-1)]).toEqual([0, "passed: true"]);
       const written = JSON.parse(readFileSync(out, "utf8"));
@@ -890,6 +1042,7 @@ describe("the CLI", () => {
         [[c.path, "--fixtures", join(c.root, "nope")], "fixtures_not_a_directory"],
         [[c.path, "--out", join(c.root, "nope", "c.json")], "out_directory_missing"],
         [[c.path, "--out", c.path], "out_would_overwrite_the_manifest"],
+        [[c.path, "--out", join(c.root, "conformance.json")], "out_inside_the_repo_or_the_tool_root"],
         [[c.path, "--unknown"], "unknown_option"],
         [[join(c.root, "mini-apps", "gone", "manifest.json")], "manifest_missing"],
       ];
@@ -901,33 +1054,67 @@ describe("the CLI", () => {
     });
   });
   const quiet = { print: () => {}, warn: () => {} };
-  test("--out: exit 2 leaves no conformance.json (a stale one is removed); exit 0 and 1 replace it; no --out writes no file", () => {
+  test("--out: an argument refusal touches nothing; a run refusal removes only this manifest's own conformance.json; exit 0 and 1 replace it; no --out writes no file", () => {
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
-      const out = join(c.root, "conformance.json");
-      const refusals: [string, string[]][] = [
-        ["an unknown base ref", ["--base", "no-such-ref"]],
-        ["a fixtures path that is not a directory", ["--fixtures", join(c.root, "nope")]],
+      const out = c.out;
+      // Argument refusals (N3, release ruling L14545): every argument is checked before any file is
+      // touched, so the file at --out is byte for byte what it was, whether it is ours or not.
+      const argumentRefusals: [string, string[], string][] = [
+        ["--fixtures given twice", [c.path, "--out", out, "--fixtures", c.fixtures, "--fixtures", c.fixtures], "--fixtures_given_twice"],
+        ["an unknown option", [c.path, "--out", out, "--force"], "unknown_option"],
+        ["--out given twice", [c.path, "--out", out, "--out", out], "--out_given_twice"],
+        ["a fixtures path that is not a directory", [c.path, "--out", out, "--fixtures", join(c.root, "nope")], "fixtures_not_a_directory"],
+        ["a base ref outside a git checkout", [c.path, "--out", out, "--base", "HEAD"], "base_needs_a_git_checkout"],
+        ["a malformed base ref", [c.path, "--out", out, "--base", "a b"], "bad_base_ref"],
+        ["a manifest that is not there", [join(c.root, "mini-apps", "gone", "manifest.json"), "--out", out], "manifest_missing"],
       ];
-      for (const [why, extra] of refusals) {
-        writeFileSync(out, "{\"passed\": true}\n");
-        expect([why, main([c.path, "--out", out, ...extra], { cwd: c.root, ...quiet }), existsSync(out)]).toEqual([why, 2, false]);
+      for (const body of [staleReport(), "{\"passed\": true}\n"]) {
+        for (const [why, args, reason] of argumentRefusals) {
+          writeFileSync(out, body);
+          const warned: string[] = [];
+          expect([why, main(args, { cwd: c.root, print: () => {}, warn: s => warned.push(s) }), warned.join("").includes(`refused: ${reason}`), readFileSync(out, "utf8")])
+            .toEqual([why, 2, true, body]);
+        }
       }
-      // A pin mismatch (the tool refuses before reading anything) removes it too.
-      writeFileSync(out, "{\"passed\": true}\n");
+      // A file at --out that is not this manifest's own conformance.json is refused before the run and
+      // left as it is, even when the run would pass: a forged passed:true, another manifest's report, a
+      // report with a duplicate key, plain text, a symlink to our own report (the link and its target).
+      const own = join(c.outDir, "own.json");
+      writeFileSync(own, staleReport());
+      const foreign: [string, () => void][] = [
+        ["a forged passed:true", () => writeFileSync(out, "{\"passed\": true}\n")],
+        ["another manifest's report", () => writeFileSync(out, staleReport("mini-apps/other/manifest.json"))],
+        ["a duplicate key", () => writeFileSync(out, staleReport().replace("\"passed\": true", "\"passed\": true, \"passed\": true"))],
+        ["plain text", () => writeFileSync(out, "notes\n")],
+        ["a symlink to our own report", () => symlinkSync(own, out)],
+      ];
+      for (const [why, plant] of foreign) {
+        rmSync(out, { force: true });
+        plant();
+        const before = lstatSync(out).isSymbolicLink() ? "link" : readFileSync(out, "utf8");
+        const warned: string[] = [];
+        expect([why, main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, print: () => {}, warn: s => warned.push(s) }),
+          warned.join("").includes("refused: out_exists_and_is_not_this_manifests_conformance_json")]).toEqual([why, 2, true]);
+        expect([why, lstatSync(out).isSymbolicLink() ? "link" : readFileSync(out, "utf8")]).toEqual([why, before]);
+      }
+      expect(readFileSync(own, "utf8")).toBe(staleReport());
+      rmSync(out);
+      // A run refusal (a pin mismatch: the tool refuses before reading anything) removes our own stale report.
+      writeFileSync(out, staleReport());
       const tool = realpathSync(mkdtempSync(join(tmpdir(), "conformance-tool-")));
       try {
         mkdirSync(join(tool, "mini-apps"));
         writeFileSync(join(tool, "mini-apps", "manifests.pins.json"), "{}");
         expect([main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, toolRoot: tool, ...quiet }), existsSync(out)]).toEqual([2, false]);
       } finally { rmSync(tool, { recursive: true, force: true }); }
-      // Exit 1 and exit 0 replace a stale file with this run's report.
-      writeFileSync(out, "{\"passed\": true}\n");
+      // Exit 1 and exit 0 replace our stale report with this run's report.
+      writeFileSync(out, staleReport());
       expect(main([c.path, "--out", out], { cwd: c.root, ...quiet })).toBe(1);
       expect(JSON.parse(readFileSync(out, "utf8")).passed).toBe(false);
       expect(main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, ...quiet })).toBe(0);
       expect(JSON.parse(readFileSync(out, "utf8")).passed).toBe(true);
       // No temp file is left beside it.
-      expect(readdirSync(c.root).filter(n => n.includes(".tmp-"))).toEqual([]);
+      expect(readdirSync(c.outDir).filter(n => n.includes(".tmp-"))).toEqual([]);
       // Without --out nothing is written: not next to the manifest, not anywhere in the catalog.
       rmSync(out);
       const before = readdirSync(c.root, { recursive: true }).map(String).sort();
@@ -938,15 +1125,22 @@ describe("the CLI", () => {
   });
   test("an internal error (not a Refusal) exits 2 with only the error's name, and leaves no conformance.json", () => {
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
-      const out = join(c.root, "conformance.json");
+      const out = c.out;
       const warned: string[] = [];
       const code = main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, print: () => { throw new TypeError("boom s" + "k-" + "A1b2".repeat(6)); }, warn: s => warned.push(s) });
       expect([code, warned, existsSync(out)]).toEqual([2, ["conformance: refused: internal error TypeError"], false]);
     });
   });
+  test("a refusal after the write removes only this manifest's own report: a foreign file that appears at --out stays", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const warned: string[] = [];
+      const code = main([c.path, "--fixtures", c.fixtures, "--out", c.out], { cwd: c.root, print: () => { writeFileSync(c.out, "foreign\n"); throw new TypeError("late"); }, warn: s => warned.push(s) });
+      expect([code, warned, readFileSync(c.out, "utf8")]).toEqual([2, ["conformance: refused: internal error TypeError"], "foreign\n"]);
+    });
+  });
   test("the temp file is opened exclusively (wx): a file or symlink planted at its name is never written through", () => {
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
-      const out = join(c.root, "conformance.json");
+      const out = c.out;
       const target = join(c.root, "victim.txt");
       writeFileSync(target, "untouched\n");
       symlinkSync(target, `${out}.tmp-${process.pid}`);
@@ -956,8 +1150,8 @@ describe("the CLI", () => {
       expect(lstatSync(`${out}.tmp-${process.pid}`).isSymbolicLink()).toBe(true);
     });
   });
-  test("--out may not be the manifest (same dev+ino: a hard link, a symlink) or under mini-apps/ (any case on a case-insensitive fs)", () => {
-    // The tool's own mini-apps/ is a throwaway copy: a mutant that drops a guard can never touch the repo.
+  test("--out is refused anywhere inside the repo (and its git checkout) or the tool root, and as the manifest (a hard link, a symlink; any case on a case-insensitive fs)", () => {
+    // The tool root is a throwaway copy: a mutant that drops a guard can never touch this repo.
     const tool = realpathSync(mkdtempSync(join(tmpdir(), "conformance-tool-")));
     for (const rel of ["scripts/mini-apps-manifests.cjs", "mini-apps/manifest.v2.schema.json", "mini-apps/manifests.pins.json"]) {
       mkdirSync(dirname(join(tool, rel)), { recursive: true });
@@ -966,43 +1160,91 @@ describe("the CLI", () => {
     mkdirSync(join(tool, "mini-apps", "gold-stars"));
     try { withCatalog({ fixtures: GOOD_FIXTURES }, c => {
       const bytes = readFileSync(c.path);
-      const pins = readFileSync(join(tool, "mini-apps", "manifests.pins.json"));
+      const skill = readFileSync(join(c.root, "skills", "acme", "SKILL.md"));
+      const toolFiles = ["scripts/mini-apps-manifests.cjs", "mini-apps/manifests.pins.json"].map(rel => [rel, readFileSync(join(tool, rel))] as const);
       linkSync(c.path, join(c.root, "hard-link.json"));
       symlinkSync(c.path, join(c.root, "sym-link.json"));
       mkdirSync(join(c.root, "elsewhere"));
       symlinkSync(join(c.root, "mini-apps"), join(c.root, "elsewhere", "apps"));
-      const unsafe: string[] = [
-        c.path, "mini-apps/acme/manifest.json", "./mini-apps/../mini-apps/acme/manifest.json", "hard-link.json", "sym-link.json",
+      // A symlinked directory OUTSIDE the repo that points back into it.
+      symlinkSync(c.root, join(c.outDir, "into-repo"));
+      symlinkSync(tool, join(c.outDir, "into-tool"));
+      // This manifest's own report, sitting inside the repo: still refused, and left there.
+      writeFileSync(join(c.root, "conformance.json"), staleReport());
+      const asManifest = [c.path, "mini-apps/acme/manifest.json", "./mini-apps/../mini-apps/acme/manifest.json", "hard-link.json", "sym-link.json"];
+      const inside = [
         "mini-apps/acme/other.json", "mini-apps/conformance.json", "mini-apps/acme/fixtures.json", "elsewhere/apps/acme/x.json",
+        "conformance.json", "skills/acme/SKILL.md", "elsewhere/c.json", join(c.root, "new.json"), join(c.outDir, "into-repo", "x.json"),
         join(tool, "mini-apps", "manifests.pins.json"), join(tool, "mini-apps", "gold-stars", "conformance.json"),
+        join(tool, "scripts", "mini-apps-manifests.cjs"), join(tool, "conformance.json"), join(c.outDir, "into-tool", "scripts", "x.json"),
       ];
-      for (const arg of unsafe) {
+      for (const [arg, reason] of [...asManifest.map(a => [a, "out_would_overwrite_the_manifest"]), ...inside.map(a => [a, "out_inside_the_repo_or_the_tool_root"])]) {
         const warned: string[] = [];
         expect([arg, main([c.path, "--fixtures", c.fixtures, "--out", arg], { cwd: c.root, toolRoot: tool, print: () => {}, warn: s => warned.push(s) }),
-          warned.join("").includes("refused: out_would_overwrite_the_manifest_or_mini-apps")]).toEqual([arg, 2, true]);
+          warned.join("").includes(`refused: ${reason}`)]).toEqual([arg, 2, true]);
       }
-      // Case variants: on a case-insensitive filesystem (macOS) they name the manifest or mini-apps/ and
-      // refuse as unsafe; on a case-sensitive one the directory does not exist. Either way: exit 2.
-      const folds = existsSync(join(c.root, "MINI-APPS"));
-      for (const arg of ["mini-apps/acme/MANIFEST.json", "MINI-APPS/acme/manifest.json", "Mini-Apps/ACME/x.json"]) {
+      // Case variants: on a case-insensitive filesystem (macOS) they name the manifest or a path in the repo;
+      // on a case-sensitive one the directory does not exist. Either way: exit 2, and nothing is touched.
+      for (const arg of ["mini-apps/acme/MANIFEST.json", "MINI-APPS/acme/manifest.json", "Mini-Apps/ACME/x.json", "SKILLS/acme/x.json",
+        join(dirname(c.root), basename(c.root).toUpperCase(), "x.json")]) {
         const warned: string[] = [];
         expect([arg, main([c.path, "--fixtures", c.fixtures, "--out", arg], { cwd: c.root, toolRoot: tool, print: () => {}, warn: s => warned.push(s) })]).toEqual([arg, 2]);
-        const reason = folds || arg.startsWith("mini-apps/") ? "out_would_overwrite_the_manifest_or_mini-apps" : "out_directory_missing";
-        expect([arg, warned.join("").includes(`refused: ${reason}`)]).toEqual([arg, true]);
+        expect([arg, ["out_would_overwrite_the_manifest", "out_inside_the_repo_or_the_tool_root", "out_directory_missing"].some(r => warned.join("").includes(`refused: ${r}`))]).toEqual([arg, true]);
       }
       // Nothing it guards was touched, and none of the refused paths was removed or created.
       expect(readFileSync(c.path).equals(bytes)).toBe(true);
-      expect(readFileSync(join(tool, "mini-apps", "manifests.pins.json")).equals(pins)).toBe(true);
+      expect(readFileSync(join(c.root, "skills", "acme", "SKILL.md")).equals(skill)).toBe(true);
+      for (const [rel, was] of toolFiles) expect([rel, readFileSync(join(tool, rel)).equals(was)]).toEqual([rel, true]);
+      expect(readFileSync(join(c.root, "conformance.json"), "utf8")).toBe(staleReport());
       expect(readdirSync(join(c.root, "mini-apps", "acme"))).toEqual(["manifest.json"]);
       expect([existsSync(join(c.root, "hard-link.json")), lstatSync(join(c.root, "sym-link.json")).isSymbolicLink()]).toEqual([true, true]);
       expect(readdirSync(join(tool, "mini-apps", "gold-stars"))).toEqual([]);
-      // A directory refuses; a symlinked parent directory outside mini-apps/ (e.g. macOS /tmp) is followed.
-      expect(main([c.path, "--out", "elsewhere"], { cwd: c.root, ...quiet })).toBe(2);
-      mkdirSync(join(c.root, "real-out"));
-      symlinkSync(join(c.root, "real-out"), join(c.root, "out-link"));
-      expect(main([c.path, "--fixtures", c.fixtures, "--out", "out-link/c.json"], { cwd: c.root, toolRoot: tool, ...quiet })).toBe(0);
-      expect(JSON.parse(readFileSync(join(c.root, "real-out", "c.json"), "utf8")).passed).toBe(true);
+      expect([existsSync(join(c.root, "new.json")), existsSync(join(tool, "conformance.json"))]).toEqual([false, false]);
+      // F22: a directory refuses out_is_a_directory, outside the repo too, and is left as it is.
+      mkdirSync(join(c.outDir, "a-dir"));
+      const warned: string[] = [];
+      expect([main([c.path, "--fixtures", c.fixtures, "--out", join(c.outDir, "a-dir")], { cwd: c.root, toolRoot: tool, print: () => {}, warn: s => warned.push(s) }),
+        warned.join("").includes("refused: out_is_a_directory"), readdirSync(join(c.outDir, "a-dir"))]).toEqual([2, true, []]);
+      // A symlinked parent directory outside the repo and the tool (e.g. macOS /tmp) is followed.
+      mkdirSync(join(c.outDir, "real-out"));
+      symlinkSync(join(c.outDir, "real-out"), join(c.outDir, "out-link"));
+      expect(main([c.path, "--fixtures", c.fixtures, "--out", join(c.outDir, "out-link", "c.json")], { cwd: c.root, toolRoot: tool, ...quiet })).toBe(0);
+      expect(JSON.parse(readFileSync(join(c.outDir, "real-out", "c.json"), "utf8")).passed).toBe(true);
     }); } finally { rmSync(tool, { recursive: true, force: true }); }
+  });
+  test("--out inside the git checkout around the repo is refused too (a catalog in a subdirectory of a checkout)", () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "conformance-top-")));
+    const outs = realpathSync(mkdtempSync(join(tmpdir(), "conformance-out-")));
+    try {
+      const root = join(top, "sub");
+      mkdirSync(join(root, "mini-apps", "acme"), { recursive: true });
+      mkdirSync(join(root, "skills", "acme"), { recursive: true });
+      writeFileSync(join(root, "skills", "acme", "SKILL.md"), SKILL);
+      const manifest = join(root, "mini-apps", "acme", "manifest.json");
+      writeFileSync(manifest, JSON.stringify(acme(), null, 2) + "\n");
+      g(top, "init", "-q");
+      writeFileSync(join(top, "keep.txt"), "keep\n");
+      for (const arg of [join(top, "keep.txt"), join(top, "c.json")]) {
+        const warned: string[] = [];
+        expect([arg, main([manifest, "--out", arg], { cwd: root, print: () => {}, warn: s => warned.push(s) }),
+          warned.join("").includes("refused: out_inside_the_repo_or_the_tool_root")]).toEqual([arg, 2, true]);
+      }
+      expect([readFileSync(join(top, "keep.txt"), "utf8"), existsSync(join(top, "c.json"))]).toEqual(["keep\n", false]);
+      expect(main([manifest, "--out", join(outs, "c.json")], { cwd: root, ...quiet })).toBe(1);
+      expect(JSON.parse(readFileSync(join(outs, "c.json"), "utf8")).manifest).toBe("mini-apps/acme/manifest.json");
+    } finally { rmSync(top, { recursive: true, force: true }); rmSync(outs, { recursive: true, force: true }); }
+  });
+  test("N4: the summary header prints the manifest path through show(): a directory name with newlines forges no line", () => {
+    const id = "x\n  PASS    manifest.schema: forged\npassed: true\n";
+    withCatalog({ id, fixtures: GOOD_FIXTURES }, c => {
+      const lines: string[] = [];
+      expect(main([c.path, "--fixtures", c.fixtures], { cwd: c.root, print: s => lines.push(s), warn: () => {} })).toBe(1);
+      const out = lines.join("\n").split("\n");
+      expect(out.length).toBe(CHECKS.length + 2);
+      expect(out[0]).toStartWith("conformance mini-apps/x?  PASS    manifest.schema: forged?passed: true?/manifest.json sha256 ");
+      expect(out.filter(l => l === "passed: true" || l.startsWith("  PASS    manifest.schema"))).toEqual([]);
+      expect(out.at(-1)).toBe("passed: false");
+    });
   });
   test("bun run conformance -- <manifest> from the repo root (the package.json script)", () => {
     const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));

@@ -80,9 +80,12 @@ Use Dizko as the starting bundle for another **public read-only** service:
    `{code, detail}` error bodies). Exit 0 passed, 1 failed, 2 refused. Live-
    service checks come in Phase 1 and show as not run. The summary always goes
    to stdout; conformance.json is written only with `--out`, never by default,
-   and `--out` is refused for the manifest or any path under `mini-apps/`, so
-   point it at a temp dir (CI: `--out "$RUNNER_TEMP/conformance.json"`). On a
-   refusal no conformance.json is left at `--out`. The file is self-attested
+   and `--out` is refused anywhere inside the repo or the tool's root, so point
+   it at a temp dir (CI: `--out "$RUNNER_TEMP/conformance.json"`). Arguments
+   are checked before any file is touched, and a file already at `--out` must
+   be this manifest's own conformance.json (anything else is refused and left
+   alone). On any other refusal, only this manifest's conformance.json is
+   removed, so read the exit code, not the file. The file is self-attested
    (anyone can write one by hand): never commit it, and CI must regenerate it
    from the PR rather than trust a copy. With `--base`, a base manifest blob
    missing from a partial clone refuses; use a full clone. The header of
