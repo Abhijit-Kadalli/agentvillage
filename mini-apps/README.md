@@ -230,8 +230,9 @@ claim mock funds arrived. Later test-paid notifications use CP's distinct
 #### On-request menu board attachments
 
 The same installed **read** operation `forkicks.menu` accepts optional
-`format: "image"` and `theme: "chalk" | "paper"` (theme requires image format;
-default chalk, paper provisional). Omitting format leaves the text call unchanged.
+`format: "image"` and `theme: "forkicks" | "chalk" | "paper"` (theme requires image
+format; default forkicks, the café's own menu design; chalk and paper are earlier
+concepts, paper provisional). Omitting format leaves the text call unchanged.
 No operation, install projection, bundle version, CP sender or purchase gate changes.
 AV uses its existing merchant bearer for `GET /api/agent/menu-image`, forwarding
 date/location filters and theme. The exact response is
@@ -273,10 +274,10 @@ Opt-in isolated local fixture smoke, run only after preview integration:
 python3 scripts/forkicks-menu-media-smoke.py \
   --fixture-home "$HOME/.local/state/sdj/agentvillage-local/fake-agents/8b3aa9f5-79f4-4a1e-adcc-3ed800c1c105/.hermes" \
   --origin https://jmill-desktop.tail587341.ts.net:8472 \
-  --theme chalk --evidence-dir /absolute/private/evidence/chalk
+  --theme forkicks --evidence-dir /absolute/private/evidence/forkicks
 ```
 
-Repeat with paper and a distinct evidence directory. It copies only the fixture
+Repeat with chalk and paper, each with a distinct evidence directory. It copies only the fixture
 credential/install projection into a temporary `HERMES_HOME`, changes the origin
 only in that copy (native HTTP remains forbidden), binds an explicit simulated
 private-owner session, and calls the actual native handler/HTTPS transport to

@@ -71,7 +71,7 @@ SCHEMA = {
         "date": {"type": "string", "description": "For Kicks menu date, YYYY-MM-DD in IST."},
         "locationId": {"type": "string", "description": "Exact For Kicks location id returned by menu/schedule."},
         "format": {"type": "string", "enum": ["image"], "description": "forkicks.menu only: on explicit request, prepare the live menu as image attachments. Omit for the unchanged text menu."},
-        "theme": {"type": "string", "enum": ["chalk", "paper"], "description": "forkicks.menu with format:image only; default chalk. Paper is a provisional concept."},
+        "theme": {"type": "string", "enum": ["forkicks", "chalk", "paper"], "description": "forkicks.menu with format:image only; default forkicks, the café's own menu design. Chalk and paper are earlier concepts; paper is provisional."},
         "from": {"type": "string", "description": "For Kicks schedule start date, YYYY-MM-DD in IST."},
         "days": {"type": "integer", "minimum": 1, "maximum": 31},
         "items": {"type": "array", "maxItems": 50, "items": {"type": "object", "properties": {
@@ -925,7 +925,7 @@ def handle(args, **kwargs):
             if set(args) - (allowed | {"operation"}):
                 raise ValueError("invalid_arguments")
             if op == "forkicks.menu" and (("format" in args and args["format"] != "image") or
-                    ("theme" in args and (args.get("format") != "image" or args["theme"] not in ("chalk", "paper")))):
+                    ("theme" in args and (args.get("format") != "image" or args["theme"] not in ("forkicks", "chalk", "paper")))):
                 raise ValueError("invalid_arguments")
             payload.update({key: value for key, value in args.items() if key != "operation"})
         elif op == "forkicks.order.prepare":
@@ -1007,7 +1007,7 @@ def handle(args, **kwargs):
             result = {"error": "forkicks_menu_image_unavailable"}
         if op == "forkicks.menu" and payload.get("format") == "image":
             try:
-                return materialize(home, result, payload.get("theme", "chalk"))
+                return materialize(home, result, payload.get("theme", "forkicks"))
             except Exception:
                 # Do not serialize MEDIA tags inside JSON: Hermes deliberately masks
                 # those. On failure there are no directives and no delivery claim.
