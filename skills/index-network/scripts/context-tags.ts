@@ -264,16 +264,17 @@ function itemKey(text: string): string {
 /**
  * A group's items the resident stated, in the entry's order: no `(guess)`, no
  * `(chat)` (the agent's reading, never the resident's words), none the
- * resident removed, and (VISIBILITY B3) none whose visibility is Private: in an
- * entry with marks, a `private` / `agentvillage/private` line and an unmarked
- * one. The app keeps a removal cut to 80 characters with an ellipsis, so an
+ * resident removed, and (VISIBILITY B3) in an entry with marks only those whose
+ * visibility is Edge City India 2026 (an allowlist: a `private` /
+ * `agentvillage/private` line, an unmarked one and anything else are skipped). The app keeps a removal cut to 80 characters with an ellipsis, so an
  * item that starts with a cut removal counts as removed too. Pure.
  */
 export function statedItems(tags: ContextTags, group: ContextGroup): string[] {
   const removed = removedBy(tags);
   return tags.groups[group]
     .filter((item) => item.marker !== "guess" && item.marker !== "chat")
-    .filter((item) => item.visibility !== VISIBILITY_PRIVATE)
+    // An allowlist, failing closed: no visibility (an entry with no marks: as on main) or Edge City India 2026 only.
+    .filter((item) => item.visibility === undefined || item.visibility === VISIBILITY_EDGE_CITY_INDIA_2026)
     .map((item) => item.text)
     .filter((text) => !removed(itemKey(text)));
 }

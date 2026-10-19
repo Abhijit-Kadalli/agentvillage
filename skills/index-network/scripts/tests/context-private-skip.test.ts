@@ -26,7 +26,7 @@ import {
   parseContextTags,
   statedItems,
 } from "../context-tags";
-import { NOT_MARKS, entryFor, pyOutputs, todayEntries } from "./context-marks-corpus";
+import { NOT_MARKS, entryFor, pyOutputs, pyRun, todayEntries } from "./context-marks-corpus";
 
 const GROUPS = Object.keys(CONTEXT_GROUP_HEADINGS) as ContextGroup[];
 /** The gate's goal headings (memory_signal_gate.py GOAL_HEADINGS), in its order. */
@@ -60,6 +60,8 @@ describe("a Private-marked stated line never reaches the stated items (TypeScrip
       const tags = parseContextTags(c.e);
       const out = JSON.stringify([allStated(c.e), contextInterests(tags), contextPreferences(tags)]);
       expect([c.mark, c.form, c.group, out.includes(c.secret)]).toEqual([c.mark, c.form, c.group, false]);
+      expect(statedItems(tags, c.group)).not.toContain(c.secret);
+      expect(statedItems(tags, c.group).length).toBe(c.e.includes("KEPT-") ? 1 : 0);
       // the line is still read (held, with its visibility): only the stated items skip it
       const item = tags.groups[c.group].find((i) => i.text === c.secret)!;
       expect([c.secret, item.visibility]).toEqual([c.secret, VISIBILITY_PRIVATE]);
@@ -85,6 +87,26 @@ describe("a Private-marked stated line never reaches the stated items (TypeScrip
   });
 });
 
+describe("the skip is an allowlist: only Edge City India 2026 (or no visibility at all) is stated", () => {
+  const FOREIGN = ["agentvillage/edgecityindia2027", "agentvillage/public", "private", "public", "", "AGENTVILLAGE/EDGECITYINDIA2026"];
+
+  test("TypeScript: an item whose visibility is anything else is never stated", () => {
+    for (const v of FOREIGN) {
+      const tags = parseContextTags(entry(["Here to:", "- WIDE (you, village)", "- OTHER (you, village)"]));
+      (tags.groups.here[1] as { visibility?: string }).visibility = v;
+      expect([v, statedItems(tags, "here")]).toEqual([v, ["WIDE"]]);
+    }
+  });
+
+  test("Python: stated_goals takes a marked item only when Edge City India 2026", () => {
+    const goals = pyRun({
+      goals_of: FOREIGN.map((v) => [{ "here to": [["WIDE", "you", VISIBILITY_EDGE_CITY_INDIA_2026], ["OTHER", "you", v]] }, []] as [Record<string, string[][]>, string[]]),
+    }).goals_of!;
+    goals.forEach((g, i) => expect([FOREIGN[i], g]).toEqual([FOREIGN[i], ["WIDE"]]));
+    expect(pyRun({ goals_of: [[{ "here to": [["PAIR", "you"]] }, []]] }).goals_of).toEqual([["PAIR"]]);
+  });
+});
+
 describe("an entry with no marks at all reads as on main", () => {
   const entries = [...todayEntries().filter((e) => !e.name.startsWith("old mark") && e.name !== "mixed old marks").map((e) => e.entry), entryFor(null, "Plain")];
 
@@ -105,12 +127,14 @@ describe("an entry with no marks at all reads as on main", () => {
   });
 
   test("a token that is no mark does not make an entry marked: the line stays stated words", () => {
-    for (const token of NOT_MARKS.filter(Boolean)) {
-      const e = entry(["Here to:", `- Words (you, ${token})`, "- Plain unmarked"]);
+    const tokens = NOT_MARKS.filter(Boolean);
+    const es = tokens.map((token) => entry(["Here to:", `- Words (you, ${token})`, "- Plain unmarked"]));
+    const py = pyGoals(es); // one python3 for all of them
+    tokens.forEach((token, i) => {
       const want = [`Words (you, ${token})`, "Plain unmarked"];
-      expect([token, statedItems(parseContextTags(e), "here")]).toEqual([token, want]);
-      expect([token, pyGoals([e])[0]]).toEqual([token, want]);
-    }
+      expect([token, statedItems(parseContextTags(es[i]!), "here")]).toEqual([token, want]);
+      expect([token, py[i]]).toEqual([token, want]);
+    });
   });
 });
 

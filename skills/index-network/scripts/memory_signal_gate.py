@@ -649,8 +649,8 @@ def is_removed(text: str, removed: list[str]) -> bool:
 
 def stated_goals(groups: dict[str, list[tuple[str, ...]]], removed: list[str]) -> list[str]:
     """The items the resident stated under the goal headings, in heading order, none removed, no repeats;
-    VISIBILITY B3: none whose visibility is Private (in an entry with marks: a `private` or
-    `agentvillage/private` line, and an unmarked one)."""
+    VISIBILITY B3: in an entry with marks, only those whose visibility is Edge City India 2026 (an
+    allowlist: a `private` or `agentvillage/private` line, an unmarked one and anything else are skipped)."""
     out: list[str] = []
     seen: set[str] = set()
     for heading in GOAL_HEADINGS:
@@ -658,7 +658,8 @@ def stated_goals(groups: dict[str, list[tuple[str, ...]]], removed: list[str]) -
             text, marker = item[0], item[1]
             if marker in ("guess", "chat") or is_removed(text, removed):
                 continue
-            if len(item) > 2 and item[2] == VISIBILITY_PRIVATE:
+            # An allowlist, failing closed: a marked entry's item is a goal only when Edge City India 2026.
+            if len(item) > 2 and item[2] != VISIBILITY_EDGE_CITY_INDIA_2026:
                 continue
             key = item_key(text)
             if key and key not in seen:
