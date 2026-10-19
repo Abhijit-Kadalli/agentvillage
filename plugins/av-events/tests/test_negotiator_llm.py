@@ -1017,6 +1017,93 @@ def test_the_key_is_registered_with_the_sanitiser_at_load(plugin, ctx, token, mo
         nl(plugin).stop()
 
 
+def _custody_module(av):
+    """av-approval's `_custody.py` (standard library only), loaded by path under a scratch name."""
+    import importlib.util  # noqa: PLC0415
+
+    path = av.PLUGIN_DIR.parent / "av-approval" / "_custody.py"
+    spec = importlib.util.spec_from_file_location("av_custody_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _fake_hermes_builders():
+    """Hermes's three custody levers as av-approval wraps them (test_custody.py has the full fake):
+    the registry, the foreground builder and its caller, the execute_code scrub and its caller."""
+    providers: list = []
+    reg = types.ModuleType("agent.terminal_env_registry")
+    reg.register_provider = providers.append
+    reg.plugin_strip_env_keys = lambda: frozenset().union(*(p.strip_env_keys for p in providers))
+    base = types.ModuleType("agent.terminal_env_provider")
+    base.TerminalEnvironmentProvider = object
+    loc = types.ModuleType("tools.environments.local")
+    loc._make_run_env = lambda env: {**os.environ, **env}
+
+    def _run_bash(self, command):
+        return _make_run_env({})  # noqa: F821 - only its code's names are read
+
+    loc.LocalEnvironment = type("LocalEnvironment", (), {"_run_bash": _run_bash})
+    ce = types.ModuleType("tools.code_execution_env")
+    ce._scrub_child_env = lambda source_env, is_passthrough=None, is_windows=None: dict(source_env)
+
+    def _build_child_env(**kwargs):
+        return _scrub_child_env({})  # noqa: F821
+
+    ce._build_child_env = _build_child_env
+    cfg = types.ModuleType("hermes_cli.config")
+    cfg.read_raw_config = dict
+    cfg.cfg_get = lambda c, *keys, default=None: default
+    cli = types.ModuleType("hermes_cli")
+    cli.__version__ = "0.21.5"
+    modules = {m.__name__: m for m in (reg, base, loc, ce, cfg, cli)}
+
+    def importer(name):
+        if name not in modules:
+            raise ImportError(name)
+        return modules[name]
+
+    return importer, modules, providers
+
+
+@pytest.mark.parametrize("source", ["environ", "dotenv"])
+def test_custody_strips_the_key_from_agent_run_children_and_av_events_still_reads_it_at_load(
+        plugin, ctx, token, monkeypatch, av, home, source):
+    """CONTRACT (custody_keys.json: MORALMOD_LLM_API_KEY strip, and in av-approval's FLOOR): the
+    gateway's own environment keeps the key, so the S3 load path still reads and registers it, while
+    every agent-run child av-approval builds (foreground terminal, execute_code with the name declared
+    passthrough, Hermes's provider strip list) has it removed."""
+    custody = _custody_module(av)
+    assert "MORALMOD_LLM_API_KEY" in custody.FLOOR
+    assert custody.load_manifest()["names"]["MORALMOD_LLM_API_KEY"]["decision"] == "strip"
+    core = sys.modules[f"{plugin.__name__}._core"]
+    key = "sk-or-v1-" + "e" * 64
+    monkeypatch.setattr(core, "_LITERAL_SECRETS", set())
+    if source == "environ":  # Hermes loaded $HERMES_HOME/.env into the gateway's environment
+        monkeypatch.setenv("MORALMOD_LLM_API_KEY", key)
+    else:  # only on disk: av-events' `env` falls back to $HERMES_HOME/.env
+        monkeypatch.delenv("MORALMOD_LLM_API_KEY", raising=False)
+        (home / ".env").write_text(f"MORALMOD_LLM_API_KEY={key}\n", encoding="utf-8")
+    importer, modules, providers = _fake_hermes_builders()
+    assert custody.install(importer=importer) == {"provider": True, "foreground": True, "execute_code": True}
+
+    gateway = {**os.environ, "MORALMOD_LLM_API_KEY": key}
+    assert "MORALMOD_LLM_API_KEY" not in modules["tools.environments.local"]._make_run_env(gateway)
+    assert "MORALMOD_LLM_API_KEY" not in modules["tools.code_execution_env"]._scrub_child_env(
+        gateway, is_passthrough=lambda _name: True)
+    assert "MORALMOD_LLM_API_KEY" in providers[0].strip_env_keys
+
+    monkeypatch.setattr(nl(plugin), "FAST_S", 3600.0)
+    try:
+        plugin.register(ctx)
+        assert key in core._LITERAL_SECRETS
+        assert nl(plugin)._own_key() == key
+        if source == "environ":
+            assert os.environ["MORALMOD_LLM_API_KEY"] == key  # custody never edits the gateway's own env
+    finally:
+        nl(plugin).stop()
+
+
 def test_the_key_shape_is_as_long_as_the_sanitisers_pattern(plugin):
     module = nl(plugin)
     core = sys.modules[f"{plugin.__name__}._core"]
