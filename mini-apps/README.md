@@ -40,14 +40,26 @@ Use Dizko as the starting bundle for another **public read-only** service:
    description, exact native call examples, result attribution, error handling
    and explicit limitations. Do not embed credentials or ask an agent to fetch
    code, install packages, run shell helpers, create cron jobs or bypass refusal.
-2. Add `mini-apps/<app-id>/manifest.json` following the real Dizko manifest.
-   Set id, name, description, version, homepage, human-readable permissions,
-   `skills: ["<app-id>"]` and `operations: ["mini-app.read"]` (or the reviewed
-   context list below, only with a CP namespace review). Pin a reviewed
-   HTTPS MCP URL and explicit tools with their observed JSON input schemas.
+2. Add `mini-apps/<app-id>/manifest.json` following the real Dizko manifest,
+   and list the id in `mini-apps/catalog.json`. Manifests are **v2**
+   (`"manifest": 2`; the closed JSON Schema is
+   [manifest.v2.schema.json](manifest.v2.schema.json), validated by
+   `scripts/mini-apps-manifests.cjs`, the same module the control plane uses):
+   id, name, description, version, homepage, `visibility`, human-readable
+   permissions, `service` (`mcp` with `auth.mode: "none"` for a public read
+   app, and its reviewed HTTPS `baseUrl`), one op per reviewed tool
+   (`<app-id>.<tool>`, `class: "read"`, `target.tool`, and the tool's observed
+   JSON input schema as `input`), and `skills` (name, version and the sha256 of
+   `skills/<app-id>/SKILL.md`). The control plane serves such an app exactly as
+   today: `operations: ["mini-app.read"]` plus its tools (or the reviewed
+   context list below, only with a CP namespace review and a `data.context`
+   block). `bun test scripts/tests/mini-app-manifests.test.ts` checks it; a
+   skill edit changes its sha256, so it is also a manifest edit.
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
-3. Submit the same reviewed definition to the control-plane catalog. Update
+3. Submit the same reviewed definition to the control-plane catalog (Phase 0:
+   the cp vendors `mini-apps/` byte for byte and serves it only under
+   `MINI_APPS_MANIFESTS=1`; its five reviewed constants stay the default). Update
    `install/install_miniapps.ts`'s reviewed bundle table so only that exact id,
    version, skill and operations can be staged from the pinned overlay checkout.
    No native plugin change is needed for another reviewed public-read MCP app:
