@@ -785,16 +785,32 @@ describe("git and the CLI", () => {
       expect(report.findings[0].text).toMatch(/^bot_crashed: Error: boom/);
     } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
-  test("this repository, base = head: an empty diff is core, never a crash", () => {
-    const { code, report } = cli(["--base", "HEAD", "--head", "HEAD", "--repo", REPO]);
-    expect([code, report.verdict, report.lane]).toEqual([0, "NEEDS_HUMAN", "core"]);
+  // Each on its own full throwaway repository: CI's test.yml checkout is shallow (fetch-depth: 2), and a
+  // shallow clone is refused on purpose, so this repository is never the --repo here.
+  test("base = head: an empty diff is core and NEEDS_HUMAN, exit 0, never a crash", () => {
+    const g = gitRepo();
+    try {
+      g.commit(baseFiles(), "base");
+      const { code, report } = cli(["--base", "HEAD", "--head", "HEAD", "--repo", g.dir]);
+      expect([code, report.verdict, report.lane, codes(report)]).toEqual([0, "NEEDS_HUMAN", "core", ["empty_diff"]]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
-  test("bad usage and a revision that does not resolve: exit 2, FAIL, bot_error", () => {
-    for (const args of [[], ["--base", "HEAD"], ["--base", "--head", "HEAD"], ["--base", "HEAD..x", "--head", "HEAD", "--repo", REPO],
-      ["--base", "no-such-rev-xyz", "--head", "HEAD", "--repo", REPO], ["--base", "HEAD", "--head", "HEAD", "--author", "a b", "--repo", REPO]]) {
-      const { code, report } = cli(args);
-      expect([args.join(" "), code, report.verdict, report.findings[0].code]).toEqual([args.join(" "), 2, "FAIL", "bot_error"]);
-    }
+  test("bad usage and a revision that does not resolve: exit 2, FAIL, bot_error, for that reason", () => {
+    const g = gitRepo();
+    try {
+      g.commit(baseFiles(), "base");
+      const cases: [string[], RegExp][] = [
+        [[], /^usage/], [["--base", "HEAD"], /^usage/], [["--base", "--head", "HEAD"], /^usage/],
+        [["--base", "HEAD..x", "--head", "HEAD", "--repo", g.dir], /^bad_revision/],
+        [["--base", "no-such-rev-xyz", "--head", "HEAD", "--repo", g.dir], /^git_failed: git rev-parse/],
+        [["--base", "HEAD", "--head", "HEAD", "--author", "a b", "--repo", g.dir], /^usage: --author/],
+      ];
+      for (const [args, why] of cases) {
+        const { code, report } = cli(args);
+        expect([args.join(" "), code, report.verdict, report.findings[0].code]).toEqual([args.join(" "), 2, "FAIL", "bot_error"]);
+        expect(report.findings[0].text).toMatch(why);
+      }
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
 });
 
