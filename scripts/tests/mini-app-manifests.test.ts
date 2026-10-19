@@ -23,9 +23,9 @@ import { validateProjection } from "../../install/install_miniapps";
 // Nothing on a box reads these files yet (no skill, plugin or installer step): data only, no roll.
 //   bun test scripts/tests/mini-app-manifests.test.ts
 
-const MODULE_SHA256 = "5e64f8a3efbd315f628a6bf13cad35a47e0982501f29f70f3135d91a779775d4";
+const MODULE_SHA256 = "5086fd74c63dbf8126496980207dcf5faddc345f851a5ed6aba21f7a07c7af7c";
 const SCHEMA_SHA256 = "ff2e958db499c33150851224bd20cbcf4e02ed9a0789ccc407c940ffb27871b7";
-const PINS_SHA256 = "7137bfeda58b0469b28783af3f054d967cba2f3f18a08eca9b68c7afa4913fed";
+const PINS_SHA256 = "9835b6de1ba0f40c466a1dd846754158c7d81604b822a28dd721e19af1831f49";
 const REPO = join(import.meta.dir, "..", "..");
 const DIR = join(REPO, "mini-apps");
 const m = createRequire(import.meta.url)("../mini-apps-manifests.cjs");
@@ -167,5 +167,94 @@ describe("mini-apps/: the published catalog", () => {
       mutate(value);
       expect([why, reasons(m.validateManifest(value)).includes(want)]).toEqual([why, true]);
     }
+  });
+
+  // review-b N3: JSON.parse keeps the last of two equal keys, so a diff can show one value and serve
+  // another. One serialization per document closes that: a duplicate key is never canonical.
+  test("every manifest and catalog.json is in canonical form (so a duplicate key cannot hide in a diff)", () => {
+    const canonical = (text: string) => text === JSON.stringify(JSON.parse(text), null, 2) + "\n";
+    for (const file of ["mini-apps/catalog.json", ...index.apps.map((id: string) => `mini-apps/${id}/manifest.json`)])
+      expect([file, canonical(bytes(file).toString("utf8"))]).toEqual([file, true]);
+    const zzz = bytes("mini-apps/zzzbot/manifest.json").toString("utf8");
+    const dup = zzz.replace('  "visibility": "sandbox",\n', '  "visibility": "sandbox",\n  "visibility": "everyone",\n');
+    expect(dup).not.toBe(zzz);
+    expect(JSON.parse(dup).visibility).toBe("everyone");
+    expect(canonical(dup)).toBe(false);
+  });
+});
+
+// review-b fold 1 (S1, N2, N8): what a manifest may name beyond its own namespace.
+describe("the validator: secretRef, baseUrl hosts, nesting depth", () => {
+  // 'acme': a third party of For Kicks' shape (https-json, app-token) under its own id.
+  const acme = () => {
+    const x = manifest("forkicks");
+    x.id = "acme";
+    for (const op of x.operations) {
+      op.name = op.name.replace(/^forkicks\./, "acme.");
+      if (op.approval) op.approval.prepare = op.approval.prepare.replace(/^forkicks\./, "acme.");
+    }
+    x.skills = [{ ...x.skills[0], name: "acme", path: "skills/acme/SKILL.md" }];
+    x.service.auth.secretRef = "MINI_APP_ACME_TOKEN";
+    return x;
+  };
+
+  test("S1: secretRef is the app's pinned grant or MINI_APP_<ID>_<NAME>, never another app's or the platform's", () => {
+    expect(m.FIRST_PARTY.forkicks.secretRef).toBe("FORKICKS_AV_TOKEN");
+    expect(reasons(m.validateManifest(manifest("forkicks")))).toEqual([]);
+    expect(reasons(m.validateManifest(acme()))).toEqual([]);
+    for (const name of ["DATABASE_URL", "FORKICKS_AV_TOKEN", "CP_ADMIN_TOKEN", "ANTHROPIC_API_KEY", "MINI_APP_ACME_CORP_TOKEN", "MINI_APP_ACME_", "MINI_APP_ACMETOKEN", "MINI_APP_FORKICKS_TOKEN"]) {
+      const x = acme();
+      x.service.auth.secretRef = name;
+      expect([name, reasons(m.validateManifest(x))]).toEqual([name, ["/service/auth/secretRef not_granted"]]);
+    }
+  });
+
+  test("N8: baseUrl never names an internal host, in any form the URL parser normalizes", () => {
+    expect(index.apps.filter((id: string) => manifest(id).service.baseUrl).length).toBe(3);
+    for (const url of ["https://localhost/mcp", "https://LOCALHOST./mcp", "https://a.localhost/mcp", "https://controlplane.railway.internal/x",
+      "https://printer.local/x", "https://intranet/x", "https://169.254.169.254/latest", "https://0xa9fea9fe/latest", "https://10.0.0.1/x",
+      "https://127.0.0.1/x", "https://2130706433/x", "https://0x7f.1/x", "https://0177.0.0.1/x", "https://127.1/x", "https://%31%32%37.0.0.1/x",
+      "https://[::1]/x", "https://[fe80::1]/x", "https://[::ffff:127.0.0.1]/x"]) {
+      const x = manifest("dizko");
+      x.service.baseUrl = url;
+      expect([url, reasons(m.validateManifest(x))]).toEqual([url, ["/service/baseUrl internal_host"]]);
+    }
+    const x = manifest("dizko");
+    x.service.baseUrl = "https://mcp.example.org/mcp";
+    expect(reasons(m.validateManifest(x))).toEqual([]);
+  });
+
+  test("N2: deep nesting is a dropped manifest with a code, never a throw; the catalog serves the rest", () => {
+    // n object schemas, each the one property of the next: 2n + 4 containers deep in the manifest.
+    const nest = (n: number) => { let v: any = { type: "object" }; for (let i = 0; i < n; i++) v = { type: "object", properties: { a: v } }; return v; };
+    const deep = (n: number) => { const x = manifest("dizko"); x.operations[0].input = nest(n); return x; };
+    expect(reasons(m.validateManifest(deep(20000)))).toEqual(["/operations/0/input too_large"]);
+    const small = reasons(m.validateManifest(deep(40)));
+    expect([small.length, small[0]!.endsWith(" too_deep"), small[0]!.startsWith("/operations/0/input/properties/a/")]).toEqual([1, true, true]);
+    expect(reasons(m.validateManifest(deep(29)))).toEqual([]);
+    const byId = Object.fromEntries(index.apps.map((id: string) => [id, manifest(id)]));
+    byId.dizko = deep(20000);
+    const built = m.buildCatalog(index, byId);
+    expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "zzzbot", "slopfolio", "forkicks"]);
+    expect(built.dropped).toEqual([{ id: "dizko", code: m.CODE, errors: [{ path: "/operations/0/input", reason: "too_large" }] }]);
+  });
+
+  test("review-a S1: a relay app (mcp, auth none) with any op but a read has no v1 entry (never served as mini-app.read)", () => {
+    const relay = (mutate: (x: any) => void) => { const x = manifest("dizko"); mutate(x); expect(reasons(m.validateManifest(x))).toEqual([]); return x; };
+    const write = relay(x => { x.operations[0].class = "write"; });
+    const card = relay(x => { x.operations[0].class = "prepare"; x.operations[1].class = "needs-card"; x.operations[1].approval = { prepare: x.operations[0].name }; });
+    for (const [why, x] of [["write", write], ["prepare + needs-card", card]] as const)
+      for (const opts of [{}, { person: true, context: true }])
+        expect([why, (() => { try { m.v1Entry(x, opts); return "served"; } catch (e: any) { return `${e.code} ${e.reason}`; } })()])
+          .toEqual([why, "mini_apps_manifest_v1_unrepresentable relay_non_read_op"]);
+    expect(m.v1Entry(manifest("dizko")).operations).toEqual(["mini-app.read"]);
+  });
+
+  test("review-a N1: a validator throw is a drop with a code, never a throw out of buildCatalog", () => {
+    const byId: Record<string, any> = Object.fromEntries(index.apps.map((id: string) => [id, manifest(id)]));
+    Object.defineProperty(byId.zzzbot, "name", { enumerable: true, get() { throw new RangeError("Maximum call stack size exceeded"); } });
+    const built = m.buildCatalog(index, byId);
+    expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "dizko", "slopfolio", "forkicks"]);
+    expect(built.dropped).toEqual([{ id: "zzzbot", code: m.CODE, errors: [{ path: "/", reason: "unvalidatable" }] }]);
   });
 });

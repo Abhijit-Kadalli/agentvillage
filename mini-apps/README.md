@@ -54,7 +54,13 @@ Use Dizko as the starting bundle for another **public read-only** service:
    today: `operations: ["mini-app.read"]` plus its tools (or the reviewed
    context list below, only with a CP namespace review and a `data.context`
    block). `bun test scripts/tests/mini-app-manifests.test.ts` checks it; a
-   skill edit changes its sha256, so it is also a manifest edit.
+   skill edit changes its sha256, so it is also a manifest edit. The validator
+   also refuses a `baseUrl` on an internal host (any IP literal, a single-label
+   name, `localhost`, `*.localhost`, `*.internal`, `*.local`), an `app-token`
+   `secretRef` other than `MINI_APP_<ID>_<NAME>` (`-` as `_`, no `_` in NAME),
+   and nesting deeper than 64; such a relay app must have only `read` ops, and
+   each file must be canonical JSON (`JSON.stringify(value, null, 2)` plus a
+   newline, so no duplicate keys).
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
 3. Submit the same reviewed definition to the control-plane catalog (Phase 0:
