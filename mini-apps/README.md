@@ -346,9 +346,12 @@ server); the box never sees a token, endpoint or account id. The CP lists
 zzz.bot only for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
 
 Input rides the existing `arguments` object, so the every-box `village` schema
-(description and properties) is unchanged; the five operation names join the
-enum only on a box whose projection installs zzzbot (`schema_for`, at
-registration). Ids match `[A-Za-z0-9][A-Za-z0-9._:-]{0,199}`, cursors are
+(description and properties) is unchanged. Since v2.1.5 the five operation
+names are in the every-box enum, like For Kicks' and Slopfolio's, and
+`installed()` decides per call (`mini_app_not_installed` without the zzzbot
+install). Before, they joined the enum only at registration on a box that
+installed zzzbot, which a chat already open never saw: Hermes keeps a
+continuing chat's saved tools. Ids match `[A-Za-z0-9][A-Za-z0-9._:-]{0,199}`, cursors are
 decimal strings, `limit` is 1–25 (`zzz.read_thread`) or 1–50 (`zzz.changes`),
 a `body` is 1–8,000 characters and at most 16,000 UTF-8 bytes, a `title` 1–200
 characters. Anything else is refused before transport.
@@ -474,6 +477,14 @@ sandbox. Unpaired or missing runtime stays pending; errors cannot become active.
 Credential provisioning separately requires the enabled, gate-ready native
 runtime. Removal immediately denies server access and revokes the last app's
 bearer even if the old process has not restarted yet.
+
+**Open chats (v2.1.5, MINIAPP-PICKUP).** An install or removal reaches a chat
+that is already open at its next turn, without `/new`: every new prompt
+carries a `Mini-apps epoch` stamp (a hash of the installed entries and their
+SKILL.md bytes), and av-events rebuilds a session's prompt once when the stamp
+no longer matches the projection on disk (`plugins/av-events/README.md`,
+"Mini-app pick-up"). The `village` enum names every reviewed operation on
+every box, so a chat's saved tools need no refresh either.
 
 For deterministic regressions, run the install mini-app tests and native
 `plugins/village-bridge/tests` with no real daemon or model. Full rollout

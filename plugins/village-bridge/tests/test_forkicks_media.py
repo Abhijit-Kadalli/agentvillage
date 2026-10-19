@@ -95,7 +95,7 @@ class MenuMediaTest(unittest.TestCase):
     def test_theme_requires_image_and_extra_args_refused_before_transport(self):
         self.enable()
         for args in ({'theme': 'paper'}, {'format': 'pdf'}, {'format': 'image', 'theme': 'other'}, {'format': 'image', 'url': 'https://example.test'}):
-            self.assertEqual(self.call({'operation': 'forkicks.menu', **args})['error'], 'village_unavailable')
+            self.assertEqual(self.call({'operation': 'forkicks.menu', **args})['error'], 'invalid_arguments')
         self.transport.assert_not_called()
 
     def test_uninstalled_and_group_guards_still_block_images(self):
