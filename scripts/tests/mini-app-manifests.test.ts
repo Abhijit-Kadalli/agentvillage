@@ -307,24 +307,27 @@ describe("the validator, fold 2: staff and listed, every endpoint field, linear 
     return x;
   };
   const json = (value: unknown) => JSON.stringify(value);
+  // S-d1: every base below is a real manifest with both marks STRIPPED, so a correct rebase that marks a real
+  // manifest (ov#411: gold-stars "staff": true) leaves these tests passing; what a real manifest may say is pinned below.
+  const plain = (id: string) => { const { staff: _s, listed: _l, ...rest } = manifest(id); return rest; };
 
   test("S1: staff: true and listed: false validate and reach the v1 entry (after restricted), never the box projection", () => {
     for (const opts of [{}, { person: true }, { person: true, context: true }]) {
-      const base = m.v1Entry(manifest("gold-stars"), opts);
-      const staff = { ...manifest("gold-stars"), staff: true };
+      const base = m.v1Entry(plain("gold-stars"), opts);
+      const staff = { ...plain("gold-stars"), staff: true };
       expect(reasons(m.validateManifest(staff))).toEqual([]);
       const entry = m.v1Entry(staff, opts);
       expect(Object.keys(entry).slice(0, 6)).toEqual(["id", "name", "description", "version", "homepage", "staff"]);
       expect(entry.staff).toBe(true);
       const { staff: _s, ...rest } = entry;
       expect(json(rest)).toBe(json(base));
-      const listed = { ...manifest("zzzbot"), listed: false };
+      const listed = { ...plain("zzzbot"), listed: false };
       expect(reasons(m.validateManifest(listed))).toEqual([]);
       const unlisted = m.v1Entry(listed, opts);
       expect(Object.keys(unlisted).slice(5, 9)).toEqual(["provenance", "auth", "restricted", "listed"]);
       expect(unlisted.listed).toBe(false);
       const { listed: _l, ...kept } = unlisted;
-      expect(json(kept)).toBe(json(m.v1Entry(manifest("zzzbot"), opts)));
+      expect(json(kept)).toBe(json(m.v1Entry(plain("zzzbot"), opts)));
       // The box projection is id, version, operations, skills: the installer takes it, and neither mark rides it.
       const projection = { version: 1, apps: [entry, unlisted].map(({ id, version, operations, skills }: any) => ({ id, version, operations, skills })) };
       expect(validateProjection(projection)).toEqual(projection);
@@ -333,19 +336,23 @@ describe("the validator, fold 2: staff and listed, every endpoint field, linear 
 
   test("S1: absent (or the default value) changes nothing; anything but a boolean is refused by the schema", () => {
     for (const id of index.apps) {
-      const today = json(m.v1Entry(manifest(id), { person: true, context: true }));
+      const today = json(m.v1Entry(plain(id), { person: true, context: true }));
       for (const marks of [{ staff: false }, { listed: true }, { staff: false, listed: true }])
-        expect([id, json(m.v1Entry({ ...manifest(id), ...marks }, { person: true, context: true }))]).toEqual([id, today]);
-      expect(Object.keys(manifest(id)).filter(key => key === "staff" || key === "listed")).toEqual([]);
+        expect([id, json(m.v1Entry({ ...plain(id), ...marks }, { person: true, context: true }))]).toEqual([id, today]);
+      // Only gold-stars may say staff, and only staff: true (the pinned grant); listed, if present, is false.
+      const real = manifest(id);
+      if (Object.hasOwn(real, "staff")) expect([id, real.staff]).toEqual(["gold-stars", true]);
+      if (Object.hasOwn(real, "listed")) expect([id, real.listed]).toEqual([id, false]);
+      expect(reasons(m.validateManifest(real))).toEqual([]);
     }
     for (const value of ["true", 1, 0, null, {}, [], "false"])
       for (const key of ["staff", "listed"])
-        expect([key, json(value), reasons(m.validateManifest({ ...manifest("gold-stars"), [key]: value }))]).toEqual([key, json(value), [`/${key} type`]]);
+        expect([key, json(value), reasons(m.validateManifest({ ...plain("gold-stars"), [key]: value }))]).toEqual([key, json(value), [`/${key} type`]]);
   });
 
   test("S1 (security finding): staff comes from the pinned grant alone; listed: false is open to any app and never raises visibility", () => {
     expect(Object.entries(m.FIRST_PARTY).filter(([, grant]: [string, any]) => grant.staff === true).map(([id]) => id)).toEqual(["gold-stars"]);
-    const acme = manifest("forkicks");
+    const acme = plain("forkicks");
     acme.id = "acme";
     for (const op of acme.operations) { op.name = op.name.replace(/^forkicks\./, "acme."); if (op.approval) op.approval.prepare = op.approval.prepare.replace(/^forkicks\./, "acme."); }
     acme.skills = [{ ...acme.skills[0], name: "acme", path: "skills/acme/SKILL.md" }];
@@ -353,17 +360,18 @@ describe("the validator, fold 2: staff and listed, every endpoint field, linear 
     expect(reasons(m.validateManifest(acme))).toEqual([]);
     expect(reasons(m.validateManifest({ ...acme, staff: true }))).toEqual(["/staff staff_reserved"]);
     for (const id of index.apps.filter((id: string) => id !== "gold-stars"))
-      expect([id, reasons(m.validateManifest({ ...manifest(id), staff: true }))]).toEqual([id, ["/staff staff_reserved"]]);
-    expect(m.v1Entry({ ...manifest("gold-stars"), staff: true }).staff).toBe(true);
-    expect(Object.hasOwn(m.v1Entry(manifest("gold-stars")), "staff")).toBe(false);
+      expect([id, reasons(m.validateManifest({ ...plain(id), staff: true }))]).toEqual([id, ["/staff staff_reserved"]]);
+    expect(m.v1Entry({ ...plain("gold-stars"), staff: true }).staff).toBe(true);
+    expect(Object.hasOwn(m.v1Entry(plain("gold-stars")), "staff")).toBe(false);
+    expect(Object.hasOwn(m.v1Entry(manifest("gold-stars")), "staff")).toBe(manifest("gold-stars").staff === true);
     // Nothing adds it: v1Entry on a manifest that never passed the validator writes no staff either.
-    for (const x of [{ ...acme, staff: true }, { ...manifest("forkicks"), staff: true }]) expect(Object.hasOwn(m.v1Entry(x), "staff")).toBe(false);
-    for (const x of [{ ...acme, listed: false }, ...index.apps.map((id: string) => ({ ...manifest(id), listed: false }))])
+    for (const x of [{ ...acme, staff: true }, { ...plain("forkicks"), staff: true }]) expect(Object.hasOwn(m.v1Entry(x), "staff")).toBe(false);
+    for (const x of [{ ...acme, listed: false }, ...index.apps.map((id: string) => ({ ...plain(id), listed: false }))])
       expect([x.id, reasons(m.validateManifest(x)), m.v1Entry(x).listed]).toEqual([x.id, [], false]);
     for (const visibility of ["sandbox", "admins"]) {
-      const x = { ...manifest("forkicks"), visibility, listed: true };
+      const x = { ...plain("forkicks"), visibility, listed: true };
       expect(reasons(m.validateManifest(x))).toEqual([]);
-      expect(json(m.v1Entry(x))).toBe(json(m.v1Entry({ ...manifest("forkicks"), visibility })));
+      expect(json(m.v1Entry(x))).toBe(json(m.v1Entry({ ...plain("forkicks"), visibility })));
       expect([m.v1Entry(x).restricted, Object.hasOwn(m.v1Entry(x), "listed")]).toEqual([true, false]);
     }
   });
