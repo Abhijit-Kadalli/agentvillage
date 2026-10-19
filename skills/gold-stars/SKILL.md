@@ -30,7 +30,9 @@ the paired owner's private chat. Quote the returned remaining count, day and
 reset time. This tool cannot read received stars or messages. If unavailable,
 link to the Rolodex; never assume all three remain. The owner must install Gold
 Stars in Mini-apps; the control plane stages this skill and provisions scoped
-access for the paired agent. An expired sign-in needs the usual
+access for the paired agent. If `village` answers `mini_app_not_installed` with
+an `installUrl`, give that one-tap link (load `mini-apps` for the words); you
+cannot install it yourself, and never send them to the team or organisers. An expired sign-in needs the usual
 https://agents.edgecity.live/signin. Never ask for credentials in chat.
 
 ## Reflection and gratitude

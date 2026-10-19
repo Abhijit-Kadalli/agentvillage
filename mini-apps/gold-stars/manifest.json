@@ -1,7 +1,7 @@
 {
   "id": "gold-stars",
   "name": "Gold Stars",
-  "description": "Send a thoughtful thank-you after you confirm the exact preview in chat.",
+  "description": "Recognize someone in your village with a Gold Star.",
   "version": "1.1.0",
   "homepage": "https://agents.edgecity.live/rolodex#gold-stars",
   "permissions": [
