@@ -9,6 +9,10 @@ The code stays closed (`mini_app_not_installed`). What it gains comes only from 
   MINI_APPS_COHORT, and a restricted app (MINI_APPS_TENANT_ALLOWLIST) has no sheet for a tenant outside its list,
   so a link is given only for an app that list names. Unset, empty or malformed: no link at all (fail closed);
   the agent still never sends the resident to the team.
+- an app that comes with every agent (STAFF: the manifest's `"staff": true`, cp#322; Gold Stars, which Rolodex rides)
+  never gets an install link, whatever AV_MINI_APPS_OFFERED says: the resident can neither install nor remove it.
+  It answers NOT_YET's words (product L13443): installed but missing the operation, NOT_YET itself; no entry on the
+  box yet (the cp's backfill has not reached it), STAFF_PENDING.
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ import re
 from pathlib import Path
 
 from . import _install_copy as copy
-from ._install_catalog import INSTALLABLE
+from ._install_catalog import INSTALLABLE, STAFF
 from ._mini_apps import projection
 
 OFFERED_ENV = "AV_MINI_APPS_OFFERED"
@@ -42,8 +46,12 @@ def not_installed(home: Path, app_id: object, handling: str) -> dict:
     offer = offered()
     match = next((app for app in offer if app["id"] == app_id), None) if isinstance(app_id, str) else None
     out = {"error": "mini_app_not_installed"}
-    installed_app = next((app for app in INSTALLABLE if app["id"] == app_id), None) if isinstance(app_id, str) and app_id in have else None
-    if installed_app is not None:
+    installed_app = next((app for app in INSTALLABLE + STAFF if app["id"] == app_id), None) if isinstance(app_id, str) and app_id in have else None
+    staff_app = next((app for app in STAFF if app["id"] == app_id), None) if isinstance(app_id, str) else None
+    if staff_app is not None and installed_app is None:
+        # Comes with every agent but has no entry here yet: never an install link (there is nothing to install).
+        out["instruction"] = copy.STAFF_PENDING.format(name=staff_app["name"])
+    elif installed_app is not None:
         # Installed, but this box's entry does not carry the operation yet (e.g. rolodex.person before the
         # control plane serves the person entry): an install link would only show "Installed".
         out["instruction"] = copy.NOT_YET.format(name=installed_app["name"])

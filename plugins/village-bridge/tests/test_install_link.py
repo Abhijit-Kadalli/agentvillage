@@ -33,6 +33,9 @@ _gen_spec.loader.exec_module(gen)
 PAGE = 'https://agents.edgecity.live/mini-apps?app='
 MANIFESTS = {p.parent.name: json.loads(p.read_text(encoding='utf-8')) for p in sorted((REPO / 'mini-apps').glob('*/manifest.json'))}
 ALL = ','.join(MANIFESTS)
+# Apps that come with every agent (manifest "staff": true; cp#322): never an install link, never installable.
+STAFF_IDS = [app_id for app_id, doc in MANIFESTS.items() if doc.get('staff') is True]
+INSTALLABLE_IDS = [app_id for app_id in MANIFESTS if app_id not in STAFF_IDS]
 # One operation per catalog app (Rolodex rides the Gold Stars install). The installed() check runs before any
 # argument validation, so the operation alone (plus an appId for the generic app ops) reaches the refusal.
 REQUESTS = {
@@ -68,6 +71,8 @@ class InstallLinkTest(unittest.TestCase):
         self.nothing_installed()
         self.assertEqual(set(REQUESTS), set(MANIFESTS))
         for app_id, requests in REQUESTS.items():
+            if app_id in STAFF_IDS:
+                continue  # test_a_staff_app_never_gets_an_install_link
             for args in requests:
                 with self.subTest(app=app_id, op=args['operation']):
                     out = self.call(args)
@@ -76,7 +81,7 @@ class InstallLinkTest(unittest.TestCase):
                     self.assertEqual(out['appName'], MANIFESTS[app_id]['name'])
                     self.assertEqual(out['instruction'], copy.NOT_INSTALLED)
                     self.assertEqual(out['handling'], bridge.HANDLING)
-                    self.assertEqual([a['id'] for a in out['installable']], sorted(set(MANIFESTS) - {app_id}))
+                    self.assertEqual([a['id'] for a in out['installable']], sorted(set(INSTALLABLE_IDS) - {app_id}))
                     for app in out['installable']:
                         self.assertEqual(app, {'id': app['id'], 'name': MANIFESTS[app['id']]['name'],
                                                'description': MANIFESTS[app['id']]['description'], 'installUrl': PAGE + app['id']})
@@ -86,8 +91,11 @@ class InstallLinkTest(unittest.TestCase):
         # The screenshot's box: nothing ever installed, so no mini-apps.json on disk.
         self.offer(ALL)
         Path(self.tmp.name, 'mini-apps.json').unlink()
+        out = self.call({'operation': 'forkicks.menu'})
+        self.assertEqual((out['error'], out['appName'], out['installUrl']), ('mini_app_not_installed', 'For Kicks', PAGE + 'forkicks'))
+        # Its Rolodex op: Gold Stars comes with every agent, so it is on its way, never an install link.
         out = self.call({'operation': 'rolodex.search', 'query': 'Naman'})
-        self.assertEqual((out['error'], out['appName'], out['installUrl']), ('mini_app_not_installed', 'Gold Stars', PAGE + 'gold-stars'))
+        self.assertEqual(out['instruction'], copy.STAFF_PENDING.format(name='Gold Stars')); self.assertNotIn('installUrl', out)
         self.transport.assert_not_called()
 
     def test_no_link_for_an_unknown_operation_or_app(self):
@@ -119,7 +127,7 @@ class InstallLinkTest(unittest.TestCase):
                 if value is not None:
                     env['AV_MINI_APPS_OFFERED'] = value
                 with patch.dict(os.environ, env, clear=True):
-                    out = self.call({'operation': 'rolodex.search', 'query': 'Naman'})
+                    out = self.call({'operation': 'forkicks.menu'})
                 self.assertEqual(out['error'], 'mini_app_not_installed')
                 self.assertNotIn('installUrl', out); self.assertEqual(out['installable'], [])
                 self.assertEqual(out['instruction'], copy.NOT_OFFERED); self.assertEqual(out['handling'], bridge.HANDLING)
@@ -127,11 +135,11 @@ class InstallLinkTest(unittest.TestCase):
         self.offer('gold-stars, forkicks,dizko')
         out = self.call({'operation': 'zzz.list_rooms', 'arguments': {}})
         self.assertNotIn('installUrl', out); self.assertEqual(out['instruction'], copy.NOT_OFFERED)
-        self.assertEqual([a['id'] for a in out['installable']], ['dizko', 'forkicks', 'gold-stars'])
+        self.assertEqual([a['id'] for a in out['installable']], ['dizko', 'forkicks'])  # a staff id named there is ignored
         # An id the cp names that the reviewed catalog does not carry is ignored, never turned into a link.
-        self.offer('gold-stars,rolodex')
+        self.offer('forkicks,rolodex')
         out = self.call({'operation': 'mini-app.read', 'appId': 'rolodex', 'tool': 'search', 'arguments': {}})
-        self.assertNotIn('installUrl', out); self.assertEqual([a['id'] for a in out['installable']], ['gold-stars'])
+        self.assertNotIn('installUrl', out); self.assertEqual([a['id'] for a in out['installable']], ['forkicks'])
 
     def test_an_installed_app_missing_the_operation_gets_no_install_link(self):
         # Gold Stars installed under the 8-op entry: rolodex.person is refused, but the sheet would say "Installed".
@@ -145,7 +153,51 @@ class InstallLinkTest(unittest.TestCase):
         # Installed apps are never suggested again.
         out = self.call({'operation': 'forkicks.menu'})
         self.assertEqual(out['installUrl'], PAGE + 'forkicks')
-        self.assertEqual([a['id'] for a in out['installable']], sorted(set(MANIFESTS) - {'forkicks', 'gold-stars'}))
+        self.assertEqual([a['id'] for a in out['installable']], sorted(set(INSTALLABLE_IDS) - {'forkicks'}))
+
+    def test_a_staff_app_never_gets_an_install_link(self):
+        # Product L13443: a staff app (Gold Stars, which Rolodex rides) answers NOT_YET's words, never an install link,
+        # whatever the cp offers and whatever else is on the box.
+        self.assertEqual(STAFF_IDS, ['gold-stars'])
+        pending = copy.STAFF_PENDING.format(name='Gold Stars')
+        self.assertIn("Tell them: '**Gold Stars** is on its way to your agent. Try again in a minute.'", pending)
+        self.assertIn('do not send an install link', pending)
+        states = {'no file': None, 'empty': [], 'other app': [{'id': 'forkicks', **mini.FORKICKS}]}
+        for offered_value in (ALL, 'gold-stars', 'gold-stars,forkicks', None):
+            for state, apps in states.items():
+                for args in REQUESTS['gold-stars'] + [{'operation': 'rolodex.meeting', 'attendeeId': 'x', 'met': True},
+                                                       {'operation': 'skylight.status'}, {'operation': 'gold-stars.send', 'draftId': 'x'}]:
+                    with self.subTest(offered=offered_value, state=state, op=args['operation']):
+                        env = {k: v for k, v in os.environ.items() if k != 'AV_MINI_APPS_OFFERED'}
+                        if offered_value is not None:
+                            env['AV_MINI_APPS_OFFERED'] = offered_value
+                        home = Path(self.tmp.name, 'mini-apps.json')
+                        if apps is None:
+                            home.unlink(missing_ok=True)
+                        else:
+                            home.write_text(json.dumps({'version': 1, 'apps': apps}))
+                        with patch.dict(os.environ, env, clear=True):
+                            out = self.call(args)
+                        self.assertEqual(out['error'], 'mini_app_not_installed')
+                        self.assertEqual(out['instruction'], pending)
+                        self.assertNotIn('installUrl', out); self.assertNotIn('appName', out)
+                        self.assertNotIn(PAGE + 'gold-stars', json.dumps(out, ensure_ascii=False))
+                        self.assertNotIn('gold-stars', [a['id'] for a in out['installable']])
+                        self.assertEqual(out['handling'], bridge.HANDLING)
+        # The post-approval recheck answers the same.
+        Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': []}))
+        self.offer(ALL)
+        refusal = link.not_installed(Path(self.tmp.name), 'gold-stars', bridge.HANDLING)
+        self.assertEqual(refusal['instruction'], pending); self.assertNotIn('installUrl', refusal)
+        # The staff mark lives only in the reviewed catalog: no link for it exists anywhere the agent reads.
+        self.assertEqual([a['id'] for a in catalog.STAFF], STAFF_IDS)
+        self.assertTrue(all('installUrl' not in a for a in catalog.STAFF))
+        self.assertNotIn('gold-stars', [a['id'] for a in link.offered({'AV_MINI_APPS_OFFERED': ALL})])
+        skill = (REPO / 'skills' / 'mini-apps' / 'SKILL.md').read_text(encoding='utf-8')
+        for name in ('mini-apps', 'rolodex', 'gold-stars'):
+            self.assertNotIn(PAGE + 'gold-stars', (REPO / 'skills' / name / 'SKILL.md').read_text(encoding='utf-8'))
+        self.assertIn(copy.STAFF_INTRO, skill); self.assertIn('> ' + copy.STAFF_TELL.format(name='Gold Stars'), skill)
+        self.transport.assert_not_called()
 
     def test_post_approval_rechecks_carry_the_link_too(self):
         self.offer(ALL)
@@ -173,18 +225,24 @@ class InstallLinkTest(unittest.TestCase):
         self.assertIn("You cannot install apps yourself.", copy.TOOL_RULE)
         self.assertEqual(copy.RULE, copy.TOOL_RULE[:-1] + "; the resident's tap is the consent.")
         self.assertLessEqual(len(copy.TOOL_RULE), 160)  # tool_search findability budget (see _install_copy.py)
+        self.assertIn('`installUrl`', skills['zzzbot'])
         for name in ('rolodex', 'gold-stars', 'zzzbot'):
-            self.assertIn('`installUrl`', skills[name]); self.assertIn('`mini-apps`', skills[name])
+            self.assertIn('`mini-apps`', skills[name])
+        for name in ('rolodex', 'gold-stars'):  # Gold Stars comes with every agent: its words, never a link
+            self.assertIn('never give an install link', skills[name]); self.assertIn("`instruction` words", skills[name])
         self.assertIn(copy.RULE, skills['mini-apps'])
 
     def test_the_installable_list_is_generated_from_the_catalog(self):
         # The committed module and skill are exactly the generator's output from the manifests and product's words.
         self.assertEqual(subprocess.run([sys.executable, '-I', str(GENERATOR), '--check'], capture_output=True).returncode, 0)
-        self.assertEqual(catalog.INSTALLABLE, tuple(gen.entries()))
-        self.assertEqual([a['id'] for a in catalog.INSTALLABLE], sorted(MANIFESTS))
+        self.assertEqual((list(catalog.INSTALLABLE), list(catalog.STAFF)), gen.split(gen.entries()))
+        self.assertEqual([a['id'] for a in catalog.INSTALLABLE], sorted(INSTALLABLE_IDS))
         for app in catalog.INSTALLABLE:
             m = MANIFESTS[app['id']]
             self.assertEqual(app, {'id': m['id'], 'name': m['name'], 'description': m['description'], 'installUrl': PAGE + m['id']})
+        for app in catalog.STAFF:
+            m = MANIFESTS[app['id']]
+            self.assertEqual(app, {'id': m['id'], 'name': m['name'], 'description': m['description']})
         skill = (REPO / 'skills' / 'mini-apps' / 'SKILL.md').read_text(encoding='utf-8')
         listed = skill.split('## Installable apps', 1)[1]
         self.assertEqual(re.findall(r'^- \*\*(.+?)\*\* — ', listed, re.M), [a['name'] for a in catalog.INSTALLABLE])
@@ -200,8 +258,19 @@ class InstallLinkTest(unittest.TestCase):
             (root / 'newapp' / 'manifest.json').write_text(json.dumps({'id': 'newapp', 'name': 'New App', 'description': 'Does one new thing.'}))
             apps = gen.entries(root)
             self.assertEqual([a['id'] for a in apps], sorted((set(MANIFESTS) - {'dizko'}) | {'newapp'}))
+            self.assertEqual([a['id'] for a in gen.split(apps)[1]], STAFF_IDS)
             self.assertIn('**New App** — Does one new thing. ' + PAGE + 'newapp', gen.render_skill(apps, copy))
             self.assertNotIn('Dizko', gen.render_skill(apps, copy).split('## Installable apps', 1)[1])
+            # Marking an app staff moves it out of the installable list and drops its link; anything but true refuses.
+            (root / 'newapp' / 'manifest.json').write_text(json.dumps({'id': 'newapp', 'name': 'New App', 'description': 'Does one new thing.', 'staff': True}))
+            installable, staff = gen.split(gen.entries(root))
+            self.assertIn({'id': 'newapp', 'name': 'New App', 'description': 'Does one new thing.'}, staff)
+            self.assertNotIn('newapp', [a['id'] for a in installable])
+            self.assertNotIn(PAGE + 'newapp', gen.render_skill(gen.entries(root), copy) + gen.render(gen.entries(root)))
+            for value in ('true', 1, None, [], 'yes'):
+                (root / 'newapp' / 'manifest.json').write_text(json.dumps({'id': 'newapp', 'name': 'New App', 'description': 'x', 'staff': value}))
+                with self.subTest(staff=value), self.assertRaises(ValueError):
+                    gen.entries(root)
             # A manifest cannot smuggle a link, markup or a mismatched id into the agent's words.
             for bad in ({'id': 'newapp', 'name': 'New App', 'description': 'See https://evil.example now.'},
                         {'id': 'newapp', 'name': '[New](https://evil.example)', 'description': 'x'},

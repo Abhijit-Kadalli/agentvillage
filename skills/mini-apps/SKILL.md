@@ -1,6 +1,6 @@
 ---
 name: mini-apps
-description: Install or add mini-apps, what apps you can use, or an action that needs an app that isn't installed (Rolodex comes with Gold Stars): give the resident that app's one-tap install link. You cannot install apps yourself; the resident's tap is the consent. Never send them to the team or organisers.
+description: Install or add mini-apps, what apps you can use, or an action that needs an app that isn't installed: give the resident that app's one-tap install link. Rolodex comes with Gold Stars, which every agent has: never an install link for it. You cannot install apps yourself; the resident's tap is the consent. Never send them to the team or organisers.
 version: 1.0.0
 author: Edge City
 ---
@@ -18,23 +18,32 @@ Offer only apps this resident can open in Mini-apps: the app ids in `$AV_MINI_AP
 
 1. The resident names an app that isn't installed, for example:
 
-> I can't install apps myself, but you can in one tap: **Gold Stars** — Recognize someone in your village with a Gold Star. https://agents.edgecity.live/mini-apps?app=gold-stars Then send /new and I'll know it.
+> I can't install apps myself, but you can in one tap: **For Kicks** — Read the café menu and schedule, and order with an exact approved preview. https://agents.edgecity.live/mini-apps?app=forkicks Then send /new and I'll know it.
 
 2. The resident asks generally (install mini-apps, what apps can you use?): one intro line, then each app they can open on its own line, unranked:
 
 > I can't install apps myself, but you can add any of these in one tap:
 > **Dizko** — Discover public music events, artists and venues. https://agents.edgecity.live/mini-apps?app=dizko
 > **For Kicks** — Read the café menu and schedule, and order with an exact approved preview. https://agents.edgecity.live/mini-apps?app=forkicks
-> **Gold Stars** — Recognize someone in your village with a Gold Star. https://agents.edgecity.live/mini-apps?app=gold-stars
 > **Slopfolio** — Turn something you built with AI into a private Slopfolio draft that you review and publish yourself. https://agents.edgecity.live/mini-apps?app=slopfolio
 > **zzz.bot** — Read and post in zzz.bot rooms through your own zzz.bot account, as the agent you connect there. https://agents.edgecity.live/mini-apps?app=zzzbot
 > Tap the ones you want; after each, send /new.
 
-3. An action fails because its app isn't installed: name the app the action needs (the `village` answer's `appName`), never the error. Rolodex actions come with Gold Stars, so say Gold Stars, for example:
+3. An action fails because its app isn't installed: name the app the action needs (the `village` answer's `appName`), never the error, for example:
 
-> That needs **Gold Stars**, which isn't installed yet. One tap: https://agents.edgecity.live/mini-apps?app=gold-stars Then send /new and ask me again.
+> That needs **For Kicks**, which isn't installed yet. One tap: https://agents.edgecity.live/mini-apps?app=forkicks Then send /new and ask me again.
 
 Never send them to the team or the organisers to install an app. Never say you installed it. Never show the error code, a tool name or any link other than the app's install link. Never promise it works in this chat before they send /new.
+
+## Apps that come with every agent
+
+These come with every agent: always on, nothing to install or remove.
+
+- **Gold Stars** — Recognize someone in your village with a Gold Star.
+
+Rolodex comes with Gold Stars. Never give an install link for these apps and never offer to install or remove them. If one of their actions answers `mini_app_not_installed`, say the answer's `instruction` words, for example:
+
+> **Gold Stars** is on its way to your agent. Try again in a minute.
 
 ## Installable apps
 
@@ -42,6 +51,5 @@ From the reviewed catalog. Offer only the ones this resident can open (above).
 
 - **Dizko** — Discover public music events, artists and venues. https://agents.edgecity.live/mini-apps?app=dizko
 - **For Kicks** — Read the café menu and schedule, and order with an exact approved preview. https://agents.edgecity.live/mini-apps?app=forkicks
-- **Gold Stars** — Recognize someone in your village with a Gold Star. https://agents.edgecity.live/mini-apps?app=gold-stars
 - **Slopfolio** — Turn something you built with AI into a private Slopfolio draft that you review and publish yourself. https://agents.edgecity.live/mini-apps?app=slopfolio
 - **zzz.bot** — Read and post in zzz.bot rooms through your own zzz.bot account, as the agent you connect there. https://agents.edgecity.live/mini-apps?app=zzzbot
