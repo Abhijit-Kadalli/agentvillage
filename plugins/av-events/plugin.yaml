@@ -43,6 +43,10 @@ optional_env:
   - AV_PLUGIN_EVENTS
   # SEC-6 half 2: off until data's DATA-477 release registering model.observed@1 / model.offlist@1 is live
   - AV_MODEL_EVENTS
+  # P10-P1: code.run@1 for every execute_code call, off unless AV_EVENTS_CODE_RUN is
+  # 1|true|yes|on; AV_EVENTS_CODE_RUN_SCOPE is all (default) or research_consented.
+  - AV_EVENTS_CODE_RUN
+  - AV_EVENTS_CODE_RUN_SCOPE
   # PRAYER P3: pray, registered only when AV_PRAY is 1|true|yes|on. It POSTs to
   # CONTROL_PLANE_URL (written by the control plane, as for dashboard-auth-edgecity)
   # with AV_EVENTS_TOKEN.

@@ -51,6 +51,8 @@ from . import _plugin_events
 from . import _model_events
 # ov#357 M1 stopgap (b), on its own line for the same reason.
 from . import _gate_events
+# P10-P1 code.run@1, on its own line for the same reason.
+from . import _code_run
 from ._intentions import IntentionCall, classify_tool, valid_id
 from ._intentions import plan as plan_intentions
 from ._messages import is_injected_turn, is_silent, message_payload
@@ -528,14 +530,19 @@ def _hook_post_tool_call(collector: Collector, **kwargs: Any) -> None:
     discards its return, `model_tools.py` at `v2026.8.31`), so nothing here can
     delay, block or rewrite the tool call.
 
-    Order: `tool.call`, then any `action.*` it implies, then any `intention.*`.
-    The three are isolated from each other: a failure in one is counted against
-    the breaker like any hook failure and does not cost the others their events.
+    Order: `tool.call`, then any `action.*` it implies, then (P10-P1) an
+    `execute_code` call's `code.run`, then any `intention.*`. They are isolated
+    from each other: a failure in one is counted against the breaker like any
+    hook failure and does not cost the others their events. `code.run` alone is
+    isolated *uncounted* (`_quiet`): it is an optional add-on, and no failure of
+    it may trip the session breaker that would silence `tool.call`.
     """
     _session(collector, kwargs)
     if not collector.config.active:
         return
     _isolated(collector, kwargs, _emit_tool_call, collector, kwargs)
+    if kwargs.get("tool_name") == _code_run.TOOL_NAME:
+        _quiet(collector, CODE_RUN_FAILED, _emit_code_run, collector, kwargs)
     if classify_tool(kwargs.get("tool_name")) is not None:
         _isolated(collector, kwargs, _capture_intentions, collector, kwargs)
 
@@ -548,6 +555,25 @@ def _isolated(collector: Collector, kwargs: dict, fn, *args: Any) -> None:
     except BaseException as exc:  # noqa: BLE001 - same contract as `guarded`
         session_id = kwargs.get("session_id") or kwargs.get("parent_session_id")
         collector.record_failure("post_tool_call", exc, str(session_id) if session_id else None)
+
+
+#: P10-P1: the counter a failed `code.run` bumps instead of the breaker.
+CODE_RUN_FAILED = "code_run_failed"
+
+
+def _quiet(collector: Collector, counter: str, fn, *args: Any) -> None:
+    """`_isolated` without the breaker: a failure bumps `counter` (logged once per
+    process as a name and a count, never the exception's text) and is otherwise
+    dropped. For an optional event that must never cost the others theirs."""
+    try:
+        fn(*args)
+    except SystemExit:
+        raise
+    except BaseException:  # noqa: BLE001 - counted, never re-raised
+        try:
+            collector.count(counter)
+        except Exception:  # noqa: BLE001 - a counter must not raise either
+            pass
 
 
 def _emit_tool_call(collector: Collector, kwargs: dict) -> None:
@@ -600,6 +626,40 @@ def _emit_tool_call(collector: Collector, kwargs: dict) -> None:
                 changed = True
         if changed:
             collector.save_edgeos_ledger()
+
+
+def _emit_code_run(collector: Collector, kwargs: dict) -> None:
+    """P10-P1 `code.run@1` for one outer `execute_code` call (`_code_run`).
+
+    Off unless `AV_EVENTS_CODE_RUN` is on: off, nothing is built. The envelope
+    carries the ids `tool.call` carries for the same call and no other, and a
+    window computed the same way (`_call_window`).
+    Observe-only: it runs after the tool returned, and anything it raises is
+    `_quiet`'s (a counter, never the session breaker), never the tool call's
+    or `tool.call`'s.
+    """
+    if not _code_run.flag_on():
+        return
+    payload = _code_run.code_run_payload(
+        kwargs.get("args"),
+        kwargs.get("result"),
+        kwargs.get("status"),
+        kwargs.get("error_type"),
+        collector.config.capture,
+        collector.keyed_hash,
+        _code_run.scope(),
+        _code_run.gated_hosts(),
+    )
+    occurred_at, earliest = _call_window(kwargs)
+    collector.emit(
+        _code_run.TYPE,
+        payload,
+        tool_call_id=_tool_call_id(kwargs),
+        occurred_at=occurred_at,
+        occurred_at_earliest=earliest,
+        occurred_at_latest=occurred_at,
+        **_refs(kwargs),
+    )
 
 
 def _tool_call_id(kwargs: dict) -> Optional[str]:

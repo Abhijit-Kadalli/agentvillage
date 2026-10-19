@@ -23,6 +23,7 @@ plugins/av-events/
   _core.py         env, uuid v7/v5, canonical hashing, secret sanitiser, buffer, HTTP, read-only SQLite
   _intentions.py   which tool calls record an intention, and which one (pure)
   _tools.py        tool.call payload and the tool-name allowlist (pure)
+  _code_run.py     code.run payload for an execute_code call: keyed hash, counts, closed risk tags (pure; P10-P1, dark behind AV_EVENTS_CODE_RUN)
   _messages.py     message.in/out payloads and the punctuation flags (pure)
   _edgeos.py       the curl parser, EdgeOS operations, the action ledger and planner
   _cron.py         cron.run from the executions ledger and usage audit (flusher thread only)
@@ -59,6 +60,8 @@ plugins/av-events/
 | `AV_INFERENCE_RUN_EVENTS` | *(off)* | `1`, `true`, `yes` or `on` emits `intention.inference_run@1` for every run of the memory signal sync (see "The memory signal sync (DATA-470)"). **Off until the data release that registers the type is live**: ingest quarantines an unknown type. Read like the other switches (process environment, then `.env`), at every run's report. |
 | `AV_PLUGIN_EVENTS` | *(off)* | `1`, `true`, `yes` or `on` emits `plugin.inventory@1` and `plugin.unknown@1` from av-approval's plugin inventory (SEC-3; see "Events from other plugins"). **Off until the data release that registers both types is live**; while off each delivery is counted `plugin_dropped_switch_off` (a counter only: unlike the other drop reasons it never logs a line) and nothing is emitted. Read like the other switches (process environment, then `.env`), on every delivery. |
 | `AV_MODEL_EVENTS` | *(off)* | `1`, `true`, `yes` or `on` emits `model.observed@1` and `model.offlist@1` from av-approval's model observer (SEC-6 half 2; see "Events from other plugins"). A switch of its own, separate from `AV_PLUGIN_EVENTS`. **Off until agentvillage-data's DATA-477 release that registers both types is live**; while off each delivery is counted `model_dropped_switch_off` (a counter only, never a log line) and nothing is emitted. Rollback is this switch off. Read like the other switches (process environment, then `.env`), on every delivery. |
+| `AV_EVENTS_CODE_RUN` | *(off)* | `1`, `true`, `yes` or `on` emits `code.run@1` for every `execute_code` call (see "Code runs (P10-P1)"). Unset, blank, `0` or any other value is off, and then nothing is built. **Off until agentvillage-data registers `code.run@1`**: ingest quarantines an unknown type. Read like the other switches (process environment, then `.env`), on every `execute_code` call. |
+| `AV_EVENTS_CODE_RUN_SCOPE` | `all` | Unset or blank: `all` (the lead's default). Exactly `all` or `research_consented` (surrounding whitespace ignored): itself. **Any other value that is set** (a typo, `research`, another case, a homoglyph) **fails narrow to `research_consented`**, with one WARNING per process that names the variable and a count, never the value. Sent as the event's `consent_scope`; agentvillage-data decides what it keeps from it (see "Code runs (P10-P1)"). It changes nothing on the box. |
 | `AV_TERMINAL_ARGS_FIX` | `1` | Any of `0`, `false`, `no`, `off` turns off the foreground `terminal` argument fix (see "Foreground `terminal` calls (DATA-312)"). **Process environment only**, read on every `pre_tool_call`; a `.env` line reaches it through Hermes's own load at gateway start. Independent of every telemetry switch. |
 | `AV_EDGEOS_CURL_GUARD` | `1` | Any of `0`, `false`, `no`, `off` turns off the refusal of hand-written calls to EdgeOS's directory and `/humans/me` (see "Hand-written EdgeOS directory and profile calls (EDGEOS-CURL-GUARD)"). **Process environment only**, read on every `pre_tool_call`. Independent of every telemetry switch. |
 | `AV_PROMPT_REFRESH` | `team` | F1 (see "Prompt refresh (F1)"). `team` (also unset or blank): on only where `AV_TEAM_TENANT` is exactly `1` once trimmed, the line the control plane writes into a team tenant's `$HERMES_HOME/.env` (control-plane `team-tenant-env.js`). `1`, `true`, `yes` or `on`: on everywhere. `0`, `false`, `no` or `off`: off. Any other value (`disabled`, `none`, a typo): off, with one WARNING per process that names the variable, not the value, like the other av-events switches, so a mistyped off never leaves it on. `prompt_refresh` in `AV_HOOKS_DISABLED` wins over all of these. Read like the other switches (process environment, then `.env`), at every turn start. Independent of every telemetry switch. |
@@ -244,6 +247,7 @@ backlog can differ from `emitted_at` by minutes. Every `marts` time series is bu
 | `message.in` | `pre_llm_call` (`user_message`) | `channel`, `length`, `content_hash`, `flags` {`is_ask`, `is_recommendation`, `sentiment`}, `flags_rule`, `cron_job_id`, `silent` — see "Messages" |
 | `message.out` | `post_llm_call` (`assistant_response`) | as above; `silent` is set on a cron run's reply |
 | `tool.call` | `post_tool_call` | `tool_name`, `tool_category`, `args_hash`, `result_hash`, `ok`, `status`, `latency_ms`, `receipt`, `error_type`, `operation`, `target_system`, `category_version`, plus `args_length` / `result_length` above `metadata` — see "Tool calls" |
+| `code.run` | `post_tool_call` on `execute_code`, after its `tool.call`, behind `AV_EVENTS_CODE_RUN` (default off) | closed, every key required, in this order, no text: `consent_scope`, `code_hmac`, `code_bytes`, `status`, `error_type`, `tool_calls_made`, `unavailable_tool_refusals`, `unavailable_tools`, `risk_tags`, `scan_truncated`, `rules_version`, `category_version`; the envelope ids of the call's `tool.call` — see "Code runs (P10-P1)" |
 | `action.attempted` / `action.failed` | `post_tool_call` on an EdgeOS RSVP or cancellation | `action_class`, `target_system`, `receipt`, `execution_token_id`, `error`, `reverses_action_id`, `reversal`, `supersedes_action_id`, `operation`, `edgeos_event_id`, `occurrence_start`, `allowlist_version` — see "EdgeOS actions" |
 | `action.receipted` | `post_tool_call` on the EdgeOS read that confirms it | as above, with `receipt` {`kind: edgeos_confirming_read`, `id`: the participant id's keyed hash} |
 | `cron.run` | the cron tail, on the flusher thread | `job_id`, `job_name`, `execution_id`, `status`, `input_tokens`, `output_tokens`, `claimed_at`, `started_at`, `finished_at`, `delivery_outcome` — see "Cron capture" |
@@ -1124,9 +1128,95 @@ tool, before any `action.*` or `intention.*` the same call implies.
 - **Refs.** `tool_call_id` is Hermes's, nulled if it fails the id pattern; `run_id` as for
   `llm.call`; `occurred_at` is when the call returned and `occurred_at_earliest` that minus
   `duration_ms`.
-- **Isolation.** The `tool.call`, the EdgeOS path and intention capture are isolated from one
-  another inside the hook: an exception in one is counted against the breaker like any hook
-  failure and does not cost the others their events.
+- **Isolation.** The `tool.call`, the EdgeOS path, `code.run` and intention capture are isolated
+  from one another inside the hook: an exception in one does not cost the others their events. It
+  is counted against the breaker like any hook failure, except in `code.run`, which only bumps the
+  `code_run_failed` counter (see "Code runs (P10-P1)").
+
+## Code runs (P10-P1)
+
+Since rc42 `execute_code` runs outside the approval hook, and its `tool.call` says only that a
+program ran, how long its arguments were and its status. `code.run@1` adds one closed record per
+`execute_code` call of what the program could reach for (CODE-RUN-GATE research, P1). It is
+**observe-only**: it is built in `post_tool_call`, after the tool has returned, and Hermes discards
+that hook's return. It adds no refusal, no card, no wait and changes nothing the tool returns.
+`pre_tool_call`, av-approval, the shim, the hook and the policy templates are untouched.
+
+**The switch.** `AV_EVENTS_CODE_RUN` (`1|true|yes|on`, `_core.env_flag_on`), default off. Off,
+`_emit_code_run` returns before anything is built. It needs the plugin's own gates as every event
+does: no `AV_EVENTS_TOKEN`, or `AV_EVENTS_ENABLED=0`, or `post_tool_call` in `AV_HOOKS_DISABLED`,
+and nothing is sent.
+
+**What is sent** (`_code_run.code_run_payload`; contract `tests/vectors/code_run_contract.json`):
+
+| Key | Value |
+|---|---|
+| `consent_scope` | `all` \| `research_consented`, from `AV_EVENTS_CODE_RUN_SCOPE` (an unrecognised set value is `research_consented`) |
+| `code_hmac` | the keyed hash (HMAC-SHA256 under the tenant key, see "Keyed hashes") of the program text `args.code`; null in `metadata`, without a key, or with no string `code` |
+| `code_bytes` | the program's UTF-8 byte length; null as `code_hmac` (except without a key) |
+| `status`, `error_type` | the same closed values `tool.call` sends |
+| `tool_calls_made` | the int 0..10000 in Hermes's result, else null |
+| `unavailable_tool_refusals` | how many `Tool '<x>' is not available in execute_code` refusals (Hermes's kernel RPC allowlist) the result's `output` and `error` hold (the whole result when it is not JSON), capped at 10000 |
+| `unavailable_tools` | the distinct `<x>`, sorted, at most 16: a name only when `tool_categories.json` lists it, any other name as `other` |
+| `risk_tags` | sorted, from the closed set below |
+| `scan_truncated` | true when the tags or the refusal count read only the first 262144 characters of the program or of a result text (`SCAN_LIMIT`: the scans run synchronously in the hook); `code_hmac` and `code_bytes` always cover the whole program |
+| `rules_version` | `code_run_tags_v1`, bumped whenever a tag rule changes |
+| `category_version` | the `tool_categories` version the names were checked against |
+
+The envelope carries the same `session_id`, `turn_id`, `run_id` and `tool_call_id` as the call's
+`tool.call`, a fresh event id, actor `agent`, `evidence_class: agent_report`.
+
+**Risk tags.** Computed on the box from the program text by plain regex checks, never sent as
+text, in time linear in the scanned text: every rule starts with a literal (word-boundary checks
+come after it), and the three rules that relate two places (an `open(` and its write mode within
+512 characters on its line, an `import` and a module within 200, a `from os import` and a name
+within 200) and `/proc/…environ` (within 64) use a linear two-place check. A test holds the tags to
+the round-1 regexes over every case and a seeded fuzz corpus, and review-b's dense shapes at the
+cap take under 30 ms. A tag says the text *could* do the thing, not that it did: the checks are static, they
+over-fire on a comment or a co-occurrence (a one-letter file name such as `'x'` reads as a write
+mode), and string building evades them.
+
+| Tag | Fires on |
+|---|---|
+| `dotenv_path` | `.env` as a path segment, or the `dotenv` package (not `os.environ`, `self.env`, `.venv`) |
+| `proc_environ` | `/proc/<…>/environ`, `'/proc'` with `'environ'`, or psutil's `.environ()` |
+| `os_environ` | `os.environ`, `os.environb`, `getenv(`, `from os import environ` |
+| `subprocess` | `subprocess`, `os.system/popen/exec*/spawn*/posix_spawn/fork`, `pty.spawn`, `asyncio.create_subprocess_*` |
+| `socket_or_http_client` | importing or using `socket`, `ssl`, `urllib`, `urllib3`, `http`, `requests`, `httpx`, `aiohttp`, `websocket(s)`, `ftplib`, `smtplib`, `telnetlib`, `pycurl`, `xmlrpc`, or `asyncio.open_connection` |
+| `hermes_home_write` | a write (an `open` with a `w`/`a`/`x`/`+` mode, `write_text`, `shutil` copy or move, `os` rename, remove, mkdir or chmod, `O_WRONLY`-style flags, a shell `>` to an absolute path) anywhere in a program that names `HERMES_HOME` or `.hermes` |
+| `scripts_dir_write` | a write, in a program that names `scripts/` |
+| `cron_write` | a write, in a program that names `cron/`, `jobs.json`, `crontab` or `/etc/cron` |
+| `gated_host` | a host the plugin already holds, as a whole host or a subdomain: `index.network`, `edgeos.world` and the EdgeOS seed hosts, the control plane's `CP_HOSTS`, `api.telegram.org`, `openrouter.ai`, and the hosts of `INDEX_API_URL`/`INDEX_MCP_URL` (as `record_intention` reads them), `EDGEOS_API_BASE` (process environment) and `CONTROL_PLANE_URL` |
+| `base64_or_eval` | `base64`, a `b64decode`-style decoder, a bare `eval(`, `exec(` or `compile(`, `__import__(`, `marshal.loads` (not `ast.literal_eval`, `re.compile`) |
+
+**Shapes.** Every value the contract checks by pattern (`code_hmac`, `error_type`,
+`rules_version`, `category_version`, a listed tool name) is checked here with `re.fullmatch`, never
+a bare `$` (which in Python also accepts a trailing newline that data's door refuses); a value off
+its shape is null. `tool.call`'s own `error_type` check in `_tools.py` is unchanged.
+
+**What is never sent.** The program, its output, its error text, a path, a host, an env name or
+value, a refused tool's name unless the allowlist lists it, and any id `tool.call` does not
+already carry. Nothing reads `.env` but the switch reader every av-events switch uses, and
+nothing opens a file or touches the network.
+
+**Scope and consent.** The plugin sends the same event in either scope; `consent_scope` tells
+agentvillage-data how to keep it. `all` is ops security monitoring for every tenant: the type is to
+be on data's ops allowlist and kept without research consent **only when `consent_scope` is
+`all`**, the way `cron.run` is kept only for an installer job. `research_consented` keeps it on the
+research path with `tool.call`: dropped by the worker for a tenant without research consent. Until
+data registers `code.run@1` (`src/schemas/`) and lists it (`src/worker/consent.ts`), ingest
+quarantines it, which is why the switch is off.
+
+**The limit.** The plugin runs as `hermes`, the uid the program runs as. A program can switch it
+off, edit it or forge its rows, so `code.run` ranks as `agent_report` evidence and is never proof
+that a program did or did not do something. The witnesses the agent cannot reach are the control
+plane's root integrity sweep (P2) and the cross-witness alarms (P5) of the CODE-RUN-GATE research;
+`code.run` is what they compare against.
+
+**Never at the cost of `tool.call`.** `code.run` runs after the call's `tool.call` and is isolated
+*uncounted* (`_quiet` in `__init__.py`): a failure bumps the `code_run_failed` counter (one log line
+per process, a name and a count) and never reaches the session breaker, so no `code.run` failure can
+silence `tool.call` or any other event.
 
 ## Foreground `terminal` calls (DATA-312)
 
