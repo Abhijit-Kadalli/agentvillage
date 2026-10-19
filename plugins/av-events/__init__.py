@@ -53,6 +53,8 @@ from . import _model_events
 from . import _gate_events
 # P10-P1 code.run@1, on its own line for the same reason.
 from . import _code_run
+# MM-INFER-VIS, on its own line for the same reason.
+from . import _negotiator_llm
 from ._intentions import IntentionCall, classify_tool, valid_id
 from ._intentions import plan as plan_intentions
 from ._messages import is_injected_turn, is_silent, message_payload
@@ -1322,6 +1324,8 @@ def _on_unload() -> None:
     _prompt_refresh.uninstall()
     # R-DEON: Hermes's own tool_search core-name check goes back too.
     _village_visible.uninstall()
+    # MM-INFER-VIS: the Index plugin's speaker._main_agent and the bridge client's create go back too.
+    _negotiator_llm.stop()
     # Lane B: the approval poller stops with the plugin (its pending state is on disk).
     try:
         _approval.stop_poller()
@@ -1437,6 +1441,15 @@ def register(ctx) -> None:
     try:
         _village_visible.install()
     except Exception:  # noqa: BLE001 - the visibility is optional; the hooks are not
+        pass
+    # MM-INFER-VIS: the MoralMod negotiator's model steps (the Index plugin's loopback bridge calls
+    # the model on its own client, outside Hermes's API hooks) as llm.call, behind
+    # AV_EVENTS_NEGOTIATOR_LLM (default off), and the MoralMod key for that bridge client only, behind
+    # AV_MORALMOD_OWN_KEY (default off). `_negotiator_llm.py`; a missing seam is a counted no-op, a
+    # failure is `_quiet`'s counter.
+    try:
+        _negotiator_llm.start(_collector, __name__, _quiet)
+    except Exception:  # noqa: BLE001 - the observer is optional; the hooks are not
         pass
     # DATA-183: hear about the unload that clears the hooks. Optional in the
     # API (probe, fail open): without it register() behaves as before.
