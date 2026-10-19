@@ -2,9 +2,12 @@
  * VISIBILITY B3, the prompt half (lanes-context CONTEXT-SECTIONS-GOLIVE-PASTE.md THE ORDER, step 3): the
  * code half (ov#417) keeps a Private line out of the overlay's stated items; tools.md's "What the app
  * knows about them" says the same thing in plain words, so the agent never sends a Private item to
- * Index by hand. This pins that sentence to the reader's rule: an item marked `private` or
- * `agentvillage/private` is Private; in an entry with any mark, an unmarked item is Private too; a
+ * Index by hand. This pins that sentence to the reader's rule: an item marked `private` or the vocab's
+ * Private id (VISIBILITY_PRIVATE) is Private; in an entry with any mark, an unmarked item is Private too; a
  * guess or chat item is never the resident's statement.
+ *
+ * The ids are built from context-tags.ts, never written here: context-marks.test.ts lists every file that
+ * names one ("writers are unchanged"), and tools.md is on that list as a reader-side prompt.
  *
  *   bun test skills/index-network/scripts/tests/context-private-prompt.test.ts
  */
@@ -28,9 +31,9 @@ describe("tools.md: the Private items rule (VISIBILITY B3, prompt half)", () => 
   });
 
   test("it names both Private marks, and every mark the reader reads as Private", () => {
-    expect(LINE).toContain("An item marked `private` or `agentvillage/private` is private.");
+    expect(LINE).toContain(`An item marked \`private\` or \`${VISIBILITY_PRIVATE}\` is private.`);
     const privateMarks = Object.keys(MARK_VISIBILITY).filter((m) => MARK_VISIBILITY[m] === VISIBILITY_PRIVATE);
-    expect(privateMarks.sort()).toEqual(["agentvillage/private", "private"]);
+    expect(privateMarks.sort()).toEqual([VISIBILITY_PRIVATE, "private"].sort());
     for (const mark of privateMarks) expect(LINE).toContain(`\`${mark}\``);
   });
 
@@ -55,6 +58,6 @@ describe("tools.md: the Private items rule (VISIBILITY B3, prompt half)", () => 
     expect(LINE).toContain("A (guess) or (chat) item is never their statement, whatever its mark.");
     // The reader agrees: a guess is Private whatever its mark.
     expect(markVisibility("public", true)).toBe(VISIBILITY_PRIVATE);
-    expect(markVisibility("agentvillage/edgecityindia2026", true)).toBe(VISIBILITY_PRIVATE);
+    expect(markVisibility(VISIBILITY_EDGE_CITY_INDIA_2026, true)).toBe(VISIBILITY_PRIVATE);
   });
 });
