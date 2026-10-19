@@ -3,6 +3,13 @@
 # scripts/mini-apps-review.ts over the pull request's diff and writes the §6.3
 # JSON to the job summary and to an artifact named mini-apps-review.
 #
+# Conformance (release's owner read of P0-5, CLAIMS L14465): the script runs
+# P0-5's suite itself, `bun scripts/mini-apps-conformance.ts <manifest> --base
+# <PR base> --out ...`, on the changed manifest, and only when that script is
+# in the checkout. A committed conformance.json is never trusted. The suite's
+# output goes into the artifact too. The version-bump rule is reported (N) and
+# not enforced until S2 is settled.
+#
 # Phase 0: dark and advisory. It is not a required check, it posts no comment
 # (jmill's LLM half does that later), it holds no secret and no write token,
 # and it never uses pull_request_target. Every verdict exits 0; only a broken
@@ -35,7 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Full history: the script diffs base...head from their merge base.
+      # Full history, never shallow or blob-less: the script diffs base...head from
+      # their merge base, and P0-5's suite reads base blobs with git cat-file. The
+      # script refuses (exit 2) a shallow or partial clone.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
@@ -54,7 +63,8 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           bun scripts/mini-apps-review.ts --base "$BASE_SHA" --head "$HEAD_SHA" --author "$PR_AUTHOR" \
-            --out "$RUNNER_TEMP/mini-apps-review.json" --summary "$RUNNER_TEMP/mini-apps-review.md"
+            --out "$RUNNER_TEMP/mini-apps-review.json" --summary "$RUNNER_TEMP/mini-apps-review.md" \
+            --conformance-dir "$RUNNER_TEMP/mini-apps-conformance"
       - name: Job summary
         if: always()
         run: |
@@ -68,6 +78,8 @@ jobs:
         if: always()
         with:
           name: mini-apps-review
-          path: ${{ runner.temp }}/mini-apps-review.json
+          path: |
+            ${{ runner.temp }}/mini-apps-review.json
+            ${{ runner.temp }}/mini-apps-conformance/
           if-no-files-found: warn
           retention-days: 14

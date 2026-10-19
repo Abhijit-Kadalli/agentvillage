@@ -23,7 +23,7 @@ function manifest(visibility = "sandbox"): any {
     manifest: 2, id: "tinyshop", name: "Tiny Shop", version: "1.0.0", description: "An invented shop used only by these tests.",
     homepage: "https://tinyshop.example.org", visibility,
     permissions: [{ kind: "read", label: "Read the menu", description: "Read the invented menu." }],
-    service: { kind: "https-json", baseUrl: "https://api.tinyshop.example.org", auth: { mode: "app-token", secretRef: "TINYSHOP_AV_TOKEN" } },
+    service: { kind: "https-json", baseUrl: "https://api.tinyshop.example.org", auth: { mode: "app-token", secretRef: "MINI_APP_TINYSHOP_TOKEN" } },
     operations: [
       { name: "tinyshop.menu", class: "read" },
       { name: "tinyshop.order.prepare", class: "prepare" },
@@ -39,7 +39,7 @@ type Files = Record<string, string | null>;
 const baseFiles = (m = manifest()): Files => ({ "mini-apps/catalog.json": CATALOG, [MP]: json(m), [SP]: SKILL });
 
 /** An in-memory pull request: base and head file maps (null deletes), modes optional. */
-function source(base: Files, head: Files, opts: { author?: string; modes?: Record<string, string> } = {}): R.Source {
+function source(base: Files, head: Files, opts: { author?: string; modes?: Record<string, string>; conf?: R.ConformanceRun } = {}): R.Source {
   const after: Files = { ...base, ...head };
   const files: R.Change[] = [];
   for (const path of [...new Set([...Object.keys(base), ...Object.keys(head)])].sort()) {
@@ -50,6 +50,7 @@ function source(base: Files, head: Files, opts: { author?: string; modes?: Recor
   const blob = (map: Files) => (path: string) => (map[path] == null ? null : Buffer.from(map[path]!));
   return {
     files, base: blob(base), head: blob(after), headSha: "f".repeat(40), author: opts.author ?? "someone",
+    ...(opts.conf ? { conformance: () => opts.conf! } : {}),
     added: path => {
       const old = new Set((base[path] ?? "").split("\n"));
       return (after[path] ?? "").split("\n").map((text, i) => ({ line: i + 1, text })).filter(l => !old.has(l.text));
@@ -57,12 +58,13 @@ function source(base: Files, head: Files, opts: { author?: string; modes?: Recor
   };
 }
 /** Review a change to the tinyshop manifest: `edit` mutates a copy of the base manifest. */
-function pr(edit: (m: any) => void, o: { base?: any; extra?: Files; skill?: string; author?: string; modes?: Record<string, string> } = {}) {
+function pr(edit: (m: any) => void, o: { base?: any; extra?: Files; skill?: string; author?: string; modes?: Record<string, string>; conf?: R.ConformanceRun | ((head: any) => R.ConformanceRun) } = {}) {
   const b = o.base ?? manifest();
   const h = clone(b);
   edit(h);
   const head: Files = { [MP]: json(h), ...(o.skill !== undefined ? { [SP]: o.skill } : {}), ...(o.extra ?? {}) };
-  return R.evaluate(source(baseFiles(b), head, { author: o.author, modes: o.modes }), V);
+  const conf = typeof o.conf === "function" ? o.conf(h) : o.conf;
+  return R.evaluate(source(baseFiles(b), head, { author: o.author, modes: o.modes, conf }), V);
 }
 const codes = (r: R.Report) => r.findings.map(f => f.code);
 const has = (r: R.Report, code: string, severity?: string) => r.findings.some(f => f.code === code && (!severity || f.severity === severity));
@@ -134,6 +136,9 @@ describe("paths: the lane classifier", () => {
     expect([script.verdict, has(script, "path_unknown_file", "M")]).toEqual(["FAIL", true]);
     expect(has(pr(patch, { extra: { "mini-apps/tinyshop/extra.json": "{}\n" } }), "path_unknown_file", "M")).toBe(true);
     expect(has(pr(patch, { extra: { "mini-apps/tinyshop/README.md": "# Tiny\n" } }), "path_unknown_file")).toBe(false);
+    // A committed conformance.json is never trusted (release, L14465): the bot runs the suite itself.
+    const committed = pr(patch, { extra: { [CP]: "{}\n" } });
+    expect([committed.verdict, committed.findings.find(x => x.code === "path_unknown_file")?.text]).toEqual(["FAIL", "a committed conformance.json is never trusted: the bot runs the suite itself; remove it"]);
     const link = pr(patch, { extra: { "mini-apps/tinyshop/README.md": "../../x" }, modes: { "mini-apps/tinyshop/README.md": "120000" } });
     expect([link.verdict, has(link, "path_symlink", "M")]).toEqual(["FAIL", true]);
   });
@@ -185,6 +190,7 @@ describe("schema: the shared validator", () => {
   test("the catalog: a manifest the cp would drop fails; one it does not list is a note", () => {
     const wrongId = pr(m => {
       m.id = "tinyshop2"; m.skills[0] = { ...m.skills[0], name: "tinyshop2", path: "skills/tinyshop2/SKILL.md" };
+      m.service.auth.secretRef = "MINI_APP_TINYSHOP2_TOKEN";
       m.operations.forEach((op: any) => { op.name = op.name.replace("tinyshop.", "tinyshop2."); });
       m.operations[2].approval.prepare = "tinyshop2.order.prepare";
     });
@@ -258,7 +264,7 @@ describe("version bump class", () => {
     ["a class change", m => { m.operations[0].class = "write"; }, "major"],
     ["an input schema", m => { m.operations[0].input = { type: "object", properties: {}, additionalProperties: false }; }, "major"],
     ["a target", m => { m.operations[0].target = { method: "GET", path: "/menu" }; }, "major"],
-    ["the auth block", m => { m.service.auth.secretRef = "TINYSHOP_OTHER"; }, "major"],
+    ["the auth block", m => { m.service.auth.secretRef = "MINI_APP_TINYSHOP_OTHER"; }, "major"],
     ["data.context added", m => { m.data = { context: { maxEntries: 4, ceiling: "private" } }; }, "major"],
     ["the approval summary", m => { m.operations[2].approval.summary = ["Order {{preview.total}}"]; }, "major"],
     ["a new permission", m => { m.permissions.push({ kind: "action", label: "Order", description: "Order." }); }, "major"],
@@ -269,6 +275,15 @@ describe("version bump class", () => {
     const base = manifest(); base.operations[0].timeoutMs = 10000;
     expect(need(m => { m.operations[0].timeoutMs = 20000; }, base)).toBe("major");
     expect(need(m => { m.operations[0].timeoutMs = 5000; }, base)).toBe("minor");
+  });
+  test("annotation-only input edits (description, title, examples) are a patch; a property named description is not", () => {
+    const base = manifest();
+    base.operations[0].input = { type: "object", description: "Menu query.", properties: { day: { type: "string", title: "Day", examples: ["mon"] } }, additionalProperties: false };
+    expect(need(m => { m.operations[0].input.description = "The menu query."; m.operations[0].input.properties.day.title = "Weekday"; m.operations[0].input.properties.day.examples = ["tue"]; }, base)).toBe("patch");
+    expect(need(m => { delete m.operations[0].input.properties.day.examples; m.operations[0].input.$comment = "x"; }, base)).toBe("patch");
+    expect(need(m => { m.operations[0].input.properties.description = { type: "string" }; }, base)).toBe("major");
+    expect(need(m => { m.operations[0].input.properties.day.maxLength = 3; }, base)).toBe("major");
+    expect(need(m => { m.operations[0].input.properties.day.description = "Which day."; }, base)).toBe("patch");
   });
   test("data.context narrowing is minor, widening is major", () => {
     const base = manifest(); base.data = { context: { maxEntries: 16, ceiling: "village" } };
@@ -281,13 +296,17 @@ describe("version bump class", () => {
     expect([R.bumpOf("1.0.0", "2.0.0"), R.bumpOf("1.0.0", "1.1.0"), R.bumpOf("1.0.9", "1.0.10"), R.bumpOf("1.2.3", "1.2.3"),
       R.bumpOf("1.2.3", "1.2.2"), R.bumpOf("1.2.3", "0.9.9"), R.bumpOf("1.0", "1.0.1")]).toEqual(["major", "minor", "patch", "none", "down", "down", null]);
   });
-  test("in a review: too small, not bumped and going down fail; enough is a note; a new manifest has none to check", () => {
+  test("in a review: too small, not bumped and going down are reported as N, not enforced, until S2 is settled", () => {
+    expect(R.BUMP_SEVERITY).toBe("N");
     const addOp = (m: any) => m.operations.push({ name: "tinyshop.hours", class: "read" });
-    expect(has(pr(m => { addOp(m); m.version = "1.1.0"; }), "version_bump_too_small", "M")).toBe(true);
+    const small = pr(m => { addOp(m); m.version = "1.1.0"; });
+    expect([has(small, "version_bump_too_small", "N"), noM(small), small.verdict]).toEqual([true, [], "PASS"]);
     const ok = pr(m => { addOp(m); m.version = "2.0.0"; });
     expect([has(ok, "version_bump", "N"), noM(ok)]).toEqual([true, []]);
-    expect(has(pr(m => { m.description = "Other."; }), "version_not_bumped", "M")).toBe(true);
-    expect(has(pr(m => { m.description = "Other."; m.version = "0.9.0"; }), "version_not_monotonic", "M")).toBe(true);
+    const same = pr(m => { m.description = "Other."; });
+    expect([has(same, "version_not_bumped", "N"), same.verdict]).toEqual([true, "PASS"]);
+    const down = pr(m => { m.description = "Other."; m.version = "0.9.0"; });
+    expect([has(down, "version_not_monotonic", "N"), down.verdict]).toEqual([true, "PASS"]);
     const fresh = R.evaluate(source({ "mini-apps/catalog.json": CATALOG }, { [MP]: json(manifest()), [SP]: SKILL }), V);
     expect([has(fresh, "version_new_manifest", "N"), noM(fresh)]).toEqual([true, []]);
   });
@@ -427,36 +446,47 @@ describe("approval classes", () => {
   });
 });
 
-describe("conformance", () => {
-  // P0-5's shape (ov#422): manifest is the repo-relative path; sha256 is over the exact bytes; not_run is pass: null.
-  const conf = (m: any, over: any = {}) => json({ manifest: MP, sha256: sha256(json(m)), results: [{ check: "manifest.schema", pass: true, note: "" }], passed: true, ...over });
-  const bumped = () => { const m = manifest(); m.version = "1.0.1"; return m; };
-  test("absent: S (PASS in sandbox, NEEDS_HUMAN in admins)", () => {
-    expect([has(pr(patch), "conformance_missing", "S"), pr(patch).verdict]).toEqual([true, "PASS"]);
-    expect(pr(patch, { base: manifest("admins") }).verdict).toBe("NEEDS_HUMAN");
+describe("conformance: the bot runs P0-5's suite itself (release, L14465)", () => {
+  // P0-5's output (ov#422): manifest is the repo-relative path; sha256 is over the exact bytes; not_run is pass: null.
+  const out = (h: any, over: any = {}) => Buffer.from(json({ manifest: MP, sha256: sha256(json(h)),
+    results: [{ check: "manifest.schema", pass: true, note: "" }, { check: "hygiene.secrets", pass: true, note: "" }], passed: true, ...over }));
+  const ran = (over: any = {}, exit: number | null = 0) => (h: any): R.ConformanceRun => ({ status: "ran", exit, bytes: out(h, over) });
+  const conf = (r: R.Report) => r.findings.filter(x => x.code.startsWith("conformance")).map(x => [x.code, x.severity]);
+  const admins = manifest("admins");
+  test("the suite not in the checkout: N conformance_not_available (no S, no M)", () => {
+    for (const r of [pr(patch), pr(patch, { base: admins })]) expect([conf(r), r.verdict]).toEqual([[["conformance_not_available", "N"]], "PASS"]);
   });
-  test("present, passed and for this manifest: quiet; admins then PASS", () => {
-    const base = manifest("admins"), h = clone(base); h.version = "1.0.1";
-    const r = pr(patch, { base, extra: { [CP]: conf(h) } });
-    expect([codes(r).filter(c => c.startsWith("conformance")), r.verdict]).toEqual([[], "PASS"]);
+  test("a passed run for this manifest: quiet, admins PASS", () => {
+    const r = pr(patch, { base: admins, conf: ran() });
+    expect([conf(r), r.verdict]).toEqual([[], "PASS"]);
   });
-  test("another manifest's path, or a failed row under passed: true, fails; a not_run row is a note, never a pass", () => {
-    expect(has(pr(patch, { extra: { [CP]: conf(bumped(), { manifest: "tinyshop@1.0.1" }) } }), "conformance_wrong_manifest", "M")).toBe(true);
-    const lying = conf(bumped(), { results: [{ check: "skills.sha256", pass: false, note: "x" }] });
-    expect(has(pr(patch, { extra: { [CP]: lying } }), "conformance_inconsistent", "M")).toBe(true);
-    const base = manifest("admins"), h = clone(base); h.version = "1.0.1";
-    const partial = pr(patch, { base, extra: { [CP]: conf(h, { results: [{ check: "manifest.schema", pass: true, note: "" }, { check: "version.bump", pass: null, note: "no --base" }] }) } });
-    expect([partial.findings.filter(x => x.code.startsWith("conformance")).map(x => [x.code, x.severity]), partial.verdict]).toEqual([[["conformance_not_run", "N"]], "PASS"]);
+  test("another manifest's path or another manifest's bytes (re-serialized included): M", () => {
+    expect(conf(pr(patch, { conf: ran({ manifest: "tinyshop@1.0.1" }) }))).toContainEqual(["conformance_wrong_manifest", "M"]);
+    expect(conf(pr(patch, { conf: h => ({ status: "ran", exit: 0, bytes: out(h, { sha256: sha256(JSON.stringify(h)) }) }) }))).toContainEqual(["conformance_stale", "M"]);
   });
-  test("bytes, not the parsed form: a re-serialized manifest's sha256 is stale", () => {
-    const m = bumped();
-    const reserialized = json({ ...conf(m), sha256: sha256(JSON.stringify(m)) });
-    expect(has(pr(patch, { extra: { [CP]: reserialized } }), "conformance_stale", "M")).toBe(true);
+  test("a failed check: M; passed: true over a failed row, or passed against the exit code: M inconsistent", () => {
+    const failed = pr(patch, { conf: ran({ passed: false, results: [{ check: "hygiene.secrets", pass: false, note: "x" }] }, 1) });
+    expect([conf(failed), failed.verdict]).toEqual([[["conformance_check_failed", "M"]], "FAIL"]);
+    expect(conf(pr(patch, { conf: ran({ results: [{ check: "skills.sha256", pass: false, note: "x" }] }) }))).toContainEqual(["conformance_inconsistent", "M"]);
+    expect(conf(pr(patch, { conf: ran({}, 1) }))).toContainEqual(["conformance_inconsistent", "M"]);
+    expect(conf(pr(patch, { conf: ran({ passed: false }, 0) }))).toContainEqual(["conformance_inconsistent", "M"]);
   });
-  test("passed false, a stale sha or not JSON: fail", () => {
-    expect(has(pr(patch, { extra: { [CP]: conf(bumped(), { passed: false }) } }), "conformance_failed", "M")).toBe(true);
-    expect(has(pr(patch, { extra: { [CP]: conf(manifest()) } }), "conformance_stale", "M")).toBe(true);
-    expect(has(pr(patch, { extra: { [CP]: "nope" } }), "conformance_unreadable", "M")).toBe(true);
+  test("required checks not run (pass: null, never a pass): S incomplete, so admins NEEDS_HUMAN and sandbox PASS", () => {
+    const notRun = { passed: false, results: [{ check: "manifest.schema", pass: true, note: "" }, { check: "hygiene.secrets", pass: null, note: "no fixtures" }] };
+    const a = pr(patch, { base: admins, conf: ran(notRun, 1) });
+    expect([conf(a), a.verdict]).toEqual([[["conformance_not_run", "N"], ["conformance_incomplete", "S"]], "NEEDS_HUMAN"]);
+    expect(pr(patch, { conf: ran(notRun, 1) }).verdict).toBe("PASS");
+  });
+  test("the suite's version.bump row is reported, not enforced (S2)", () => {
+    const bump = { passed: false, results: [{ check: "manifest.schema", pass: true, note: "" }, { check: "version.bump", pass: false, note: "widened at minor" }] };
+    const r = pr(patch, { base: admins, conf: ran(bump, 1) });
+    expect([conf(r), noM(r)]).toEqual([[["conformance_bump", "N"], ["conformance_incomplete", "S"]], []]);
+  });
+  test("a refused run (exit 2, no output) fails closed; unreadable output fails; not at head is a note", () => {
+    const refused = pr(patch, { conf: { status: "refused", exit: 2, message: "validator_pin_mismatch" } });
+    expect([conf(refused), refused.verdict]).toEqual([[["conformance_refused", "M"]], "FAIL"]);
+    expect(conf(pr(patch, { conf: { status: "ran", exit: 0, bytes: Buffer.from("nope") } }))).toEqual([["conformance_unreadable", "M"]]);
+    expect(conf(pr(patch, { conf: { status: "not_at_head" } }))).toEqual([["conformance_not_run_here", "N"]]);
   });
 });
 
@@ -567,6 +597,58 @@ describe("git and the CLI", () => {
       const core = g.commit({ "install/x.ts": "x\n" }, "core");
       expect(R.review({ repo: g.dir, base, head: core }).lane).toBe("core");
     } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
+  // A stand-in for P0-5's suite at scripts/mini-apps-conformance.ts: it records its argv in its one row.
+  const fakeSuite = (exit: number, write: boolean) => [
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    'import { createHash } from "node:crypto";',
+    "const a = process.argv.slice(2);",
+    write ? 'writeFileSync(a[a.indexOf("--out") + 1], JSON.stringify({ manifest: a[0], sha256: createHash("sha256").update(readFileSync(a[0])).digest("hex"), results: [{ check: "argv", pass: true, note: a.join(" ") }], passed: true }));' : "",
+    `process.exit(${exit});`, "",
+  ].join("\n");
+  const withSuite = (suite: string | null) => {
+    const g = gitRepo();
+    const base = g.commit({ ...baseFiles(), ...(suite ? { [R.CONFORMANCE_PATH]: suite } : {}) }, "base");
+    const m = manifest(); m.version = "1.0.1"; m.description = "Reworded.";
+    const head = g.commit({ [MP]: json(m) }, "pr");
+    return { g, base, head };
+  };
+  test("the suite in the checkout is run on the lane's manifest, always with --base, and judged", () => {
+    const { g, base, head } = withSuite(fakeSuite(0, true));
+    const saved = join(g.dir, "..", `${base.slice(0, 8)}-conformance`);
+    try {
+      const r = R.review({ repo: g.dir, base, head, conformanceDir: saved });
+      expect([r.verdict, r.findings.filter(f => f.code.startsWith("conformance"))]).toEqual(["PASS", []]);
+      const note = JSON.parse(readFileSync(join(saved, "tinyshop.conformance.json"), "utf8")).results[0].note;
+      expect(note).toBe(`${MP} --base ${base} --out ${note.split(" --out ")[1]}`);
+      // The checkout moved off head: the suite reads the working tree, so it is not run.
+      g.run("checkout", "-q", base);
+      expect(R.review({ repo: g.dir, base, head }).findings.filter(f => f.code.startsWith("conformance")).map(f => f.code)).toEqual(["conformance_not_run_here"]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(saved, { recursive: true, force: true }); }
+  });
+  test("a suite that refuses (exit 2, no conformance.json) fails closed; no suite at all is N", () => {
+    for (const [suite, code, severity] of [[fakeSuite(2, false), "conformance_refused", "M"], [null, "conformance_not_available", "N"]] as const) {
+      const { g, base, head } = withSuite(suite);
+      try {
+        const r = R.review({ repo: g.dir, base, head });
+        expect(r.findings.filter(f => f.code.startsWith("conformance")).map(f => [f.code, f.severity])).toEqual([[code, severity]]);
+      } finally { rmSync(g.dir, { recursive: true, force: true }); }
+    }
+  });
+  test("a shallow or partial clone cannot be judged: exit 2", () => {
+    const { g, base, head } = withSuite(null);
+    const shallow = `${g.dir}-shallow`;
+    try {
+      const c = spawnSync("git", ["clone", "-q", "--depth", "1", `file://${g.dir}`, shallow]);
+      expect(c.status).toBe(0);
+      const s1 = cli(["--base", "HEAD", "--head", "HEAD", "--repo", shallow]);
+      expect([s1.code, s1.report.findings[0].text]).toEqual([2, "shallow_checkout: fetch the full history (fetch-depth: 0)"]);
+      g.run("config", "core.repositoryformatversion", "1");
+      g.run("config", "extensions.partialClone", "origin");
+      const s2 = cli(["--base", base, "--head", head, "--repo", g.dir]);
+      expect([s2.code, s2.report.verdict, s2.report.findings[0].code]).toEqual([2, "FAIL", "bot_error"]);
+      expect(s2.report.findings[0].text).toMatch(/^partial_clone/);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(shallow, { recursive: true, force: true }); }
   });
   test("this repository, base = head: an empty diff is core, never a crash", () => {
     const { code, report } = cli(["--base", "HEAD", "--head", "HEAD", "--repo", REPO]);

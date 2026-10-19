@@ -5,7 +5,7 @@
  * (§6.2) reads this JSON and posts the PR comment later; this script posts nothing.
  *
  *   bun scripts/mini-apps-review.ts --base <rev> --head <rev> [--author <login>] [--repo <dir>]
- *       [--out <file.json>] [--summary <file.md>]
+ *       [--out <file.json>] [--summary <file.md>] [--conformance-dir <dir>]
  *
  * It reads `git diff --raw --no-renames base...head` (the --name-status list plus the file modes), the
  * files at the merge base and at head, and judges the pull request:
@@ -14,8 +14,10 @@
  *            everyone; v1's `restricted` is sandbox or admins, as v1Entry serves them). Anything else is
  *            `core`. So is a pull request that turns a needs-card op into a read or write.
  *   checks   paths, author, schema (the ONE validator, scripts/mini-apps-manifests.cjs, loaded only when
- *            its bytes and the schema's hash to mini-apps/manifests.pins.json), hashes, version_bump,
- *            secrets, data_context, approval_classes, conformance, lane_rules (§5).
+ *            its bytes and the schema's hash to mini-apps/manifests.pins.json), hashes, version_bump
+ *            (reported as N, not enforced, until S2 is settled), secrets, data_context, approval_classes,
+ *            conformance (P0-5's suite, run here with --base when scripts/mini-apps-conformance.ts is in
+ *            the checkout; a committed conformance.json is never trusted), lane_rules (§5).
  *   verdict  any M finding: FAIL. Else core, or a §5 rule that needs the human read: NEEDS_HUMAN. Else any
  *            S finding: PASS in sandbox, NEEDS_HUMAN in admins and everyone. Else PASS. N is a note.
  *
@@ -31,7 +33,8 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInThisContext } from "node:vm";
 
@@ -59,14 +62,19 @@ export const LANE_CEILING: Readonly<Record<string, string>> = Object.freeze({ sa
 export const HUMAN_CODES = Object.freeze(new Set(["core_path", "gate_changed", "manifest_deleted", "no_manifest", "needs_card_downgrade",
   "needs_card_replaced", "needs_card_review", "oauth_review", "context_ceiling_above_private", "events_review",
   "events_entering_everyone", "visibility_raise_multi_step", "visibility_raise_with_major", "author_not_owner"]));
-/** The files a manifest lane may hold (P0-1's closed mini-apps/ tree, plus P0-5's conformance.json). */
+/**
+ * The files a manifest lane may hold: P0-1's closed mini-apps/ tree. No conformance.json: anyone can hand-write
+ * one, so the bot generates it itself (release's owner read of P0-5, CLAIMS L14465) and a committed one fails.
+ */
 const LANE_FILES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  "mini-apps": ["manifest.json", "README.md", "conformance.json"], skills: ["SKILL.md"],
+  "mini-apps": ["manifest.json", "README.md"], skills: ["SKILL.md"],
 });
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REV = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._\/^~-]{0,199}$/;
 const MAX_PER_CODE = 10;
+/** The version-bump rule is reported, not enforced, in Phase 0 (release, L14465 (c); S2 open). */
+export const BUMP_SEVERITY: "M" | "S" | "N" = "N";
 
 export type Severity = "M" | "S" | "N";
 export type Finding = { code: string; severity: Severity; file?: string; line?: number; text: string };
@@ -79,6 +87,12 @@ export type Report = {
 export type Change = { status: string; path: string; oldMode: string; newMode: string };
 export type Bytes = Buffer | null;
 /** What a review reads. `review()` builds one from git; the tests build them by hand too. */
+/** One run of P0-5's suite on the lane's manifest (`runConformance`). */
+export type ConformanceRun =
+  | { status: "unavailable" }
+  | { status: "not_at_head" }
+  | { status: "refused"; exit: number | null; message: string }
+  | { status: "ran"; exit: number | null; bytes: Buffer };
 export type Source = {
   files: Change[];
   base: (path: string) => Bytes;
@@ -86,6 +100,8 @@ export type Source = {
   added: (path: string) => { line: number; text: string }[] | "binary";
   headSha: string;
   author: string;
+  /** Runs P0-5's suite on a manifest at head; absent means the suite is not available. */
+  conformance?: (manifestPath: string) => ConformanceRun;
 };
 
 /** The bot cannot judge: exit 2, fail closed. */
@@ -184,19 +200,53 @@ function blobAt(repo: string, rev: string, path: string): Bytes {
   if (!type || type.toString("utf8").trim() !== "blob") return null;
   return git(repo, ["cat-file", "blob", `${rev}:${path}`]);
 }
+export const CONFORMANCE_PATH = "scripts/mini-apps-conformance.ts";
+/**
+ * Run P0-5's suite (ov#422) on one manifest of the checkout, always with `--base`, and hand back its
+ * conformance.json bytes: `bun scripts/mini-apps-conformance.ts <manifest> --base <base> --out <tmp>` (what
+ * `bun run conformance --` runs, minus package.json's indirection). Only when the script is in the checkout,
+ * and only when the checkout's manifest bytes are head's, since the suite reads the working tree. In a
+ * manifest lane the pull request cannot have touched the script (it is a gate file), so this is the base's suite.
+ */
+export function runConformance(repo: string, manifestPath: string, base: string, headBytes: Bytes, saveDir?: string, timeoutMs = 120_000): ConformanceRun {
+  const script = join(repo, CONFORMANCE_PATH);
+  if (!existsSync(script)) return { status: "unavailable" };
+  let disk: Buffer | null = null;
+  try { disk = readFileSync(join(repo, manifestPath)); } catch { disk = null; }
+  if (!disk || !headBytes || Buffer.compare(disk, headBytes) !== 0) return { status: "not_at_head" };
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-conformance-"));
+  const out = join(dir, "conformance.json");
+  try {
+    const r = spawnSync(process.execPath, [script, manifestPath, "--base", base, "--out", out], { cwd: repo, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+    const said = `${String(r.stderr ?? "")}\n${String(r.stdout ?? "")}`.split("\n").map(l => l.trim()).filter(Boolean)[0] ?? "";
+    if (r.error) return { status: "refused", exit: r.status, message: r.error.message.slice(0, 200) };
+    if (!existsSync(out)) return { status: "refused", exit: r.status, message: said.slice(0, 200) || "it wrote no conformance.json" };
+    const bytes = readFileSync(out);
+    if (saveDir) {
+      mkdirSync(saveDir, { recursive: true });
+      writeFileSync(join(saveDir, `${manifestPath.split("/")[1]}.conformance.json`), bytes);
+    }
+    return { status: "ran", exit: r.status, bytes };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
 /** A Source from a real repository: everything base-side is read at the merge base, as the diff is. */
-export function gitSource(repo: string, base: string, head: string, author: string): Source {
+export function gitSource(repo: string, base: string, head: string, author: string, opts: { conformanceDir?: string } = {}): Source {
   for (const rev of [base, head]) if (!REV.test(rev)) throw new BotError(`bad_revision: ${JSON.stringify(rev).slice(0, 80)}`);
+  // P0-5's suite reads base blobs with git cat-file and no lazy fetch: full history, never shallow or blob-less.
+  if (git(repo, ["rev-parse", "--is-shallow-repository"])!.toString("utf8").trim() === "true") throw new BotError("shallow_checkout: fetch the full history (fetch-depth: 0)");
+  if (git(repo, ["config", "--get", "extensions.partialClone"], true)?.toString("utf8").trim()) throw new BotError("partial_clone: a blob-less or tree-less clone cannot be judged; clone with full history");
   const headSha = git(repo, ["rev-parse", "--verify", `${head}^{commit}`])!.toString("utf8").trim();
-  git(repo, ["rev-parse", "--verify", `${base}^{commit}`]);
+  const baseSha = git(repo, ["rev-parse", "--verify", `${base}^{commit}`])!.toString("utf8").trim();
   const mergeBase = git(repo, ["merge-base", base, head])!.toString("utf8").trim();
+  const headBlob = (path: string) => blobAt(repo, headSha, path);
   return {
     files: changedFiles(repo, base, head),
     base: path => blobAt(repo, mergeBase, path),
-    head: path => blobAt(repo, headSha, path),
+    head: headBlob,
     added: path => addedLines(repo, base, head, path),
     headSha,
     author,
+    conformance: path => runConformance(repo, path, baseSha, headBlob(path), opts.conformanceDir),
   };
 }
 
@@ -263,7 +313,10 @@ export function requiredBump(base: any, head: any, budgets: Validator["operation
     if (!b) { need("major", `operation ${name} added`); continue; }
     if (b.class !== op.class) need("major", `${name} class ${b.class} -> ${op.class}`);
     if (canon(b.target) !== canon(op.target)) need("major", `${name} target changed`);
-    if (canon(b.input) !== canon(op.input)) need("major", `${name} input schema changed`);
+    if (canon(b.input) !== canon(op.input)) {
+      const same = canon(withoutAnnotations(b.input)) === canon(withoutAnnotations(op.input));
+      need(same ? "patch" : "major", `${name} input schema ${same ? "annotations (description, title, examples) changed" : "changed"}`);
+    }
     const bb = budgets(b), hb = budgets(op);
     for (const k of ["maxRequestBytes", "maxResponseBytes", "timeoutMs"]) {
       if (Number(hb[k]) > Number(bb[k])) need("major", `${name} ${k} raised ${bb[k]} -> ${hb[k]}`);
@@ -314,6 +367,28 @@ export function requiredBump(base: any, head: any, budgets: Validator["operation
   if (!found.length) need("patch", "manifest changed");
   const level = found.reduce<Level>((top, [l]) => (rank(l) > rank(top) ? l : top), "none");
   return { level, reasons: found.filter(([l]) => l === level).map(([, why]) => why) };
+}
+/** Schema keywords that only annotate: an edit to these alone is a patch (release, L14465 (e)). */
+const ANNOTATIONS = new Set(["description", "title", "examples", "$comment"]);
+const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+const SCHEMA_ONE = new Set(["items", "additionalProperties", "not", "if", "then", "else", "contains", "propertyNames",
+  "unevaluatedItems", "unevaluatedProperties", "additionalItems"]);
+const SCHEMA_LIST = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+/**
+ * A JSON Schema with its annotation keywords dropped at schema positions only, so a property NAMED
+ * "description" (under properties) is kept: that is a real input change.
+ */
+export function withoutAnnotations(schema: unknown, depth = 0): unknown {
+  if (!isObject(schema) || depth > 64) return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (ANNOTATIONS.has(k)) continue;
+    if (SCHEMA_MAPS.has(k) && isObject(v)) out[k] = Object.fromEntries(Object.entries(v).map(([name, sub]) => [name, withoutAnnotations(sub, depth + 1)]));
+    else if (SCHEMA_ONE.has(k)) out[k] = Array.isArray(v) ? v.map(x => withoutAnnotations(x, depth + 1)) : withoutAnnotations(v, depth + 1);
+    else if (SCHEMA_LIST.has(k) && Array.isArray(v)) out[k] = v.map(x => withoutAnnotations(x, depth + 1));
+    else out[k] = v;
+  }
+  return out;
 }
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 /** The bump `from -> to` is (by the numeric triple), "down" for a decrease, or null if either is not semver. */
@@ -370,7 +445,9 @@ export function evaluate(src: Source, validator: Validator): Report {
     if (f.newMode === "120000" || f.newMode === "160000") add({ code: "path_symlink", severity: "M", file: f.path, text: `${f.newMode === "120000" ? "a symlink" : "a submodule"} is never a reviewed catalog file` });
     const m = LANE_PATH.exec(f.path);
     if (m && f.status !== "D" && !(LANE_FILES[m[1]] ?? []).includes(m[3])) {
-      add({ code: "path_unknown_file", severity: "M", file: f.path, text: `only ${LANE_FILES[m[1]].join(", ")} may sit in ${m[1]}/<id>/ (no code, no other files)` });
+      add({ code: "path_unknown_file", severity: "M", file: f.path, text: m[1] === "mini-apps" && m[3] === "conformance.json"
+        ? "a committed conformance.json is never trusted: the bot runs the suite itself; remove it"
+        : `only ${LANE_FILES[m[1]].join(", ")} may sit in ${m[1]}/<id>/ (no code, no other files)` });
     }
   }
   const manifestPath = id ? `mini-apps/${id}/manifest.json` : null;
@@ -431,15 +508,18 @@ export function evaluate(src: Source, validator: Validator): Report {
     }
   }
 
-  // version_bump: against the base manifest; a new manifest has no bump to check.
+  // version_bump: against the base manifest; a new manifest has no bump to check. Reported, not enforced:
+  // every bump finding is BUMP_SEVERITY (N) until the lead and release settle S2 (the installer's
+  // validateProjection matches the exact {id, version, operations, skills}; release prefers the version
+  // informational). Turning it on is that one constant.
   let bump: { level: Level; reasons: string[] } = { level: "none", reasons: [] };
   let actual: Level | "down" | null = null;
   if (laneId && head.ok && bm) {
     bump = requiredBump(bm, hm, validator.operationBudgets);
     actual = bumpOf(bm.version, hm.version);
-    if (actual === "down") add({ code: "version_not_monotonic", severity: "M", file: manifestPath!, text: `version ${bm.version} -> ${hm.version} goes down` });
+    if (actual === "down") add({ code: "version_not_monotonic", severity: BUMP_SEVERITY, file: manifestPath!, text: `version ${bm.version} -> ${hm.version} goes down` });
     else if (actual !== null && rank(actual) < rank(bump.level)) {
-      add({ code: actual === "none" ? "version_not_bumped" : "version_bump_too_small", severity: "M", file: manifestPath!,
+      add({ code: actual === "none" ? "version_not_bumped" : "version_bump_too_small", severity: BUMP_SEVERITY, file: manifestPath!,
         text: `version ${bm.version} -> ${hm.version} is ${actual}; the change needs ${bump.level}: ${bump.reasons.slice(0, 3).join("; ")}` });
     } else if (bump.level !== "none") add({ code: "version_bump", severity: "N", file: manifestPath!, text: `version ${bm.version} -> ${hm.version} (${actual}); the change needs ${bump.level}` });
   } else if (laneId && head.ok && !baseBytes) add({ code: "version_new_manifest", severity: "N", file: manifestPath!, text: "a new manifest: no bump to check" });
@@ -504,27 +584,12 @@ export function evaluate(src: Source, validator: Validator): Report {
     if (downgraded) lane = "core";
   }
 
-  // conformance: conformance.json next to the manifest, as P0-5's suite (ov#422) writes it:
-  // {manifest: <repo-relative manifest path>, sha256: <of the manifest's exact bytes>, results: [{check, pass, note}], passed}.
-  // A not_run row is pass: null and never a pass. Where the file lives (P0-1's closed tree refuses it today,
-  // or a PR artifact) is a lead decision; this reads it if present and says S when it is absent.
+  // conformance: the bot runs P0-5's suite itself (release, L14465 (a)); a committed conformance.json is never
+  // read (it fails path_unknown_file above). Its output: {manifest: <repo-relative path>, sha256: <of the
+  // manifest's exact bytes>, results: [{check, pass, note}], passed}; a not_run row is pass: null, never a pass.
   if (laneId && headBytes) {
-    const path = `mini-apps/${laneId}/conformance.json`;
-    const bytes = src.head(path);
-    if (!bytes) add({ code: "conformance_missing", severity: "S", file: path, text: "no conformance.json next to the manifest (bun run conformance, P0-5)" });
-    else {
-      const c = parseJson(bytes);
-      if (!c.ok || !isObject(c.value)) add({ code: "conformance_unreadable", severity: "M", file: path, text: "conformance.json is not a JSON object" });
-      else {
-        const results = Array.isArray(c.value.results) ? c.value.results.filter(isObject) : [];
-        if (c.value.passed !== true) add({ code: "conformance_failed", severity: "M", file: path, text: "conformance.json does not say passed: true" });
-        else if (results.some(r => r.pass === false)) add({ code: "conformance_inconsistent", severity: "M", file: path, text: "conformance.json says passed: true but holds a failed check" });
-        if (c.value.manifest !== manifestPath) add({ code: "conformance_wrong_manifest", severity: "M", file: path, text: `conformance.json names ${JSON.stringify(c.value.manifest)?.slice(0, 80)}, not ${manifestPath}` });
-        if (c.value.sha256 !== sha256(headBytes)) add({ code: "conformance_stale", severity: "M", file: path, text: "conformance.json's sha256 is not this manifest's exact bytes: it was run on another version" });
-        const notRun = results.filter(r => r.pass === null).map(r => String(r.check)).slice(0, 8);
-        if (notRun.length) add({ code: "conformance_not_run", severity: "N", file: path, text: `not run (never a pass): ${notRun.join(", ")}; the bot checks the version bump itself` });
-      }
-    }
+    const run: ConformanceRun = src.conformance ? src.conformance(manifestPath!) : { status: "unavailable" };
+    for (const f of judgeConformance(run, manifestPath!, headBytes)) add(f);
   }
 
   // lane_rules (§5): visibility one step at a time and never with a major bump; oauth and events read by a human.
@@ -546,10 +611,41 @@ export function evaluate(src: Source, validator: Validator): Report {
   };
 }
 
+/** Rows about the version bump: reported as notes while the bump rule is not enforced (BUMP_SEVERITY). */
+const BUMP_ROW = /^version\./;
+/** The findings one conformance run gives (pure; the tests feed it every shape). */
+export function judgeConformance(run: ConformanceRun, manifestPath: string, headBytes: Buffer): Finding[] {
+  const out: Finding[] = [];
+  const file = manifestPath;
+  if (run.status === "unavailable") return [{ code: "conformance_not_available", severity: "N", file, text: `${CONFORMANCE_PATH} is not in this checkout (P0-5, ov#422): conformance was not run` }];
+  if (run.status === "not_at_head") return [{ code: "conformance_not_run_here", severity: "N", file, text: "the checkout's manifest is not head's bytes, so the suite (which reads the working tree) was not run" }];
+  if (run.status === "refused") return [{ code: "conformance_refused", severity: "M", file, text: `the conformance suite refused (exit ${run.exit}): ${run.message}` }];
+  const c = parseJson(run.bytes);
+  if (!c.ok || !isObject(c.value)) return [{ code: "conformance_unreadable", severity: "M", file, text: "the suite's conformance.json is not a JSON object" }];
+  const v = c.value;
+  const rows = Array.isArray(v.results) ? v.results.filter(isObject) : [];
+  const name = (r: any) => String(r.check).slice(0, 60);
+  if (v.manifest !== manifestPath) out.push({ code: "conformance_wrong_manifest", severity: "M", file, text: `conformance.json names ${JSON.stringify(v.manifest)?.slice(0, 80)}, not ${manifestPath}` });
+  if (v.sha256 !== sha256(headBytes)) out.push({ code: "conformance_stale", severity: "M", file, text: "conformance.json's sha256 is not the manifest's exact bytes at head" });
+  if (typeof v.passed !== "boolean" || (v.passed === true) !== (run.exit === 0) || (v.passed === true && rows.some(r => r.pass === false))) {
+    out.push({ code: "conformance_inconsistent", severity: "M", file, text: `passed ${JSON.stringify(v.passed)} with exit ${run.exit}${rows.some(r => r.pass === false) ? " and a failed row" : ""}` });
+  }
+  const failed = rows.filter(r => r.pass === false && !BUMP_ROW.test(String(r.check)));
+  const bump = rows.filter(r => r.pass === false && BUMP_ROW.test(String(r.check)));
+  const notRun = rows.filter(r => r.pass === null);
+  if (failed.length) out.push({ code: "conformance_check_failed", severity: "M", file, text: `failed: ${failed.map(name).join(", ")}` });
+  if (bump.length) out.push({ code: "conformance_bump", severity: BUMP_SEVERITY, file, text: `the suite's ${bump.map(name).join(", ")} failed; the bump rule is reported, not enforced (S2)` });
+  if (notRun.length) out.push({ code: "conformance_not_run", severity: "N", file, text: `not run (never a pass): ${notRun.map(name).slice(0, 8).join(", ")}` });
+  if (v.passed !== true && !failed.length && !out.some(f => f.severity === "M")) {
+    out.push({ code: "conformance_incomplete", severity: "S", file, text: `passed: false with no failed check${notRun.length ? `: required checks did not run (${notRun.map(name).slice(0, 4).join(", ")})` : ""}` });
+  }
+  return out;
+}
+
 /** Review a real pull request. */
-export function review(opts: { repo: string; base: string; head: string; author?: string; validatorRoot?: string }): Report {
+export function review(opts: { repo: string; base: string; head: string; author?: string; validatorRoot?: string; conformanceDir?: string }): Report {
   const validator = loadValidator(opts.validatorRoot ?? REPO_ROOT);
-  return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? ""), validator);
+  return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? "", { conformanceDir: opts.conformanceDir }), validator);
 }
 
 /** The fail-closed report: the bot could not judge, so it never says PASS. */
@@ -576,13 +672,13 @@ export function summary(r: Report): string {
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
-  const known = new Set(["--base", "--head", "--author", "--repo", "--out", "--summary"]);
+  const known = new Set(["--base", "--head", "--author", "--repo", "--out", "--summary", "--conformance-dir"]);
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 2) {
     if (!known.has(argv[i]) || argv[i + 1] === undefined) throw new BotError(`usage: unknown or empty option ${JSON.stringify(argv[i]).slice(0, 40)}`);
     out[argv[i].slice(2)] = argv[i + 1];
   }
-  if (!out.base || !out.head) throw new BotError("usage: --base <rev> --head <rev> [--author <login>] [--repo <dir>] [--out <file>] [--summary <file>]");
+  if (!out.base || !out.head) throw new BotError("usage: --base <rev> --head <rev> [--author <login>] [--repo <dir>] [--out <file>] [--summary <file>] [--conformance-dir <dir>]");
   if (out.author && !LOGIN.test(out.author) && !/^[A-Za-z0-9-]{1,39}\[bot\]$/.test(out.author)) throw new BotError("usage: --author is not a GitHub login");
   return out;
 }
@@ -595,7 +691,7 @@ export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?
   let report: Report, code = 0;
   try {
     args = parseArgs(argv);
-    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, author: args.author ?? "", validatorRoot: io.validatorRoot });
+    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, author: args.author ?? "", validatorRoot: io.validatorRoot, conformanceDir: args["conformance-dir"] });
   } catch (e) {
     const message = e instanceof BotError ? e.message : `bot_crashed: ${(e as Error)?.stack ?? String(e)}`;
     report = errorReport(message);
