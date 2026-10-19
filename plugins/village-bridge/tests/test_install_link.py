@@ -231,6 +231,11 @@ class InstallLinkTest(unittest.TestCase):
         for name in ('rolodex', 'gold-stars'):  # Gold Stars comes with every agent: its words, never a link
             self.assertIn('never give an install link', skills[name]); self.assertIn("`instruction` words", skills[name])
         self.assertIn(copy.RULE, skills['mini-apps'])
+        # v2.1.5 is on every box (lead L13755, product L13758): no install word asks for /new any more.
+        for where, text in texts.items():
+            with self.subTest(no_new=where):
+                self.assertNotIn('/new', text)
+        self.assertIn("Once it's installed I'll pick it up on your next message.", copy.NAMED)
 
     def test_the_installable_list_is_generated_from_the_catalog(self):
         # The committed module and skill are exactly the generator's output from the manifests and product's words.

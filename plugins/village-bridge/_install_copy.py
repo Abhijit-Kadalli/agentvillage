@@ -7,13 +7,9 @@ the consent. Swap a string here and nowhere else: the `village` tool description
 the shipped skills read these (their tests pin the wiring, not the words). {name}, {description} and {link}
 are filled from the reviewed catalog (_install_catalog.py), never from a tool argument or an upstream reply.
 
-The "/new" clauses are product's to drop once the lead says v2.1.5 (ov#410: an installed mini-app reaches an open
-chat without /new) is on every box. Product's post-v2.1.5 tails, verbatim (CLAIMS L13415), to swap in then:
-    NAMED          ends "{link} Once it's installed I'll pick it up on your next message."
-    GENERAL_OUTRO  = "Tap the ones you want; I'll pick each one up on your next message."
-    MID_TASK       ends "One tap: {link} Then ask me again."
-    NOT_INSTALLED  loses "until the box runs v2.1.5, add: then send /new"
-Then rerun `python3 scripts/gen_install_catalog.py`.
+No "/new": v2.1.5 (ov#410: an installed mini-app reaches an open chat without /new) is on every box (lead L13755,
+product L13758), so NAMED, GENERAL_OUTRO, MID_TASK and NOT_INSTALLED carry product's post-v2.1.5 tails, verbatim
+(CLAIMS L13415), and NEVER drops its /new sentence. After any change, rerun `python3 scripts/gen_install_catalog.py`.
 """
 
 # The lead's install rule, whole (L13329). The shipped `mini-apps` skill carries it.
@@ -28,8 +24,7 @@ TOOL_RULE = ("If an app isn't installed, send the resident its install link (one
 
 # The refusal's `instruction` when the catalog has a link this resident can open (product's text, verbatim).
 NOT_INSTALLED = ("This app is not installed for this resident. Do not retry and do not send them to the team. Tell them "
-                 "you cannot install it yourself and give the one-tap link below; until the box runs v2.1.5, add: then "
-                 "send /new. Never show this code.")
+                 "you cannot install it yourself and give the one-tap link below. Never show this code.")
 
 # The refusal's `instruction` when no link can be given (an app outside the reviewed catalog, or one this resident
 # cannot open in Mini-apps). Product's text, verbatim (CLAIMS L13415).
@@ -60,13 +55,14 @@ STAFF_RULE = ("Rolodex comes with Gold Stars. Never give an install link for the
               "words, for example:")
 
 # 1. The resident names an app that isn't installed.
-NAMED = "I can't install apps myself, but you can in one tap: **{name}** — {description} {link} Then send /new and I'll know it."
+NAMED = ("I can't install apps myself, but you can in one tap: **{name}** — {description} {link} Once it's installed "
+         "I'll pick it up on your next message.")
 # 2. A general ask ("install mini-apps", "what apps can you use?"): the intro, one LINE per app (unranked), the outro.
 GENERAL_INTRO = "I can't install apps myself, but you can add any of these in one tap:"
 LINE = "**{name}** — {description} {link}"
-GENERAL_OUTRO = "Tap the ones you want; after each, send /new."
+GENERAL_OUTRO = "Tap the ones you want; I'll pick each one up on your next message."
 # 3. An action fails mid-task because its app isn't installed: name the app, never the error.
-MID_TASK = "That needs **{name}**, which isn't installed yet. One tap: {link} Then send /new and ask me again."
+MID_TASK = "That needs **{name}**, which isn't installed yet. One tap: {link} Then ask me again."
 
 # The shipped `mini-apps` skill (skills/mini-apps/SKILL.md, generated from these strings and the catalog by
 # scripts/gen_install_catalog.py). SKILL_DESCRIPTION is its skills-index line.
@@ -80,5 +76,4 @@ SKILL_OFFER = ("Offer only apps this resident can open in Mini-apps: the app ids
                "returned it; never build or change one. If the variable is unset or empty and the tool gave no link, say "
                "you can't add apps from here right now and carry on.")
 NEVER = ("Never send them to the team or the organisers to install an app. Never say you installed it. Never show the "
-         "error code, a tool name or any link other than the app's install link. Never promise it works in this chat "
-         "before they send /new.")
+         "error code, a tool name or any link other than the app's install link.")

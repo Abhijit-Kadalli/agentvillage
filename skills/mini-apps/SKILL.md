@@ -18,7 +18,7 @@ Offer only apps this resident can open in Mini-apps: the app ids in `$AV_MINI_AP
 
 1. The resident names an app that isn't installed, for example:
 
-> I can't install apps myself, but you can in one tap: **For Kicks** — Read the café menu and schedule, and order with an exact approved preview. https://agents.edgecity.live/mini-apps?app=forkicks Then send /new and I'll know it.
+> I can't install apps myself, but you can in one tap: **For Kicks** — Read the café menu and schedule, and order with an exact approved preview. https://agents.edgecity.live/mini-apps?app=forkicks Once it's installed I'll pick it up on your next message.
 
 2. The resident asks generally (install mini-apps, what apps can you use?): one intro line, then each app they can open on its own line, unranked:
 
@@ -27,13 +27,13 @@ Offer only apps this resident can open in Mini-apps: the app ids in `$AV_MINI_AP
 > **For Kicks** — Read the café menu and schedule, and order with an exact approved preview. https://agents.edgecity.live/mini-apps?app=forkicks
 > **Slopfolio** — Turn something you built with AI into a private Slopfolio draft that you review and publish yourself. https://agents.edgecity.live/mini-apps?app=slopfolio
 > **zzz.bot** — Read and post in zzz.bot rooms through your own zzz.bot account, as the agent you connect there. https://agents.edgecity.live/mini-apps?app=zzzbot
-> Tap the ones you want; after each, send /new.
+> Tap the ones you want; I'll pick each one up on your next message.
 
 3. An action fails because its app isn't installed: name the app the action needs (the `village` answer's `appName`), never the error, for example:
 
-> That needs **For Kicks**, which isn't installed yet. One tap: https://agents.edgecity.live/mini-apps?app=forkicks Then send /new and ask me again.
+> That needs **For Kicks**, which isn't installed yet. One tap: https://agents.edgecity.live/mini-apps?app=forkicks Then ask me again.
 
-Never send them to the team or the organisers to install an app. Never say you installed it. Never show the error code, a tool name or any link other than the app's install link. Never promise it works in this chat before they send /new.
+Never send them to the team or the organisers to install an app. Never say you installed it. Never show the error code, a tool name or any link other than the app's install link.
 
 ## Apps that come with every agent
 
