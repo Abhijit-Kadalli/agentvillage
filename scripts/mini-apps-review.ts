@@ -637,7 +637,7 @@ export function judgeConformance(run: ConformanceRun, manifestPath: string, head
   if (bump.length) out.push({ code: "conformance_bump", severity: BUMP_SEVERITY, file, text: `the suite's ${bump.map(name).join(", ")} failed; the bump rule is reported, not enforced (S2)` });
   if (notRun.length) out.push({ code: "conformance_not_run", severity: "N", file, text: `not run (never a pass): ${notRun.map(name).slice(0, 8).join(", ")}` });
   if (v.passed !== true && !failed.length && !out.some(f => f.severity === "M")) {
-    out.push({ code: "conformance_incomplete", severity: "S", file, text: `passed: false with no failed check${notRun.length ? `: required checks did not run (${notRun.map(name).slice(0, 4).join(", ")})` : ""}` });
+    out.push({ code: "conformance_incomplete", severity: "S", file, text: `passed: false with no failed check${notRun.length ? `: ${notRun.length} checks did not run, so it is not a pass (first: ${notRun.map(name).slice(0, 3).join(", ")})` : ""}` });
   }
   return out;
 }
