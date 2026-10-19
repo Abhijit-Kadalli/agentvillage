@@ -70,6 +70,26 @@ Use Dizko as the starting bundle for another **public read-only** service:
    separately. Request review before publication/deployment. No production
    changes follow merely from building the bundle.
 
+**The review bot (v0, advisory).** A pull request that touches `mini-apps/**`
+or `skills/**` runs `.github/workflows/mini-apps-review.yml`, the deterministic
+half of the PR-review bot. It runs `bun scripts/mini-apps-review.ts --base <sha>
+--head <sha> --author <login>` and writes a JSON verdict (`PASS`, `FAIL` or
+`NEEDS_HUMAN`) to the job summary and to an artifact. Run the same line
+locally before you open the pull request. A pull request that stays inside one
+app's `mini-apps/<id>/` and `skills/<id>/` is judged in that app's
+`visibility` lane. Anything else is core and goes to the human gate, including
+listing a new id in `catalog.json`. The bot checks:
+
+- the shared validator;
+- the skill hash and the version bump;
+- secret shapes in the added lines;
+- `data.context`;
+- the needs-card classes;
+- `conformance.json`;
+- the one-step visibility rule.
+
+In Phase 0 it is not a required check and it posts no comment.
+
 The manifest is the review artifact. The **CP catalog is authoritative** for
 what may be installed. The app server retrieves it and enforces the exact
 installed app/version/tool/schema before making a remote call. This is not
