@@ -123,7 +123,7 @@ export const ITEM_LINE_SOURCE = LINE.source;
 
 /**
  * The visibility a card line's mark names (the vocab's visibilityOfMark): a guess is Private whatever
- * its mark (`mark_of_a_guess`), and so is a line not known to be no guess (`guess` anything but false);
+ * its mark (the vocab's guess rule), and so is a line not known to be no guess (`guess` anything but false);
  * no mark, and anything that is not a mark, are Private (`fail_closed`). A mark is read without case,
  * as LINE reads it. Never wider than the vocab says; the only narrowing beyond it is the caller's
  * (parseContextLine counts a plain `(chat)` line, and a guess suffix on another marker, as not known
