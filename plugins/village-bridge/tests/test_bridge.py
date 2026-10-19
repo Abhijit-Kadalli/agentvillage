@@ -153,7 +153,7 @@ class BridgeTest(unittest.TestCase):
   # the cp has offered nothing, so no install link and nothing installable (test_install_link.py has the links).
   self.assertEqual(out['error'],'mini_app_not_installed');self.assertEqual(out['handling'],bridge.HANDLING)
   self.assertNotIn('installUrl',out);self.assertNotIn('appName',out);self.assertEqual(out['installable'],[])
-  self.assertIn(out['instruction'],(copy.NOT_OFFERED,copy.NOT_YET))
+  self.assertIn(out['instruction'],(copy.NOT_OFFERED,*(copy.NOT_YET.format(name=n) for n in ('Gold Stars','Dizko','For Kicks','zzz.bot','Slopfolio'))))
  def install_slopfolio(self):
   Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':[{'id':'slopfolio',**mini.SLOPFOLIO}]}))
   # The approval gate is on and verified unless a test says otherwise (slopfolio.prepare is a gated write).

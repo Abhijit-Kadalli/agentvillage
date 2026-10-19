@@ -7,8 +7,13 @@ the consent. Swap a string here and nowhere else: the `village` tool description
 the shipped skills read these (their tests pin the wiring, not the words). {name}, {description} and {link}
 are filled from the reviewed catalog (_install_catalog.py), never from a tool argument or an upstream reply.
 
-The "Then send /new" clauses are product's to drop once v2.1.5 (ov#410, an installed mini-app reaches an open
-chat without /new) is on every box.
+The "/new" clauses are product's to drop once the lead says v2.1.5 (ov#410: an installed mini-app reaches an open
+chat without /new) is on every box. Product's post-v2.1.5 tails, verbatim (CLAIMS L13415), to swap in then:
+    NAMED          ends "{link} Once it's installed I'll pick it up on your next message."
+    GENERAL_OUTRO  = "Tap the ones you want; I'll pick each one up on your next message."
+    MID_TASK       ends "One tap: {link} Then ask me again."
+    NOT_INSTALLED  loses "until the box runs v2.1.5, add: then send /new"
+Then rerun `python3 scripts/gen_install_catalog.py`.
 """
 
 # The lead's install rule, whole (L13329). The shipped `mini-apps` skill carries it.
@@ -27,14 +32,17 @@ NOT_INSTALLED = ("This app is not installed for this resident. Do not retry and 
                  "send /new. Never show this code.")
 
 # The refusal's `instruction` when no link can be given (an app outside the reviewed catalog, or one this resident
-# cannot open in Mini-apps). Release's placeholder until product supplies the words.
-NOT_OFFERED = ("This app is not available to this resident. Do not retry and do not send them to the team or the "
-               "organisers. Say you cannot use it here and carry on without it. Never show this code.")
+# cannot open in Mini-apps). Product's text, verbatim (CLAIMS L13415).
+NOT_OFFERED = ("This app isn't available to this resident here. Do not retry, do not send an install link, and do not "
+               "send them to the team or the organisers. Tell them: 'That app isn't available on your agent yet, so I'll "
+               "carry on without it.' Never show this code.")
 
 # The refusal's `instruction` when the app is installed but this agent's entry does not carry the operation yet.
-# Release's placeholder until product supplies the words.
-NOT_YET = ("This app is installed, but this action is not available on this agent yet. Do not retry now, do not send "
-           "an install link and do not send them to the team or the organisers. Never show this code.")
+# Product's text, verbatim (CLAIMS L13415); {name} is the catalog name. A minute, not /new: the gateway restarts
+# after each mini-apps reconcile.
+NOT_YET = ("This app is installed, but this action isn't available on this agent yet. Do not retry now, do not send an "
+           "install link, and do not send them to the team or the organisers. Tell them: '{name} is installed, but that "
+           "action isn't ready on your agent yet. Try again in a minute.' Never show this code.")
 
 # 1. The resident names an app that isn't installed.
 NAMED = "I can't install apps myself, but you can in one tap: **{name}** — {description} {link} Then send /new and I'll know it."

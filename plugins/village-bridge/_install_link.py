@@ -42,13 +42,15 @@ def not_installed(home: Path, app_id: object, handling: str) -> dict:
     offer = offered()
     match = next((app for app in offer if app["id"] == app_id), None) if isinstance(app_id, str) else None
     out = {"error": "mini_app_not_installed"}
-    if isinstance(app_id, str) and app_id in have:
+    installed_app = next((app for app in INSTALLABLE if app["id"] == app_id), None) if isinstance(app_id, str) and app_id in have else None
+    if installed_app is not None:
         # Installed, but this box's entry does not carry the operation yet (e.g. rolodex.person before the
         # control plane serves the person entry): an install link would only show "Installed".
-        out["instruction"] = copy.NOT_YET
+        out["instruction"] = copy.NOT_YET.format(name=installed_app["name"])
     elif match is not None:
         out.update(appName=match["name"], installUrl=match["installUrl"], instruction=copy.NOT_INSTALLED)
     else:
+        # Outside the reviewed catalog, not offered to this resident, or installed under a name the catalog lacks.
         out["instruction"] = copy.NOT_OFFERED
     out["installable"] = [app for app in offer if app["id"] not in have and app is not match]
     out["handling"] = handling

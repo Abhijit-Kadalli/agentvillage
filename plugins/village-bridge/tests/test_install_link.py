@@ -138,7 +138,8 @@ class InstallLinkTest(unittest.TestCase):
         self.offer(ALL)
         Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'gold-stars', **mini.GOLD_STARS_RESTORED}]}))
         out = self.call({'operation': 'rolodex.person', 'query': 'Lena'})
-        self.assertEqual(out['error'], 'mini_app_not_installed'); self.assertEqual(out['instruction'], copy.NOT_YET)
+        self.assertEqual(out['error'], 'mini_app_not_installed'); self.assertEqual(out['instruction'], copy.NOT_YET.format(name='Gold Stars'))
+        self.assertIn("'Gold Stars is installed, but that action isn't ready on your agent yet. Try again in a minute.'", out['instruction'])
         self.assertNotIn('installUrl', out)
         self.assertNotIn('gold-stars', [a['id'] for a in out['installable']])
         # Installed apps are never suggested again.
