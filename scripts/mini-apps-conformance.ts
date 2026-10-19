@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 /**
  * Mini-apps v2 conformance v0 (MINIAPPS-PLATFORM-v2-design.md section 5.3, section 8 Phase 0 item 5).
- * The developer runs it on their manifest; CI runs it again on the PR and reads conformance.json.
+ * The developer runs it on their manifest; CI runs it AGAIN on the PR itself and reads the conformance.json
+ * that its own run wrote. A conformance.json is self-attested (anyone can hand-write one): never trust a
+ * committed or uploaded copy; regenerate it.
  *
  *   bun run conformance -- mini-apps/<id>/manifest.json [--fixtures <dir>] [--out <path>] [--base <git ref>]
  *
@@ -15,7 +17,10 @@
  *         manifest.schema         strict JSON (no duplicate keys), then validateManifest(); id = its directory
  *         skills.sha256           every skills[].sha256 is sha256 of the file's bytes
  *         version.bump            with --base: the semver bump covers the diff class (major for a widened op,
- *                                 budget, auth/service, data, events or summary); without --base: not_run
+ *                                 budget, auth/service, data, events or summary; an input-schema edit of
+ *                                 annotations only is a patch); a downgrade (1.0.0 -> 1.0.0-rc.1 too) fails;
+ *                                 a base blob that is not in the local object store (a blob-less partial
+ *                                 clone) REFUSES; without --base: not_run
  * Item 4  approval.prepare_pair   static: every needs-card op names a prepare-class op of this manifest
  *         approval.summary_render not_run "renderer_absent": no section 3.2 renderer exists in Node or Python
  *                                 yet (Phase 1 item 6); v0 never renders a card itself
@@ -32,12 +37,18 @@
  * conformance.json (--out): {manifest, sha256, results: [{check, pass, note}], passed}. `manifest` is the
  * repo-relative path; `sha256` is over the manifest file's exact bytes. A not_run check has pass null.
  * `passed` is true only when every check that ran passed, and item 1 (pin, schema, skills) and item 5 ran.
- * Exit codes: 0 passed, 1 failed, 2 refused (bad arguments, a validator pin mismatch, an internal error).
+ * Output: the summary always goes to stdout. A file is written ONLY with --out, and never by default:
+ * --out may not be the manifest or anything under a mini-apps/ directory (compared by dev+ino, and
+ * case-folded on a case-insensitive filesystem), so CI writes it to a temp dir, e.g.
+ * --out "$RUNNER_TEMP/conformance.json". On exit 2 no file is left at --out: a file already there is
+ * removed first, and the new one is written to a temp file renamed into place only on exit 0 or 1.
+ * Exit codes: 0 passed, 1 failed, 2 refused (bad arguments, a validator pin mismatch, a base blob that is
+ * not local, an unsafe --out, an internal error).
  * No network, no credentials: it reads local files and, for --base only, the local git object store.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export type Result = { check: string; pass: boolean | null; note: string };
@@ -230,8 +241,12 @@ function utf8(bytes: Uint8Array): string | null {
 /**
  * Over every key and string of a fixture after decoding (so an escaped secret is still found). Kept
  * aligned with FORBIDDEN_TEXT in scripts/mini-apps-manifests.cjs, plus the response-side shapes: bearer
- * values, the bridge's own avb_ token, AWS secret assignments, Stripe/Google/npm keys. `password=` only
- * (not `password:` as the validator also refuses), since response prose says "Password: ...".
+ * values, the bridge's own avb_ token, AWS secret assignments, Stripe/Google/npm keys, URL userinfo with a
+ * password, Basic credentials. `password=` only (not `password:` as the validator also refuses), since
+ * response prose says "Password: ...". An assignment pattern runs on to the end of its value, so redact()
+ * removes the value too, not only the key. Every pattern is linear: no `\b` (or other zero-width start)
+ * in front of an unbounded run that can then fail, which is quadratic on "eyJ-eyJ-..." (the JWT shape
+ * uses a lookbehind instead; P0-1's pinned validator still has the `\b` form, a P0-1 fix).
  */
 export const SECRET_PATTERNS: readonly [string, RegExp][] = [
   ["sk_key", /\bsk-[A-Za-z0-9_-]{16,}/],
@@ -239,25 +254,35 @@ export const SECRET_PATTERNS: readonly [string, RegExp][] = [
   ["github_token", /\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{20,}/],
   ["github_pat", /\bgithub_pat_[A-Za-z0-9_]{20,}/],
   ["slack_token", /\bxox[abposr]-[A-Za-z0-9-]{10,}/],
-  ["jwt", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./],
+  ["jwt", /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./],
   ["pem_private_key", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/],
   ["aws_access_key_id", /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/],
-  ["aws_secret_assignment", /aws_?secret_?access_?key["']?\s*[=:]/i],
-  ["password_assignment", /\bpass(?:word|wd)\s*=/i],
+  ["aws_secret_assignment", /aws_?secret_?access_?key["']?\s*[=:]\s*\S*/i],
+  ["password_assignment", /\bpass(?:word|wd)\s*=\s*\S*/i],
   ["bearer_value", /\bbearer\s+[A-Za-z0-9._~+/-]{20,}/i],
   ["av_bridge_token", /\bavb_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/],
   ["google_api_key", /\bAIza[0-9A-Za-z_-]{35}/],
   ["npm_token", /\bnpm_[A-Za-z0-9]{36}/],
   ["token_assignment", /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key)["']?\s*[=:]\s*["']?[A-Za-z0-9._~+/-]{12,}/i],
+  // scheme://user:password@ (a URL without a password, or host:port, does not match).
+  ["url_userinfo", /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/?#@:]+:[^\s/?#@]+@/],
+  // A Basic credential after an Authorization header name ("Basic subscription" alone is prose; a value
+  // held by an "Authorization" key is caught by AUTH_HEADER_KEYS below).
+  ["basic_auth", /authorization["']?\s*[=:]\s*["']?basic\s+[A-Za-z0-9+/]{8,}={0,2}/i],
 ];
 /** A key that names a credential, holding a non-empty string, is a secret whatever the value looks like. */
 const SECRET_KEY_NAMES = new Set(["password", "passwd", "secret", "clientsecret", "apikey", "accesstoken", "refreshtoken",
-  "idtoken", "authtoken", "bearertoken", "sessiontoken", "privatekey", "awssecretaccesskey"]);
+  "idtoken", "authtoken", "bearertoken", "sessiontoken", "privatekey", "awssecretaccesskey",
+  "secretkey", "xapikey", "token", "apisecret", "setcookie", "cookie"]);
+/** An Authorization header held as a key: its value is a credential when it names an auth scheme. */
+const AUTH_HEADER_KEYS = new Set(["authorization", "proxyauthorization"]);
+const AUTH_SCHEME_VALUE = /^\s*(?:basic|bearer|digest|negotiate|token|apikey)\s+\S{8,}/i;
 export function secretPattern(text: string): string | null {
   for (const [name, pattern] of SECRET_PATTERNS) if (pattern.test(text)) return name;
   return null;
 }
-const secretKeyName = (key: string) => SECRET_KEY_NAMES.has(key.toLowerCase().replace(/[-_]/g, ""));
+const normalKey = (key: string) => key.toLowerCase().replace(/[-_]/g, "");
+const secretKeyName = (key: string) => SECRET_KEY_NAMES.has(normalKey(key));
 /** Findings as [pointer, pattern]; a pointer never carries a secret-shaped segment (see show()). */
 export function secretFindings(value: unknown, at: Pointer = [], out: [Pointer, string][] = []): [Pointer, string][] {
   if (typeof value === "string") {
@@ -271,6 +296,7 @@ export function secretFindings(value: unknown, at: Pointer = [], out: [Pointer, 
       if (hit) out.push([[...at, key], `${hit}, in a key`]);
       const v = value[key];
       if (secretKeyName(key) && typeof v === "string" && v.trim() !== "") out.push([[...at, key], "secret_key_name"]);
+      else if (AUTH_HEADER_KEYS.has(normalKey(key)) && typeof v === "string" && AUTH_SCHEME_VALUE.test(v)) out.push([[...at, key], "authorization_header"]);
       secretFindings(v, [...at, key], out);
     }
   }
@@ -285,12 +311,21 @@ export function show(at: Pointer): string {
     return "/" + (safe.length > 64 ? safe.slice(0, 61) + "..." : safe);
   }).join("");
 }
-/** The last net: no note ever carries a secret-shaped run, whatever produced it. */
-function redact(note: string): string {
+const MAX_NOTE_CHARS = 4000;
+/** C0 and C1 controls, DEL, and the two Unicode line separators (U+2028, U+2029). */
+const NOTE_CONTROL = new RegExp(`[\\x00-\\x1f\\x7f-\\x9f${String.fromCharCode(0x2028, 0x2029)}]`, "g");
+/**
+ * The last net over every note, whatever produced it: no secret-shaped run, no control or line-break
+ * character (a file name or manifest string cannot forge a summary line), and a bounded length.
+ */
+export function redact(note: string): string {
   let out = note;
   for (const [, pattern] of SECRET_PATTERNS) out = out.replace(new RegExp(pattern.source, pattern.flags + "g"), "<redacted>");
-  return out;
+  out = out.replace(NOTE_CONTROL, "?");
+  return out.length > MAX_NOTE_CHARS ? out.slice(0, MAX_NOTE_CHARS - 3) + "..." : out;
 }
+/** A fixture's <op>/<name> for a note: each segment as show() prints it (secret-shaped ones redacted). */
+const fixtureLabel = (...segments: string[]) => show(segments).slice(1);
 const listNote = (items: string[]) => items.length <= MAX_NOTE_ITEMS ? items.join("; ")
   : `${items.slice(0, MAX_NOTE_ITEMS).join("; ")}; and ${items.length - MAX_NOTE_ITEMS} more`;
 
@@ -337,7 +372,29 @@ export function bumpOf(from: string, to: string): Bump {
     if (y > x) return name;
     if (y < x) return "downgrade";
   }
-  return (a[4] || "") === (b[4] || "") ? "none" : "prerelease";
+  // Equal triples: semver precedence of the prerelease (1.0.0-rc.1 < 1.0.0, rc.2 < rc.10, 1 < alpha).
+  const order = prereleaseOrder(a[4], b[4]);
+  return order === 0 ? "none" : order > 0 ? "prerelease" : "downgrade";
+}
+/** Semver section 11: > 0 when `to` is the higher prerelease, < 0 when lower, 0 when of equal precedence. */
+function prereleaseOrder(from: string | undefined, to: string | undefined): number {
+  if (from === to) return 0;
+  if (from === undefined) return -1; // 1.0.0 -> 1.0.0-x goes down
+  if (to === undefined) return 1;    // 1.0.0-x -> 1.0.0 goes up
+  const x = from.split("."), y = to.split(".");
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const p = x[i], q = y[i];
+    if (p === q) continue;
+    const pn = /^[0-9]+$/.test(p), qn = /^[0-9]+$/.test(q);
+    if (pn && qn) {
+      const d = BigInt(q) - BigInt(p);
+      if (d !== 0n) return d > 0n ? 1 : -1;
+      continue;
+    }
+    if (pn !== qn) return pn ? 1 : -1; // a numeric identifier is lower than an alphanumeric one
+    return q > p ? 1 : -1;             // ASCII order
+  }
+  return y.length - x.length;
 }
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -345,6 +402,29 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
+/**
+ * An input schema without its annotation keywords (description, title, examples, $comment), removed only
+ * where a keyword stands: in a schema object, and in the subschemas of the keywords below. A property
+ * NAMED "description" (a key of `properties`) is kept, and so is anything under a keyword not listed, so
+ * an edit there still counts as a change.
+ */
+const ANNOTATIONS = new Set(["description", "title", "examples", "$comment"]);
+const SCHEMA_MAP = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
+const SCHEMA_ONE = new Set(["additionalProperties", "items", "additionalItems", "contains", "propertyNames", "not", "if", "then",
+  "else", "unevaluatedItems", "unevaluatedProperties"]);
+const SCHEMA_LIST = new Set(["allOf", "anyOf", "oneOf", "prefixItems"]);
+export function withoutAnnotations(schema: unknown): unknown {
+  if (!isObject(schema)) return schema;
+  const out: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(schema)) {
+    if (ANNOTATIONS.has(key)) continue;
+    if (SCHEMA_MAP.has(key) && isObject(v)) out[key] = Object.fromEntries(Object.entries(v).map(([name, sub]) => [name, withoutAnnotations(sub)]));
+    else if (SCHEMA_ONE.has(key)) out[key] = Array.isArray(v) ? v.map(withoutAnnotations) : withoutAnnotations(v);
+    else if (SCHEMA_LIST.has(key) && Array.isArray(v)) out[key] = v.map(withoutAnnotations);
+    else out[key] = v;
+  }
+  return out;
+}
 const CEILING_RANK: Record<string, number> = { private: 0, village: 1, public: 2 };
 type Level = "patch" | "major" | "refuse";
 /**
@@ -352,8 +432,9 @@ type Level = "patch" | "major" | "refuse";
  * added, or widened (class, target, input, a budget raised, framing, returns widened, any approval
  * change: the summary template), any service change (auth, kind, baseUrl), data added or widened,
  * events added or changed, legacy or owner changed. v0 cannot prove an input schema tighter, so any
- * input change is major. Everything else that changed (copy, permissions, skills, visibility, an op
- * removed, a budget lowered) needs at least a patch. A changed id is refused (ids are immutable).
+ * input change is major, except an edit of annotations only (description, title, examples, $comment:
+ * withoutAnnotations()), which is a patch. Everything else that changed (copy, permissions, skills,
+ * visibility, an op removed, a budget lowered) needs at least a patch. A changed id is refused.
  */
 export function requiredBump(from: any, to: any, budgets: Validator["operationBudgets"]): { level: Level | "none"; reasons: string[] } {
   const reasons: [Level, string][] = [];
@@ -385,7 +466,11 @@ function operationChanges(from: any[], to: any[], add: (l: Level, t: string) => 
     const old = a.get(name);
     if (!old) { add("major", `operation ${name} added`); continue; }
     if (old.class !== op.class) add("major", `${name} class ${old.class} -> ${op.class}`);
-    for (const field of ["target", "input"]) if (!same(old[field], op[field])) add("major", `${name} ${field} changed`);
+    if (!same(old.target, op.target)) add("major", `${name} target changed`);
+    if (!same(old.input, op.input)) {
+      if (same(withoutAnnotations(old.input), withoutAnnotations(op.input))) add("patch", `${name} input annotations changed`);
+      else add("major", `${name} input changed`);
+    }
     const x = budgets(old), y = budgets(op);
     for (const field of ["maxRequestBytes", "maxResponseBytes", "timeoutMs"] as const) {
       if (y[field] > x[field]) add("major", `${name} ${field} raised ${x[field]} -> ${y[field]}`);
@@ -437,7 +522,8 @@ function git(cwd: string, args: string[]): { status: number | null; stdout: Buff
   const r = spawnSync("git", args, {
     cwd, maxBuffer: 16 << 20,
     // Local reads only: never prompt, never fetch a missing object of a partial clone, take no lock.
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+    // A path is a literal path, never a glob pathspec.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" },
   });
   return { status: r.status, stdout: r.stdout ?? Buffer.alloc(0) };
 }
@@ -451,10 +537,20 @@ function resolveBase(root: string, manifestAbs: string, ref: string): Base {
   const commit = git(root, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]);
   if (commit.status !== 0) throw new Refusal("base_ref_unknown");
   const sha = commit.stdout.toString("utf8").trim();
-  const exists = git(root, ["cat-file", "-e", `${sha}:${rel}`]);
-  if (exists.status !== 0) return { ref, commit: sha, blob: null };
-  const blob = git(root, ["cat-file", "blob", `${sha}:${rel}`]);
-  if (blob.status !== 0) throw new Refusal("base_blob_unreadable");
+  // The base tree decides "absent" (a new app): `cat-file -e <sha>:<path>` cannot tell an absent path
+  // from a present blob that is not local (a --filter=blob:none clone with lazy fetch off), and that
+  // must never pass as a new manifest. An unreadable tree (a --filter=tree:0 clone) refuses too.
+  const listed = git(root, ["ls-tree", "-z", "--full-tree", sha, "--", rel]);
+  if (listed.status !== 0) throw new Refusal("base_tree_unreadable");
+  const entry = listed.stdout.toString("utf8");
+  if (entry === "") return { ref, commit: sha, blob: null };
+  const m = /^(100644|100755|120000|040000|160000) (blob|tree|commit) ([0-9a-f]{40}|[0-9a-f]{64})\t([^\0]*)\0$/.exec(entry);
+  if (!m || m[4] !== rel) throw new Refusal("base_tree_unreadable");
+  if (m[2] !== "blob" || m[1] === "120000") throw new Refusal("base_manifest_not_a_regular_file");
+  const oid = m[3];
+  if (git(root, ["cat-file", "-e", oid]).status !== 0) throw new Refusal("base_blob_missing");
+  const blob = git(root, ["cat-file", "blob", oid]);
+  if (blob.status !== 0) throw new Refusal("base_blob_missing");
   return { ref, commit: sha, blob: blob.stdout };
 }
 
@@ -549,7 +645,7 @@ function skillHashes(manifest: any, root: string): Result {
       if (relative(realpathSync(root), real).split(sep)[0] === "..") { problems.push(`${path} resolves outside the repo`); return; }
     } catch { problems.push(`${path} unresolvable`); return; }
     const actual = sha256(readFileSync(abs));
-    if (actual !== skill.sha256) problems.push(`${path} sha256 is ${actual}, the manifest says ${skill.sha256}`);
+    if (actual !== skill.sha256) problems.push(`${path} sha256 is ${actual}, the manifest says ${show([skill.sha256]).slice(1)}`);
     else ok.push(path);
   });
   return problems.length ? fail("skills.sha256", listNote(problems)) : pass("skills.sha256", `matches: ${ok.join(", ")}`);
@@ -607,18 +703,19 @@ function hygiene(dir: string | null, absentNote: string, manifest: any, validato
   else {
     for (const entry of readdirSync(dir).sort()) {
       const st = lstatSync(join(dir, entry));
-      if (st.isSymbolicLink()) { layout.push(`${entry}: symlink`); continue; }
-      if (!st.isDirectory()) { layout.push(`${entry}: a fixture sits in an <operation>/ directory`); continue; }
+      const shown = fixtureLabel(entry);
+      if (st.isSymbolicLink()) { layout.push(`${shown}: symlink`); continue; }
+      if (!st.isDirectory()) { layout.push(`${shown}: a fixture sits in an <operation>/ directory`); continue; }
       const op = ops.get(entry);
-      if (!op) { layout.push(`${entry}/: not an operation of this manifest`); continue; }
+      if (!op) { layout.push(`${shown}/: not an operation of this manifest`); continue; }
       const limit = validator.operationBudgets(op).maxResponseBytes;
       for (const name of readdirSync(join(dir, entry)).sort()) {
-        const label = `${entry}/${name}`;
+        const label = fixtureLabel(entry, name);
         const fst = lstatSync(join(dir, entry, name));
         if (fst.isSymbolicLink()) layout.push(`${label}: symlink`);
         else if (!fst.isFile()) layout.push(`${label}: not a regular file`);
         else if (!name.endsWith(".json")) layout.push(`${label}: not a .json file`);
-        else if (fst.size > limit) layout.push(`${label}: ${fst.size} bytes is over ${entry}'s maxResponseBytes ${limit} (the reader refuses it)`);
+        else if (fst.size > limit) layout.push(`${label}: ${fst.size} bytes is over ${shown}'s maxResponseBytes ${limit} (the reader refuses it)`);
         else if (files.length >= MAX_FIXTURE_FILES) { layout.push(`more than ${MAX_FIXTURE_FILES} fixture files`); break; }
         else files.push({ label, op: entry, error: name.startsWith("error"), bytes: readFileSync(join(dir, entry, name)) });
       }
@@ -697,26 +794,82 @@ export function summary(report: Report): string {
     ...report.results.map(r => `  ${label(r)} ${r.check}: ${r.note}`),
     `passed: ${report.passed}`].join("\n");
 }
+/** Written to a temp file beside `path` (wx: never through a planted file or symlink), then renamed. */
 function writeOut(path: string, report: Report) {
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(report, null, 2) + "\n", { flag: "wx" });
-  renameSync(tmp, path);
+  try { renameSync(tmp, path); } catch (e) { removeFile(tmp); throw e; }
 }
-/** The CLI: returns the exit code (0 passed, 1 failed, 2 refused). */
+/** Unlinks a file or symlink (never its target, never a directory); an absent path is fine. */
+function removeFile(path: string) {
+  try { unlinkSync(path); } catch (e: any) { if (e?.code !== "ENOENT") throw e; }
+}
+const inode = (path: string): string | null => {
+  try { const st = statSync(path); return `${st.dev}:${st.ino}`; } catch { return null; }
+};
+/**
+ * The --out file, resolved, or Refusal. It may not be the manifest (the same dev+ino: a hard link or a
+ * symlink to it too), a directory, or any path under the manifest's or the tool's mini-apps/ directory:
+ * every ancestor of its real parent is compared by dev+ino, and on a case-insensitive filesystem the
+ * case-folded real path is compared as well (macOS: mini-apps/acme/MANIFEST.json is manifest.json).
+ */
+export function outPath(outArg: string, manifestArg: string, cwd: string, toolRoot: string): string {
+  const out = resolve(cwd, outArg);
+  let parent: string;
+  try {
+    if (!statSync(dirname(out)).isDirectory()) throw new Error();
+    parent = realpathSync(dirname(out));
+  } catch { throw new Refusal("out_directory_missing"); }
+  const real = join(parent, basename(out));
+  const unsafe = "out_would_overwrite_the_manifest_or_mini-apps";
+  if (directory(out) || directory(real)) throw new Refusal("out_is_a_directory");
+  const manifest = resolve(cwd, manifestArg);
+  const manifestId = inode(manifest);
+  if (manifestId !== null && (inode(out) === manifestId || inode(real) === manifestId)) throw new Refusal(unsafe);
+  const guards = [join(toolRoot, "mini-apps")];
+  if (basename(dirname(dirname(manifest))) === "mini-apps") guards.push(dirname(dirname(manifest)));
+  for (const guarded of new Set(guards)) {
+    const guardedId = inode(guarded);
+    if (guardedId === null) continue;
+    for (let p = parent; ; p = dirname(p)) {
+      if (inode(p) === guardedId) throw new Refusal(unsafe);
+      if (dirname(p) === p) break;
+    }
+    if (caseInsensitive(guarded)) {
+      const fold = (path: string) => path.normalize("NFC").toLowerCase();
+      const g = fold(realpathSync(guarded)), o = fold(real);
+      if (o === g || o.startsWith(g + sep)) throw new Refusal(unsafe);
+    }
+  }
+  return out;
+}
+/** Whether the filesystem holding `dir` folds case: its own name upper-cased names the same directory. */
+function caseInsensitive(dir: string): boolean {
+  const name = basename(dir), flipped = name.toUpperCase() === name ? name.toLowerCase() : name.toUpperCase();
+  if (flipped === name) return false;
+  const id = inode(dir);
+  return id !== null && inode(join(dirname(dir), flipped)) === id;
+}
+/**
+ * The CLI: returns the exit code (0 passed, 1 failed, 2 refused). With --out, a file already at that
+ * path is removed before the run, and the new one is renamed into place only for exit 0 or 1, so a
+ * refusal never leaves a conformance.json behind (stale or new).
+ */
 export function main(argv: string[], { cwd = process.cwd(), toolRoot = resolve(import.meta.dir, ".."), print = console.log, warn = console.error } = {}): number {
+  let out: string | null = null;
   try {
     const opts = parseArgs(argv);
-    let out: string | null = null;
     if (opts.out !== undefined) {
-      out = resolve(cwd, opts.out);
-      if (!directory(dirname(out))) throw new Refusal("out_directory_missing");
-      if (out === resolve(cwd, opts.manifest) || directory(out)) throw new Refusal("out_would_overwrite_the_manifest_or_a_directory");
+      out = outPath(opts.out, opts.manifest, cwd, toolRoot);
+      removeFile(out);
     }
     const report = runConformance(opts, { cwd, toolRoot });
+    const text = summary(report);
     if (out) writeOut(out, report);
-    print(summary(report));
+    print(text);
     return report.passed ? 0 : 1;
   } catch (e) {
+    if (out) { try { removeFile(out); } catch { /* the refusal below stands */ } }
     if (e instanceof Refusal) { warn(`conformance: refused: ${e.reason}\n${USAGE}`); return 2; }
     warn(`conformance: refused: internal error ${e instanceof Error ? e.name : "unknown"}`);
     return 2;

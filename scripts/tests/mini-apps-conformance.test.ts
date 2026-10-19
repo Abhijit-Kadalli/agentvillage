@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   BRIDGE_ERROR_CODES, CHECKS, GENERIC_ERROR_CODES, REQUIRED, Refusal, SECRET_PATTERNS, allowedErrorCode, bumpOf, bumpVerdict,
-  loadValidator, main, parseArgs, passedOf, requiredBump, runConformance, secretFindings, show, strictJson,
-  type Report, type Result,
+  loadValidator, main, parseArgs, passedOf, redact, requiredBump, runConformance, secretFindings, secretPattern, show, strictJson,
+  summary, withoutAnnotations, type Report, type Result,
 } from "../mini-apps-conformance";
 
 // Mini-apps v2 Phase 0, P0-5 (MINIAPPS-PLATFORM-v2-design.md section 5.3 items 1, 4-template, 5): the
@@ -222,6 +222,47 @@ describe("item 1: the manifest, the validator pin, the skill hashes", () => {
     });
   });
 
+  test("skills: a skill directory symlinked outside the repo fails; one symlinked inside the repo is followed", () => {
+    // skills/acme -> a directory outside the catalog root that holds a correct SKILL.md (the guard at realpath).
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "conformance-outside-")));
+    try {
+      writeFileSync(join(outside, "SKILL.md"), SKILL);
+      withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+        rmSync(join(c.root, "skills", "acme"), { recursive: true });
+        symlinkSync(outside, join(c.root, "skills", "acme"));
+        const r = run(c);
+        expect(row(r, "skills.sha256")).toEqual({ check: "skills.sha256", pass: false, note: "skills/acme/SKILL.md resolves outside the repo" });
+        expect(r.passed).toBe(false);
+      });
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      renameSync(join(c.root, "skills", "acme"), join(c.root, "skills", "acme-real"));
+      symlinkSync(join(c.root, "skills", "acme-real"), join(c.root, "skills", "acme"));
+      expect(row(run(c), "skills.sha256")).toEqual({ check: "skills.sha256", pass: true, note: "matches: skills/acme/SKILL.md" });
+    });
+  });
+
+  test("the manifest: a symlinked manifest.json refuses; a manifest over 1 MB fails, one of exactly 1 MB is read", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const real = join(c.root, "real-manifest.json");
+      renameSync(c.path, real);
+      symlinkSync(real, c.path);
+      let reason = "";
+      try { run(c); } catch (e) { reason = e instanceof Refusal ? e.reason : "other"; }
+      expect(reason).toBe("manifest_not_a_regular_file");
+    });
+    const sized = (n: number) => { const head = "{\"pad\":\"", tail = "\"}"; return head + "a".repeat(n - head.length - tail.length) + tail; };
+    withCatalog({ text: sized((1 << 20) + 1), fixtures: GOOD_FIXTURES }, c => {
+      expect(statSync(c.path).size).toBe((1 << 20) + 1);
+      expect(row(run(c), "manifest.schema")).toEqual({ check: "manifest.schema", pass: false, note: "over 1048576 bytes" });
+    });
+    withCatalog({ text: sized(1 << 20), fixtures: GOOD_FIXTURES }, c => {
+      expect(statSync(c.path).size).toBe(1 << 20);
+      const r = row(run(c), "manifest.schema");
+      expect([r.pass, r.note.startsWith("over "), r.note.includes("/pad")]).toEqual([false, false, true]);
+    });
+  });
+
   /** A tool root holding copies of the script, the validator, the schema and the pins. */
   function toolCopy(): string {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "conformance-tool-")));
@@ -239,6 +280,9 @@ describe("item 1: the manifest, the validator pin, the skill hashes", () => {
       ["a malformed pins file", d => writeFileSync(join(d, "mini-apps/manifests.pins.json"), JSON.stringify({ sha256: { module: "x" } })), "pins_malformed"],
       ["no pins file", d => rmSync(join(d, "mini-apps/manifests.pins.json")), "pins_missing"],
       ["no validator", d => rmSync(join(d, "scripts/mini-apps-manifests.cjs")), "validator_missing"],
+      // A symlink to the very same (pinned) bytes is still refused: the tool reads only regular files.
+      ["a symlinked pins file", d => { renameSync(join(d, "mini-apps/manifests.pins.json"), join(d, "pins-real.json")); symlinkSync(join(d, "pins-real.json"), join(d, "mini-apps/manifests.pins.json")); }, "pins_not_a_regular_file"],
+      ["a symlinked validator", d => { renameSync(join(d, "scripts/mini-apps-manifests.cjs"), join(d, "validator-real.cjs")); symlinkSync(join(d, "validator-real.cjs"), join(d, "scripts/mini-apps-manifests.cjs")); }, "validator_not_a_regular_file"],
     ];
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
       for (const [why, plant, reason] of cases) {
@@ -290,6 +334,65 @@ describe("item 1: the version bump class", () => {
     expect(bumpOf("1.2.0", "1.1.9")).toBe("downgrade");
     expect(bumpOf("1.10.0", "1.9.0")).toBe("downgrade");
     expect(bumpOf("1.0", "1.0.1")).toBe("invalid");
+  });
+  test("prerelease precedence (semver section 11): a downgrade, 1.0.0 -> 1.0.0-rc.1 included, is \"downgrade\" and fails", () => {
+    const downs: [string, string][] = [["1.0.0", "1.0.0-rc.1"], ["1.0.0", "1.0.0-rc1"], ["1.0.0-rc.2", "1.0.0-rc.1"], ["1.0.0-rc.10", "1.0.0-rc.9"],
+      ["1.0.0-alpha.beta", "1.0.0-alpha.1"], ["1.0.0-alpha.1", "1.0.0-alpha"], ["1.0.0-beta", "1.0.0-alpha"], ["2.0.0", "2.0.0-rc.1"]];
+    for (const [from, to] of downs) {
+      expect([from, to, bumpOf(from, to)]).toEqual([from, to, "downgrade"]);
+      const v = verdict(edit(from, () => {}), edit(to, m => { m.description = "New copy."; }));
+      expect([from, to, v.pass, v.note.startsWith(`${from} -> ${to} is downgrade`)]).toEqual([from, to, false, true]);
+    }
+    const ups: [string, string][] = [["1.0.0-rc.1", "1.0.0"], ["1.0.0-rc.1", "1.0.0-rc.2"], ["1.0.0-rc.9", "1.0.0-rc.10"],
+      ["1.0.0-alpha", "1.0.0-alpha.1"], ["1.0.0-alpha.1", "1.0.0-alpha.beta"], ["1.0.0-alpha", "1.0.0-beta"]];
+    for (const [from, to] of ups) {
+      expect([from, to, bumpOf(from, to)]).toEqual([from, to, "prerelease"]);
+      expect([from, to, verdict(edit(from, () => {}), edit(to, m => { m.description = "New copy."; })).pass]).toEqual([from, to, true]);
+    }
+    expect(bumpOf("1.0.0-rc.1", "1.0.0-rc.1")).toBe("none");
+    expect(bumpOf("1.0.0", "1.0.1-rc.1")).toBe("patch");
+  });
+  test("an input-schema edit of annotations only (description, title, examples, $comment) is a patch; any other input edit is major", () => {
+    const annotations: [string, (m: any) => void][] = [
+      ["a property description", m => { m.operations[0].input.properties.q.description = "The query."; }],
+      ["a schema title", m => { m.operations[0].input.title = "Lookup"; }],
+      ["examples", m => { m.operations[0].input.properties.q.examples = ["latte"]; }],
+      ["a $comment", m => { m.operations[0].input.$comment = "from the upstream tool"; }],
+      ["nested, inside items / anyOf / $defs", m => {
+        m.operations[1].input = { type: "object", properties: { lines: { type: "array", items: { type: "string", description: "one line" } } },
+          anyOf: [{ required: ["lines"], title: "with lines" }], $defs: { x: { type: "string", description: "x" } } };
+      }],
+    ];
+    const base = () => {
+      const m = acme();
+      m.operations[1].input = { type: "object", properties: { lines: { type: "array", items: { type: "string" } } }, anyOf: [{ required: ["lines"] }], $defs: { x: { type: "string" } } };
+      return m;
+    };
+    const ed = (version: string, change: (m: any) => void) => { const m = base(); m.version = version; change(m); return m; };
+    for (const [why, change] of annotations) {
+      const patch = verdict(base(), ed("1.0.1", change));
+      expect([why, patch.pass, patch.note.includes("input annotations changed")]).toEqual([why, true, true]);
+      expect([why, requiredBump(base(), ed("1.0.1", change), budgets).level]).toEqual([why, "patch"]);
+      expect([why, verdict(base(), ed("1.0.0", change)).pass]).toEqual([why, false]);
+    }
+    const real: [string, (m: any) => void][] = [
+      ["a type changed", m => { m.operations[0].input.properties.q.type = "number"; }],
+      ["a property NAMED description added", m => { m.operations[0].input.properties.description = { type: "string" }; }],
+      ["a property removed", m => { m.operations[0].input.properties = {}; }],
+      ["a default added (not an annotation here)", m => { m.operations[0].input.properties.q.default = "x"; }],
+      ["required changed", m => { m.operations[0].input.required = ["q"]; }],
+      ["enum changed", m => { m.operations[0].input.properties.q.enum = ["a"]; }],
+      ["a description under a keyword v0 does not walk", m => { m.operations[0].input["x-upstream"] = { description: "y" }; }],
+      ["additionalProperties opened", m => { m.operations[0].input.additionalProperties = true; }],
+    ];
+    for (const [why, change] of real) {
+      const minor = verdict(acme(), edit("1.1.0", change));
+      expect([why, minor.pass, minor.note.includes("major: acme.lookup input changed")]).toEqual([why, false, true]);
+      expect([why, verdict(acme(), edit("2.0.0", change)).pass]).toEqual([why, true]);
+    }
+    // withoutAnnotations keeps a property named like a keyword, and drops only keyword positions.
+    expect(withoutAnnotations({ type: "object", description: "d", properties: { description: { type: "string", title: "t" } }, required: ["description"] }))
+      .toEqual({ type: "object", properties: { description: { type: "string" } }, required: ["description"] });
   });
   test("a widening needs a major bump: each one fails at minor and passes at major", () => {
     const widenings: [string, (m: any) => void][] = [
@@ -374,6 +477,11 @@ describe("item 1: the version bump class", () => {
       g(c.root, "commit", "-q", "-am", "v1");
       writeFileSync(c.path, JSON.stringify(acme()));
       expect(row(run(c, { base: "HEAD" }), "version.bump").pass).toBe(null);
+      // A v2 base the validator rejects: not_run, never a pass.
+      writeFileSync(c.path, JSON.stringify({ ...acme(), restricted: true }));
+      g(c.root, "commit", "-q", "-am", "an invalid v2 base");
+      writeFileSync(c.path, JSON.stringify(acme()));
+      expect(row(run(c, { base: "HEAD" }), "version.bump")).toEqual({ check: "version.bump", pass: null, note: "the manifest at HEAD is not a valid v2 manifest" });
       for (const bad of ["no-such-ref", "-p", "HEAD:mini-apps", "a b", "HEAD..HEAD~1", ""]) {
         let reason = "";
         try { run(c, { base: bad }); } catch (e) { reason = e instanceof Refusal ? e.reason : "other"; }
@@ -384,6 +492,70 @@ describe("item 1: the version bump class", () => {
       let reason = "";
       try { run(c, { base: "HEAD" }); } catch (e) { reason = (e as Refusal).reason; }
       expect(reason).toBe("base_needs_a_git_checkout");
+    });
+  });
+
+  test("--base: the manifest path reaches git as a literal path, never pathspec magic (a checkout dir named \":(glob)c\")", () => {
+    const top = realpathSync(mkdtempSync(join(tmpdir(), "conformance-magic-")));
+    try {
+      const root = join(top, ":(glob)c");
+      mkdirSync(join(root, "mini-apps", "acme"), { recursive: true });
+      mkdirSync(join(root, "skills", "acme"), { recursive: true });
+      writeFileSync(join(root, "skills", "acme", "SKILL.md"), SKILL);
+      writeFileSync(join(root, "mini-apps", "acme", "manifest.json"), JSON.stringify(acme(), null, 2) + "\n");
+      g(top, "init", "-q");
+      g(top, "add", "-A");
+      g(top, "commit", "-q", "-m", "a catalog in a subdirectory");
+      const r = runConformance({ manifest: join(root, "mini-apps", "acme", "manifest.json"), base: "HEAD" }, { cwd: root });
+      expect(row(r, "version.bump")).toEqual({ check: "version.bump", pass: true, note: "no change since the base; 1.0.0 -> 1.0.0 is none" });
+    } finally { rmSync(top, { recursive: true, force: true }); }
+  });
+
+  test("--base in a partial clone: a base blob that is not local REFUSES (exit 2), never \"a new manifest\", never a pass", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      g(c.root, "init", "-q");
+      g(c.root, "config", "uploadpack.allowFilter", "true");
+      g(c.root, "add", "skills");
+      g(c.root, "commit", "-q", "-m", "skill only");
+      g(c.root, "add", "mini-apps");
+      g(c.root, "commit", "-q", "-m", "acme 1.0.0");
+      // A budget widened at a minor bump: a full clone fails it.
+      writeFileSync(c.path, JSON.stringify(edit("1.1.0", m => { m.operations[0].maxResponseBytes = 8192; }), null, 2) + "\n");
+      g(c.root, "commit", "-q", "-am", "acme 1.1.0, widened");
+      const full = run(c, { base: "HEAD~1" });
+      expect([row(full, "version.bump").pass, row(full, "version.bump").note]).toEqual([false,
+        "needs a major bump, 1.0.0 -> 1.1.0 is minor (major: acme.lookup maxResponseBytes raised 4096 -> 8192)"]);
+      const clones = realpathSync(mkdtempSync(join(tmpdir(), "conformance-clone-")));
+      try {
+        for (const filter of ["blob:none", "tree:0"]) {
+          const dir = join(clones, filter.replace(":", "-"));
+          g(clones, "clone", "-q", `--filter=${filter}`, `file://${c.root}`, dir);
+          const manifest = join(dir, "mini-apps", "acme", "manifest.json");
+          // The precondition: the base's manifest blob really is not in the clone's object store.
+          const probe = spawnSync("git", ["cat-file", "-e", "HEAD~1:mini-apps/acme/manifest.json"], { cwd: dir, env: { ...gitEnv, GIT_NO_LAZY_FETCH: "1" } });
+          expect([filter, probe.status === 0]).toEqual([filter, false]);
+          const want = filter === "blob:none" ? "base_blob_missing" : "base_tree_unreadable";
+          let reason = "";
+          try { runConformance({ manifest, fixtures: c.fixtures, base: "HEAD~1" }, { cwd: dir }); } catch (e) { reason = e instanceof Refusal ? e.reason : `other ${e}`; }
+          expect([filter, reason]).toEqual([filter, want]);
+          // The CLI: exit 2, from a real process, and no conformance.json.
+          const out = join(clones, `${filter.replace(":", "-")}.json`);
+          const p = spawnSync("bun", [SCRIPT, manifest, "--fixtures", c.fixtures, "--base", "HEAD~1", "--out", out], { cwd: dir, encoding: "utf8" });
+          expect([filter, p.status, p.stderr.includes(`refused: ${want}`), existsSync(out)]).toEqual([filter, 2, true, false]);
+          // The clone fetched nothing on the tool's behalf: the blob is still not local.
+          expect([filter, spawnSync("git", ["cat-file", "-e", "HEAD~1:mini-apps/acme/manifest.json"], { cwd: dir, env: { ...gitEnv, GIT_NO_LAZY_FETCH: "1" } }).status === 0]).toEqual([filter, false]);
+        }
+        // A path is literal, never a pathspec glob: mini-apps/[a]cme/ is not mini-apps/acme/ (no refusal).
+        const globbed = join(clones, "blob-none", "mini-apps", "[a]cme");
+        mkdirSync(globbed);
+        copyFileSync(join(clones, "blob-none", "mini-apps", "acme", "manifest.json"), join(globbed, "manifest.json"));
+        const literal = runConformance({ manifest: join(globbed, "manifest.json"), fixtures: c.fixtures, base: "HEAD~1" }, { cwd: join(clones, "blob-none") });
+        expect(row(literal, "version.bump")).toEqual({ check: "version.bump", pass: null, note: "the manifest is not a valid v2 manifest" });
+        // In the blob-less clone a path that is absent at the base is still told apart: a new manifest.
+        const manifest = join(clones, "blob-none", "mini-apps", "acme", "manifest.json");
+        const fresh = runConformance({ manifest, fixtures: c.fixtures, base: "HEAD~2" }, { cwd: join(clones, "blob-none") });
+        expect(row(fresh, "version.bump").note).toStartWith("a new manifest: none at HEAD~2");
+      } finally { rmSync(clones, { recursive: true, force: true }); }
     });
   });
 });
@@ -506,11 +678,18 @@ describe("item 5: secret patterns", () => {
     ["google_api_key", "AI" + "za" + A(35)],
     ["npm_token", "np" + "m_" + A(36)],
     ["token_assignment", "access_" + "token=" + A(20)],
+    ["jwt", "id=" + "ey" + "JhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxIn0." + A(20)],
+    ["url_userinfo", "postgres://" + "app:" + "hunter2pass" + "@db.example:5432/x"],
+    ["url_userinfo", "see https://" + "u:" + "p" + "@host.example/"],
+    ["basic_auth", "Authorization: Bas" + "ic " + "dXNlcjpwYXNzd29yZA=="],
+    ["basic_auth", "{\"authorization\": \"bas" + "ic " + "dXNlcjpwYXNz\"}"],
   ];
   const negatives = ["risk-assessment-framework-2026", "desk-0123456789abcdefghij", "s" + "k-short", "gh" + "p_short",
     "ey" + "JhbGciOiJIUzI1NiJ9", "Password: reset it from your settings", "The password reset link expired.",
     "passport=12345", "AK" + "IAshort", "a".repeat(64), "123e4567-e89b-12d3-a456-426614174000", "the bearer of good news",
-    "task-0123456789abcdefghijklmn", "access token rotates daily", "avb_" + "short", "Total: 120 INR"];
+    "task-0123456789abcdefghijklmn", "access token rotates daily", "avb_" + "short", "Total: 120 INR",
+    "https://host.example:8443/path", "https://user@host.example/", "postgres://db.example:5432/app", "mailto:a@b.example",
+    "Basic subscription: 5 USD a month", "the basic idea is simple", "x" + "ey" + "JhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiIxIn0." + A(20)];
   test("each pattern finds its shape, the note names the pattern and the place, and never the secret", () => {
     for (const [name, secret] of positives) {
       const found = secretFindings({ deep: [{ text: secret }] });
@@ -529,7 +708,8 @@ describe("item 5: secret patterns", () => {
   });
   test("false positives: ordinary response text is not a secret", () => {
     for (const text of negatives) expect([text, secretFindings({ text })]).toEqual([text, []]);
-    expect(secretFindings({ password_hint: "x", password: "", token: "abc", passwordSet: true })).toEqual([]);
+    expect(secretFindings({ password_hint: "x", password: "", token: "", tokenCount: "3", passwordSet: true, nextToken: "page-2",
+      authorization: "required", "Proxy-Authorization": "not configured yet" })).toEqual([]);
     withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/prose.json": JSON.stringify({ lines: negatives }) } }, c => {
       expect(row(run(c), "hygiene.secrets").pass).toBe(true);
     });
@@ -552,6 +732,65 @@ describe("item 5: secret patterns", () => {
       expect(r.note).toContain("acme.lookup/named.json /auth/client_secret (secret_key_name)");
       expect(r.note).toContain("acme.lookup/raw.json raw text (sk_key)");
       expect(r.note.includes(key)).toBe(false);
+    });
+  });
+  test("a key that names a credential (review-b N3 names) or an Authorization header holding a scheme value is found", () => {
+    const named = ["secret_key", "secretKey", "x-api-key", "X-API-Key", "token", "api_secret", "set-cookie", "Set-Cookie", "cookie",
+      "password", "client_secret", "access_token"];
+    for (const key of named) expect([key, secretFindings({ h: { [key]: "plain-looking-value" } })]).toEqual([key, [[["h", key], "secret_key_name"]]]);
+    for (const key of ["Authorization", "authorization", "Proxy-Authorization"]) {
+      for (const value of ["Bas" + "ic dXNlcjpwYXNz", "Dig" + "est username=x", "Tok" + "en " + A(12)]) {
+        expect([key, value, secretFindings({ [key]: value }).map(([, p]) => p)]).toEqual([key, value, ["authorization_header"]]);
+      }
+    }
+  });
+  test("redaction removes an assignment's value too, not only its key (password=, aws_secret_access_key=)", () => {
+    const values = [["pass" + "word=" + "hunter2-value", "hunter2-value"], ["PASS" + "WORD = " + "s3cr3t!x", "s3cr3t!x"],
+      ["aws_secret_access_key" + " = " + A(40), A(40)], ["AWS_SECRET_ACCESS_KEY" + ":" + A(40), A(40)],
+      ["db postgres://" + "app:" + "hunter2pass" + "@db.example/x", "hunter2pass"], ["Authorization: Bas" + "ic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="]];
+    for (const [text, value] of values) {
+      const r = redact(`before ${text} after`);
+      expect([text, r.includes(value), r.includes("<redacted>"), r.startsWith("before "), r.endsWith(" after")]).toEqual([text, false, true, true, true]);
+    }
+  });
+  test("ReDoS: every pattern is linear; 1 MB adversarial strings (eyJ-eyJ-... and one per shape) each scan in well under 2 s", () => {
+    const MB = 1 << 20;
+    const fill = (unit: string, prefix = "") => (prefix + unit.repeat(Math.ceil(MB / unit.length))).slice(0, MB);
+    const cases: [string, string][] = [
+      ["eyJ-", fill("ey" + "J-")], ["eyJ.", fill("ey" + "J.")], ["eyJ then a run", fill("a", "ey" + "J")], ["eyJ, a dot, a run", fill("a", "ey" + "Jaaaaaaaaa.")],
+      ["a.a.", fill("a.")], ["x://u: then a run", fill("p", "x://u:")], ["x://x://", fill("x://")], ["u:u:", fill("u:", "x://")],
+      ["authorization: ", fill("authorization: ")], ["authorization:basic ", fill("authorization:bas" + "ic ")],
+      ["-----BEGIN A A", fill("A ", "-----BEGIN ")], ["password ", fill("pass" + "word ")], ["bearer ", fill("bear" + "er ")],
+      ["api_key ", fill("api_" + "key ")], ["AKIA", fill("AK" + "IA")],
+    ];
+    for (const [name, text] of cases) {
+      expect(text.length).toBe(MB);
+      const t = performance.now();
+      secretPattern(text);
+      redact(text);
+      secretFindings({ [text.slice(0, 64)]: text });
+      const ms = performance.now() - t;
+      expect([name, ms < 2000]).toEqual([name, true]);
+    }
+  }, 60000);
+  test("a fixture file name cannot forge a summary line, and notes carry no control character", () => {
+    const spoof = "x\n  PASS    hygiene.secrets: spoofed\n.json";
+    withCatalog({ fixtures: { ...GOOD_FIXTURES, [`acme.lookup/${spoof}`]: JSON.stringify({ t: "s" + "k-" + A(24) }) } }, c => {
+      const r = run(c);
+      expect(row(r, "hygiene.secrets").pass).toBe(false);
+      const control = new RegExp(`[${BS}x00-${BS}x1f${BS}x7f-${BS}x9f${String.fromCharCode(0x2028, 0x2029)}]`);
+      for (const x of r.results) expect([x.check, control.test(x.note)]).toEqual([x.check, false]);
+      const lines = summary(r).split("\n");
+      expect(lines.filter(l => l.includes("spoofed")).every(l => l.startsWith("  FAIL    hygiene.secrets: "))).toBe(true);
+      expect(lines.length).toBe(CHECKS.length + 2);
+    });
+    expect(redact(["a", "b", "c", "d"].join("\n").replace("b\nc", "b" + String.fromCharCode(0x2028) + "c").replace("c\nd", "c" + String.fromCharCode(7) + "d"))).toBe("a?b?c?d");
+    expect(redact("x".repeat(5000)).length).toBe(4000);
+    // A long name is shown cut to 64 characters, as every pointer segment is.
+    const long = "n".repeat(100) + ".txt";
+    withCatalog({ fixtures: { ...GOOD_FIXTURES, [`acme.lookup/${long}`]: "{}" } }, c => {
+      const note = row(run(c), "hygiene.fixtures").note;
+      expect([note.includes(long), note.includes(`acme.lookup/${"n".repeat(61)}...: not a .json file`)]).toEqual([false, true]);
     });
   });
   test("the pattern list covers the brief's shapes and the validator's own", () => {
@@ -660,6 +899,110 @@ describe("the CLI", () => {
       }
       expect(readFileSync(c.path, "utf8")).toBe(JSON.stringify(acme(), null, 2) + "\n");
     });
+  });
+  const quiet = { print: () => {}, warn: () => {} };
+  test("--out: exit 2 leaves no conformance.json (a stale one is removed); exit 0 and 1 replace it; no --out writes no file", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const out = join(c.root, "conformance.json");
+      const refusals: [string, string[]][] = [
+        ["an unknown base ref", ["--base", "no-such-ref"]],
+        ["a fixtures path that is not a directory", ["--fixtures", join(c.root, "nope")]],
+      ];
+      for (const [why, extra] of refusals) {
+        writeFileSync(out, "{\"passed\": true}\n");
+        expect([why, main([c.path, "--out", out, ...extra], { cwd: c.root, ...quiet }), existsSync(out)]).toEqual([why, 2, false]);
+      }
+      // A pin mismatch (the tool refuses before reading anything) removes it too.
+      writeFileSync(out, "{\"passed\": true}\n");
+      const tool = realpathSync(mkdtempSync(join(tmpdir(), "conformance-tool-")));
+      try {
+        mkdirSync(join(tool, "mini-apps"));
+        writeFileSync(join(tool, "mini-apps", "manifests.pins.json"), "{}");
+        expect([main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, toolRoot: tool, ...quiet }), existsSync(out)]).toEqual([2, false]);
+      } finally { rmSync(tool, { recursive: true, force: true }); }
+      // Exit 1 and exit 0 replace a stale file with this run's report.
+      writeFileSync(out, "{\"passed\": true}\n");
+      expect(main([c.path, "--out", out], { cwd: c.root, ...quiet })).toBe(1);
+      expect(JSON.parse(readFileSync(out, "utf8")).passed).toBe(false);
+      expect(main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, ...quiet })).toBe(0);
+      expect(JSON.parse(readFileSync(out, "utf8")).passed).toBe(true);
+      // No temp file is left beside it.
+      expect(readdirSync(c.root).filter(n => n.includes(".tmp-"))).toEqual([]);
+      // Without --out nothing is written: not next to the manifest, not anywhere in the catalog.
+      rmSync(out);
+      const before = readdirSync(c.root, { recursive: true }).map(String).sort();
+      expect(main([c.path, "--fixtures", c.fixtures], { cwd: c.root, ...quiet })).toBe(0);
+      expect(readdirSync(c.root, { recursive: true }).map(String).sort()).toEqual(before);
+      expect(readdirSync(join(c.root, "mini-apps", "acme"))).toEqual(["manifest.json"]);
+    });
+  });
+  test("an internal error (not a Refusal) exits 2 with only the error's name, and leaves no conformance.json", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const out = join(c.root, "conformance.json");
+      const warned: string[] = [];
+      const code = main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, print: () => { throw new TypeError("boom s" + "k-" + "A1b2".repeat(6)); }, warn: s => warned.push(s) });
+      expect([code, warned, existsSync(out)]).toEqual([2, ["conformance: refused: internal error TypeError"], false]);
+    });
+  });
+  test("the temp file is opened exclusively (wx): a file or symlink planted at its name is never written through", () => {
+    withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const out = join(c.root, "conformance.json");
+      const target = join(c.root, "victim.txt");
+      writeFileSync(target, "untouched\n");
+      symlinkSync(target, `${out}.tmp-${process.pid}`);
+      const warned: string[] = [];
+      expect(main([c.path, "--fixtures", c.fixtures, "--out", out], { cwd: c.root, print: () => {}, warn: s => warned.push(s) })).toBe(2);
+      expect([warned.join(""), readFileSync(target, "utf8"), existsSync(out)]).toEqual(["conformance: refused: internal error Error", "untouched\n", false]);
+      expect(lstatSync(`${out}.tmp-${process.pid}`).isSymbolicLink()).toBe(true);
+    });
+  });
+  test("--out may not be the manifest (same dev+ino: a hard link, a symlink) or under mini-apps/ (any case on a case-insensitive fs)", () => {
+    // The tool's own mini-apps/ is a throwaway copy: a mutant that drops a guard can never touch the repo.
+    const tool = realpathSync(mkdtempSync(join(tmpdir(), "conformance-tool-")));
+    for (const rel of ["scripts/mini-apps-manifests.cjs", "mini-apps/manifest.v2.schema.json", "mini-apps/manifests.pins.json"]) {
+      mkdirSync(dirname(join(tool, rel)), { recursive: true });
+      copyFileSync(join(REPO, rel), join(tool, rel));
+    }
+    mkdirSync(join(tool, "mini-apps", "gold-stars"));
+    try { withCatalog({ fixtures: GOOD_FIXTURES }, c => {
+      const bytes = readFileSync(c.path);
+      const pins = readFileSync(join(tool, "mini-apps", "manifests.pins.json"));
+      linkSync(c.path, join(c.root, "hard-link.json"));
+      symlinkSync(c.path, join(c.root, "sym-link.json"));
+      mkdirSync(join(c.root, "elsewhere"));
+      symlinkSync(join(c.root, "mini-apps"), join(c.root, "elsewhere", "apps"));
+      const unsafe: string[] = [
+        c.path, "mini-apps/acme/manifest.json", "./mini-apps/../mini-apps/acme/manifest.json", "hard-link.json", "sym-link.json",
+        "mini-apps/acme/other.json", "mini-apps/conformance.json", "mini-apps/acme/fixtures.json", "elsewhere/apps/acme/x.json",
+        join(tool, "mini-apps", "manifests.pins.json"), join(tool, "mini-apps", "gold-stars", "conformance.json"),
+      ];
+      for (const arg of unsafe) {
+        const warned: string[] = [];
+        expect([arg, main([c.path, "--fixtures", c.fixtures, "--out", arg], { cwd: c.root, toolRoot: tool, print: () => {}, warn: s => warned.push(s) }),
+          warned.join("").includes("refused: out_would_overwrite_the_manifest_or_mini-apps")]).toEqual([arg, 2, true]);
+      }
+      // Case variants: on a case-insensitive filesystem (macOS) they name the manifest or mini-apps/ and
+      // refuse as unsafe; on a case-sensitive one the directory does not exist. Either way: exit 2.
+      const folds = existsSync(join(c.root, "MINI-APPS"));
+      for (const arg of ["mini-apps/acme/MANIFEST.json", "MINI-APPS/acme/manifest.json", "Mini-Apps/ACME/x.json"]) {
+        const warned: string[] = [];
+        expect([arg, main([c.path, "--fixtures", c.fixtures, "--out", arg], { cwd: c.root, toolRoot: tool, print: () => {}, warn: s => warned.push(s) })]).toEqual([arg, 2]);
+        const reason = folds || arg.startsWith("mini-apps/") ? "out_would_overwrite_the_manifest_or_mini-apps" : "out_directory_missing";
+        expect([arg, warned.join("").includes(`refused: ${reason}`)]).toEqual([arg, true]);
+      }
+      // Nothing it guards was touched, and none of the refused paths was removed or created.
+      expect(readFileSync(c.path).equals(bytes)).toBe(true);
+      expect(readFileSync(join(tool, "mini-apps", "manifests.pins.json")).equals(pins)).toBe(true);
+      expect(readdirSync(join(c.root, "mini-apps", "acme"))).toEqual(["manifest.json"]);
+      expect([existsSync(join(c.root, "hard-link.json")), lstatSync(join(c.root, "sym-link.json")).isSymbolicLink()]).toEqual([true, true]);
+      expect(readdirSync(join(tool, "mini-apps", "gold-stars"))).toEqual([]);
+      // A directory refuses; a symlinked parent directory outside mini-apps/ (e.g. macOS /tmp) is followed.
+      expect(main([c.path, "--out", "elsewhere"], { cwd: c.root, ...quiet })).toBe(2);
+      mkdirSync(join(c.root, "real-out"));
+      symlinkSync(join(c.root, "real-out"), join(c.root, "out-link"));
+      expect(main([c.path, "--fixtures", c.fixtures, "--out", "out-link/c.json"], { cwd: c.root, toolRoot: tool, ...quiet })).toBe(0);
+      expect(JSON.parse(readFileSync(join(c.root, "real-out", "c.json"), "utf8")).passed).toBe(true);
+    }); } finally { rmSync(tool, { recursive: true, force: true }); }
   });
   test("bun run conformance -- <manifest> from the repo root (the package.json script)", () => {
     const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));

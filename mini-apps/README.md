@@ -68,12 +68,19 @@ Use Dizko as the starting bundle for another **public read-only** service:
    canonical JSON (`JSON.stringify(value, null, 2)` plus a newline, so no
    duplicate keys).
    `bun run conformance -- mini-apps/<app-id>/manifest.json --fixtures <dir>
-   [--base origin/main] [--out conformance.json]` (run from the repo root) is
-   conformance v0: the manifest, skill hashes and version bump, the needs-card
-   to prepare pairing, and the hygiene of your service's response fixtures
-   (`<dir>/<operation>/<name>.json`; `error*.json` files are `{code, detail}`
-   error bodies). Exit 0 passed, 1 failed, 2 refused. Live-service checks come
-   in Phase 1 and show as not run. The header of
+   [--base origin/main] [--out "$TMPDIR/conformance.json"]` (run from the repo
+   root) is conformance v0: the manifest, skill hashes and version bump, the
+   needs-card to prepare pairing, and the hygiene of your service's response
+   fixtures (`<dir>/<operation>/<name>.json`; `error*.json` files are
+   `{code, detail}` error bodies). Exit 0 passed, 1 failed, 2 refused. Live-
+   service checks come in Phase 1 and show as not run. The summary always goes
+   to stdout; conformance.json is written only with `--out`, never by default,
+   and `--out` is refused for the manifest or any path under `mini-apps/`, so
+   point it at a temp dir (CI: `--out "$RUNNER_TEMP/conformance.json"`). On a
+   refusal no conformance.json is left at `--out`. The file is self-attested
+   (anyone can write one by hand): never commit it, and CI must regenerate it
+   from the PR rather than trust a copy. With `--base`, a base manifest blob
+   missing from a partial clone refuses; use a full clone. The header of
    `scripts/mini-apps-conformance.ts` documents every check.
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
