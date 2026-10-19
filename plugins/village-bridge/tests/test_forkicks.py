@@ -99,6 +99,35 @@ class ForKicksTest(unittest.TestCase):
                 self.assertFalse(mini.installed(Path(self.tmp.name), 'forkicks', op))
         self.transport.assert_not_called()
 
+    def test_prepare_top_level_date_is_actionable_and_nested_date_passes(self):
+        self.enable()
+        result, order = self.preview()
+        self.transport.return_value = result
+        response = self.call({'operation': 'forkicks.order.prepare', **order, 'date': '2026-10-19'})
+        self.assertEqual(response['error'], 'invalid_arguments')
+        self.assertEqual(response['fields'], ['date'])
+        self.assertIn('fulfilment.date', response['instruction'])
+        self.assertIn('No request was sent', response['instruction'])
+        self.transport.assert_not_called()
+        self.assertEqual(self.call({'operation': 'forkicks.order.prepare', **order})['data'], result)
+        self.transport.assert_called_once_with(self.config, {'operation': 'forkicks.order.prepare', **order})
+        self.assertIn('fulfilment.date', bridge.SCHEMA['parameters']['properties']['date']['description'])
+
+    def test_prepare_argument_errors_name_only_safe_fields_not_values(self):
+        self.enable()
+        _, order = self.preview()
+        for field, value in [('items', 'private-value'), ('fulfilment', 17), ('paymentMethod', 'private-value'), ('note', 'x' * 141)]:
+            response = self.call({'operation': 'forkicks.order.prepare', **{**order, field: value}})
+            self.assertEqual(response['error'], 'invalid_arguments')
+            self.assertEqual(response['fields'], [field])
+            self.assertNotIn('private-value', json.dumps(response))
+        response = self.call({'operation': 'forkicks.order.prepare', **order, 'secret-as-unknown-key': 'private-value'})
+        self.assertEqual(response['error'], 'invalid_arguments')
+        self.assertEqual(response['fields'], ['(unknown field)'])
+        self.assertNotIn('secret-as-unknown-key', json.dumps(response))
+        self.assertNotIn('private-value', json.dumps(response))
+        self.transport.assert_not_called()
+
     def test_free_text_note_is_forwarded_verbatim_and_oversized_notes_are_refused(self):
         self.enable()
         result, order = self.preview()
