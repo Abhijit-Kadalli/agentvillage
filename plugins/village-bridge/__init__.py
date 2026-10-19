@@ -14,7 +14,7 @@ import os
 import re
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, timezone
 from pathlib import Path
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.error import HTTPError
@@ -223,6 +223,34 @@ class _InvalidArguments(ValueError):
             "Nothing was sent. " + ("Correct: " + ", ".join(fields) + ". " if fields else "") + op + " accepts only: "
             + accepted + ". Fix the arguments and call again; this is not an outage, so do not report the service as unavailable."
             if accepted else "Nothing was sent. Use one operation from the village tool's list with only its arguments, then call again.")
+
+
+def _iso_date(value):
+    """A YYYY-MM-DD string that is a real calendar day (ov#412 owner read N1): the app's z.iso.date() refuses
+    2026-02-30, so the box does too, before anything is sent. The regex stays: fromisoformat alone would also
+    take 20260219 or 2026-W08-4 on Python 3.11+."""
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value, flags=re.ASCII):
+        return False
+    try:
+        _date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+# ECMAScript String.prototype.trim's set (WhiteSpace + LineTerminator), which zod's .trim() uses. Python's
+# str.strip() differs (it strips U+001C-U+001F and U+0085, keeps U+FEFF).
+_JS_TRIM = ("\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+            "\u2028\u2029\u202f\u205f\u3000\ufeff")
+
+
+def _zod_length(text):
+    """The note's length as the app measures it (ov#412 owner read N2): z.string().trim().max(140) in the app's
+    zod 4.6.5 trims with String.prototype.trim, then counts Unicode code points of the UTF-16 string it received,
+    not UTF-16 units (zod v4/core/checks.js $ZodCheckMaxLength: "Strings are measured in Unicode code points, not
+    UTF-16 units"; a surrogate pair counts 1, a lone surrogate 1). The UTF-16 round trip pairs any surrogates the
+    way the JSON sent to the app does."""
+    return len(text.strip(_JS_TRIM).encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass"))
 
 
 def _uuid(value, op):
@@ -982,7 +1010,7 @@ def handle(args, **kwargs):
                 # as fulfilment.date (app ForKicksOrderInput: strict, z.iso.date()). Move it there when fulfilment
                 # has none; an equal copy is dropped; a different one is refused, never guessed between.
                 date, fulfilment = order.pop("date"), dict(order["fulfilment"])
-                if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date, flags=re.ASCII):
+                if not _iso_date(date):
                     raise _InvalidArguments(op, fields=["date"])
                 if "date" not in fulfilment:
                     fulfilment["date"] = date
@@ -996,10 +1024,13 @@ def handle(args, **kwargs):
                 invalid.add("items")
             if "fulfilment" in order and not isinstance(order["fulfilment"], dict):
                 invalid.add("fulfilment")
+            elif "fulfilment" in order and "date" in order["fulfilment"] and not _iso_date(order["fulfilment"]["date"]):
+                invalid.add("date")  # fulfilment.date: a real YYYY-MM-DD day (N1), named by its schema name
             if "paymentMethod" in order and order["paymentMethod"] not in ("upi", "card_on_pickup"):
                 invalid.add("paymentMethod")
-            # The app trims the note, then allows at most 140 characters (ForKicksOrderInput.note).
-            if "note" in order and (not isinstance(order["note"], str) or len(order["note"].strip()) > 140):
+            # The app trims the note, then allows at most 140 characters (ForKicksOrderInput.note: z.string().trim()
+            # .max(140)), measured exactly as the app does (N2, _zod_length).
+            if "note" in order and (not isinstance(order["note"], str) or _zod_length(order["note"]) > 140):
                 invalid.add("note")
             if invalid:
                 raise _InvalidArguments(op, fields=sorted({key if key in SCHEMA["parameters"]["properties"] else "(unknown field)" for key in invalid}))
