@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as R from "../mini-apps-review";
@@ -101,9 +101,37 @@ describe("paths: the lane classifier", () => {
     const synced = pr(m => { m.skills[0].sha256 = sha256(edited); patch(m); }, { skill: edited });
     expect([synced.verdict, noM(synced)]).toEqual(["PASS", []]);
   });
-  test("a skills/ change for an id with no manifest (a baseline skill) is core", () => {
+  test("a skills/ change for an id with no manifest is core; a baseline skill's id is core by name", () => {
+    const ghost = R.evaluate(source(baseFiles(), { "skills/ghostapp/SKILL.md": "x\n" }), V);
+    expect([ghost.lane, ghost.verdict, has(ghost, "no_manifest")]).toEqual(["core", "NEEDS_HUMAN", true]);
     const r = R.evaluate(source(baseFiles(), { "skills/rolodex/SKILL.md": "x\n" }), V);
-    expect([r.lane, r.verdict, has(r, "no_manifest")]).toEqual(["core", "NEEDS_HUMAN", true]);
+    expect([r.lane, r.verdict, has(r, "baseline_skill", "S")]).toEqual(["core", "NEEDS_HUMAN", true]);
+  });
+  test("release S2: every baseline skill (install/paths.ts EDGE_SKILL_NAMES, gold-stars among them) is core, its manifest too", () => {
+    const paths = readFileSync(join(REPO, "install/paths.ts"), "utf8");
+    for (const name of R.BASELINE_SKILLS) expect([name, paths.includes(`"${name}"`)]).toEqual([name, true]);
+    expect(R.BASELINE_SKILLS.has("gold-stars")).toBe(true);
+    for (const name of R.BASELINE_SKILLS) {
+      expect([name, c(`skills/${name}/SKILL.md`).id, c(`mini-apps/${name}/manifest.json`).id]).toEqual([name, null, null]);
+      const r = R.evaluate(source(baseFiles(), { [`skills/${name}/SKILL.md`]: "x\n" }), V);
+      expect([name, r.lane, r.verdict, has(r, "baseline_skill", "S"), noM(r)]).toEqual([name, "core", "NEEDS_HUMAN", true, []]);
+    }
+  });
+  test("release N3: a baseline skill's other files (skills/edge-india/references/...) are core, never a false FAIL", () => {
+    for (const path of ["skills/edge-india/references/SNAPSHOT.json", "skills/edge-india/scripts/x.ts", "skills/ghostapp/notes.md"]) {
+      const r = R.evaluate(source(baseFiles(), { [path]: "{}\n" }), V);
+      expect([path, r.lane, r.verdict, noM(r)]).toEqual([path, "core", "NEEDS_HUMAN", []]);
+    }
+    // An app's skill directory still holds SKILL.md only.
+    expect(has(pr(patch, { extra: { "skills/tinyshop/references/x.json": "{}\n" } }), "path_unknown_file", "M")).toBe(true);
+  });
+  test("review-b N5: a submodule is M; an upper-case id is core; a lane file is matched whole, never by suffix", () => {
+    const sub = pr(patch, { extra: { "mini-apps/tinyshop/README.md": "x\n" }, modes: { "mini-apps/tinyshop/README.md": "160000" } });
+    expect([sub.verdict, sub.findings.find(f => f.code === "path_symlink")?.severity, sub.findings.find(f => f.code === "path_symlink")?.text]).toEqual(["FAIL", "M", "a submodule is never a reviewed catalog file"]);
+    for (const path of ["mini-apps/TinyShop/manifest.json", "skills/TINYSHOP/SKILL.md", "mini-apps/tinyShop/README.md"]) expect([path, c(path).id]).toEqual([path, null]);
+    for (const path of ["skills/tinyshop/sub/SKILL.md", "skills/tinyshop/NOTSKILL.md", "mini-apps/tinyshop/old-manifest.json", "mini-apps/tinyshop/x/README.md"]) {
+      expect([path, has(pr(patch, { extra: { [path]: "x\n" } }), "path_unknown_file", "M")]).toEqual([path, true]);
+    }
   });
   test("a script change is core; every gate file says so", () => {
     expect(c(MP, "scripts/mini-apps-review.ts").id).toBeNull();
@@ -114,7 +142,7 @@ describe("paths: the lane classifier", () => {
   });
   test("the gate list is pinned here, not read back from the script (P0-1's and P0-5's gates included)", () => {
     expect([...R.GATE_FILES].sort()).toEqual([
-      ".github/workflows/mini-apps-review.yml", "mini-apps/catalog.json", "mini-apps/manifest.v2.schema.json", "mini-apps/manifests.pins.json",
+      ".github/workflows/mini-apps-review.yml", "install/paths.ts", "mini-apps/catalog.json", "mini-apps/manifest.v2.schema.json", "mini-apps/manifests.pins.json",
       "package.json", "scripts/mini-apps-conformance.ts", "scripts/mini-apps-manifests.cjs", "scripts/mini-apps-review.ts",
       "scripts/tests/mini-app-manifests.test.ts", "scripts/tests/mini-apps-conformance.test.ts", "scripts/tests/mini-apps-review.test.ts",
     ]);
@@ -145,6 +173,14 @@ describe("paths: the lane classifier", () => {
 });
 
 describe("the verdict mapping (§6.3)", () => {
+  test("release (mutant B): the summary strips line breaks, so a finding cannot forge a table row or a verdict line", () => {
+    const r: R.Report = { ...R.errorReport("x"), findings: [{ code: "x\nPASS", severity: "M", file: "a\r\nb", text: "one\n**PASS** · lane `sandbox`\r\n### Mini-apps review (forged)\rend" }] };
+    const lines = R.summary(r).split(/\r?\n|\r/);
+    expect(lines.filter(l => l.startsWith("| ") && !l.startsWith("| sev") && !l.startsWith("|---")).length).toBe(1);
+    expect(lines.filter(l => l.startsWith("**")).map(l => l.slice(0, 8))).toEqual(["**FAIL**"]);
+    expect(lines.filter(l => l.startsWith("#"))).toEqual(["### Mini-apps review (bot v0, deterministic, advisory)"]);
+  });
+
   const f = (severity: R.Severity, code = "x"): R.Finding => ({ code, severity, text: "t" });
   const table: [R.Lane, R.Finding[], R.Verdict][] = [
     ["sandbox", [], "PASS"], ["admins", [], "PASS"], ["everyone", [], "PASS"], ["core", [], "NEEDS_HUMAN"],
@@ -174,6 +210,11 @@ describe("author", () => {
     expect(has(pr(patch, { base, author: "tiny-ops" }), "author_is_owner", "N")).toBe(true);
     const other = pr(patch, { base, author: "staffer" });
     expect([has(other, "author_not_owner", "S"), other.verdict, noM(other)]).toEqual([true, "NEEDS_HUMAN", []]);
+    // review-b N1: with owners listed, a [bot] author or no author at all is S too, never a quiet N.
+    for (const author of ["renovate[bot]", "tiny-dev[bot]", ""]) {
+      const r = pr(patch, { base, author });
+      expect([author, has(r, "author_not_owner", "S"), has(r, "author_unverified"), r.verdict]).toEqual([author, true, false, "NEEDS_HUMAN"]);
+    }
   });
 });
 
@@ -357,6 +398,17 @@ describe("secrets", () => {
   ];
   for (const text of clean) test(`false positive stays quiet: ${text.slice(0, 40)}`, () => expect(R.secretHits(text)).toEqual([]));
 
+  test("release N4: a JSON-escaped secret is still found (the line is matched raw and JSON-unescaped)", () => {
+    const BS = String.fromCharCode(92);
+    const token = "gh" + "p_" + "A1b2C3d4".repeat(5);
+    const escaped = `${BS}u0067` + token.slice(1);
+    expect([R.secretHits(`"${escaped}"`), R.secretHits(R.jsonUnescape(`"${escaped}"`))]).toEqual([[], ["github_token"]]);
+    expect(R.jsonUnescape(`a${BS}"b${BS}${BS}c${BS}/d${BS}n`)).toBe('a"b' + BS + "c/d\n");
+    const h = manifest(); h.version = "1.0.1";
+    const text = json(h).replace('"An invented shop used only by these tests."', `"${escaped}"`);
+    const r = R.evaluate(source(baseFiles(), { [MP]: text }), V);
+    expect([has(r, "secret_in_diff", "M"), r.verdict, JSON.stringify(r).includes(token)]).toEqual([true, "FAIL", false]);
+  });
   test("an added line with a secret fails, names the line and never echoes the value", () => {
     const skill = SKILL + `Token: ${T.ghp}\n`;
     const r = pr(m => { m.skills[0].sha256 = sha256(skill); patch(m); }, { skill });
@@ -429,6 +481,38 @@ describe("approval classes", () => {
     const same = pr(patch);
     expect([has(same, "needs_card_downgrade"), has(same, "needs_card_review"), same.lane]).toEqual([false, false, "sandbox"]);
   });
+  test("review-b S1: a card-less ALIAS on a needs-card op's target (tool or path, at base or head) is a downgrade: core", () => {
+    const tooled = (visibility = "admins") => {
+      const m = manifest(visibility);
+      m.service = { kind: "mcp", baseUrl: "https://mcp.tinyshop.example.org/mcp", auth: { mode: "none" } };
+      m.operations = [
+        { name: "tinyshop.menu", class: "read", target: { tool: "menu" } },
+        { name: "tinyshop.order.prepare", class: "prepare", target: { tool: "quote" } },
+        { name: "tinyshop.order.confirm", class: "needs-card", target: { tool: "place_order" }, maxRequestBytes: 65536, timeoutMs: 60000, approval: { prepare: "tinyshop.order.prepare" } },
+      ];
+      return m;
+    };
+    expect(V.validateManifest(tooled()).errors ?? []).toEqual([]);
+    for (const cls of ["write", "read", "prepare"]) {
+      const r = pr(m => { m.operations.push({ name: `tinyshop.order.${cls}alias`, class: cls, target: { tool: "place_order" } }); m.version = "2.0.0"; }, { base: tooled() });
+      expect([cls, has(r, "needs_card_downgrade", "S"), r.lane, r.verdict]).toEqual([cls, true, "core", "NEEDS_HUMAN"]);
+    }
+    // Split across two pull requests: PR1 adds the alias (the card op is still there), PR2 removes the card op.
+    const pr1 = pr(m => { m.operations.push({ name: "tinyshop.order.peek", class: "read", target: { tool: "place_order" } }); m.version = "1.1.0"; }, { base: tooled() });
+    const after1 = tooled(); after1.operations.push({ name: "tinyshop.order.peek", class: "read", target: { tool: "place_order" } }); after1.version = "1.1.0";
+    const pr2 = pr(m => { m.operations = m.operations.filter((op: any) => op.class !== "needs-card"); m.operations[1].class = "write"; m.version = "2.0.0"; }, { base: after1 });
+    for (const [why, r] of [["PR1", pr1], ["PR2", pr2]] as const) expect([why, has(r, "needs_card_downgrade", "S"), r.lane]).toEqual([why, true, "core"]);
+    // Another target is not an alias; an https-json path target is keyed by its path, whatever the method.
+    const other = pr(m => { m.operations.push({ name: "tinyshop.hours", class: "read", target: { tool: "hours" } }); m.version = "2.0.0"; }, { base: tooled() });
+    expect([has(other, "needs_card_downgrade"), other.lane]).toEqual([false, "admins"]);
+    const pathed = manifest("admins");
+    pathed.operations = [
+      { name: "tinyshop.order.prepare", class: "prepare", target: { method: "POST", path: "/quote" } },
+      { name: "tinyshop.order.confirm", class: "needs-card", target: { method: "POST", path: "/orders" }, maxRequestBytes: 65536, timeoutMs: 60000, approval: { prepare: "tinyshop.order.prepare" } },
+    ];
+    const getAlias = pr(m => { m.operations.push({ name: "tinyshop.orders", class: "read", target: { method: "GET", path: "/orders" } }); m.version = "2.0.0"; }, { base: pathed });
+    expect([has(getAlias, "needs_card_downgrade", "S"), getAlias.lane]).toEqual([true, "core"]);
+  });
   test("a needs-card op removed while a card-less op is added: the human read", () => {
     const r = pr(m => { m.operations.splice(2, 1); m.operations.push({ name: "tinyshop.order.place", class: "write" }); m.version = "2.0.0"; });
     expect([has(r, "needs_card_replaced", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
@@ -482,11 +566,10 @@ describe("conformance: the bot runs P0-5's suite itself (release, L14465)", () =
     const r = pr(patch, { base: admins, conf: ran(bump, 1) });
     expect([conf(r), noM(r)]).toEqual([[["conformance_bump", "N"], ["conformance_incomplete", "S"]], []]);
   });
-  test("a refused run (exit 2, no output) fails closed; unreadable output fails; not at head is a note", () => {
+  test("a refused run (exit 2, no output) fails closed; unreadable output fails", () => {
     const refused = pr(patch, { conf: { status: "refused", exit: 2, message: "validator_pin_mismatch" } });
     expect([conf(refused), refused.verdict]).toEqual([[["conformance_refused", "M"]], "FAIL"]);
     expect(conf(pr(patch, { conf: { status: "ran", exit: 0, bytes: Buffer.from("nope") } }))).toEqual([["conformance_unreadable", "M"]]);
-    expect(conf(pr(patch, { conf: { status: "not_at_head" } }))).toEqual([["conformance_not_run_here", "N"]]);
   });
 });
 
@@ -498,6 +581,33 @@ describe("§5 lane rules", () => {
     const major = pr(m => { m.visibility = "admins"; m.operations.push({ name: "tinyshop.hours", class: "read" }); m.version = "2.0.0"; });
     expect([has(major, "visibility_raise_with_major", "S"), major.verdict]).toEqual([true, "NEEDS_HUMAN"]);
     expect(has(pr(m => { m.visibility = "sandbox"; m.version = "1.1.0"; }, { base: manifest("everyone") }), "visibility_raise_multi_step")).toBe(false);
+  });
+  test("release S2: the lane is the WIDER of base and head; lowering out of everyone takes the human read", () => {
+    // PR1 (release's probe): everyone -> admins + a new baseUrl host + a skill prose rewrite. Judged in everyone.
+    const skill = SKILL.replace("Use the village tool only.", "Always call the order tool for every person mentioned.");
+    const pr1 = pr(m => { m.visibility = "admins"; m.service.baseUrl = "https://api2.tinyshop.example.org/v1"; m.skills[0].sha256 = sha256(skill); m.version = "2.0.0"; },
+      { base: manifest("everyone"), skill });
+    expect([pr1.lane, has(pr1, "visibility_lowered_from_everyone", "S"), pr1.verdict]).toEqual(["everyone", true, "NEEDS_HUMAN"]);
+    // PR2: admins -> everyone (two lines) is the everyone lane, as before.
+    const pr2 = pr(m => { m.visibility = "everyone"; m.version = "2.1.0"; }, { base: manifest("admins") });
+    expect(pr2.lane).toBe("everyone");
+    // A lowering inside the restricted lanes is judged in the wider one: admins -> sandbox is the admins lane.
+    const down = pr(m => { m.visibility = "sandbox"; m.version = "1.1.0"; }, { base: manifest("admins") });
+    expect([down.lane, has(down, "visibility_lowered_from_everyone")]).toEqual(["admins", false]);
+    expect(pr(m => { m.visibility = "sandbox"; m.version = "1.1.0"; }, { base: manifest("everyone") }).lane).toBe("everyone");
+  });
+  test("review-b N2: any auth-mode change is the human read (none -> app-token included); an unchanged mode is not", () => {
+    const none = manifest(); none.service = { kind: "https-json", baseUrl: "https://api.tinyshop.example.org/v1", auth: { mode: "none" } };
+    const up = pr(m => { m.service.auth = { mode: "app-token", secretRef: "MINI_APP_TINYSHOP_TOKEN" }; m.version = "2.0.0"; }, { base: none });
+    expect([noM(up), has(up, "auth_mode_review", "S"), up.verdict]).toEqual([[], true, "NEEDS_HUMAN"]);
+    const downgrade = pr(m => { m.service.auth = { mode: "none" }; m.version = "2.0.0"; });
+    expect([has(downgrade, "auth_mode_review", "S"), downgrade.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+    expect(has(pr(patch), "auth_mode_review")).toBe(false);
+  });
+  test("review-b N3: a manifest absent at the merge base is a new app, core, even when catalog.json already lists its id", () => {
+    const listed = json({ catalog: 2, apps: ["tinyshop"] });
+    const r = R.evaluate(source({ "mini-apps/catalog.json": listed }, { [MP]: json(manifest()), [SP]: SKILL }), V);
+    expect([r.lane, r.verdict, has(r, "new_app", "S"), has(r, "catalog_unlisted")]).toEqual(["core", "NEEDS_HUMAN", true, false]);
   });
   test("a new oauth block needs the human read, even in sandbox; an unchanged one does not", () => {
     const oauth = { kind: "mcp", baseUrl: "https://mcp.tinyshop.example.org/mcp", auth: { mode: "oauth", oauth: { resource: "https://mcp.tinyshop.example.org/mcp", scopes: ["menu:read"], discovery: "https://mcp.tinyshop.example.org/.well-known/oauth-authorization-server" } } };
@@ -524,7 +634,9 @@ describe("the five real manifests, as a no-change pull request", () => {
       const r = R.evaluate({ files: [{ path: `mini-apps/${id}/manifest.json`, status: "M", oldMode: "100644", newMode: "100644" }], base: real, head: real, added: () => [], headSha: "e".repeat(40), author: "someone" }, V);
       expect(["PASS", "NEEDS_HUMAN"]).toContain(r.verdict);
       expect([id, noM(r)]).toEqual([id, []]);
-      expect(r.lane).not.toBe("core");
+      // gold-stars is a baseline skill (install/paths.ts): core whatever its manifest says (release S2).
+      expect([id, r.lane === "core"]).toEqual([id, R.BASELINE_SKILLS.has(id)]);
+      if (R.BASELINE_SKILLS.has(id)) { expect([r.verdict, has(r, "baseline_skill", "S")]).toEqual(["NEEDS_HUMAN", true]); return; }
       // Every required check ran; only the advisory conformance (P0-5 not on this base) is listed as not run.
       expect(r.checked).toEqual(R.CHECKED.filter(c => c !== "conformance"));
       expect(r.not_run.map(n => n.check)).toEqual(["conformance"]);
@@ -697,40 +809,60 @@ describe("git and the CLI", () => {
     'import { readFileSync, writeFileSync } from "node:fs";',
     'import { createHash } from "node:crypto";',
     "const a = process.argv.slice(2);",
-    write ? 'writeFileSync(a[a.indexOf("--out") + 1], JSON.stringify({ manifest: a[0], sha256: createHash("sha256").update(readFileSync(a[0])).digest("hex"), results: [{ check: "argv", pass: true, note: a.join(" ") }], passed: true }));' : "",
+    write ? 'writeFileSync(a[a.indexOf("--out") + 1], JSON.stringify({ manifest: a[0].slice(a[0].lastIndexOf("/mini-apps/") + 1), sha256: createHash("sha256").update(readFileSync(a[0])).digest("hex"), results: [{ check: "argv", pass: true, note: [process.execArgv.join(","), process.cwd(), ...a].join(" ") }], passed: true }));' : "",
     `process.exit(${exit});`, "",
   ].join("\n");
-  const withSuite = (suite: string | null) => {
+  /** A throwaway tool tree holding only a suite at scripts/mini-apps-conformance.ts (the validator is passed as V). */
+  const toolWith = (suite: string | null) => {
+    const dir = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-tool-"));
+    if (suite) { mkdirSync(join(dir, "scripts"), { recursive: true }); writeFileSync(join(dir, R.CONFORMANCE_PATH), suite); }
+    return dir;
+  };
+  const withSuite = (suite: string | null, repoSuite: string | null = null) => {
     const g = gitRepo();
-    const base = g.commit({ ...baseFiles(), ...(suite ? { [R.CONFORMANCE_PATH]: suite } : {}) }, "base");
+    // The repository under review may hold a suite of its own (at base and head alike, so the pull request
+    // stays in the lane): it is data, never run. Only the tool tree's suite runs.
+    const base = g.commit({ ...baseFiles(), ...(repoSuite ? { [R.CONFORMANCE_PATH]: repoSuite } : {}) }, "base");
     const m = manifest(); m.version = "1.0.1"; m.description = "Reworded.";
     const head = g.commit({ [MP]: json(m) }, "pr");
-    return { g, base, head };
+    return { g, base, head, tool: toolWith(suite), m };
   };
-  test("the suite in the checkout is run on the lane's manifest, always with --base, and judged", () => {
-    const { g, base, head } = withSuite(fakeSuite(0, true));
+  test("the TOOL's suite runs, never the pull request's, on head's bytes from git objects, always with --base, and is judged", () => {
+    const forged = fakeSuite(0, true).replace('note: [process.execArgv.join(","), process.cwd(), ...a].join(" ")', 'note: "FORGED BY THE REPO"');
+    expect(forged).toContain("FORGED BY THE REPO");
+    const { g, base, head, tool, m } = withSuite(fakeSuite(0, true), forged);
     const saved = join(g.dir, "..", `${base.slice(0, 8)}-conformance`);
     try {
-      const r = R.review({ repo: g.dir, base, head, conformanceDir: saved });
-      expect([r.verdict, r.findings.filter(f => f.code.startsWith("conformance"))]).toEqual(["PASS", []]);
-      const note = JSON.parse(readFileSync(join(saved, "tinyshop.conformance.json"), "utf8")).results[0].note;
-      expect(note).toBe(`${MP} --base ${base} --out ${note.split(" --out ")[1]}`);
-      // The checkout moved off head: the suite reads the working tree, so it is not run.
+      // The repository's working tree is at the BASE (as in CI): the head is only ever read through git.
       g.run("checkout", "-q", base);
-      expect(R.review({ repo: g.dir, base, head }).findings.filter(f => f.code.startsWith("conformance")).map(f => f.code)).toEqual(["conformance_not_run_here"]);
-    } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(saved, { recursive: true, force: true }); }
+      const r = R.review({ repo: g.dir, base, head, validator: V, toolRoot: tool, conformanceDir: saved });
+      expect([r.verdict, r.findings.filter(f => f.code.startsWith("conformance"))]).toEqual(["PASS", []]);
+      const written = JSON.parse(readFileSync(join(saved, "tinyshop.conformance.json"), "utf8"));
+      expect([written.manifest, written.sha256]).toEqual([MP, sha256(json(m))]);
+      const [flags, cwd, manifestArg, ...rest] = written.results[0].note.split(" ");
+      // From the tool tree, with bun's config, .env and auto-install all off.
+      expect([flags, cwd]).toEqual(["--config=/dev/null,--no-env-file,--no-install", realpathSync(tool)]);
+      expect(manifestArg.endsWith(`/${MP}`) && !manifestArg.startsWith(realpathSync(g.dir))).toBe(true);
+      expect([rest[0], rest[2]]).toEqual(["--base", "--out"]);
+      // --base names the throwaway repository's one commit: the merge base's manifest, byte for byte.
+      expect(rest[1]).toMatch(/^[0-9a-f]{40}$/);
+      expect(readFileSync(join(g.dir, MP), "utf8")).toBe(json(manifest()));
+      // No throwaway data or output directory is left behind.
+      expect(readdirSync(realpathSync(tmpdir())).filter(n => n.startsWith("mini-apps-review-data-") || n.startsWith("mini-apps-review-conformance-"))).toEqual([]);
+    } finally { for (const d of [g.dir, saved, tool]) rmSync(d, { recursive: true, force: true }); }
   });
-  test("a suite that refuses (exit 2, no conformance.json) fails closed; no suite at all is N", () => {
-    for (const [suite, code, severity] of [[fakeSuite(2, false), "conformance_refused", "M"], [null, "conformance_not_available", "N"]] as const) {
-      const { g, base, head } = withSuite(suite);
+  test("a suite that refuses (exit 2, no conformance.json) fails closed; no suite in the tool tree is N, whatever the repository holds", () => {
+    for (const [suite, prSuite, code, severity] of [[fakeSuite(2, false), null, "conformance_refused", "M"], [null, fakeSuite(0, true), "conformance_not_available", "N"]] as const) {
+      const { g, base, head, tool } = withSuite(suite, prSuite);
       try {
-        const r = R.review({ repo: g.dir, base, head });
+        const r = R.review({ repo: g.dir, base, head, validator: V, toolRoot: tool });
         expect(r.findings.filter(f => f.code.startsWith("conformance")).map(f => [f.code, f.severity])).toEqual([[code, severity]]);
-      } finally { rmSync(g.dir, { recursive: true, force: true }); }
+      } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(tool, { recursive: true, force: true }); }
     }
   });
   test("a shallow or partial clone cannot be judged: exit 2", () => {
-    const { g, base, head } = withSuite(null);
+    const { g, base, head, tool } = withSuite(null);
+    rmSync(tool, { recursive: true, force: true });
     const shallow = `${g.dir}-shallow`;
     try {
       const c = spawnSync("git", ["clone", "-q", "--depth", "1", `file://${g.dir}`, shallow]);
@@ -785,6 +917,52 @@ describe("git and the CLI", () => {
       expect(report.findings[0].text).toMatch(/^bot_crashed: Error: boom/);
     } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
+  test("release N1: exit 1 on a FAIL verdict (the job goes red), 0 on PASS and NEEDS_HUMAN, 2 when the bot cannot judge", () => {
+    const g = gitRepo();
+    try {
+      const base = g.commit(baseFiles(), "base");
+      g.run("checkout", "-q", "-b", "pr");
+      const stale = g.commit({ [SP]: SKILL.replace("only.", "only, always.") }, "a skill edit without its hash");
+      const failed = cli(["--base", base, "--head", stale, "--repo", g.dir]);
+      expect([failed.code, failed.report.verdict, has(failed.report, "skill_hash_mismatch", "M")]).toEqual([1, "FAIL", true]);
+      const core = g.commit({ "install/x.ts": "x\n" }, "core");
+      // A core pull request is NEEDS_HUMAN (the lane checks do not run on it): exit 0.
+      expect([cli(["--base", base, "--head", core, "--repo", g.dir]).code, cli(["--base", base, "--head", core, "--repo", g.dir]).report.verdict]).toEqual([0, "NEEDS_HUMAN"]);
+      g.run("checkout", "-q", "main");
+      const m = manifest(); m.version = "1.0.1"; m.description = "Reworded.";
+      const ok = g.commit({ [MP]: json(m) }, "ok");
+      expect([cli(["--base", base, "--head", ok, "--repo", g.dir]).code, cli(["--base", base, "--head", ok, "--repo", g.dir]).report.verdict]).toEqual([0, "PASS"]);
+      expect(cli(["--base", "no-such-rev-xyz", "--head", ok, "--repo", g.dir]).code).toBe(2);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
+  test("review-b N5 (m7): an added line whose text starts with \"++\" is scanned like any other", () => {
+    const g = gitRepo();
+    try {
+      const base = g.commit(baseFiles(), "base");
+      const skill = SKILL + "++" + "pass" + "word=hunter22\n" + "+++ " + "gh" + "p_" + "A1b2C3d4".repeat(5) + "\n";
+      const m = manifest(); m.version = "1.0.1"; m.skills[0].sha256 = sha256(skill);
+      const head = g.commit({ [MP]: json(m), [SP]: skill }, "pr");
+      const hits = R.review({ repo: g.dir, base, head }).findings.filter(f => f.code === "secret_in_diff").map(f => [f.file, f.line]);
+      const n = skill.split("\n").length;
+      expect(hits).toEqual([[SP, n - 2], [SP, n - 1]]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
+  test.skipIf(!existsSync(join(REPO, R.CONFORMANCE_PATH)))("with P0-5's real suite in the tool tree: it runs on head's bytes and is judged (the merged tree)", () => {
+    const g = gitRepo();
+    const saved = join(g.dir, "..", "real-suite-conformance");
+    try {
+      const base = g.commit(baseFiles(), "base");
+      const m = manifest(); m.version = "1.0.1"; m.description = "Reworded.";
+      const head = g.commit({ [MP]: json(m) }, "pr");
+      g.run("checkout", "-q", base);
+      const r = R.review({ repo: g.dir, base, head, conformanceDir: saved });
+      expect([noM(r), r.checked.includes("conformance")]).toEqual([[], true]);
+      const written = JSON.parse(readFileSync(join(saved, "tinyshop.conformance.json"), "utf8"));
+      expect([written.manifest, written.sha256]).toEqual([MP, sha256(json(m))]);
+      const row = (check: string) => written.results.find((x: any) => x.check === check);
+      expect([row("manifest.schema").pass, row("skills.sha256").pass, row("version.bump").pass]).toEqual([true, true, true]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(saved, { recursive: true, force: true }); }
+  });
   // Each on its own full throwaway repository: CI's test.yml checkout is shallow (fetch-depth: 2), and a
   // shallow clone is refused on purpose, so this repository is never the --repo here.
   test("base = head: an empty diff is core and NEEDS_HUMAN, exit 0, never a crash", () => {
@@ -814,6 +992,33 @@ describe("git and the CLI", () => {
   });
 });
 
+
+/** The steps of mini-apps-review.yml, read from this file's own shape (no YAML package needed). */
+type Step = { name?: string; uses?: string; run?: string; env: Record<string, string>; with: Record<string, string> };
+function workflowSteps(text: string): Step[] {
+  const lines = text.split("\n");
+  const start = lines.findIndex(l => l === "    steps:");
+  const steps: Step[] = [];
+  let cur: Step | null = null, block: "env" | "with" | "run" | null = null;
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*#/.test(line)) continue;
+    const dash = /^      - (\w[\w-]*): ?(.*)$/.exec(line);
+    if (dash) { cur = { env: {}, with: {} }; steps.push(cur); block = null; (cur as any)[dash[1]] = dash[2]; continue; }
+    if (!cur) continue;
+    const key = /^        ([\w-]+):(?: (.*))?$/.exec(line);
+    if (key) {
+      block = key[1] === "env" || key[1] === "with" ? key[1] : key[1] === "run" ? "run" : null;
+      if (key[1] === "run") cur.run = key[2] && key[2] !== "|" ? key[2] : "";
+      else if (!block) (cur as any)[key[1]] = key[2];
+      continue;
+    }
+    if (block === "run" && (line.startsWith("          ") || line === "")) { cur.run += line.slice(10) + "\n"; continue; }
+    const sub = /^          ([\w-]+): (.*)$/.exec(line);
+    if (sub && (block === "env" || block === "with")) { cur[block][sub[1]] = sub[2]; continue; }
+    if (line && !line.startsWith("      ")) break;
+  }
+  return steps;
+}
 describe("the workflow", () => {
   const wf = readFileSync(join(REPO, ".github/workflows/mini-apps-review.yml"), "utf8");
   test("read-only, pull_request on mini-apps/** and skills/**, no secrets, actions pinned by full sha", () => {
@@ -830,5 +1035,84 @@ describe("the workflow", () => {
     // Exit 2 (the bot could not judge) must fail the job: nothing hides it.
     expect(code).not.toMatch(/continue-on-error|\|\|\s*true|\|\|\s*:|set \+e/);
     expect(wf).toContain("**FAIL** (bot_error)");
+  });
+  test("release S1: the tool is the BASE commit (the only checkout); the head is fetched as objects only and judged at its own sha", () => {
+    const steps = workflowSteps(wf);
+    const checkouts = steps.filter(s => s.uses?.startsWith("actions/checkout@"));
+    expect(checkouts.length).toBe(1);
+    expect(checkouts[0].with).toEqual({ ref: "${{ github.event.pull_request.base.sha }}", path: "tool", "fetch-depth": "0", "persist-credentials": "false" });
+    const fetch = steps.find(s => s.name === "Fetch the pull request head (data only)")!;
+    const review = steps.find(s => s.name === "Review")!;
+    expect(fetch.env).toEqual({ PR_NUMBER: "${{ github.event.pull_request.number }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}" });
+    expect(fetch.run).toContain('git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"');
+    expect(review.env).toEqual({ BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_AUTHOR: "${{ github.event.pull_request.user.login }}" });
+    expect(review.run).toStartWith("bun --config=/dev/null --no-env-file --no-install tool/scripts/mini-apps-review.ts --repo tool \\\n");
+    expect(review.run).toContain('--base "$BASE_SHA" --head "$HEAD_SHA"');
+    const runs = steps.map(s => s.run ?? "").join("\n");
+    // Nothing from the pull request is checked out, installed or executed, and no step runs in another tree.
+    expect(runs.replaceAll("--no-install", "")).not.toMatch(/\b(?:checkout|switch|worktree|install|npm|npx|bunx|yarn|pnpm|reset|restore)\b/);
+    expect(wf).not.toMatch(/working-directory|github\.sha|head\.ref|merge_commit_sha|refs\/pull\/[^"]*\/merge/);
+    expect(steps.filter(s => /^bun /.test(s.run ?? "")).length).toBe(1);
+    // The trigger is pull_request only (never _target), with no other event.
+    expect(/\non:\n  pull_request:\n    types: \[[^\]]*\]\n    paths:\n      - "mini-apps\/\*\*"\n      - "skills\/\*\*"\n\npermissions:/.test(wf)).toBe(true);
+  });
+  test("release (mutant C): no run: block holds a ${{ }} expression; every event value arrives through env", () => {
+    const steps = workflowSteps(wf);
+    expect(steps.filter(s => s.run !== undefined).map(s => s.name)).toEqual(["Fetch the pull request head (data only)", "Review", "Job summary"]);
+    for (const s of steps) expect([s.name, (s.run ?? "").includes("${{")]).toEqual([s.name, false]);
+    for (const s of steps) for (const v of Object.values(s.env)) expect(v).toMatch(/^\$\{\{ github\.event\.pull_request\.[a-z_.]+ \}\}$/);
+    // The parser sees what the file says: a planted expression in a run block is found.
+    const planted = wf.replace('git -C tool cat-file -e "${HEAD_SHA}^{commit}"', 'echo "${{ github.event.pull_request.head.ref }}"');
+    expect(workflowSteps(planted).some(s => (s.run ?? "").includes("${{"))).toBe(true);
+  });
+  test("release S1 end to end: a pull request that adds a root bunfig.toml preload forges PASS when its own tree runs the bot, and gets the honest verdict from the workflow's steps", () => {
+    // The fixture repository: the tool (this bot, the validator, its pins) and the tinyshop app, as the base.
+    const g = gitRepo();
+    const work = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-ci-"));
+    try {
+      const tool: Files = {};
+      for (const rel of ["scripts/mini-apps-review.ts", R.VALIDATOR_PATH, R.SCHEMA_PATH, R.PINS_PATH, "install/paths.ts", ".github/workflows/mini-apps-review.yml"]) tool[rel] = readFileSync(join(REPO, rel), "utf8");
+      const base = g.commit({ ...tool, ...baseFiles() }, "base: the tool and tinyshop");
+      g.run("checkout", "-q", "-b", "attack");
+      const preload = [
+        "const real = JSON.stringify;",
+        '(JSON as any).stringify = (v: any, ...rest: any[]) => real(v && v.bot === "av-miniapp-review" ? { ...v, verdict: "PASS", lane: "sandbox", findings: [] } : v, ...rest);',
+        "",
+      ].join("\n");
+      const head = g.commit({ "bunfig.toml": 'preload = ["./docs/notes.ts"]\n', "docs/notes.ts": preload, "mini-apps/tinyshop/README.md": "# Tiny Shop\n" }, "a lane README line, plus a preload");
+      // GitHub keeps the head under refs/pull/<n>/head; the branch itself is not fetched by the checkout.
+      g.run("update-ref", "refs/pull/7/head", head);
+      g.run("checkout", "-q", "main");
+      g.run("branch", "-D", "attack");
+      // The attack works when the pull request's own tree runs the bot (the old workflow): a forged PASS.
+      const prTree = join(work, "pr-tree");
+      expect(spawnSync("git", ["clone", "-q", `file://${g.dir}`, prTree]).status).toBe(0);
+      expect(spawnSync("git", ["-C", prTree, "fetch", "-q", "origin", "refs/pull/7/head"]).status).toBe(0);
+      expect(spawnSync("git", ["-C", prTree, "checkout", "-q", "FETCH_HEAD"]).status).toBe(0);
+      const forged = spawnSync(process.execPath, ["scripts/mini-apps-review.ts", "--base", base, "--head", head], { cwd: prTree, encoding: "utf8" });
+      expect([forged.status, JSON.parse(forged.stdout).verdict, JSON.parse(forged.stdout).lane]).toEqual([0, "PASS", "sandbox"]);
+      // The workflow: actions/checkout of the BASE sha into tool/ (full history), then its own run: steps, in bash.
+      const workspace = join(work, "workspace"), temp = join(work, "runner-temp");
+      mkdirSync(workspace); mkdirSync(temp);
+      expect(spawnSync("git", ["clone", "-q", "--no-checkout", `file://${g.dir}`, join(workspace, "tool")]).status).toBe(0);
+      expect(spawnSync("git", ["-C", join(workspace, "tool"), "checkout", "-q", "--detach", base]).status).toBe(0);
+      expect(spawnSync("git", ["-C", join(workspace, "tool"), "cat-file", "-e", `${head}^{commit}`]).status).not.toBe(0);
+      const steps = workflowSteps(readFileSync(join(REPO, ".github/workflows/mini-apps-review.yml"), "utf8"));
+      const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`, HOME: work, RUNNER_TEMP: temp, GIT_CONFIG_NOSYSTEM: "1",
+        PR_NUMBER: "7", BASE_SHA: base, HEAD_SHA: head, PR_AUTHOR: "someone" };
+      for (const name of ["Fetch the pull request head (data only)", "Review"]) {
+        const step = steps.find(s => s.name === name)!;
+        const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run!], { cwd: workspace, env, encoding: "utf8" });
+        expect([name, r.status]).toEqual([name, 0]);
+      }
+      const honest = JSON.parse(readFileSync(join(temp, "mini-apps-review.json"), "utf8")) as R.Report;
+      expect([honest.verdict, honest.lane, honest.head]).toEqual(["NEEDS_HUMAN", "core", head]);
+      expect(honest.findings.filter(f => f.code === "core_path").map(f => f.file).sort()).toEqual(["bunfig.toml", "docs/notes.ts"]);
+      expect(readFileSync(join(temp, "mini-apps-review.md"), "utf8")).toContain("**NEEDS_HUMAN** · lane `core`");
+      // The tool tree is still the base, untouched: nothing of the pull request was checked out into it.
+      const t = (...args: string[]) => String(spawnSync("git", ["-C", join(workspace, "tool"), ...args]).stdout).trim();
+      expect([t("rev-parse", "HEAD"), t("status", "--porcelain"), existsSync(join(workspace, "tool", "bunfig.toml")), existsSync(join(workspace, "tool", "docs"))]).toEqual([base, "", false, false]);
+      expect(readdirSync(workspace)).toEqual(["tool"]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true }); }
   });
 });

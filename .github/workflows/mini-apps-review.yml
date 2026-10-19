@@ -3,23 +3,33 @@
 # scripts/mini-apps-review.ts over the pull request's diff and writes the §6.3
 # JSON to the job summary and to an artifact named mini-apps-review.
 #
-# Conformance (release's owner read of P0-5, CLAIMS L14465): the script runs
-# P0-5's suite itself, `bun scripts/mini-apps-conformance.ts <manifest> --base
-# <PR base> --out ...`, on the changed manifest, and only when that script is
-# in the checkout. A committed conformance.json is never trusted. The suite's
-# output goes into the artifact too. The version-bump rule is reported (N) and
-# not enforced until S2 is settled.
+# Trust (release S1, CLAIMS L14538): the pull request is DATA, never code. The
+# tool (scripts/mini-apps-review.ts, P0-1's validator, P0-5's suite) is the BASE
+# commit's tree, checked out alone into tool/. The pull request head is fetched
+# as git objects only and read with git diff / ls-tree / cat-file on its sha:
+# never checked out, never installed, never executed, its bunfig.toml, .env and
+# tsconfig.json never read. bun runs with --config=/dev/null --no-env-file
+# --no-install. The bot judges exactly the head sha it fetched (--head
+# "$HEAD_SHA"), never the merge ref.
+#
+# Conformance (release's owner read of P0-5, CLAIMS L14465): the bot runs the
+# TOOL's copy of P0-5's suite, when present, on head's manifest and skill bytes
+# taken from git objects, with --base. A committed conformance.json is never
+# trusted. The suite's output goes into the artifact too. The version-bump rule
+# is reported (N) and not enforced until S2 is settled.
 #
 # Phase 0: dark and advisory. It is not a required check, it posts no comment
 # (jmill's LLM half does that later), it holds no secret and no write token,
-# and it never uses pull_request_target. Every verdict exits 0; only a broken
-# bot (exit 2) fails the job, and then the report says FAIL with bot_error.
+# and it never uses pull_request_target. Exit 0 for PASS and NEEDS_HUMAN, exit
+# 1 for FAIL (the job is red; the check is still not required), exit 2 when the
+# bot cannot judge (the report then says FAIL with bot_error).
 #
-# Known limit: on pull_request GitHub runs this file, the script and the
-# validator from the pull request's own checkout, so a pull request can edit its
-# own gate. The script classes any pull request that touches them as core
-# (NEEDS_HUMAN). The real gate is the cp's own copy of the validator plus branch
-# protection on the catalog repo later (design §6.4).
+# Known limit: on pull_request GitHub runs the pull request's own copy of THIS
+# FILE, so a pull request that edits it can change what runs. Such a pull
+# request touches a gate file, which the honest bot classes core. The check must
+# not become required until it runs from the base's workflow definition
+# (pull_request_target with the pull request as data, or a required workflow;
+# design §6.4).
 name: mini-apps review
 
 on:
@@ -42,11 +52,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Full history, never shallow or blob-less: the script diffs base...head from
-      # their merge base, and P0-5's suite reads base blobs with git cat-file. The
-      # script refuses (exit 2) a shallow or partial clone.
+      # The tool: the BASE commit's tree, full history (the bot diffs base...head
+      # from their merge base and refuses a shallow or partial clone).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: tool
           fetch-depth: 0
           persist-credentials: false
       # no-cache: never restore bun from the Actions cache. The script needs no
@@ -55,14 +66,24 @@ jobs:
         with:
           bun-version: 1.4.2
           no-cache: true
-      # The event's values go through env, never into the shell text.
+      # The pull request head: objects only, into a ref of the tool's repository.
+      # Nothing is checked out. The event's values go through env, never into the
+      # shell text.
+      - name: Fetch the pull request head (data only)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+          git -C tool cat-file -e "${HEAD_SHA}^{commit}"
       - name: Review
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          bun scripts/mini-apps-review.ts --base "$BASE_SHA" --head "$HEAD_SHA" --author "$PR_AUTHOR" \
+          bun --config=/dev/null --no-env-file --no-install tool/scripts/mini-apps-review.ts --repo tool \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --author "$PR_AUTHOR" \
             --out "$RUNNER_TEMP/mini-apps-review.json" --summary "$RUNNER_TEMP/mini-apps-review.md" \
             --conformance-dir "$RUNNER_TEMP/mini-apps-conformance"
       - name: Job summary
@@ -72,7 +93,7 @@ jobs:
           if [ -f "$RUNNER_TEMP/mini-apps-review.json" ]; then
             { echo; echo '```json'; cat "$RUNNER_TEMP/mini-apps-review.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "**FAIL** (bot_error): the bot could not run and wrote no report; the Review step failed with exit 2." >> "$GITHUB_STEP_SUMMARY"
+            echo "**FAIL** (bot_error): the bot could not run and wrote no report; the Review step failed." >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

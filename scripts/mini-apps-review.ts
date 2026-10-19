@@ -22,21 +22,30 @@
  *            S finding: PASS in sandbox, NEEDS_HUMAN in admins and everyone. Else PASS. N is a note.
  *
  * The §6.3 JSON goes to stdout (and --out); a short summary goes to stderr (and --summary, markdown for
- * the job summary). Phase 0 is advisory and not a required check, so every verdict exits 0. Exit 2 means
- * the bot itself could not judge (bad arguments, git failed, the validator is not the pinned one): it
- * fails closed, still prints a FAIL report with code bot_error, and never prints PASS.
+ * the job summary). Phase 0 is advisory and not a required check. Exit 0: PASS or NEEDS_HUMAN. Exit 1:
+ * FAIL, so the job is red on a FAIL (release N1; the check stays non-required). Exit 2 means the bot itself
+ * could not judge (bad arguments, git failed, the validator is not the pinned one): it fails closed, still
+ * prints a FAIL report with code bot_error, and never prints PASS.
  *
- * Known limit (design §6.4): on pull_request, GitHub runs this workflow, this script and the validator
- * from the pull request's own checkout, so a pull request can edit its own gate. A pull request that
- * touches any of them is classed core here (GATE_FILES); the real gate is the cp's own copy of the
- * validator plus branch protection on the catalog repo later.
+ * Trust (release S1, CLAIMS L14538): the pull request is DATA, never code. The tool (this script, the
+ * validator and P0-5's suite) is read from its own tree, `toolRoot` (default: this file's repository); in
+ * CI that tree is the BASE commit's, checked out on its own, run with `bun --config=/dev/null --no-env-file
+ * --no-install`, and the pull request head is only fetched as git objects. Everything the bot knows about
+ * the head comes from `git diff`, `git ls-tree` and `git cat-file` on the head sha; P0-5's suite runs from
+ * the tool tree on the head's manifest and skill bytes, written out of git into a throwaway directory.
+ * Nothing from the pull request's tree is executed, installed or read as configuration.
+ * Known limit: on pull_request GitHub runs the pull request's own copy of the WORKFLOW file, so a pull
+ * request that edits .github/workflows/mini-apps-review.yml can change what runs (it is a gate file, core
+ * by the honest bot). The check must not be required until it runs from the base's workflow definition
+ * (pull_request_target with the PR as data, or a required workflow), design §6.4.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { runInThisContext } from "node:vm";
+import { EDGE_SKILL_NAMES } from "../install/paths";
 
 export const BOT = "av-miniapp-review";
 export const BOT_VERSION = "0.1";
@@ -51,7 +60,14 @@ export const GATE_FILES = Object.freeze([
   CATALOG_PATH, "scripts/tests/mini-app-manifests.test.ts", ".github/workflows/mini-apps-review.yml",
   // P0-5's conformance suite (ov#422) and the package.json line that runs it (`bun run conformance`).
   "scripts/mini-apps-conformance.ts", "scripts/tests/mini-apps-conformance.test.ts", "package.json",
+  // The baseline-skill list the lane classifier reads (EDGE_SKILL_NAMES).
+  "install/paths.ts",
 ]);
+/**
+ * Baseline skills (install/paths.ts EDGE_SKILL_NAMES) ship to EVERY box at roll time whatever a manifest's
+ * visibility says (gold-stars is one), so an id in this list is never a manifest lane: core (release S2).
+ */
+export const BASELINE_SKILLS: ReadonlySet<string> = new Set(EDGE_SKILL_NAMES);
 export const CHECKED = Object.freeze(["paths", "author", "schema", "hashes", "version_bump", "secrets", "data_context",
   "approval_classes", "conformance", "lane_rules"]);
 /**
@@ -65,7 +81,8 @@ export const CEILINGS = Object.freeze(["private", "village", "public"]);
 /** The widest data.context ceiling each lane may declare without the human lane (design §1.3, §7). */
 export const LANE_CEILING: Readonly<Record<string, string>> = Object.freeze({ sandbox: "public", admins: "public", everyone: "village" });
 /** The §5 rules: a finding with one of these codes needs the human read in every lane. */
-export const HUMAN_CODES = Object.freeze(new Set(["core_path", "empty_diff", "multiple_apps", "gate_changed", "manifest_deleted", "no_manifest",
+export const HUMAN_CODES = Object.freeze(new Set(["core_path", "baseline_skill", "new_app", "visibility_lowered_from_everyone", "auth_mode_review",
+  "empty_diff", "multiple_apps", "gate_changed", "manifest_deleted", "no_manifest",
   "path_status_unknown", "path_mode_unusual", "binary_unscanned", "base_manifest_missing", "base_manifest_unexpected", "base_unparseable",
   "base_invalid", "catalog_unreadable", "catalog_unlisted", "check_not_run", "needs_card_downgrade",
   "needs_card_replaced", "needs_card_review", "oauth_review", "context_ceiling_above_private", "events_review",
@@ -98,7 +115,6 @@ export type Bytes = Buffer | null;
 /** One run of P0-5's suite on the lane's manifest (`runConformance`). */
 export type ConformanceRun =
   | { status: "unavailable" }
-  | { status: "not_at_head" }
   | { status: "refused"; exit: number | null; message: string }
   | { status: "ran"; exit: number | null; bytes: Buffer };
 export type Source = {
@@ -108,7 +124,7 @@ export type Source = {
   added: (path: string) => { line: number; text: string }[] | "binary";
   headSha: string;
   author: string;
-  /** Runs P0-5's suite on a manifest at head; absent means the suite is not available. */
+  /** Runs the tool's P0-5 suite on head's bytes of a manifest; absent means the suite is not available. */
   conformance?: (manifestPath: string) => ConformanceRun;
 };
 
@@ -227,63 +243,102 @@ function blobAt(repo: string, rev: string, path: string): Bytes {
   return git(repo, ["cat-file", "blob", `${rev}:${path}`])!;
 }
 export const CONFORMANCE_PATH = "scripts/mini-apps-conformance.ts";
+const SKILL_PATH = /^skills\/[a-z][a-z0-9-]{0,63}\/SKILL\.md$/;
+/** What the suite reads, taken from git objects: never the pull request's working tree. */
+export type ConformanceInput = { manifestPath: string; headBytes: Buffer; baseBytes: Bytes; skills: { path: string; bytes: Buffer }[] };
+/** A throwaway git repository: base manifest (if any) committed, head's bytes in the working tree. */
+function dataRepo(input: ConformanceInput): { root: string; base: string } {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-data-"));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+  const g = (...args: string[]) => {
+    const r = spawnSync("git", ["-C", root, "-c", "user.name=av-miniapp-review", "-c", "user.email=review@invalid", "-c", "commit.gpgsign=false",
+      "-c", "core.hooksPath=/dev/null", ...args], { env, maxBuffer: 64 * 1024 * 1024 });
+    if (r.error || r.status !== 0) throw new BotError(`conformance_data_failed: git ${args[0]}`);
+    return String(r.stdout).trim();
+  };
+  const put = (rel: string, bytes: Buffer) => { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), bytes); };
+  g("init", "-q");
+  if (input.baseBytes) { put(input.manifestPath, input.baseBytes); g("add", "--", input.manifestPath); g("commit", "-q", "-m", "base"); }
+  else g("commit", "-q", "--allow-empty", "-m", "base (no manifest)");
+  const base = g("rev-parse", "HEAD");
+  put(input.manifestPath, input.headBytes);
+  for (const skill of input.skills) if (SKILL_PATH.test(skill.path)) put(skill.path, skill.bytes);
+  return { root, base };
+}
 /**
- * Run P0-5's suite (ov#422) on one manifest of the checkout, always with `--base`, and hand back its
- * conformance.json bytes: `bun scripts/mini-apps-conformance.ts <manifest> --base <base> --out <tmp>` (what
- * `bun run conformance --` runs, minus package.json's indirection). Only when the script is in the checkout,
- * and only when the checkout's manifest bytes are head's, since the suite reads the working tree. In a
- * manifest lane the pull request cannot have touched the script (it is a gate file), so this is the base's suite.
+ * Run P0-5's suite (ov#422) on one manifest and hand back its conformance.json bytes. The suite is the
+ * TOOL's (`toolRoot`, in CI the base commit's tree), never the pull request's, and it runs on head's
+ * manifest and skill bytes taken from git objects (`ConformanceInput`), in a throwaway repository whose one
+ * commit is the merge base's manifest, so `--base` is always passed. Run with `bun --config=/dev/null
+ * --no-env-file --no-install` from the tool tree; the output goes to a temp dir outside both trees.
  */
-export function runConformance(repo: string, manifestPath: string, base: string, headBytes: Bytes, saveDir?: string, timeoutMs = 120_000): ConformanceRun {
-  const script = join(repo, CONFORMANCE_PATH);
+export function runConformance(input: ConformanceInput, opts: { toolRoot?: string; saveDir?: string; timeoutMs?: number } = {}): ConformanceRun {
+  const toolRoot = opts.toolRoot ?? REPO_ROOT;
+  const script = join(toolRoot, CONFORMANCE_PATH);
   if (!existsSync(script)) return { status: "unavailable" };
-  let disk: Buffer | null = null;
-  try { disk = readFileSync(join(repo, manifestPath)); } catch { disk = null; }
-  if (!disk || !headBytes || Buffer.compare(disk, headBytes) !== 0) return { status: "not_at_head" };
+  const data = dataRepo(input);
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-conformance-"));
   const out = join(dir, "conformance.json");
   try {
-    const r = spawnSync(process.execPath, [script, manifestPath, "--base", base, "--out", out], { cwd: repo, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+    const r = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", "--no-install", script, join(data.root, input.manifestPath), "--base", data.base, "--out", out],
+      { cwd: toolRoot, timeout: opts.timeoutMs ?? 120_000, maxBuffer: 16 * 1024 * 1024 });
     const said = `${String(r.stderr ?? "")}\n${String(r.stdout ?? "")}`.split("\n").map(l => l.trim()).filter(Boolean)[0] ?? "";
     if (r.error) return { status: "refused", exit: r.status, message: r.error.message.slice(0, 200) };
     if (!existsSync(out)) return { status: "refused", exit: r.status, message: said.slice(0, 200) || "it wrote no conformance.json" };
     const bytes = readFileSync(out);
-    if (saveDir) {
-      mkdirSync(saveDir, { recursive: true });
-      writeFileSync(join(saveDir, `${manifestPath.split("/")[1]}.conformance.json`), bytes);
+    if (opts.saveDir) {
+      mkdirSync(opts.saveDir, { recursive: true });
+      writeFileSync(join(opts.saveDir, `${input.manifestPath.split("/")[1]}.conformance.json`), bytes);
     }
     return { status: "ran", exit: r.status, bytes };
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(data.root, { recursive: true, force: true });
+  }
 }
-/** A Source from a real repository: everything base-side is read at the merge base, as the diff is. */
-export function gitSource(repo: string, base: string, head: string, author: string, opts: { conformanceDir?: string } = {}): Source {
+/**
+ * A Source from a real repository: everything head-side is read from git objects at the head sha, and
+ * everything base-side at the merge base, as the diff is. The repository's working tree is never read.
+ */
+export function gitSource(repo: string, base: string, head: string, author: string, opts: { conformanceDir?: string; toolRoot?: string } = {}): Source {
   for (const rev of [base, head]) if (!REV.test(rev)) throw new BotError(`bad_revision: ${JSON.stringify(rev).slice(0, 80)}`);
   // P0-5's suite reads base blobs with git cat-file and no lazy fetch: full history, never shallow or blob-less.
   if (git(repo, ["rev-parse", "--is-shallow-repository"])!.toString("utf8").trim() === "true") throw new BotError("shallow_checkout: fetch the full history (fetch-depth: 0)");
   if (git(repo, ["config", "--get", "extensions.partialClone"], true)?.toString("utf8").trim()) throw new BotError("partial_clone: a blob-less or tree-less clone cannot be judged; clone with full history");
   const headSha = git(repo, ["rev-parse", "--verify", `${head}^{commit}`])!.toString("utf8").trim();
-  const baseSha = git(repo, ["rev-parse", "--verify", `${base}^{commit}`])!.toString("utf8").trim();
+  git(repo, ["rev-parse", "--verify", `${base}^{commit}`]);
   const mergeBase = git(repo, ["merge-base", base, head])!.toString("utf8").trim();
   const headBlob = (path: string) => blobAt(repo, headSha, path);
+  const baseBlob = (path: string) => blobAt(repo, mergeBase, path);
   return {
     files: changedFiles(repo, base, head),
-    base: path => blobAt(repo, mergeBase, path),
+    base: baseBlob,
     head: headBlob,
     added: path => addedLines(repo, base, head, path),
     headSha,
     author,
-    conformance: path => runConformance(repo, path, baseSha, headBlob(path), opts.conformanceDir),
+    conformance: path => {
+      const headBytes = headBlob(path);
+      if (!headBytes) return { status: "refused", exit: null, message: "no manifest at head" };
+      let skills: { path: string; bytes: Buffer }[] = [];
+      try {
+        const m = JSON.parse(headBytes.toString("utf8"));
+        const paths = Array.isArray(m?.skills) ? m.skills.map((x: any) => x?.path).filter((p: unknown) => typeof p === "string" && SKILL_PATH.test(p)) : [];
+        skills = [...new Set<string>(paths)].flatMap(p => { const bytes = headBlob(p); return bytes ? [{ path: p, bytes }] : []; });
+      } catch { skills = []; }
+      return runConformance({ manifestPath: path, headBytes, baseBytes: baseBlob(path), skills }, { toolRoot: opts.toolRoot, saveDir: opts.conformanceDir });
+    },
   };
 }
 
 // ---- Paths: the lane classifier --------------------------------------------------------------------
 const LANE_PATH = /^(mini-apps|skills)\/([^/]+)\/(.+)$/;
-/** The one app id the pull request stays inside, or null (core) with why. */
+/** The one app id the pull request stays inside, or null (core) with why. A baseline skill's id is core. */
 export function classify(files: Change[]): { id: string | null; core: string[] } {
   const ids = new Set<string>(), core: string[] = [];
   for (const f of files) {
     const m = LANE_PATH.exec(f.path);
-    if (!m || !APP_ID.test(m[2])) core.push(f.path);
+    if (!m || !APP_ID.test(m[2]) || BASELINE_SKILLS.has(m[2])) core.push(f.path);
     else ids.add(m[2]);
   }
   if (files.length === 0) return { id: null, core: ["(no changed files)"] };
@@ -312,6 +367,12 @@ export const SECRET_PATTERNS: readonly (readonly [string, RegExp])[] = Object.fr
 ]);
 const DATA_URI = /\bdata:[a-z]+\/[a-z0-9.+-]+[;,]/i;
 const BASE64_RUN = /[A-Za-z0-9+\/_-]{1025,}={0,2}/;
+/** JSON string escapes decoded (\uXXXX and the simple ones), so an escaped secret matches its shape. */
+export function jsonUnescape(text: string): string {
+  if (!text.includes("\\")) return text;
+  const simple: Record<string, string> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+  return text.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g, (_, hex, c) => (hex ? String.fromCharCode(parseInt(hex, 16)) : simple[c]));
+}
 export function secretHits(text: string): string[] {
   return SECRET_PATTERNS.filter(([, re]) => re.test(text)).map(([name]) => name);
 }
@@ -470,6 +531,7 @@ export function evaluate(src: Source, validator: Validator): Report {
   for (const path of core) {
     if (path === "(no changed files)") add({ code: "empty_diff", severity: "S", text: "the pull request changes no file: nothing to judge, so core (never a PASS on nothing)" });
     else if (/ app ids: /.test(path)) add({ code: "multiple_apps", severity: "S", text: `${path}: a manifest lane is exactly one app id, so core` });
+    else if (BASELINE_SKILLS.has(LANE_PATH.exec(path)?.[2] ?? "")) add({ code: "baseline_skill", severity: "S", file: path, text: `${LANE_PATH.exec(path)![2]} is a baseline skill (install/paths.ts EDGE_SKILL_NAMES): its skill ships to every box whatever the manifest says, so core` });
     else add({ code: "core_path", severity: "S", file: path, text: `${path} is outside one app's mini-apps/<id>/ and skills/<id>/: core, the human gate` });
   }
   for (const f of src.files) {
@@ -480,7 +542,10 @@ export function evaluate(src: Source, validator: Validator): Report {
     if (GATE_FILES.includes(f.path)) add({ code: "gate_changed", severity: "S", file: f.path, text: "this pull request changes the review gate itself (script, validator, pins, catalog index or workflow); its own result is advisory only" });
     if (f.newMode === "120000" || f.newMode === "160000") add({ code: "path_symlink", severity: "M", file: f.path, text: `${f.newMode === "120000" ? "a symlink" : "a submodule"} is never a reviewed catalog file` });
     const m = LANE_PATH.exec(f.path);
-    if (m && f.status !== "D" && !(LANE_FILES[m[1]] ?? []).includes(m[3])) {
+    // skills/<id>/ holds only SKILL.md for an app (an id with a manifest at the base or head); a baseline
+    // skill (skills/edge-india/references/...) or another skill directory is core, never a false FAIL.
+    const appSkill = m?.[1] === "skills" ? !BASELINE_SKILLS.has(m[2]) && !!(src.head(`mini-apps/${m[2]}/manifest.json`) || src.base(`mini-apps/${m[2]}/manifest.json`)) : true;
+    if (m && f.status !== "D" && appSkill && !(LANE_FILES[m[1]] ?? []).includes(m[3])) {
       add({ code: "path_unknown_file", severity: "M", file: f.path, text: m[1] === "mini-apps" && m[3] === "conformance.json"
         ? "a committed conformance.json is never trusted: the bot runs the suite itself; remove it"
         : `only ${LANE_FILES[m[1]].join(", ")} may sit in ${m[1]}/<id>/ (no code, no other files)` });
@@ -492,6 +557,8 @@ export function evaluate(src: Source, validator: Validator): Report {
   // A base manifest is expected unless the pull request adds the manifest; either surprise is "could not check".
   const manifestChange = manifestPath ? src.files.find(f => f.path === manifestPath) : undefined;
   const expectBase = manifestChange?.status !== "A";
+  // A manifest absent at the merge base is a new app (core in Phase 0), even when catalog.json already lists its id.
+  if (id && headBytes && !baseBytes) add({ code: "new_app", severity: "S", file: manifestPath!, text: `${id} has no manifest at the merge base: a new app is core in Phase 0 (whether or not catalog.json lists it)` });
   if (id && !headBytes) add({ code: baseBytes ? "manifest_deleted" : "no_manifest", severity: "S", file: manifestPath!, text: baseBytes ? "the pull request removes this app's manifest: unpublishing is core" : `${id} has no manifest at head: skills/${id}/ is a baseline skill or a new app without one, core` });
   const laneId = id && headBytes ? id : null;
 
@@ -510,15 +577,25 @@ export function evaluate(src: Source, validator: Validator): Report {
   const baseWhy = "the base manifest is missing or unreadable";
   if (!laneId) for (const c of CHECKED.filter(c => c !== "paths" && c !== "secrets")) skip(c, id && !headBytes ? "the app has no manifest at head (core)" : "no single app manifest: core");
   else if (!head.ok) for (const c of ["author", "schema", "hashes", "version_bump", "data_context", "approval_classes", "lane_rules"]) skip(c, "the manifest is not JSON");
-  if (laneId) lane = VISIBILITY.includes(hm?.visibility) ? hm.visibility : "core";
+  // The lane is the WIDER of the base's and the head's visibility (release S2): lowering an app out of a lane
+  // never moves its review into a narrower one, and lowering it out of everyone takes the human read.
+  if (laneId) {
+    const to = VISIBILITY.indexOf(hm?.visibility), from = bm ? VISIBILITY.indexOf(bm.visibility) : -1;
+    lane = to < 0 ? "core" : (VISIBILITY[Math.max(to, from)] as Lane);
+    if (bm?.visibility === "everyone" && to >= 0 && hm.visibility !== "everyone") {
+      add({ code: "visibility_lowered_from_everyone", severity: "S", file: manifestPath!, text: `visibility everyone -> ${hm.visibility} takes the app away from every resident: the human read (judged in the everyone lane)` });
+    }
+  }
+  if (laneId && !baseBytes) lane = "core";
 
   // author: owner.github is not filled in any manifest yet (P0-1), so this never passes on its own.
   if (laneId && head.ok) {
     ran.add("author");
     const owners = ownerLogins(hm);
-    if (!owners || !LOGIN.test(src.author)) add({ code: "author_unverified", severity: "N", file: manifestPath!, text: owners ? "the pull request author is missing or not a user login: not checked" : "the manifest names no owner.github yet: the author is not checked" });
-    else if (owners.some(o => o.toLowerCase() === src.author.toLowerCase())) add({ code: "author_is_owner", severity: "N", file: manifestPath!, text: `${src.author} is a listed owner` });
-    else add({ code: "author_not_owner", severity: "S", file: manifestPath!, text: `${src.author} is not in owner.github: the human read decides (staff may open it)` });
+    // With owners listed, anyone else is S: a [bot] or a missing author too (review-b N1).
+    if (!owners) add({ code: "author_unverified", severity: "N", file: manifestPath!, text: "the manifest names no owner.github yet: the author is not checked" });
+    else if (LOGIN.test(src.author) && owners.some(o => o.toLowerCase() === src.author.toLowerCase())) add({ code: "author_is_owner", severity: "N", file: manifestPath!, text: `${src.author} is a listed owner` });
+    else add({ code: "author_not_owner", severity: "S", file: manifestPath!, text: `${src.author ? src.author.slice(0, 60) : "(no author)"} is not in owner.github: the human read decides (staff may open it)` });
   }
 
   // schema: the one validator, and the catalog it builds.
@@ -594,7 +671,8 @@ export function evaluate(src: Source, validator: Validator): Report {
       continue;
     }
     for (const { line, text } of added) {
-      for (const name of secretHits(text)) add({ code: "secret_in_diff", severity: "M", file: f.path, line, text: `an added line matches the ${name} shape (value not shown)` });
+      // Matched raw AND JSON-unescaped, so "\u0067hp_..." in a manifest string is still a ghp_ token (release N4).
+      for (const name of new Set([...secretHits(text), ...secretHits(jsonUnescape(text))])) add({ code: "secret_in_diff", severity: "M", file: f.path, line, text: `an added line matches the ${name} shape (value not shown)` });
     }
     if (LANE_PATH.test(f.path)) {
       const body = src.head(f.path)?.toString("utf8") ?? "";
@@ -645,6 +723,16 @@ export function evaluate(src: Source, validator: Validator): Report {
         add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${was.name} was needs-card and is now ${now.class}: a downgrade is core` });
       }
     }
+    // An alias: a card-less op on a target a needs-card op uses, at the base or the head (review-b S1). Keeping
+    // X.confirm (needs-card) and adding X.quick (write) or X.peek (read) on the same tool or path is a downgrade.
+    const targetOf = (op: any) => !isObject(op?.target) ? null : typeof op.target.tool === "string" ? `tool ${op.target.tool}` : typeof op.target.path === "string" ? `path ${op.target.path}` : canon(op.target);
+    const cardTargets = new Set([...bo.values(), ...ho.values()].filter(op => op.class === "needs-card").map(targetOf).filter((t): t is string => t !== null));
+    for (const op of ho.values()) {
+      const t = targetOf(op);
+      if (op.class === "needs-card" || t === null || !cardTargets.has(t)) continue;
+      downgraded = true;
+      add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${op.name} (${op.class}) calls ${t}, which a needs-card op calls: a card-less alias is a downgrade, core` });
+    }
     const removedCard = [...bo.values()].some(op => op.class === "needs-card" && !ho.has(op.name));
     const newPlain = [...ho.values()].some(op => !bo.has(op.name) && op.class !== "needs-card");
     if (bm && removedCard && newPlain) add({ code: "needs_card_replaced", severity: "S", file: manifestPath!, text: "a needs-card op was removed and a new op without a card was added: the human read decides whether it is a renamed downgrade" });
@@ -658,7 +746,7 @@ export function evaluate(src: Source, validator: Validator): Report {
     const run: ConformanceRun = src.conformance ? src.conformance(manifestPath!) : { status: "unavailable" };
     for (const f of judgeConformance(run, manifestPath!, headBytes)) add(f);
     if (run.status === "ran") ran.add("conformance");
-    else skip("conformance", run.status === "unavailable" ? `${CONFORMANCE_PATH} is not in the checkout` : run.status === "not_at_head" ? "the checkout is not at head" : "the suite refused");
+    else skip("conformance", run.status === "unavailable" ? `${CONFORMANCE_PATH} is not in the tool tree` : "the suite refused");
   }
 
   // lane_rules (§5): visibility one step at a time and never with a major bump; oauth and events read by a human.
@@ -669,6 +757,8 @@ export function evaluate(src: Source, validator: Validator): Report {
     if (to >= 0 && to - from > 1) add({ code: "visibility_raise_multi_step", severity: "S", file: manifestPath!, text: `visibility ${bm?.visibility ?? "(new)"} -> ${hm.visibility} is more than one step` });
     if (to >= 0 && to > from && from >= 0 && (bump.level === "major" || actual === "major")) add({ code: "visibility_raise_with_major", severity: "S", file: manifestPath!, text: `visibility raised to ${hm.visibility} in the same pull request as a major bump` });
     if (hm.service?.auth?.mode === "oauth" && canon(hm.service.auth) !== canon(bm?.service?.auth)) add({ code: "oauth_review", severity: "S", file: manifestPath!, text: "an oauth auth block is new or changed: the human read (a client registration and env vars)" });
+    // Any auth-mode change (none -> app-token included) is the human read (review-b N2).
+    if (bm && canon(hm.service?.auth?.mode) !== canon(bm.service?.auth?.mode)) add({ code: "auth_mode_review", severity: "S", file: manifestPath!, text: `service.auth.mode ${String(bm.service?.auth?.mode)} -> ${String(hm.service?.auth?.mode)}: an auth-mode change is the human read` });
     const events = isObject(hm.events) && Object.keys(hm.events).length > 0;
     const entering = hm.visibility === "everyone" && bm?.visibility !== "everyone";
     if (events && (canon(hm.events) !== canon(bm?.events) || entering)) {
@@ -692,8 +782,7 @@ const BUMP_ROW = /^version\./;
 export function judgeConformance(run: ConformanceRun, manifestPath: string, headBytes: Buffer): Finding[] {
   const out: Finding[] = [];
   const file = manifestPath;
-  if (run.status === "unavailable") return [{ code: "conformance_not_available", severity: "N", file, text: `${CONFORMANCE_PATH} is not in this checkout (P0-5, ov#422): conformance was not run` }];
-  if (run.status === "not_at_head") return [{ code: "conformance_not_run_here", severity: "N", file, text: "the checkout's manifest is not head's bytes, so the suite (which reads the working tree) was not run" }];
+  if (run.status === "unavailable") return [{ code: "conformance_not_available", severity: "N", file, text: `${CONFORMANCE_PATH} is not in the tool tree (P0-5, ov#422): conformance was not run` }];
   if (run.status === "refused") return [{ code: "conformance_refused", severity: "M", file, text: `the conformance suite refused (exit ${run.exit}): ${run.message}` }];
   const c = parseJson(run.bytes);
   if (!c.ok || !isObject(c.value)) return [{ code: "conformance_unreadable", severity: "M", file, text: "the suite's conformance.json is not a JSON object" }];
@@ -718,9 +807,14 @@ export function judgeConformance(run: ConformanceRun, manifestPath: string, head
 }
 
 /** Review a real pull request. */
-export function review(opts: { repo: string; base: string; head: string; author?: string; validatorRoot?: string; conformanceDir?: string; validator?: Validator }): Report {
-  const validator = opts.validator ?? loadValidator(opts.validatorRoot ?? REPO_ROOT);
-  return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? "", { conformanceDir: opts.conformanceDir }), validator);
+/**
+ * Review a real pull request. `toolRoot` (default REPO_ROOT, this script's tree; in CI the base commit's) is
+ * where the validator and P0-5's suite are read from; `repo` is only ever read through git objects.
+ */
+export function review(opts: { repo: string; base: string; head: string; author?: string; toolRoot?: string; validatorRoot?: string; conformanceDir?: string; validator?: Validator }): Report {
+  const toolRoot = opts.toolRoot ?? opts.validatorRoot ?? REPO_ROOT;
+  const validator = opts.validator ?? loadValidator(toolRoot);
+  return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? "", { conformanceDir: opts.conformanceDir, toolRoot }), validator);
 }
 
 /** The fail-closed report: the bot could not judge, so it never says PASS. */
@@ -760,7 +854,7 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-/** The CLI. 0: reviewed (any verdict). 2: the bot is broken; a FAIL report is still written. */
+/** The CLI. 0: PASS or NEEDS_HUMAN. 1: FAIL. 2: the bot is broken; a FAIL report is still written. */
 export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?: (s: string) => void; validatorRoot?: string; validator?: Validator } = {}): number {
   const stdout = io.stdout ?? (s => process.stdout.write(s));
   const stderr = io.stderr ?? (s => process.stderr.write(s));
@@ -786,7 +880,7 @@ export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?
     stderr(`mini-apps-review: could not write the report file: ${(e as Error).message}\n`);
     return 2;
   }
-  return code;
+  return code !== 0 ? code : report.verdict === "FAIL" ? 1 : 0;
 }
 
 if (import.meta.main) process.exit(main(process.argv.slice(2)));

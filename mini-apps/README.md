@@ -93,19 +93,25 @@ half of the PR-review bot. It runs `bun scripts/mini-apps-review.ts --base <sha>
 --head <sha> --author <login>` and writes a JSON verdict (`PASS`, `FAIL` or
 `NEEDS_HUMAN`) to the job summary and to an artifact. Run the same line
 locally before you open the pull request. A pull request that stays inside one
-app's `mini-apps/<id>/` and `skills/<id>/` is judged in that app's
-`visibility` lane. Anything else is core and goes to the human gate, including
-listing a new id in `catalog.json`. The bot checks:
+app's `mini-apps/<id>/` and `skills/<id>/` is judged in the wider of that
+app's base and head `visibility` lane (lowering an app out of `everyone` takes
+the human read). Anything else is core and goes to the human gate, including a
+new app, listing a new id in `catalog.json`, and any baseline skill
+(`gold-stars` among them). CI runs the bot from the base commit's tree with the
+pull request as data only (git objects, never checked out or executed); a pull
+request that edits the workflow file itself still runs its own copy, so a
+verdict is trustworthy only when the workflow is unchanged. The bot checks:
 
 - the shared validator;
 - the skill hash and the version bump;
 - secret shapes in the added lines;
 - `data.context`;
 - the needs-card classes;
-- `conformance.json`;
+- P0-5's conformance suite (the tool's copy, on the head's bytes);
 - the one-step visibility rule.
 
-In Phase 0 it is not a required check and it posts no comment.
+In Phase 0 it is not a required check and it posts no comment. A `FAIL`
+turns the job red (exit 1).
 
 The manifest is the review artifact. The **CP catalog is authoritative** for
 what may be installed. The app server retrieves it and enforces the exact
