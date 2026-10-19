@@ -68,7 +68,7 @@ SCHEMA = {
             "promptingApproach": {"type": ["string", "null"], "maxLength": 20000},
             "tags": {"type": ["array", "null"], "maxItems": 16, "items": {"type": "string", "maxLength": 80}},
         }, "additionalProperties": False, "description": "Slopfolio projection overrides only; this object cannot be null. Omit members to keep; null on an individual member clears it. Never credentials, endpoints or account ids."},
-        "date": {"type": "string", "description": "For Kicks menu date, YYYY-MM-DD in IST."},
+        "date": {"type": "string", "description": "forkicks.menu only: menu date, YYYY-MM-DD in IST. For an order, put the pickup date in fulfilment.date instead."},
         "locationId": {"type": "string", "description": "Exact For Kicks location id returned by menu/schedule."},
         "format": {"type": "string", "enum": ["image"], "description": "forkicks.menu only: use image by default when the resident asks to see the menu, including 'what is on the menu' or 'what do you have'. Omit only for explicit text-only requests or structured reads needed to prepare an order."},
         "theme": {"type": "string", "enum": ["chalk", "paper"], "description": "forkicks.menu with format:image only; default chalk. Paper is a provisional concept."},
@@ -78,9 +78,9 @@ SCHEMA = {
             "itemId": {"type": "string"}, "qty": {"type": "integer", "minimum": 1},
             "optionIds": {"type": "array", "items": {"type": "string"}}
         }, "required": ["itemId", "qty", "optionIds"], "additionalProperties": False}},
-        "fulfilment": {"type": "object", "properties": {
+        "fulfilment": {"type": "object", "description": "forkicks.order.prepare: {type,locationId,date?,deliveryAddress?}. The optional pickup/delivery date belongs HERE as fulfilment.date, not at the top level.", "properties": {
             "type": {"type": "string", "enum": ["pickup", "delivery"]}, "locationId": {"type": "string"},
-            "date": {"type": "string"}, "deliveryAddress": {"type": "string"}
+            "date": {"type": "string", "description": "Optional pickup or delivery date, YYYY-MM-DD in IST, nested inside fulfilment."}, "deliveryAddress": {"type": "string"}
         }, "required": ["type", "locationId"], "additionalProperties": False},
         "paymentMethod": {"type": "string", "enum": ["upi", "card_on_pickup"]},
         "orderId": {"type": "string", "description": "Exact For Kicks order id returned by confirm; never another resident's."},
@@ -174,6 +174,58 @@ def zzz_payload(op, args, context):
         # Stable on retries in this originating turn, distinct across later turns: the app's idempotency key input.
         out["turnId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["zzz-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))
     return out
+
+
+# FORKICKS-DOWN (19 Oct): the arguments each operation accepts besides "operation", named in the plugin's own
+# invalid_arguments instruction so the agent can correct a call. zzz operations keep invalid_zzz_arguments.
+OP_ARGUMENTS = {
+    "rolodex.search": "query",
+    "rolodex.person": "id or query, not both",
+    "rolodex.meeting": "attendeeId and met",
+    "gold-stars.quota": "no other arguments",
+    "gold-stars.prepare": "attendeeId, note and visibility",
+    "gold-stars.send": "draftId",
+    "gold-stars.status": "draftId",
+    "gold-stars.cancel": "draftId",
+    "skylight.status": "no other arguments",
+    "mini-app.read": "appId, tool and arguments",
+    "mini-app.context.read": "appId and arguments",
+    "mini-app.context.write": "appId and arguments",
+    "forkicks.menu": "optional date, locationId, format and theme",
+    "forkicks.schedule": "optional from and days",
+    "forkicks.order.prepare": ("items, fulfilment ({type, locationId, date?, deliveryAddress?}), paymentMethod and "
+                               "optional note; the pickup date goes in fulfilment.date (YYYY-MM-DD, IST)"),
+    "forkicks.order.confirm": "draftId",
+    "forkicks.order.status": "orderId",
+    "forkicks.order.cancel": "orderId",
+    "slopfolio.prepare": "paste, and optional draftId, artifactUrl, medium and fixes",
+    "slopfolio.status": "draftId",
+}
+FORKICKS_DATE_CONFLICT = ("Nothing was sent. The top-level date and fulfilment.date differ. Send the pickup date the "
+                          "owner chose once, as fulfilment.date (YYYY-MM-DD, IST), with no top-level date, then call again.")
+
+
+class _InvalidArguments(ValueError):
+    """Raised ONLY by handle()'s argument checks, before any request is built or sent: nothing left the box, so
+    the agent gets a closed invalid_arguments error it can correct, never village_unavailable (FORKICKS-DOWN).
+    Every other exception, a ValueError after a request was sent included, keeps the catch-all's text."""
+    def __init__(self, op=None, instruction=None, fields=None):
+        super().__init__("invalid_arguments")
+        accepted = OP_ARGUMENTS.get(op) if isinstance(op, str) else None
+        # fields (forkicks.order.prepare, after jmill's ov#407): schema property names only, never values.
+        self.fields = fields
+        self.instruction = instruction or (
+            "Nothing was sent. " + ("Correct: " + ", ".join(fields) + ". " if fields else "") + op + " accepts only: "
+            + accepted + ". Fix the arguments and call again; this is not an outage, so do not report the service as unavailable."
+            if accepted else "Nothing was sent. Use one operation from the village tool's list with only its arguments, then call again.")
+
+
+def _uuid(value, op):
+    """A model-supplied uuid, canonicalized, or _InvalidArguments (a parse failure is the model's argument)."""
+    try:
+        return str(uuid.UUID(value))
+    except Exception:
+        raise _InvalidArguments(op) from None
 
 
 def hermes_home():
@@ -790,10 +842,10 @@ def handle(args, **kwargs):
     try:
         home = hermes_home()
         if not isinstance(args, dict):
-            raise ValueError("invalid_arguments")
+            raise _InvalidArguments()
         op = args.get("operation")
-        if op not in READ_OPERATIONS and op not in WRITE_OPERATIONS:
-            raise ValueError("invalid_arguments")
+        if not isinstance(op, str) or (op not in READ_OPERATIONS and op not in WRITE_OPERATIONS):
+            raise _InvalidArguments()
         app_id = (args.get("appId") if op in APP_SCOPED_OPERATIONS else "forkicks" if op.startswith("forkicks.")
                   else "zzzbot" if op in ZZZ_OPERATIONS else "slopfolio" if op in ("slopfolio.prepare", "slopfolio.status") else "gold-stars")
         if not isinstance(app_id, str) or not installed(home, app_id, op):
@@ -815,7 +867,7 @@ def handle(args, **kwargs):
         if op == "rolodex.search" and set(args) == {"operation", "query"}:
             query = args["query"]
             if not isinstance(query, str) or not 1 <= len(query.strip()) <= 120:
-                raise ValueError("invalid_query")
+                raise _InvalidArguments(op)
             payload["query"] = query.strip()
         elif op == "rolodex.person" and set(args) in ({"operation", "id"}, {"operation", "query"}):
             # ROLODEX.PERSON (rc42): a read of one other resident's public profile. Exactly one subject:
@@ -825,19 +877,19 @@ def handle(args, **kwargs):
             # 120 code points after trimming, exactly as rolodex.search.
             if "id" in args:
                 if not isinstance(args["id"], str) or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", args["id"]):
-                    raise ValueError("invalid_person")
+                    raise _InvalidArguments(op)
                 payload["id"] = args["id"]
             else:
                 query = args["query"]
                 if not isinstance(query, str) or not 1 <= len(query.strip()) <= 120:
-                    raise ValueError("invalid_query")
+                    raise _InvalidArguments(op)
                 payload["query"] = query.strip()
         elif op == "rolodex.meeting" and set(args) == {"operation", "attendeeId", "met"}:
             # ov#300 (1.1.x), restored: an owner-requested, owner-scoped, reversible write. The app derives
             # the tenant and person from the bearer; no actor argument exists.
-            attendee = str(uuid.UUID(args["attendeeId"]))
+            attendee = _uuid(args["attendeeId"], op)
             if type(args["met"]) is not bool:
-                raise ValueError("invalid_state")
+                raise _InvalidArguments(op)
             payload.update(attendeeId=attendee, met=args["met"])
             # Stable across retries in this originating turn. The same old request cannot
             # re-mark someone after a later undo; the server returns a historical receipt.
@@ -845,7 +897,7 @@ def handle(args, **kwargs):
             payload["requestId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
         elif op == "mini-app.read" and set(args) == {"operation", "appId", "tool", "arguments"}:
             if not isinstance(args["tool"], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", args["tool"]) or not isinstance(args["arguments"], dict):
-                raise ValueError("invalid_mini_app_read")
+                raise _InvalidArguments(op)
             payload.update(appId=app_id, tool=args["tool"], arguments=args["arguments"])
         elif op in ("mini-app.context.read", "mini-app.context.write") and set(args) == {"operation", "appId", "arguments"}:
             # NEW-03 (rc44): the app's own context namespace, forwarded unchanged like mini-app.read (appId,
@@ -854,7 +906,7 @@ def handle(args, **kwargs):
             # different appId is refused, never forwarded. The CP/app own the claim shape and quota.
             body = args["arguments"]
             if not isinstance(body, dict) or ("appId" in body and body["appId"] != app_id):
-                raise ValueError("invalid_mini_app_context")
+                raise _InvalidArguments(op)
             payload.update(appId=app_id, arguments=body)
         elif op in ZZZ_OPERATIONS:
             try:
@@ -868,80 +920,103 @@ def handle(args, **kwargs):
             if (not set(args) <= allowed or not isinstance(paste, str) or not paste or
                     len(paste.encode("utf-8")) > 100000 or
                     (draft_id is not None and (not isinstance(draft_id, str) or not SLOPFOLIO_DRAFT_ID.fullmatch(draft_id)))):
-                raise ValueError("invalid_slopfolio_arguments")
+                raise _InvalidArguments(op)
             medium = args.get("medium")
             if medium is not None and medium not in ("code", "image", "video", "audio", "workflow"):
-                raise ValueError("invalid_slopfolio_arguments")
+                raise _InvalidArguments(op)
             artifact = args.get("artifactUrl")
             if artifact is not None:
                 if not isinstance(artifact, str) or not artifact or len(artifact) > 2048:
-                    raise ValueError("invalid_slopfolio_arguments")
+                    raise _InvalidArguments(op)
                 url = urlsplit(artifact)
                 if url.scheme != "https" or not url.hostname or url.username or url.password:
-                    raise ValueError("invalid_slopfolio_arguments")
+                    raise _InvalidArguments(op)
             fixes = args.get("fixes", {})
             if not isinstance(fixes, dict) or not set(fixes) <= {
                     "title", "oneLiner", "tools", "iterations", "howItWasMade",
                     "bestDeadEnd", "promptingApproach", "tags"}:
-                raise ValueError("invalid_slopfolio_arguments")
+                raise _InvalidArguments(op)
             for key, value in fixes.items():
                 if value is None:
                     continue
                 if key in ("tools", "tags"):
                     if not isinstance(value, list) or len(value) > 16 or any(
                             not isinstance(item, str) or len(item) > 80 for item in value):
-                        raise ValueError("invalid_slopfolio_arguments")
+                        raise _InvalidArguments(op)
                 elif key == "iterations":
                     if value not in ("one_shot", "a_few_tries", "many_attempts"):
-                        raise ValueError("invalid_slopfolio_arguments")
+                        raise _InvalidArguments(op)
                 else:
                     cap = {"title": 100, "oneLiner": 200, "howItWasMade": 20000,
                            "bestDeadEnd": 10000, "promptingApproach": 20000}[key]
                     if not isinstance(value, str) or len(value) > cap:
-                        raise ValueError("invalid_slopfolio_arguments")
+                        raise _InvalidArguments(op)
             # Private drafts only; preserve omissions, explicit nulls and the owner's exact Markdown.
             payload.update({key: value for key, value in args.items() if key != "operation"})
             # Trusted originating-turn identity, stable on retries but distinct across later turns/sessions.
             payload["turnId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["slopfolio-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))
             if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 256 * 1024:
-                raise ValueError("invalid_slopfolio_arguments")
+                raise _InvalidArguments(op)
         elif op == "slopfolio.status" and set(args) == {"operation", "draftId"}:
             if not isinstance(args["draftId"], str) or not SLOPFOLIO_DRAFT_ID.fullmatch(args["draftId"]):
-                raise ValueError("invalid_slopfolio_arguments")
+                raise _InvalidArguments(op)
             payload["draftId"] = args["draftId"]
         elif op == "gold-stars.prepare" and set(args) == {"operation", "attendeeId", "note", "visibility"}:
-            attendee = str(uuid.UUID(args["attendeeId"]))
+            attendee = _uuid(args["attendeeId"], op)
             note = args["note"]
             if not isinstance(note, str) or len(note) > 500 or args["visibility"] not in ("named", "anonymous"):
-                raise ValueError("invalid_star")
+                raise _InvalidArguments(op)
             payload.update(attendeeId=attendee, note=note.strip(), visibility=args["visibility"])
             payload["turnId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["gold-star-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))
         elif op in ("gold-stars.send", "gold-stars.status", "gold-stars.cancel") and set(args) == {"operation", "draftId"}:
-            payload["draftId"] = str(uuid.UUID(args["draftId"]))
+            payload["draftId"] = _uuid(args["draftId"], op)
             if op == "gold-stars.send":
                 payload["turnId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["gold-star-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))
         elif op in ("forkicks.menu", "forkicks.schedule"):
             allowed = {"date", "locationId", "format", "theme"} if op == "forkicks.menu" else {"from", "days"}
             if set(args) - (allowed | {"operation"}):
-                raise ValueError("invalid_arguments")
+                raise _InvalidArguments(op)
             if op == "forkicks.menu" and (("format" in args and args["format"] != "image") or
                     ("theme" in args and (args.get("format") != "image" or args["theme"] not in ("chalk", "paper")))):
-                raise ValueError("invalid_arguments")
+                raise _InvalidArguments(op)
             payload.update({key: value for key, value in args.items() if key != "operation"})
         elif op == "forkicks.order.prepare":
-            if set(args) not in ({"operation", "items", "fulfilment", "paymentMethod"}, {"operation", "items", "fulfilment", "paymentMethod", "note"}):
-                raise ValueError("invalid_arguments")
-            if not isinstance(args["items"], list) or not 1 <= len(args["items"]) <= 50 or not isinstance(args["fulfilment"], dict) or args["paymentMethod"] not in ("upi", "card_on_pickup"):
-                raise ValueError("invalid_arguments")
-            payload.update({key: value for key, value in args.items() if key != "operation"})
+            order = dict(args)
+            if "date" in order and isinstance(order.get("fulfilment"), dict):
+                # FORKICKS-DOWN: the schema's top-level `date` is forkicks.menu's; the app takes the pickup date only
+                # as fulfilment.date (app ForKicksOrderInput: strict, z.iso.date()). Move it there when fulfilment
+                # has none; an equal copy is dropped; a different one is refused, never guessed between.
+                date, fulfilment = order.pop("date"), dict(order["fulfilment"])
+                if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date, flags=re.ASCII):
+                    raise _InvalidArguments(op, fields=["date"])
+                if "date" not in fulfilment:
+                    fulfilment["date"] = date
+                elif fulfilment["date"] != date:
+                    raise _InvalidArguments(op, FORKICKS_DATE_CONFLICT, ["date"])
+                order["fulfilment"] = fulfilment
+            # Field-aware refusal, after jmill's ov#407: every bad or missing field is named (schema names only).
+            required = {"operation", "items", "fulfilment", "paymentMethod"}
+            invalid = (set(order) - (required | {"note"})) | (required - set(order))
+            if "items" in order and (not isinstance(order["items"], list) or not 1 <= len(order["items"]) <= 50):
+                invalid.add("items")
+            if "fulfilment" in order and not isinstance(order["fulfilment"], dict):
+                invalid.add("fulfilment")
+            if "paymentMethod" in order and order["paymentMethod"] not in ("upi", "card_on_pickup"):
+                invalid.add("paymentMethod")
+            # The app trims the note, then allows at most 140 characters (ForKicksOrderInput.note).
+            if "note" in order and (not isinstance(order["note"], str) or len(order["note"].strip()) > 140):
+                invalid.add("note")
+            if invalid:
+                raise _InvalidArguments(op, fields=sorted({key if key in SCHEMA["parameters"]["properties"] else "(unknown field)" for key in invalid}))
+            payload.update({key: value for key, value in order.items() if key != "operation"})
         elif op == "forkicks.order.confirm" and set(args) == {"operation", "draftId"}:
             payload["draftId"] = args["draftId"]
         elif op in ("forkicks.order.status", "forkicks.order.cancel") and set(args) == {"operation", "orderId"}:
             if not isinstance(args["orderId"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", args["orderId"]):
-                raise ValueError("invalid_arguments")
+                raise _InvalidArguments(op)
             payload["orderId"] = args["orderId"]
         elif op not in ("gold-stars.quota", "skylight.status") or set(args) != {"operation"}:
-            raise ValueError("invalid_arguments")
+            raise _InvalidArguments(op)
         if op == "rolodex.meeting":
             # A write through the gated `village` entry: refuse it while that gate is off or unverified.
             try:
@@ -1049,6 +1124,10 @@ def handle(args, **kwargs):
                     error["retryable"] = False
                 return json.dumps(error, ensure_ascii=False)
         return json.dumps({"data": result, "handling": HANDLING}, ensure_ascii=False)
+    except _InvalidArguments as error:
+        # Raised only by the argument checks above, before any request: nothing was sent, so the agent can fix
+        # the call. Never village_unavailable, which tells it (and the owner) the service is down.
+        return json.dumps({"error": "invalid_arguments", **({"fields": error.fields} if error.fields else {}), "instruction": error.instruction})
     except Exception:
         if isinstance(args, dict) and isinstance(args.get("operation"), str) and args["operation"] in ZZZ_OPERATIONS:
             return json.dumps({"error": "village_unavailable", "settingsUrl": SETTINGS, "instruction": ZZZ_UNCLEAR})
