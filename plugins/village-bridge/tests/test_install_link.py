@@ -235,7 +235,12 @@ class InstallLinkTest(unittest.TestCase):
         for where, text in texts.items():
             with self.subTest(no_new=where):
                 self.assertNotIn('/new', text)
-        self.assertIn("Once it's installed I'll pick it up on your next message.", copy.NAMED)
+        # Product's post-v2.1.5 tails, verbatim (CLAIMS L13415, L14006).
+        self.assertTrue(copy.NAMED.endswith("{link} Once it's installed I'll pick it up on your next message."))
+        self.assertEqual(copy.GENERAL_OUTRO, "Tap the ones you want; I'll pick each one up on your next message.")
+        self.assertTrue(copy.MID_TASK.endswith("One tap: {link} Then ask me again."))
+        self.assertTrue(copy.NOT_INSTALLED.endswith("give the one-tap link below. Never show this code."))
+        self.assertTrue(copy.NEVER.endswith(" Never promise it works before their next message."))
 
     def test_the_installable_list_is_generated_from_the_catalog(self):
         # The committed module and skill are exactly the generator's output from the manifests and product's words.

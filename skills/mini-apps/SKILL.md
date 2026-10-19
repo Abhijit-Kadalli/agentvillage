@@ -33,7 +33,7 @@ Offer only apps this resident can open in Mini-apps: the app ids in `$AV_MINI_AP
 
 > That needs **For Kicks**, which isn't installed yet. One tap: https://agents.edgecity.live/mini-apps?app=forkicks Then ask me again.
 
-Never send them to the team or the organisers to install an app. Never say you installed it. Never show the error code, a tool name or any link other than the app's install link.
+Never send them to the team or the organisers to install an app. Never say you installed it. Never show the error code, a tool name or any link other than the app's install link. Never promise it works before their next message.
 
 ## Apps that come with every agent
 

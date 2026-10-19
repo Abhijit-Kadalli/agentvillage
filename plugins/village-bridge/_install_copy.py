@@ -9,7 +9,7 @@ are filled from the reviewed catalog (_install_catalog.py), never from a tool ar
 
 No "/new": v2.1.5 (ov#410: an installed mini-app reaches an open chat without /new) is on every box (lead L13755,
 product L13758), so NAMED, GENERAL_OUTRO, MID_TASK and NOT_INSTALLED carry product's post-v2.1.5 tails, verbatim
-(CLAIMS L13415), and NEVER drops its /new sentence. After any change, rerun `python3 scripts/gen_install_catalog.py`.
+(CLAIMS L13415, confirmed L14006), and NEVER ends "Never promise it works before their next message." (L14006). After any change, rerun `python3 scripts/gen_install_catalog.py`.
 """
 
 # The lead's install rule, whole (L13329). The shipped `mini-apps` skill carries it.
@@ -76,4 +76,5 @@ SKILL_OFFER = ("Offer only apps this resident can open in Mini-apps: the app ids
                "returned it; never build or change one. If the variable is unset or empty and the tool gave no link, say "
                "you can't add apps from here right now and carry on.")
 NEVER = ("Never send them to the team or the organisers to install an app. Never say you installed it. Never show the "
-         "error code, a tool name or any link other than the app's install link.")
+         "error code, a tool name or any link other than the app's install link. Never promise it works before their "
+         "next message.")
