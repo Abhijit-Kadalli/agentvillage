@@ -29,5 +29,6 @@
     "contextsling.update",
     "contextsling.revoke"
   ],
-  "contextCeiling": "agentvillage/private"
+  "contextCeiling": "agentvillage/private",
+  "listed": false
 }

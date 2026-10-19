@@ -5,6 +5,9 @@ version: 1.0.0
 ---
 
 Use only when installed, in the paired resident's private root Telegram conversation.
+After installation and the runtime restart finish, start a **NEW chat** before
+using Contextsling. An already-open chat keeps its old tool schema and will not
+pick up these installed-only operations merely from the restart.
 Connect the resident's own contextsling.com account through Mini-apps first. Never ask
 for credentials, call MCP directly, install helpers or create jobs. contextsling.com
 is a third-party recipient. Anyone with a document link can read it; copies cannot

@@ -251,6 +251,7 @@ class ContextslingTest(unittest.TestCase):
         root=Path(__file__).resolve().parents[3]
         manifest=json.loads((root/'mini-apps/contextsling/manifest.json').read_text())
         self.assertEqual(manifest['contextCeiling'],cx.CONTEXT_CEILING)
+        self.assertIs(manifest['listed'],False)
         self.assertEqual(manifest['operations'],mini.CONTEXTSLING['operations'])
         schemas=json.loads((root/'mini-apps/contextsling/events.schema.json').read_text())['events']
         self.assertEqual(set(schemas),{'miniapp.'+op+'@1' for op in mini.CONTEXTSLING['operations']})
@@ -473,5 +474,27 @@ class ContextslingTest(unittest.TestCase):
         bridge.cleanup_contextsling_turn()
         self.transport.assert_called_once_with(self.config,{'operation':result['operation'],'draftId':result['draftId'],'declined':True})
         self.assertFalse(cx.load_record(Path(self.tmp.name),result['draftId']).get('pendingDecline'))
+
+    def test_decline_sync_requires_current_install_even_for_saved_terminal_task(self):
+        result=self.prepare();self.next_turn();ap=self.daemon(status='rejected');self.transport.side_effect=TimeoutError()
+        with patch.object(cx,'approval_modules',return_value=ap): self.confirm(result)
+        Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':[]}))
+        self.transport.side_effect=None;self.transport.reset_mock()
+        cx.sync_declines(Path(self.tmp.name),self.config,self.transport)
+        self.transport.assert_not_called()
+        self.assertTrue(cx.load_record(Path(self.tmp.name),result['draftId'])['pendingDecline'])
+        self.assertNotIn('payload',cx.load_record(Path(self.tmp.name),result['draftId']))
+
+    def test_uninstall_during_manual_authorization_refuses_before_app_dispatch(self):
+        result=self.prepare();self.next_turn();ap=self.daemon()
+        def uninstall_during_start(*args):
+            Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':[]}))
+            return answer(ok=True,authorization='grant')
+        ap.start.side_effect=uninstall_during_start
+        with patch.object(cx,'approval_modules',return_value=ap): out=self.confirm(result)
+        self.assertEqual(out.get('error'),'mini_app_not_installed')
+        self.transport.assert_not_called();ap.start.assert_called_once()
+        record=cx.load_record(Path(self.tmp.name),result['draftId'])
+        self.assertEqual(record['terminal'],'mini_app_not_installed');self.assertNotIn('payload',record)
 
 if __name__ == '__main__': unittest.main()

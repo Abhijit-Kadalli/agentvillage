@@ -325,6 +325,7 @@ test("CX-2 stages only its named operations and removes private draft cache on u
   const app = REVIEWED_MINI_APPS.find(x => x.id === "contextsling")!;
   const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps/contextsling/manifest.json"), "utf8"));
   expect(app.operations).toEqual(manifest.operations);
+  expect(manifest.listed).toBe(false);
   expect(app.skills).toEqual(["contextsling"]);
   expect(SHIPPED_SKILLS.has("contextsling")).toBe(false);
   expect(app.operations).not.toContain("mini-app.context.read");
@@ -357,4 +358,39 @@ test("CX-2 uninstall refuses a cache symlink without touching its target", () =>
   expect(() => reconcileMiniApps({version: 1, apps: []}, root)).toThrow("mini_apps_symlink_refused");
   expect(readFileSync(secret, "utf8")).toBe("preserve");
   expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({version:1,apps:[]});
+});
+
+
+test("CX-2 cache-only home is not stateless: empty projection removes orphaned drafts", () => {
+  const root = home();
+  const folder = join(root, "contextsling-drafts");
+  mkdirSync(folder, {mode: 0o700});
+  const draft = join(folder, "abcdefghijklmnopqrstuv.json");
+  writeFileSync(draft, "PRIVATE orphaned draft fixture", {mode: 0o600});
+  expect(existsSync(join(root, "mini-apps.json"))).toBe(false);
+  expect(existsSync(join(root, "village-bridge.json"))).toBe(false);
+  expect(existsSync(join(root, "skills"))).toBe(false);
+  reconcileMiniApps({version: 1, apps: []}, root);
+  expect(existsSync(draft)).toBe(false);
+  expect(existsSync(folder)).toBe(false);
+  expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({version:1,apps:[]});
+});
+
+test("CX-2 same-app restage preserves in-flight draft bytes and mode", () => {
+  const app = REVIEWED_MINI_APPS.find(x => x.id === "contextsling")!;
+  const root = home();
+  const projection = {version: 1, apps: [app]};
+  const first = reconcileMiniApps(projection, root);
+  const folder = join(root, "contextsling-drafts");
+  mkdirSync(folder, {mode: 0o700});
+  const draft = join(folder, "abcdefghijklmnopqrstuv.json");
+  const bytes = "PRIVATE in-flight draft fixture with exact trailing spaces  ";
+  writeFileSync(draft, bytes, {mode: 0o600});
+  const before = snapshot(folder);
+  expect(reconcileMiniApps(projection, root)).toEqual(first);
+  expect(readFileSync(draft, "utf8")).toBe(bytes);
+  expect(statSync(draft).mode & 0o777).toBe(0o600);
+  expect(snapshot(folder)).toEqual(before);
+  expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(first);
+  expect(snapshot(folder)).toEqual(before);
 });

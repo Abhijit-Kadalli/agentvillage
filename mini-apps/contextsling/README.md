@@ -2,6 +2,17 @@
 
 Dark admin-pilot integration. No registration, rollout, flags or provider activation
 is included. Exact operation/version/skill projection matches CP and installer.
+The manifest's `listed: false` marks the pilot as excluded from catalogue
+discovery; it does not replace the control plane's per-tenant install/activation
+gates. Release-owned ov#411 must skip unlisted entries before description
+validation and listing. This metadata alone does not implement that generator
+behavior; verify the combined changes before the second PR merges.
+Admin pilot setup: after Contextsling is installed and the runtime restart has
+finished, the admin must start a **NEW chat** before trying Contextsling. Hermes
+keeps the tool schema pinned in an existing chat; a restart does not add these
+installed-only operations to that chat. Verify the new chat loads the installed
+Contextsling skill and named operations before testing the connector.
+
 The sole context ceiling is `_contextsling.CONTEXT_CEILING = agentvillage/private`
 under agentvillage.visibility/1; no context namespace read or write is granted.
 
