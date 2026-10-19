@@ -229,7 +229,8 @@ export const SECRET_PATTERNS: readonly (readonly [string, RegExp])[] = Object.fr
   ["password_assignment", /\bpass(?:word|wd)\s*=\s*["']?[^\s"'`]{3,}/i],
   ["password_field", /["']pass(?:word|wd)["']\s*:\s*["'][^"']{3,}["']/i],
   ["bearer_token", /\bBearer\s+[A-Za-z0-9._~+\/-]{20,}=*/],
-  ["credential_assignment", /\b(?:api[_-]?key|secret|token|access[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*["'][A-Za-z0-9_\-+\/=.]{16,}["']/i],
+  // A value with a letter and a digit: an identifier or an env var name (`"token": "TINYSHOP_AV_TOKEN"`) is not a credential.
+  ["credential_assignment", /\b(?:api[_-]?key|secret|token|access[_-]?key|client[_-]?secret)\b["']?\s*[:=]\s*["'](?=[^"'\s]*\d)(?=[^"'\s]*[A-Za-z])[A-Za-z0-9_\-+\/=.]{16,}["']/i],
 ]);
 const DATA_URI = /\bdata:[a-z]+\/[a-z0-9.+-]+[;,]/i;
 const BASE64_RUN = /[A-Za-z0-9+\/_-]{1025,}={0,2}/;

@@ -318,6 +318,8 @@ describe("secrets", () => {
     "password = ",
     "The app server holds the Bearer tokens; the box never sees one.",
     `"secretRef": "TINYSHOP_AV_TOKEN"`,
+    `"token": "TINYSHOP_AV_TOKEN_NAME"`,
+    `apiKey: "credential_assignment",`,
     `"sha256": "${"a".repeat(64)}"`,
     "-----BEGIN PUBLIC KEY-----",
     "eyJ alone is not a token",
