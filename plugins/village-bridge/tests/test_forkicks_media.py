@@ -32,6 +32,22 @@ def envelope():
             'pages': [{'mimeType': 'image/png', 'filename': 'menu-1.png', 'width': 1, 'height': 1, 'altText': 'For Kicks\nMenu is empty.', 'base64': base64.b64encode(png).decode()}]}
 
 
+class MenuSkillTest(unittest.TestCase):
+    def test_menu_requests_default_to_images_with_verbatim_markers_and_explicit_fallback(self):
+        skill = (Path(__file__).resolve().parents[3] / "skills/forkicks/SKILL.md").read_text()
+        guidance = skill.split("## Menu and places\n", 1)[1].split("## Prepare", 1)[0]
+        defaults = guidance.split("For an explicit text-only request", 1)[0]
+        for phrase in ("Show me the menu", "What's on the menu?", "What do you have?"):
+            self.assertIn(phrase, defaults)
+        self.assertIn('{"operation":"forkicks.menu","format":"image"}` by default', defaults)
+        self.assertIn("do not require the resident to say “image”", defaults)
+        self.assertIn("Copy **every returned MEDIA line verbatim**", guidance)
+        self.assertIn("each on its own line outside JSON/code/quotes", guidance)
+        self.assertIn("explicitly say the image\nfailed", guidance)
+        self.assertIn("Never silently substitute text while claiming an\nimage was sent", guidance)
+        self.assertIn("use image by default", bridge.SCHEMA["parameters"]["properties"]["format"]["description"])
+
+
 class MenuMediaTest(unittest.TestCase):
     setUp = fixture.BridgeTest.setUp
     call = fixture.BridgeTest.call
@@ -79,7 +95,7 @@ class MenuMediaTest(unittest.TestCase):
     def test_theme_requires_image_and_extra_args_refused_before_transport(self):
         self.enable()
         for args in ({'theme': 'paper'}, {'format': 'pdf'}, {'format': 'image', 'theme': 'other'}, {'format': 'image', 'url': 'https://example.test'}):
-            self.assertEqual(self.call({'operation': 'forkicks.menu', **args})['error'], 'village_unavailable')
+            self.assertEqual(self.call({'operation': 'forkicks.menu', **args})['error'], 'invalid_arguments')
         self.transport.assert_not_called()
 
     def test_uninstalled_and_group_guards_still_block_images(self):

@@ -333,6 +333,107 @@ list or any other operation (`mini-app.context.delete`, `gold-stars.send` on
 another app) refuses the whole projection. Gold Stars entries never carry a
 context operation. Overlay first, then the CP projects the longer dizko list.
 
+## zzz.bot: connected rooms and posts
+
+The [reviewed manifest](zzzbot/manifest.json) and the native bundle allowlist
+(`_mini_apps.py` `ZZZBOT`, exact equality, in this order) expose exactly
+`zzz.list_rooms`, `zzz.read_thread`, `zzz.changes`, `zzz.reply` and
+`zzz.create_thread`, never an arbitrary MCP call, `set_thread_state` or
+`doctor`; `mini-app.read` refuses `zzzbot`. Each resident connects their own
+zzz.bot account in the Mini-apps sheet (OAuth 2.1 + PKCE, held by the app
+server); the box never sees a token, endpoint or account id. The CP lists
+zzz.bot only for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
+
+Input rides the existing `arguments` object, so the every-box `village` schema
+(description and properties) is unchanged. Since v2.1.5 the five operation
+names are in the every-box enum, like For Kicks' and Slopfolio's, and
+`installed()` decides per call (`mini_app_not_installed` without the zzzbot
+install). Before, they joined the enum only at registration on a box that
+installed zzzbot, which a chat already open never saw: Hermes keeps a
+continuing chat's saved tools. Ids match `[A-Za-z0-9][A-Za-z0-9._:-]{0,199}`, cursors are
+decimal strings, `limit` is 1–25 (`zzz.read_thread`) or 1–50 (`zzz.changes`),
+a `body` is 1–8,000 characters and at most 16,000 UTF-8 bytes, a `title` 1–200
+characters. Anything else is refused before transport.
+
+The two writes are public posts as the owner's connected zzz.bot agent. They
+need the box's verified approval gate (`gate_verified`, the
+`mini-app.context.write` path) but no manual grant; zzz.bot's room rules and
+moderation apply. The overlay adds `turnId` from the trusted session and
+message, never model input, and sends `X-Village-Operation` so the app admits
+the larger post body. All returned strings and keys pass through
+`scrubbed_tree`/`visible` and are framed as untrusted reference data. zzz.bot's
+error codes map to zzz-only instructions; no Gold Star or meeting wording.
+
+Overlay first: the CP must not project zzzbot to a box below the overlay roll
+that carries this entry (v2.1.3), since an older box refuses the whole
+projection, Gold Stars included. See [zzzbot/README.md](zzzbot/README.md).
+
+## Slopfolio: connected private drafts
+
+The [reviewed manifest](slopfolio/manifest.json) and native bundle allowlist
+expose exactly `slopfolio.prepare` and `slopfolio.status`, never an arbitrary
+MCP call or `publish_slopfolio_post`. Both require the installed app and the
+paired owner's private root Telegram conversation. Preparing a private draft
+and reading status do not request a manual approval tap. Publishing is solely
+the resident's action on Slopfolio at the returned `reviewUrl`.
+
+Prepare accepts only `draftId`, `paste`, `artifactUrl`, `medium` and `fixes`
+(`title`, `oneLiner`, `tools`, `iterations`, `howItWasMade`, `bestDeadEnd`,
+`promptingApproach`, `tags`). Every prepare, including a fixes-only revision,
+requires the exact original or corrected nonempty `paste` (at most 100,000
+UTF-8 bytes). The app always sends complete capture metadata plus `raw`; it never
+sends null or metadata-only capture. Omission preserves supplement/override fields,
+and explicit null clears an individual field; the `fixes` object itself cannot be
+null. `draftId` must be the returned lowercase v1–5 UUID; omit/null creates a new
+draft. `medium` is `code`, `image`, `video`, `audio`, `workflow`, or null.
+`iterations` is `one_shot`, `a_few_tries`, `many_attempts`, or null, never a count.
+Text limits are 100 characters for `title`, 200 for `oneLiner`, 20,000 for
+`howItWasMade`/`promptingApproach`, and 10,000 for `bestDeadEnd`. `tools`/`tags`
+allow at most 16 strings of at most 80 characters each. `artifactUrl` must be
+credential-free HTTPS, at most 2,048 characters. The complete compact UTF-8
+prepare payload, including trusted metadata and JSON escaping, must not exceed
+256 KiB; oversize input is refused before transport, not truncated.
+Only prepare transport adds `X-Village-Operation: slopfolio.prepare`, allowing
+the app's bounded large-body parser; status and other operations retain the
+small-body path.
+
+The overlay adds `turnId` from trusted session/message context, never model
+input. Retries in that turn retain the same identity; later turns differ.
+Status accepts only the exact returned lowercase v1–5 UUID `draftId`.
+The app server derives operation ids, checks that existing drafts are owned
+private drafts before revision, owns OAuth and refresh, validates the upstream
+contract and performs the two reviewed MCP operations. Models cannot supply
+a turn id, token, endpoint, account id or tool name. Both operations' returned
+strings and keys pass through the bridge's recursive `scrubbed_tree`/`visible`
+sanitizer (including hidden/bidi characters and controls) and remain explicitly
+untrusted reference data, never instructions.
+The app accepts the live provider's operation-specific outcome-code enums,
+including status `STATUS`; a status error may omit `status`, but a `STATUS`
+success must include a reviewed state. `missing` is a list of
+`title`/`one_liner`/`artifact_url`/`medium`/`tools`. `findings`/`warnings` contain
+strict `{code, message, severity}` objects (code 1–80 characters, message 1–240,
+severity `block` or `warn`), with a local safety cap of 20 items per list.
+
+`DRAFT_NOT_EDITABLE` and `DRAFT_NOT_FOUND` are known terminal bridge errors,
+returned as errors rather than success data with `retryable: false`. Do not retry
+that `draftId`: the former means the post is already published or deleted, so
+start a new draft instead; the latter means no draft with that id on your account.
+The app retains the draft-status preflight as defence in depth, while Slopfolio
+enforces the published/deleted rejection in its database: it changes nothing,
+never edits a live post and never forks a new draft from that call. Only prepare
+without `draftId` creates a new post.
+`CAPABILITY_NOT_GRANTED` and `RATE_LIMITED` are also preserved as named errors
+without provider text: reconnect through Mini-apps for the former, and try later
+or use the manual Slopfolio page for the latter rather than retrying immediately.
+
+The provider-authored skill and manifest from
+[PR #389](https://github.com/Edge-City/agentvillage/pull/389) are integrated here.
+The installer stages `skills/slopfolio/SKILL.md` byte for byte only from the validated
+installed projection, with parity coverage against the catalog and standalone skills
+mirror. Slopfolio is not a baseline skill and remains tenant-restricted in the CP;
+see the control-plane README rollout configuration. The provider guide's retry and
+authority wording remains subject to the integration review on #389.
+
 ## Disk staging and lifecycle
 
 The baseline installer stages the guarded native plugin and **grants no app**.
@@ -375,6 +476,14 @@ sandbox. Unpaired or missing runtime stays pending; errors cannot become active.
 Credential provisioning separately requires the enabled, gate-ready native
 runtime. Removal immediately denies server access and revokes the last app's
 bearer even if the old process has not restarted yet.
+
+**Open chats (v2.1.5, MINIAPP-PICKUP).** An install or removal reaches a chat
+that is already open at its next turn, without `/new`: every new prompt
+carries a `Mini-apps epoch` stamp (a hash of the installed entries and their
+SKILL.md bytes), and av-events rebuilds a session's prompt once when the stamp
+no longer matches the projection on disk (`plugins/av-events/README.md`,
+"Mini-app pick-up"). The `village` enum names every reviewed operation on
+every box, so a chat's saved tools need no refresh either.
 
 For deterministic regressions, run the install mini-app tests and native
 `plugins/village-bridge/tests` with no real daemon or model. Full rollout
