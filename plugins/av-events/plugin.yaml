@@ -76,6 +76,8 @@ optional_env:
   - AV_PROMPT_REFRESH
   - AV_PROMPT_REFRESH_FILES
   - AV_TEAM_TENANT
+  # MINIAPP-PICKUP (v2.1.5): the installed-apps stamp and check, on (default) | 0.
+  - AV_MINIAPP_REFRESH
 # Documentation only — Hermes registers the tool from ctx.register_tool() (toolset
 # av-events, DATA-157); `hermes plugins` reads this list to name the toolset.
 provides_tools:
