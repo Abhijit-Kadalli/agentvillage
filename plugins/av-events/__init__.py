@@ -28,6 +28,7 @@ from ._query_village import register_query_village_tool
 from ._pray import register_pray_tool
 from ._collector import Collector, guarded, hermes_version, overlay_ref
 from ._clock import with_clock_line
+from . import _miniapp_epoch
 from . import _prompt_refresh
 from . import _village_visible
 from ._consent import TOOL_NAME as CONSENT_TOOL_NAME
@@ -1322,6 +1323,7 @@ def _on_unload() -> None:
     _REGISTERED = False
     # F1: Hermes's own build_turn_context goes back with the hooks (the memory acknowledgement is one).
     _prompt_refresh.uninstall()
+    _miniapp_epoch.unregister()
     # R-DEON: Hermes's own tool_search core-name check goes back too.
     _village_visible.uninstall()
     # MM-INFER-VIS: the Index plugin's speaker._main_agent and the bridge client's create go back too.
@@ -1434,6 +1436,13 @@ def register(ctx) -> None:
     try:
         _prompt_refresh.install(_collector)
     except Exception:  # noqa: BLE001 - the refresh is optional; the hooks are not
+        pass
+    # MINIAPP-PICKUP (v2.1.5): the installed-apps stamp each new prompt carries (`_miniapp_epoch.py`),
+    # which the same wrapper checks so an open chat picks up an install or removal without /new.
+    # Behind AV_MINIAPP_REFRESH (default on); a Hermes without plugin prompt sections is one log line.
+    try:
+        _miniapp_epoch.register_section(ctx)
+    except Exception:  # noqa: BLE001 - optional; the hooks are not
         pass
     # R-DEON: the village tools (ask_village, search_village, query_village, village) stay in the
     # model's tool list when Hermes's tool_search defers plugin tools (`_village_visible.py`).

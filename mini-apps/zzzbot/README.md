@@ -22,9 +22,10 @@ for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
 - **Data.** Thread text is returned framed as untrusted data. The app stores
   only encrypted tokens and write receipts that expire after 24 hours; it keeps
   no thread text and no resident context.
-- **Schema.** The `village` tool's enum gains the five operations only on a box
-  whose projection installs zzzbot (`schema_for`, at registration). Their input
-  rides the existing `arguments` object, so the every-box schema is unchanged.
+- **Schema.** Since v2.1.5 the five operations are in the `village` tool's enum
+  on every box; `installed()` refuses them per call (`mini_app_not_installed`)
+  until the projection installs zzzbot, so a chat open before the install can
+  use them without `/new`. Their input rides the existing `arguments` object.
 - **Rollout order.** cp#304, then the cp catalog entry, then the app routes,
   then this overlay in v2.1.3. The CP must not project zzzbot to a box below
   v2.1.3: an older overlay refuses the whole projection, Gold Stars included.

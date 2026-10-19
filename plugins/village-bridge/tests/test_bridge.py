@@ -421,10 +421,10 @@ class BridgeTest(unittest.TestCase):
   self.assertIn('rolodex.meeting',mini.WRITE_OPERATIONS);self.assertNotIn('rolodex.meeting',mini.READ_OPERATIONS)
   self.assertIn('skylight.status',mini.READ_OPERATIONS);self.assertNotIn('skylight.status',mini.WRITE_OPERATIONS)
   self.assertFalse(mini.READ_OPERATIONS&mini.WRITE_OPERATIONS)
-  # P-6: zzzbot's operations are classified here but enter the registered enum only on a box that installs it (schema_for).
-  # For Kicks and Slopfolio operations are in the every-box enum as main has them.
-  self.assertEqual(mini.READ_OPERATIONS|mini.WRITE_OPERATIONS,set(bridge.SCHEMA['parameters']['properties']['operation']['enum'])|mini.ZZZ_OPERATIONS)
-  self.assertFalse(mini.ZZZ_OPERATIONS&set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
+  # MINIAPP-PICKUP (v2.1.5): every classified operation, zzzbot's included, is in the every-box enum; installed()
+  # is checked per call. For Kicks and Slopfolio operations are in it as main has them.
+  self.assertEqual(mini.READ_OPERATIONS|mini.WRITE_OPERATIONS,set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
+  self.assertTrue(mini.ZZZ_OPERATIONS<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
   self.assertTrue({'forkicks.menu','forkicks.schedule','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.status','forkicks.order.cancel'}<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
   self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write',
                                           'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare','zzz.reply','zzz.create_thread'})
@@ -487,7 +487,7 @@ class BridgeTest(unittest.TestCase):
   # No new tool name: both operations go through `village`, the 36th gated tool (exact full-match matcher).
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status'})
+  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status'}|set(mini.ZZZBOT['operations']))
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()
@@ -1373,23 +1373,39 @@ class BridgeTest(unittest.TestCase):
    out=self.call({'operation':'zzz.reply','arguments':{'thread':'thr_1','body':'hi'}})
   self.assertEqual(out['error'],'village_unavailable');self.assertEqual(out['instruction'],bridge.ZZZ_UNCLEAR)
   self.assertNotIn('star',out['instruction'].lower());self.assertNotIn('meeting',out['instruction']);self.assertNotIn('avb_',json.dumps(out))
- def test_schema_gains_zzz_operations_only_on_a_box_that_installs_zzzbot(self):
-  home=Path(self.tmp.name)
-  before=json.dumps(bridge.SCHEMA,sort_keys=True)
-  self.assertIs(bridge.schema_for(home),bridge.SCHEMA)
-  self.zzz_home()
-  schema=bridge.schema_for(home)
-  enum=schema['parameters']['properties']['operation']['enum']
-  self.assertEqual(enum,bridge.SCHEMA['parameters']['properties']['operation']['enum']+mini.ZZZBOT['operations'])
-  self.assertEqual(schema['description'],bridge.SCHEMA['description'])
-  self.assertEqual(set(schema['parameters']['properties']),set(bridge.SCHEMA['parameters']['properties']))
+ def test_the_every_box_enum_carries_zzz_operations_and_registration_never_reads_the_install(self):
+  # MINIAPP-PICKUP (v2.1.5): one fixed schema on every box, zzzbot's five names appended last; the description and
+  # properties are as before (no zzz text). Registration no longer depends on the projection.
+  enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
+  self.assertEqual(enum[-5:],mini.ZZZBOT['operations']);self.assertEqual(len(enum),len(set(enum)))
   self.assertNotIn('zzz',bridge.SCHEMA['description'].lower())
-  self.assertEqual(json.dumps(bridge.SCHEMA,sort_keys=True),before)
-  with patch.object(bridge,'_REGISTERED',False):
-   ctx=types.SimpleNamespace(register_tool=unittest.mock.Mock());bridge.register(ctx)
-  self.assertEqual(ctx.register_tool.call_args.kwargs['schema']['parameters']['properties']['operation']['enum'][-5:],mini.ZZZBOT['operations'])
+  self.assertFalse(hasattr(bridge,'schema_for'))
+  for apps in ([],[{'id':'gold-stars',**mini.GOLD_STARS}],[{'id':'gold-stars',**mini.GOLD_STARS},{'id':'zzzbot',**mini.ZZZBOT}]):
+   with self.subTest(apps=[a['id'] for a in apps]):
+    Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':apps}))
+    with patch.object(bridge,'_REGISTERED',False):
+     ctx=types.SimpleNamespace(register_tool=unittest.mock.Mock());bridge.register(ctx)
+    self.assertIs(ctx.register_tool.call_args.kwargs['schema'],bridge.SCHEMA)
+ def test_a_saved_tools_chat_reaches_zzz_when_installed_and_is_refused_when_not(self):
+  # A continuing chat sends the village schema it saved at its first turn (Hermes pins tools[] bytes,
+  # tools/mcp_tool_agent.py:194-215). Saved before zzzbot was installed, it already names the five operations;
+  # the handler decides per call from the projection on disk, with the refusal every other app's operation gets.
+  saved=json.loads(json.dumps(bridge.SCHEMA))
+  self.assertTrue(set(mini.ZZZBOT['operations'])<=set(saved['parameters']['properties']['operation']['enum']))
+  for op in ('gold-stars.quota','forkicks.menu','slopfolio.status','zzz.list_rooms','zzz.reply'):
+   Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':[]}))
+   with self.subTest(op=op,installed=False),self.gate():
+    self.assertIn(op,saved['parameters']['properties']['operation']['enum'])
+    self.assertEqual(self.call({'operation':op}),{'error':'mini_app_not_installed'})
+  self.transport.assert_not_called()
+  self.zzz_home()
+  self.assertIn('data',self.call({'operation':'zzz.list_rooms','arguments':{}}))
+  self.transport.assert_called_once_with(self.config,{'operation':'zzz.list_rooms'})
+  # Removed again: refused again, before any network call.
   Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':[{'id':'gold-stars',**mini.GOLD_STARS}]}))
-  self.assertIs(bridge.schema_for(home),bridge.SCHEMA)
+  self.transport.reset_mock()
+  self.assertEqual(self.call({'operation':'zzz.list_rooms','arguments':{}}),{'error':'mini_app_not_installed'})
+  self.transport.assert_not_called()
  def test_registration_idempotent(self):
   with patch.object(bridge,'_REGISTERED',False):
    ctx=types.SimpleNamespace(register_tool=unittest.mock.Mock());bridge.register(ctx);bridge.register(ctx);self.assertEqual(ctx.register_tool.call_count,1)

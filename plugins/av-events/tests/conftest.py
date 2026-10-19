@@ -90,6 +90,8 @@ AV_ENV_VARS = (
     "AV_PROMPT_REFRESH",
     "AV_PROMPT_REFRESH_FILES",
     "AV_TEAM_TENANT",
+    # MINIAPP-PICKUP: the installed-apps stamp and check.
+    "AV_MINIAPP_REFRESH",
 )
 
 
