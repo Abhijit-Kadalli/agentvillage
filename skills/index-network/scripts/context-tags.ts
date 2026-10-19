@@ -142,12 +142,19 @@ export interface ContextLine extends ContextItem {
   visibility: Visibility;
 }
 
+/** The five markers, and the only characters a parenthesis read for its visibility may hold. */
+const ITEM_MARKERS: readonly string[] = ["setup", "telegram", "you", "guess", "chat"];
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
 /**
  * One item line read: the words, the marker (a `(chat, guess)` is `guess`; no marker is `telegram`),
  * the mark and its visibility; null for a line that is no item (no `- `, or no words). A `guess`, a
  * plain `chat` line (the agent's reading, never the resident's words: OV-278) and a line with a guess
  * suffix on another marker (`(you, guess, public)`: read as `you`, but not known to be no guess) are
- * Private whatever their mark. parseContextTags keeps only the words and the marker. Pure.
+ * Private whatever their mark. So is a line whose parenthesis holds anything but printable ASCII, or
+ * whose marker is not one of the five (a lookalike or an invisible the two languages' `i` flag and `\s`
+ * read differently: OV-415 refute N1; memory_signal_gate.py parse_item_line fails closed the same way).
+ * parseContextTags keeps only the words and the marker. Pure.
  */
 export function parseContextLine(line: string): ContextLine | null {
   const match = LINE.exec(line);
@@ -156,7 +163,8 @@ export function parseContextLine(line: string): ContextLine | null {
   const marker = (match![2]?.toLowerCase() ?? "telegram") as ContextMarker;
   const read: ContextMarker = marker === "chat" && match![4] ? "guess" : marker;
   const mark = match![5]?.toLowerCase() ?? null;
-  const guess = read === "guess" || read === "chat" || match![4] !== undefined;
+  const plain = PRINTABLE_ASCII.test(line.slice(2 + match![1]!.length)) && (match![2] === undefined || ITEM_MARKERS.includes(match![2].toLowerCase()));
+  const guess = !plain || read === "guess" || read === "chat" || match![4] !== undefined;
   return { text, marker: read, mark, visibility: markVisibility(mark, guess) };
 }
 

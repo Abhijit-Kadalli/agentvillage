@@ -198,7 +198,7 @@ export interface PyAnswer {
 
 /** Run the Python harness once over every request (one python3 process). */
 export function pyRun(req: { entries?: string[]; lines?: string[]; marks?: [string | null, boolean][]; constants?: boolean }): PyAnswer {
-  const proc = Bun.spawnSync(["python3", "-I", "-c", PY_HARNESS, GATE], { stdin: Buffer.from(JSON.stringify(req)), stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync(["python3", "-I", "-B", "-c", PY_HARNESS, GATE], { stdin: Buffer.from(JSON.stringify(req)), stdout: "pipe", stderr: "pipe" });
   if (proc.exitCode !== 0) throw new Error(`python3 harness exited ${proc.exitCode}: ${proc.stderr.toString().slice(0, 2000)}`);
   return JSON.parse(proc.stdout.toString()) as PyAnswer;
 }

@@ -17,8 +17,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   CONTEXT_TAGS_MARK,
@@ -209,6 +209,80 @@ describe("anything else is still no mark, exactly as today", () => {
   });
 });
 
+/**
+ * OV-415 refute N1: Python's `re.I` folds `ſ`/`ı`/`İ` into ASCII letters, and the two languages' `\s`
+ * differ (`﻿` is JavaScript's only; `\x1c`-`\x1f` and `\x85` Python's only), so on such a line the
+ * two readers may take different words and markers (as on main; parseContextTags and context_tags
+ * are unchanged). The visibility both name is Private, never a mark's audience.
+ */
+describe("lookalikes and invisibles: both readers name Private", () => {
+  const LINES = [
+    "- X (guesſ, public)",
+    "- X (guesſ, village)",
+    "- X (guesſ, agentvillage/edgecityindia2026)",
+    "- X (ſetup, public)",
+    "- X (chat, guesſ, public)",
+    "- X (you, publıc)",
+    "- X (setup, prıvate)",
+    "- X (you, vıllage)",
+    "- X (you, vİllage)",
+    "- X (ıntros chat, public)",
+    "- X (telegram, ıntros chat 0123456789ab, public)",
+    "- X (you, agentvıllage/edgecityindia2026)",
+    "- X (you, agentvİllage/edgecityindia2026)",
+    "- X (yoU, public)".replace("U", "U̇"),
+    "- X (you,﻿public)",
+    "- X﻿(you, public)",
+    "- X (you,\u0085public)",
+    "- X (you,\u001cpublic)",
+    "- X (you,\u001fvillage)",
+    "- X (you, public)",
+    "- X (you, public)",
+    "- X (you,\tpublic)",
+    "- X\t(setup, village)",
+    "- X (you, public​)",
+  ];
+  const py = pyRun({ lines: LINES }).lines;
+
+  test("TypeScript and Python: every one is Private (or no item at all)", () => {
+    LINES.forEach((line, i) => {
+      const ts = parseContextLine(line);
+      expect([JSON.stringify(line), ts?.visibility ?? null]).toEqual([JSON.stringify(line), VISIBILITY_PRIVATE]);
+      expect([JSON.stringify(line), py[i]?.[3] ?? null]).toEqual([JSON.stringify(line), VISIBILITY_PRIVATE]);
+    });
+  });
+
+  test("the same lines in plain ASCII still name their audience (the check is not vacuous)", () => {
+    for (const line of ["- X (guess, public)", "- X (setup, public)", "- X (you, village)", "- X (telegram, intros chat 0123456789ab, public)", "- X (you, agentvillage/edgecityindia2026)"]) {
+      const want = /guess/.test(line) ? VISIBILITY_PRIVATE : VISIBILITY_EDGE_CITY_INDIA_2026;
+      expect([line, parseContextLine(line)!.visibility]).toEqual([line, want]);
+      expect([line, pyRun({ lines: [line] }).lines[0]![3]]).toEqual([line, want]);
+    }
+  });
+});
+
+/** OV-415 refute N5 F and N3: near-ids and a closing after the parenthesis are no mark (words, Private), in both. */
+describe("near-ids and trailing text: still no mark", () => {
+  const LINES = [
+    "- X (you, agentvillage/edgecityindia2026x)",
+    "- X (guess, agentvillage/edgecityindia2026x)",
+    "- X (you, agentvillage/privatex)",
+    "- X (you, agentvillage/edgecityindia2026_)",
+    "- X (you, publicx)",
+    "- X (guess, agentvillage/private).",
+    "- X (you, public)!",
+    "- X (agentvillage/edgecityindia2026, guess)",
+  ];
+  const py = pyRun({ lines: LINES }).lines;
+  test("the whole line is the words, telegram, Private, in TypeScript and Python", () => {
+    LINES.forEach((line, i) => {
+      const want = { text: line.slice(2), marker: "telegram", mark: null, visibility: VISIBILITY_PRIVATE };
+      expect([line, parseContextLine(line)]).toEqual([line, want]);
+      expect([line, py[i]]).toEqual([line, [want.text, want.marker, want.mark, want.visibility]]);
+    });
+  });
+});
+
 describe("never wider: a narrower mark is never read as a wider one", () => {
   const MARK_INPUTS: (string | null)[] = [null, "", ...OLD_MARKS, ...NEW_MARKS, ...NOT_MARKS, "hasOwnProperty", "toString", "valueOf"];
   const cases: [string | null, boolean][] = MARK_INPUTS.flatMap((m) => [[m, false], [m, true]] as [string | null, boolean][]);
@@ -233,8 +307,12 @@ describe("never wider: a narrower mark is never read as a wider one", () => {
     });
   });
 
-  test("a guess flag that is not exactly false is a guess (fail closed)", () => {
-    for (const g of [true, undefined, null, 0, "", "false"] as unknown as boolean[]) expect(markVisibility("public", g)).toBe(VISIBILITY_PRIVATE);
+  test("a guess flag that is not exactly false is a guess (fail closed), in both languages", () => {
+    const flags = [true, undefined, null, 0, "", "false", 1] as unknown as boolean[];
+    for (const g of flags) expect(markVisibility("public", g)).toBe(VISIBILITY_PRIVATE);
+    const pyFlags = flags.filter((g) => g !== undefined);
+    expect(pyRun({ marks: pyFlags.map((g) => ["public", g] as [string, boolean]) }).marks).toEqual(pyFlags.map(() => VISIBILITY_PRIVATE));
+    expect(pyRun({ marks: [["public", false]] }).marks).toEqual([VISIBILITY_EDGE_CITY_INDIA_2026]);
   });
 
   test("private, old or new, is never Edge City India 2026; a guess or a chat line never is, whatever its mark", () => {
@@ -280,22 +358,22 @@ describe("the golden: today's inputs give byte-identical outputs", () => {
 });
 
 describe("writers are unchanged: nothing in the overlay writes a new id", () => {
-  test("only the two readers (and these tests) name an id", () => {
+  test("only the two readers (and these tests) name an id, anywhere in the repo", () => {
     const REPO = join(import.meta.dir, "..", "..", "..", "..");
     const hits: string[] = [];
-    const walk = (dir: string) => {
-      for (const name of readdirSync(dir)) {
-        if (name === "node_modules" || name === ".git" || name.startsWith(".test-deps")) continue;
-        const path = join(dir, name);
-        const st = statSync(path);
-        if (st.isDirectory()) walk(path);
-        else if (st.size < 2_000_000 && /\.(ts|js|py|md|json|ya?ml|sh)$/.test(name)) {
-          const text = readFileSync(path, "utf8");
-          if (text.includes("agentvillage/private") || text.includes("agentvillage/edgecityindia2026")) hits.push(relative(REPO, path));
-        }
-      }
-    };
-    for (const top of ["install", "plugins", "skills", "workspace", "scripts", "mini-apps", "docs"]) walk(join(REPO, top));
+    // Every file git tracks or would add (OV-415 refute N6): the whole checkout, less what .gitignore drops.
+    const listed = Bun.spawnSync(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: REPO, stdout: "pipe", stderr: "pipe" });
+    expect(listed.exitCode).toBe(0);
+    const files = listed.stdout.toString().split("\0").filter(Boolean);
+    expect(files.length).toBeGreaterThan(500);
+    for (const rel of files) {
+      const path = join(REPO, rel);
+      let st;
+      try { st = statSync(path); } catch { continue; }
+      if (!st.isFile() || st.size > 8_000_000) continue;
+      const text = readFileSync(path, "latin1");
+      if (text.includes("agentvillage/private") || text.includes("agentvillage/edgecityindia2026")) hits.push(rel);
+    }
     expect(hits.sort()).toEqual([
       "skills/index-network/scripts/context-tags.ts",
       "skills/index-network/scripts/memory_signal_gate.py",

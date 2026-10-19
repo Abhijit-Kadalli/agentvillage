@@ -572,13 +572,17 @@ def _ascii_lower(text: str) -> str:
 
 
 _ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+#: The five markers (`context-tags.ts` ITEM_MARKERS).
+_ITEM_MARKERS = frozenset({"setup", "telegram", "you", "guess", "chat"})
 
 
 def parse_item_line(line: str) -> Optional[tuple[str, str, Optional[str], str]]:
     """(words, marker, mark or None, visibility) of one item line (`context-tags.ts` parseContextLine),
     or None for a line with no words. A `(chat, guess)` is `guess`; no marker is `telegram`; a guess, a
     plain `(chat)` line and a guess suffix on another marker (`(you, guess, public)`) are Private
-    whatever their mark."""
+    whatever their mark; so is a line whose parenthesis holds anything but printable ASCII, or whose
+    marker is not one of the five after ASCII lowering (`re.I` folds `ſ`/`ı`/`İ`, and the whitespace
+    class differs from JavaScript's: OV-415 refute N1)."""
     match = ITEM_LINE.match(line)
     text = match.group(1).strip() if match else ""
     if not text:
@@ -587,7 +591,10 @@ def parse_item_line(line: str) -> Optional[tuple[str, str, Optional[str], str]]:
     if marker == "chat" and match.group(4):
         marker = "guess"
     mark = _ascii_lower(match.group(5)) if match.group(5) else None
-    guess = marker in ("guess", "chat") or match.group(4) is not None
+    plain = all(" " <= c <= "~" for c in line[match.end(1):]) and (
+        match.group(2) is None or _ascii_lower(match.group(2)) in _ITEM_MARKERS
+    )
+    guess = not plain or marker in ("guess", "chat") or match.group(4) is not None
     return text, marker, mark, mark_visibility(mark, guess)
 
 
