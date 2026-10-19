@@ -70,7 +70,7 @@ SCHEMA = {
         }, "additionalProperties": False, "description": "Slopfolio projection overrides only; this object cannot be null. Omit members to keep; null on an individual member clears it. Never credentials, endpoints or account ids."},
         "date": {"type": "string", "description": "For Kicks menu date, YYYY-MM-DD in IST."},
         "locationId": {"type": "string", "description": "Exact For Kicks location id returned by menu/schedule."},
-        "format": {"type": "string", "enum": ["image"], "description": "forkicks.menu only: on explicit request, prepare the live menu as image attachments. Omit for the unchanged text menu."},
+        "format": {"type": "string", "enum": ["image"], "description": "forkicks.menu only: use image by default when the resident asks to see the menu, including 'what is on the menu' or 'what do you have'. Omit only for explicit text-only requests or structured reads needed to prepare an order."},
         "theme": {"type": "string", "enum": ["forkicks", "chalk", "paper"], "description": "forkicks.menu with format:image only; default forkicks, the café's own menu design. Chalk and paper are earlier concepts; paper is provisional."},
         "from": {"type": "string", "description": "For Kicks schedule start date, YYYY-MM-DD in IST."},
         "days": {"type": "integer", "minimum": 1, "maximum": 31},
