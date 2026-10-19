@@ -55,6 +55,14 @@ Use Dizko as the starting bundle for another **public read-only** service:
    context list below, only with a CP namespace review and a `data.context`
    block). `bun test scripts/tests/mini-app-manifests.test.ts` checks it; a
    skill edit changes its sha256, so it is also a manifest edit.
+   `bun run conformance -- mini-apps/<app-id>/manifest.json --fixtures <dir>
+   [--base origin/main] [--out conformance.json]` (run from the repo root) is
+   conformance v0: the manifest, skill hashes and version bump, the needs-card
+   to prepare pairing, and the hygiene of your service's response fixtures
+   (`<dir>/<operation>/<name>.json`; `error*.json` files are `{code, detail}`
+   error bodies). Exit 0 passed, 1 failed, 2 refused. Live-service checks come
+   in Phase 1 and show as not run. The header of
+   `scripts/mini-apps-conformance.ts` documents every check.
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
 3. Submit the same reviewed definition to the control-plane catalog (Phase 0:
