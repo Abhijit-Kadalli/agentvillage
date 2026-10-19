@@ -42,14 +42,16 @@ const PROVENANCE = 'first-party-reviewed-external';
 // The five first-party apps, pinned HERE, never by a manifest field (security review "authorization-
 // reserved-namespace"): what only each may carry. `internal`: service.kind "internal" (core handlers in
 // app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `prefixes`: the op
-// namespaces it owns beyond its id; `provenance`, `personOnly`: its exact Phase 0 legacy block. Any other
-// manifest's ops sit under its own id, it is never `internal`, and it carries no `legacy` block.
+// namespaces it owns beyond its id; `provenance`, `personOnly`: its exact Phase 0 legacy block;
+// `secretRef`: the one app-server env var outside MINI_APP_<ID>_ it may name (the token the app sends
+// today, forkicks-client.ts). Any other manifest's ops sit under its own id, it is never `internal`, it
+// carries no `legacy` block, and its secretRef is MINI_APP_<ID>_<NAME> (review-b S1, design §2).
 const FIRST_PARTY = deepFreeze({
   'gold-stars': { internal: true, prefixes: ['rolodex', 'skylight'], personOnly: true },
   dizko: {},
   zzzbot: { provenance: PROVENANCE, prefixes: ['zzz'] },
   slopfolio: { provenance: PROVENANCE },
-  forkicks: {},
+  forkicks: { secretRef: 'FORKICKS_AV_TOKEN' },
 });
 // Ids no manifest may take: the platform's own op namespaces and the overlay's baseline (non-app) skill
 // names (an app's skill is named for its id, so such an id would shadow a shipped skill on the box), and
@@ -300,25 +302,56 @@ const FORBIDDEN_TEXT = [
   ['secret', /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./], ['secret', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
   ['secret', /\bAKIA[0-9A-Z]{16}\b/], ['secret', /\bxox[abposr]-[A-Za-z0-9-]{10,}/], ['secret', /password\s*[=:]/i],
 ];
-function scanText(value, at, fail) {
+// Containers deeper than this fail `too_deep` rather than recursing (review-b N2: the real five reach 7).
+const MAX_DEPTH = 64;
+function scanText(value, at, fail, skip, depth = 0) {
   if (typeof value === 'string') {
     for (const [reason, pattern] of FORBIDDEN_TEXT) if (pattern.test(value)) return fail(at, reason);
-  } else if (Array.isArray(value)) value.forEach((item, i) => scanText(item, `${at}/${i}`, fail));
-  else if (isObject(value)) for (const key of Object.keys(value)) { scanText(key, `${at}/${key}`, fail); scanText(value[key], `${at}/${key}`, fail); }
+  } else if (value !== null && typeof value === 'object') {
+    if (skip.has(value)) return;
+    if (depth >= MAX_DEPTH) return fail(at, 'too_deep');
+    if (Array.isArray(value)) value.forEach((item, i) => scanText(item, `${at}/${i}`, fail, skip, depth + 1));
+    else for (const key of Object.keys(value)) { scanText(key, `${at}/${key}`, fail, skip, depth + 1); scanText(value[key], `${at}/${key}`, fail, skip, depth + 1); }
+  }
 }
 function httpsUrl(value, { bare = false } = {}) {
   let url;
   try { url = new URL(value); } catch { return false; }
   return url.protocol === 'https:' && !url.username && !url.password && (!bare || (!url.search && !url.hash && !value.includes('?') && !value.includes('#')));
 }
+/**
+ * Whether an endpoint names a host the platform must never be pointed at (review-b N8: SSRF once third
+ * parties author manifests). Read from the URL parser's hostname, never the text: it already turns
+ * decimal, hex, octal and short IPv4 forms into dotted quads and brackets IPv6. Refused: any IP literal
+ * (so 169.254.169.254 and every private range), a single-label name, localhost and *.localhost, *.internal
+ * and *.local. A public name that resolves inward is the fetcher's to refuse (it resolves; this cannot).
+ */
+function internalHost(value) {
+  let host;
+  try { host = new URL(value).hostname.toLowerCase().replace(/\.+$/, ''); } catch { return true; }
+  return host.startsWith('[') || /^[0-9.]+$/.test(host) || !host.includes('.') ||
+    /(?:^|\.)(?:localhost|internal|local)$/.test(host);
+}
 const utf8Bytes = value => new TextEncoder().encode(value).length;
+const appSecretPrefix = id => `MINI_APP_${id.toUpperCase().replace(/-/g, '_')}_`;
 function semantics(m, compileInput) {
   const errors = [];
   const fail = (path, reason) => { if (errors.length < MAX_ERRORS) errors.push({ path, reason }); };
-  scanText(m, '', fail);
+  // Sizes before the text scan (review-b N2): an oversized input schema is refused by size and never walked.
+  const oversized = new Set();
+  m.operations.forEach((op, i) => {
+    if (!own(op, 'input')) return;
+    let size;
+    try { size = utf8Bytes(JSON.stringify(op.input)); } catch { size = Infinity; }
+    if (size > 16384) { oversized.add(op.input); fail(`/operations/${i}/input`, 'too_large'); }
+  });
+  scanText(m, '', fail, oversized);
   if (!httpsUrl(m.homepage)) fail('/homepage', 'url');
   const service = m.service, auth = service.auth;
-  if (own(service, 'baseUrl') && !httpsUrl(service.baseUrl, { bare: true })) fail('/service/baseUrl', 'url');
+  if (own(service, 'baseUrl')) {
+    if (!httpsUrl(service.baseUrl, { bare: true })) fail('/service/baseUrl', 'url');
+    else if (internalHost(service.baseUrl)) fail('/service/baseUrl', 'internal_host');
+  }
   if (service.kind === 'internal') {
     if (own(service, 'baseUrl')) fail('/service/baseUrl', 'internal_has_endpoint');
     if (auth) fail('/service/auth', 'internal_has_auth');
@@ -334,6 +367,13 @@ function semantics(m, compileInput) {
   // Reserved names and first-party grants, from the pinned table only (a manifest field never widens them).
   const grant = own(FIRST_PARTY, m.id) ? FIRST_PARTY[m.id] : null;
   if (!grant && reservedId(m.id)) fail('/id', 'reserved');
+  // The env var an app-token names is sent as the bearer to the app's own baseUrl (design §2): only its
+  // pinned grant, or MINI_APP_<ID>_<NAME> with no `_` in NAME (so app `acme` never names `acme-corp`'s
+  // MINI_APP_ACME_CORP_TOKEN). Never a platform secret: DATABASE_URL, CP_ADMIN_TOKEN, another app's token.
+  if (auth && own(auth, 'secretRef') && auth.secretRef !== grant?.secretRef) {
+    const prefix = appSecretPrefix(m.id);
+    if (!auth.secretRef.startsWith(prefix) || !/^[A-Z0-9]+$/.test(auth.secretRef.slice(prefix.length))) fail('/service/auth/secretRef', 'not_granted');
+  }
   if (service.kind === 'internal' && !grant?.internal) fail('/service/kind', 'internal_first_party_only');
   if (m.legacy) {
     if (!grant) fail('/legacy', 'first_party_only');
@@ -363,8 +403,9 @@ function semantics(m, compileInput) {
     if (card !== own(op, 'approval')) fail(`${at}/approval`, card ? 'required' : 'needs_card_only');
     if (own(op, 'input')) {
       if (op.input.type !== 'object') fail(`${at}/input`, 'not_object_schema');
-      if (utf8Bytes(JSON.stringify(op.input)) > 16384) fail(`${at}/input`, 'too_large');
-      else if (compileInput) {
+      const deep = errors.some(e => e.reason === 'too_deep' && (e.path === `${at}/input` || e.path.startsWith(`${at}/input/`)));
+      if (oversized.has(op.input) || deep) return;
+      if (compileInput) {
         try { compileInput(op.input, op); } catch { fail(`${at}/input`, 'uncompilable'); }
       }
     }
@@ -405,7 +446,8 @@ function validateManifest(value, { compileInput } = {}) {
  * The published catalog: `index` is mini-apps/catalog.json, `byId` maps each id to its parsed manifest.json
  * (or an Error when it could not be read). An index that fails is a whole-catalog failure (ok: false). A
  * manifest that fails is dropped with a code and the rest serve (design §1.2); so is one whose id is not
- * its index id, or one that reuses another's op name or prefix.
+ * its index id, or one that reuses another's op name or prefix. A validator throw (a host stack limit, a
+ * caller's compileInput) is a drop too (review-a N1), never a throw out of here.
  */
 function buildCatalog(index, byId, options = {}) {
   const indexErrors = checkSchema(index, INDEX_SCHEMA);
@@ -414,7 +456,8 @@ function buildCatalog(index, byId, options = {}) {
   for (const id of index.apps) {
     const raw = byId && own(byId, id) ? byId[id] : undefined;
     if (raw === undefined || raw instanceof Error) { dropped.push({ id, code: 'mini_apps_manifest_unreadable', errors: [] }); continue; }
-    const result = validateManifest(raw, options);
+    let result;
+    try { result = validateManifest(raw, options); } catch { result = { ok: false, code: CODE, errors: [{ path: '/', reason: 'unvalidatable' }] }; }
     if (!result.ok) { dropped.push({ id, code: result.code, errors: result.errors }); continue; }
     const m = result.manifest;
     const clash = m.id !== id ? 'id_mismatch'
@@ -436,7 +479,7 @@ const v1Unrepresentable = reason => Object.assign(new Error(V1_CODE), { code: V1
  * `person`: the per-box person entry (legacy.personOnly kept); `context`: the per-box context entry (the
  * generic context ops after the app's own, for an app that declares data.context). A public MCP app
  * (service mcp, auth none) is served as today's generic relay: `mini-app.read` plus an `mcp` block of its
- * ops' tools. A v2 `admins` app is served restricted (the narrower v1 audience: allowlisted tenants only).
+ * ops' tools; every op must be a `read`, or it throws (the relay is a read on the box). A v2 `admins` app is served restricted (the narrower v1 audience: allowlisted tenants only).
  * @returns {Record<string, any>}
  */
 function v1Entry(m, { person = false, context = false } = {}) {
@@ -457,6 +500,9 @@ function v1Entry(m, { person = false, context = false } = {}) {
   if (context && m.data?.context) entry.operations.push(...CONTEXT_OPERATIONS);
   if (m.data?.context) entry.data = { context: { maxEntries: m.data.context.maxEntries } };
   if (relay) {
+    // The v1 relay is `mini-app.read`, a read on the box (no card, no write gate): an app with any other
+    // class has no v1 form (review-a S1), so it is dropped, never served as a read.
+    if (m.operations.some(op => op.class !== 'read')) throw v1Unrepresentable('relay_non_read_op');
     if (!m.service.baseUrl) throw v1Unrepresentable('relay_without_base_url');
     if (ops.some(op => !op.target?.tool || !op.input)) throw v1Unrepresentable('relay_op_without_tool');
     entry.mcp = { url: m.service.baseUrl, tools: ops.map(op => ({ name: op.target.tool, inputSchema: clone(op.input) })) };
