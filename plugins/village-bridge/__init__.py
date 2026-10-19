@@ -78,9 +78,9 @@ SCHEMA = {
             "itemId": {"type": "string"}, "qty": {"type": "integer", "minimum": 1},
             "optionIds": {"type": "array", "items": {"type": "string"}}
         }, "required": ["itemId", "qty", "optionIds"], "additionalProperties": False}},
-        "fulfilment": {"type": "object", "properties": {
+        "fulfilment": {"type": "object", "description": "forkicks.order.prepare: {type,locationId,date?,deliveryAddress?}. The optional pickup/delivery date belongs HERE as fulfilment.date, not at the top level.", "properties": {
             "type": {"type": "string", "enum": ["pickup", "delivery"]}, "locationId": {"type": "string"},
-            "date": {"type": "string", "description": "Pickup or delivery date, YYYY-MM-DD in IST."}, "deliveryAddress": {"type": "string"}
+            "date": {"type": "string", "description": "Optional pickup or delivery date, YYYY-MM-DD in IST, nested inside fulfilment."}, "deliveryAddress": {"type": "string"}
         }, "required": ["type", "locationId"], "additionalProperties": False},
         "paymentMethod": {"type": "string", "enum": ["upi", "card_on_pickup"]},
         "orderId": {"type": "string", "description": "Exact For Kicks order id returned by confirm; never another resident's."},
@@ -209,12 +209,15 @@ class _InvalidArguments(ValueError):
     """Raised ONLY by handle()'s argument checks, before any request is built or sent: nothing left the box, so
     the agent gets a closed invalid_arguments error it can correct, never village_unavailable (FORKICKS-DOWN).
     Every other exception, a ValueError after a request was sent included, keeps the catch-all's text."""
-    def __init__(self, op=None, instruction=None):
+    def __init__(self, op=None, instruction=None, fields=None):
         super().__init__("invalid_arguments")
         accepted = OP_ARGUMENTS.get(op) if isinstance(op, str) else None
+        # fields (forkicks.order.prepare, after jmill's ov#407): schema property names only, never values.
+        self.fields = fields
         self.instruction = instruction or (
-            "Nothing was sent. " + op + " accepts only: " + accepted + ". Fix the arguments and call again." if accepted
-            else "Nothing was sent. Use one operation from the village tool's list with only its arguments, then call again.")
+            "Nothing was sent. " + ("Correct: " + ", ".join(fields) + ". " if fields else "") + op + " accepts only: "
+            + accepted + ". Fix the arguments and call again; this is not an outage, so do not report the service as unavailable."
+            if accepted else "Nothing was sent. Use one operation from the village tool's list with only its arguments, then call again.")
 
 
 def _uuid(value, op):
@@ -985,16 +988,26 @@ def handle(args, **kwargs):
                 # has none; an equal copy is dropped; a different one is refused, never guessed between.
                 date, fulfilment = order.pop("date"), dict(order["fulfilment"])
                 if not isinstance(date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date, flags=re.ASCII):
-                    raise _InvalidArguments(op)
+                    raise _InvalidArguments(op, fields=["date"])
                 if "date" not in fulfilment:
                     fulfilment["date"] = date
                 elif fulfilment["date"] != date:
-                    raise _InvalidArguments(op, FORKICKS_DATE_CONFLICT)
+                    raise _InvalidArguments(op, FORKICKS_DATE_CONFLICT, ["date"])
                 order["fulfilment"] = fulfilment
-            if set(order) not in ({"operation", "items", "fulfilment", "paymentMethod"}, {"operation", "items", "fulfilment", "paymentMethod", "note"}):
-                raise _InvalidArguments(op)
-            if not isinstance(order["items"], list) or not 1 <= len(order["items"]) <= 50 or not isinstance(order["fulfilment"], dict) or order["paymentMethod"] not in ("upi", "card_on_pickup"):
-                raise _InvalidArguments(op)
+            # Field-aware refusal, after jmill's ov#407: every bad or missing field is named (schema names only).
+            required = {"operation", "items", "fulfilment", "paymentMethod"}
+            invalid = (set(order) - (required | {"note"})) | (required - set(order))
+            if "items" in order and (not isinstance(order["items"], list) or not 1 <= len(order["items"]) <= 50):
+                invalid.add("items")
+            if "fulfilment" in order and not isinstance(order["fulfilment"], dict):
+                invalid.add("fulfilment")
+            if "paymentMethod" in order and order["paymentMethod"] not in ("upi", "card_on_pickup"):
+                invalid.add("paymentMethod")
+            # The app trims the note, then allows at most 140 characters (ForKicksOrderInput.note).
+            if "note" in order and (not isinstance(order["note"], str) or len(order["note"].strip()) > 140):
+                invalid.add("note")
+            if invalid:
+                raise _InvalidArguments(op, fields=sorted({key if key in SCHEMA["parameters"]["properties"] else "(unknown field)" for key in invalid}))
             payload.update({key: value for key, value in order.items() if key != "operation"})
         elif op == "forkicks.order.confirm" and set(args) == {"operation", "draftId"}:
             payload["draftId"] = args["draftId"]
@@ -1114,7 +1127,7 @@ def handle(args, **kwargs):
     except _InvalidArguments as error:
         # Raised only by the argument checks above, before any request: nothing was sent, so the agent can fix
         # the call. Never village_unavailable, which tells it (and the owner) the service is down.
-        return json.dumps({"error": "invalid_arguments", "instruction": error.instruction})
+        return json.dumps({"error": "invalid_arguments", **({"fields": error.fields} if error.fields else {}), "instruction": error.instruction})
     except Exception:
         if isinstance(args, dict) and isinstance(args.get("operation"), str) and args["operation"] in ZZZ_OPERATIONS:
             return json.dumps({"error": "village_unavailable", "settingsUrl": SETTINGS, "instruction": ZZZ_UNCLEAR})

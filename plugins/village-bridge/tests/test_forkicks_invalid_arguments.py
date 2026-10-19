@@ -76,12 +76,13 @@ class ForKicksInvalidArgumentsTest(unittest.TestCase):
         self.enable()
         conflict = self.failing_call(); conflict['fulfilment'] = {**conflict['fulfilment'], 'date': '2026-10-20'}
         response = self.call(conflict)
-        self.assertEqual(response, {'error': 'invalid_arguments', 'instruction': bridge.FORKICKS_DATE_CONFLICT})
+        self.assertEqual(response, {'error': 'invalid_arguments', 'fields': ['date'], 'instruction': bridge.FORKICKS_DATE_CONFLICT})
         self.assertNotIn('village_unavailable', json.dumps(response))
         for date in ['19 Oct', '2026-10-19T08:00', 20261019, None, '２０２６-10-19']:
             with self.subTest(date=date):
                 response = self.call({**self.failing_call(), 'date': date})
                 self.assertEqual(response['error'], 'invalid_arguments')
+                self.assertEqual(response['fields'], ['date'])
                 self.assertIn('fulfilment.date', response['instruction'])
         self.transport.assert_not_called(); self.gate.assert_not_called()
         self.assertFalse(Path(self.tmp.name, 'forkicks-drafts').exists())
@@ -108,17 +109,48 @@ class ForKicksInvalidArgumentsTest(unittest.TestCase):
             {'operation': 'forkicks.order.confirm', 'draftId': draft, 'approval': {'approved': True}},
             {'operation': 'forkicks.order.status', 'orderId': 'order-1', 'tenantId': 'other'},
         ]
+        tail = '. Fix the arguments and call again; this is not an outage, so do not report the service as unavailable.'
         for request in requests:
             with self.subTest(op=request['operation']):
                 response = self.call(request)
                 self.assertEqual(response['error'], 'invalid_arguments')
-                self.assertEqual(response['instruction'], 'Nothing was sent. ' + request['operation'] + ' accepts only: '
-                                 + bridge.OP_ARGUMENTS[request['operation']] + '. Fix the arguments and call again.')
+                op = request['operation']
+                if op == 'forkicks.order.prepare':  # field-aware: the unknown key is never echoed
+                    self.assertEqual(response['fields'], ['(unknown field)'])
+                    self.assertEqual(response['instruction'], 'Nothing was sent. Correct: (unknown field). ' + op + ' accepts only: ' + bridge.OP_ARGUMENTS[op] + tail)
+                else:
+                    self.assertNotIn('fields', response)
+                    self.assertEqual(response['instruction'], 'Nothing was sent. ' + op + ' accepts only: ' + bridge.OP_ARGUMENTS[op] + tail)
         for request in [{'operation': 'forkicks.order.publish'}, {'operation': ['forkicks.menu']}]:
             response = self.call(request)
             self.assertEqual(response['error'], 'invalid_arguments')
             self.assertTrue(response['instruction'].startswith('Nothing was sent.'))
         self.transport.assert_not_called(); self.gate.assert_not_called()
+
+    def test_prepare_errors_name_only_schema_fields_never_values(self):
+        # Adapted from jmill's ov#407 field-aware tests.
+        self.enable()
+        order = self.failing_call()
+        for field, value in [('items', 'private-value'), ('items', []), ('fulfilment', 17), ('paymentMethod', 'private-value'),
+                             ('paymentMethod', 'cash'), ('note', 'x' * 141), ('note', 7)]:
+            with self.subTest(field=field, value=str(value)[:10]):
+                response = self.call({**order, field: value})
+                self.assertEqual(response['error'], 'invalid_arguments')
+                # With no fulfilment object to move it into, the top-level date is named too.
+                self.assertEqual(response['fields'], ['date', 'fulfilment'] if field == 'fulfilment' else [field])
+                self.assertNotIn('private-value', json.dumps(response))
+        missing = dict(order); del missing['paymentMethod']
+        self.assertEqual(self.call(missing)['fields'], ['paymentMethod'])
+        response = self.call({**order, 'private-key': 1, 'locationId': 'cafe'})
+        self.assertEqual(response['fields'], ['(unknown field)', 'locationId'])
+        self.assertNotIn('private-key', json.dumps(response))
+        # The app trims the note before its 140 limit, so surrounding spaces do not count.
+        sent = {k: v for k, v in order.items() if k not in ('operation', 'date')}
+        sent['fulfilment'] = {**sent['fulfilment'], 'date': '2026-10-19'}
+        sent['note'] = ' ' + 'x' * 140 + ' '
+        self.transport.return_value = self.result_for(sent)
+        self.assertIn('data', self.call({**order, 'note': sent['note']}))
+        self.transport.assert_called_once()
 
     def test_errors_after_a_request_was_sent_keep_village_unavailable_and_its_instruction(self):
         self.enable()
