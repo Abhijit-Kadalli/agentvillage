@@ -1,6 +1,6 @@
 # Mini-apps platform v2: a faster, safer development cycle (design)
 
-> **Status (19 Oct 2026).** Approved by Carter with the six defaults in [Questions for Carter](#questions-for-carter-each-with-a-default-answered-defaults): admins lane fully unattended; manifests stay in this repo for now (own repo in Phase 2); third-party write ops always need a card; context ceiling default private; our Action merges, the review bot comments/checks; everyone-lane reviewer = the platform lead. Phase 0 starts this week.
+> **Status (19 Oct 2026).** Approved by Carter with the six defaults in [Questions for Carter](#questions-for-carter-each-with-a-default-answered-defaults): admins lane fully unattended; manifests stay in this repo for now (own repo in Phase 2); third-party needs-card ops always ask the resident (no autonomous rows); write-class ops get no new consent gate; context ceiling default private; our Action merges, the review bot comments/checks; everyone-lane reviewer = the platform lead. Phase 0 starts this week.
 
 Design by the platform team, Mon 19 Oct 2026. The companion developer guide is [`DEVELOPER-GUIDE-v2.md`](DEVELOPER-GUIDE-v2.md).
 Repository heads this design was read against: cp origin/main `5c9329f`, app origin/main `5c7f50e9`, overlay origin/main `40988960`.
