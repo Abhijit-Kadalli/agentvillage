@@ -46,6 +46,8 @@ export const CATALOG_PATH = "mini-apps/catalog.json";
 export const GATE_FILES = Object.freeze([
   "scripts/mini-apps-review.ts", "scripts/tests/mini-apps-review.test.ts", VALIDATOR_PATH, SCHEMA_PATH, PINS_PATH,
   CATALOG_PATH, "scripts/tests/mini-app-manifests.test.ts", ".github/workflows/mini-apps-review.yml",
+  // P0-5's conformance suite (ov#422) and the package.json line that runs it (`bun run conformance`).
+  "scripts/mini-apps-conformance.ts", "scripts/tests/mini-apps-conformance.test.ts", "package.json",
 ]);
 export const CHECKED = Object.freeze(["paths", "author", "schema", "hashes", "version_bump", "secrets", "data_context",
   "approval_classes", "conformance", "lane_rules"]);
@@ -502,17 +504,25 @@ export function evaluate(src: Source, validator: Validator): Report {
     if (downgraded) lane = "core";
   }
 
-  // conformance: conformance.json next to the manifest (P0-5 writes it; this only reads it).
+  // conformance: conformance.json next to the manifest, as P0-5's suite (ov#422) writes it:
+  // {manifest: <repo-relative manifest path>, sha256: <of the manifest's exact bytes>, results: [{check, pass, note}], passed}.
+  // A not_run row is pass: null and never a pass. Where the file lives (P0-1's closed tree refuses it today,
+  // or a PR artifact) is a lead decision; this reads it if present and says S when it is absent.
   if (laneId && headBytes) {
     const path = `mini-apps/${laneId}/conformance.json`;
     const bytes = src.head(path);
-    if (!bytes) add({ code: "conformance_missing", severity: "S", file: path, text: "no conformance.json next to the manifest (P0-5 builds the suite)" });
+    if (!bytes) add({ code: "conformance_missing", severity: "S", file: path, text: "no conformance.json next to the manifest (bun run conformance, P0-5)" });
     else {
       const c = parseJson(bytes);
       if (!c.ok || !isObject(c.value)) add({ code: "conformance_unreadable", severity: "M", file: path, text: "conformance.json is not a JSON object" });
       else {
+        const results = Array.isArray(c.value.results) ? c.value.results.filter(isObject) : [];
         if (c.value.passed !== true) add({ code: "conformance_failed", severity: "M", file: path, text: "conformance.json does not say passed: true" });
-        if (c.value.sha256 !== sha256(headBytes)) add({ code: "conformance_stale", severity: "M", file: path, text: "conformance.json's sha256 is not this manifest's: it was run on another version" });
+        else if (results.some(r => r.pass === false)) add({ code: "conformance_inconsistent", severity: "M", file: path, text: "conformance.json says passed: true but holds a failed check" });
+        if (c.value.manifest !== manifestPath) add({ code: "conformance_wrong_manifest", severity: "M", file: path, text: `conformance.json names ${JSON.stringify(c.value.manifest)?.slice(0, 80)}, not ${manifestPath}` });
+        if (c.value.sha256 !== sha256(headBytes)) add({ code: "conformance_stale", severity: "M", file: path, text: "conformance.json's sha256 is not this manifest's exact bytes: it was run on another version" });
+        const notRun = results.filter(r => r.pass === null).map(r => String(r.check)).slice(0, 8);
+        if (notRun.length) add({ code: "conformance_not_run", severity: "N", file: path, text: `not run (never a pass): ${notRun.join(", ")}; the bot checks the version bump itself` });
       }
     }
   }

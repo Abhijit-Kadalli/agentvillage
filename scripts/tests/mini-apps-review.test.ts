@@ -110,6 +110,15 @@ describe("paths: the lane classifier", () => {
       expect([gate, r.lane, r.verdict, has(r, "gate_changed")]).toEqual([gate, "core", "NEEDS_HUMAN", true]);
     }
   });
+  test("the gate list is pinned here, not read back from the script (P0-1's and P0-5's gates included)", () => {
+    expect([...R.GATE_FILES].sort()).toEqual([
+      ".github/workflows/mini-apps-review.yml", "mini-apps/catalog.json", "mini-apps/manifest.v2.schema.json", "mini-apps/manifests.pins.json",
+      "package.json", "scripts/mini-apps-conformance.ts", "scripts/mini-apps-manifests.cjs", "scripts/mini-apps-review.ts",
+      "scripts/tests/mini-app-manifests.test.ts", "scripts/tests/mini-apps-conformance.test.ts", "scripts/tests/mini-apps-review.test.ts",
+    ]);
+    const r = pr(patch, { extra: { "scripts/mini-apps-conformance.ts": "changed\n" } });
+    expect([r.lane, r.verdict, has(r, "gate_changed")]).toEqual(["core", "NEEDS_HUMAN", true]);
+  });
   test("other core shapes: no files, a top-level mini-apps file, an id the id rule refuses", () => {
     expect(R.classify([]).id).toBeNull();
     expect(c("mini-apps/README.md").id).toBeNull();
@@ -419,7 +428,8 @@ describe("approval classes", () => {
 });
 
 describe("conformance", () => {
-  const conf = (m: any, over: any = {}) => json({ manifest: "tinyshop@1.0.1", sha256: sha256(json(m)), results: [], passed: true, ...over });
+  // P0-5's shape (ov#422): manifest is the repo-relative path; sha256 is over the exact bytes; not_run is pass: null.
+  const conf = (m: any, over: any = {}) => json({ manifest: MP, sha256: sha256(json(m)), results: [{ check: "manifest.schema", pass: true, note: "" }], passed: true, ...over });
   const bumped = () => { const m = manifest(); m.version = "1.0.1"; return m; };
   test("absent: S (PASS in sandbox, NEEDS_HUMAN in admins)", () => {
     expect([has(pr(patch), "conformance_missing", "S"), pr(patch).verdict]).toEqual([true, "PASS"]);
@@ -429,6 +439,19 @@ describe("conformance", () => {
     const base = manifest("admins"), h = clone(base); h.version = "1.0.1";
     const r = pr(patch, { base, extra: { [CP]: conf(h) } });
     expect([codes(r).filter(c => c.startsWith("conformance")), r.verdict]).toEqual([[], "PASS"]);
+  });
+  test("another manifest's path, or a failed row under passed: true, fails; a not_run row is a note, never a pass", () => {
+    expect(has(pr(patch, { extra: { [CP]: conf(bumped(), { manifest: "tinyshop@1.0.1" }) } }), "conformance_wrong_manifest", "M")).toBe(true);
+    const lying = conf(bumped(), { results: [{ check: "skills.sha256", pass: false, note: "x" }] });
+    expect(has(pr(patch, { extra: { [CP]: lying } }), "conformance_inconsistent", "M")).toBe(true);
+    const base = manifest("admins"), h = clone(base); h.version = "1.0.1";
+    const partial = pr(patch, { base, extra: { [CP]: conf(h, { results: [{ check: "manifest.schema", pass: true, note: "" }, { check: "version.bump", pass: null, note: "no --base" }] }) } });
+    expect([partial.findings.filter(x => x.code.startsWith("conformance")).map(x => [x.code, x.severity]), partial.verdict]).toEqual([[["conformance_not_run", "N"]], "PASS"]);
+  });
+  test("bytes, not the parsed form: a re-serialized manifest's sha256 is stale", () => {
+    const m = bumped();
+    const reserialized = json({ ...conf(m), sha256: sha256(JSON.stringify(m)) });
+    expect(has(pr(patch, { extra: { [CP]: reserialized } }), "conformance_stale", "M")).toBe(true);
   });
   test("passed false, a stale sha or not JSON: fail", () => {
     expect(has(pr(patch, { extra: { [CP]: conf(bumped(), { passed: false }) } }), "conformance_failed", "M")).toBe(true);
