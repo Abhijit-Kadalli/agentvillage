@@ -15,9 +15,9 @@ Gold Stars. These are separate actions: recording a meeting does not send a star
 When asked, give the useful link immediately:
 https://agents.edgecity.live/rolodex
 
-The native operations below come with the optional **Gold Stars** mini-app.
+The native operations below come with the **Gold Stars** mini-app, which every agent has.
 If `village` answers `mini_app_not_installed`, it is not available on this agent
-yet (or Gold Stars is not installed): acknowledge the interaction, offer the Rolodex link where they
+yet (Gold Stars has not reached it): acknowledge the interaction, offer the Rolodex link where they
 can mark the meeting themselves, and never claim you updated a mark. Gold Stars comes with every agent,
 so never give an install link for it: say that answer's `instruction` words (load `mini-apps`); you
 cannot install it yourself, and never send them to the team or organisers.

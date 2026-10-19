@@ -230,6 +230,11 @@ class InstallLinkTest(unittest.TestCase):
             self.assertIn('`mini-apps`', skills[name])
         for name in ('rolodex', 'gold-stars'):  # Gold Stars comes with every agent: its words, never a link
             self.assertIn('never give an install link', skills[name]); self.assertIn("`instruction` words", skills[name])
+            # review-b S3: nothing in them still says Gold Stars is optional or the owner must install it.
+            flat = ' '.join(skills[name].split()).lower()
+            for phrase in ('optional curated mini-app', 'optional **gold stars**', 'must install gold stars', 'or gold stars is not installed'):
+                self.assertNotIn(phrase, flat)
+            self.assertIn('every agent', flat)
         self.assertIn(copy.RULE, skills['mini-apps'])
         # v2.1.5 is on every box (lead L13755, product L13758): no install word asks for /new any more.
         for where, text in texts.items():
