@@ -54,13 +54,19 @@ Use Dizko as the starting bundle for another **public read-only** service:
    today: `operations: ["mini-app.read"]` plus its tools (or the reviewed
    context list below, only with a CP namespace review and a `data.context`
    block). `bun test scripts/tests/mini-app-manifests.test.ts` checks it; a
-   skill edit changes its sha256, so it is also a manifest edit. The validator
-   also refuses a `baseUrl` on an internal host (any IP literal, a single-label
-   name, `localhost`, `*.localhost`, `*.internal`, `*.local`), an `app-token`
-   `secretRef` other than `MINI_APP_<ID>_<NAME>` (`-` as `_`, no `_` in NAME),
-   and nesting deeper than 64; such a relay app must have only `read` ops, and
-   each file must be canonical JSON (`JSON.stringify(value, null, 2)` plus a
-   newline, so no duplicate keys).
+   skill edit changes its sha256, so it is also a manifest edit. A `baseUrl`
+   must be canonical (`new URL(s).href === s` exactly, so a bare origin is
+   written with its `/`) lower-case ASCII `https://` with no port, userinfo,
+   query, fragment, `%` in the host, `xn--` label, backslash or whitespace, and
+   name a public DNS host: any IP literal, a single-label name, `localhost` and
+   `*.localhost`, `*.internal`, `*.local`, `*.lan`, `*.home.arpa`, `*.intranet`
+   and `*.corp` are refused. This static check cannot stop DNS rebinding or a
+   public name that resolves to a private address: the fetcher must re-check
+   the resolved IP at connect time. An `app-token` `secretRef` must be
+   `MINI_APP_<ID>_<NAME>` (`-` as `_`, no `_` in NAME); nesting deeper than 64
+   is refused; a relay app must have only `read` ops; and each file must be
+   canonical JSON (`JSON.stringify(value, null, 2)` plus a newline, so no
+   duplicate keys).
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
 3. Submit the same reviewed definition to the control-plane catalog (Phase 0:
