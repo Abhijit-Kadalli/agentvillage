@@ -23,7 +23,7 @@ function manifest(visibility = "sandbox"): any {
     manifest: 2, id: "tinyshop", name: "Tiny Shop", version: "1.0.0", description: "An invented shop used only by these tests.",
     homepage: "https://tinyshop.example.org", visibility,
     permissions: [{ kind: "read", label: "Read the menu", description: "Read the invented menu." }],
-    service: { kind: "https-json", baseUrl: "https://api.tinyshop.example.org", auth: { mode: "app-token", secretRef: "MINI_APP_TINYSHOP_TOKEN" } },
+    service: { kind: "https-json", baseUrl: "https://api.tinyshop.example.org/v1", auth: { mode: "app-token", secretRef: "MINI_APP_TINYSHOP_TOKEN" } },
     operations: [
       { name: "tinyshop.menu", class: "read" },
       { name: "tinyshop.order.prepare", class: "prepare" },
