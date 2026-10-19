@@ -17,7 +17,8 @@
  * Phase 0 (dark): nothing reads a manifest at runtime unless the cp's MINI_APPS_MANIFESTS=1 is set. The
  * `legacy` block carries what today's exact-equality v1 entry needs and v2 does not model (provenance,
  * the per-box person entry, the op prefixes that predate "first segment = id"); it retires with the
- * signed projection (design §1.2, §2.3, Phase 2).
+ * signed projection (design §1.2, §2.3, Phase 2). Only the five first-party ids may carry it, and only
+ * as FIRST_PARTY below grants: a manifest's own content never widens what it may claim.
  */
 'use strict';
 
@@ -38,6 +39,27 @@ const TRIMMED = '^\\S(.*\\S)?$';
 const RELAY_OPERATION = 'mini-app.read';
 const CONTEXT_OPERATIONS = Object.freeze(['mini-app.context.read', 'mini-app.context.write']);
 const PROVENANCE = 'first-party-reviewed-external';
+// The five first-party apps, pinned HERE, never by a manifest field (security review "authorization-
+// reserved-namespace"): what only each may carry. `internal`: service.kind "internal" (core handlers in
+// app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `prefixes`: the op
+// namespaces it owns beyond its id; `provenance`, `personOnly`: its exact Phase 0 legacy block. Any other
+// manifest's ops sit under its own id, it is never `internal`, and it carries no `legacy` block.
+const FIRST_PARTY = deepFreeze({
+  'gold-stars': { internal: true, prefixes: ['rolodex', 'skylight'], personOnly: true },
+  dizko: {},
+  zzzbot: { provenance: PROVENANCE, prefixes: ['zzz'] },
+  slopfolio: { provenance: PROVENANCE },
+  forkicks: {},
+});
+// Ids no manifest may take: the platform's own op namespaces and the overlay's baseline (non-app) skill
+// names (an app's skill is named for its id, so such an id would shadow a shipped skill on the box), and
+// any id in a platform family. The first-party prefixes above are reserved too (only their owner uses them).
+const RESERVED_IDS = Object.freeze(['mini-app', 'mini-apps', 'rolodex', 'skylight', 'zzz', 'village', 'marketplace', 'approval',
+  'agent-commons', 'agent-plaza', 'agent-profile', 'edgeos', 'hooks', 'index-network', 'recall', 'record-intention', 'simocracy',
+  'token-usage-audit', 'moralmod', 'odin', 'index']);
+const RESERVED_ID_FAMILY = /^(?:av|agentvillage|agent-village|mini-app|mini-apps|staff|admin|edge|edgecity|edge-city|core|cp|platform|system)(?:-|$)/;
+const reservedId = id => RESERVED_IDS.includes(id) || RESERVED_ID_FAMILY.test(id) ||
+  Object.entries(FIRST_PARTY).some(([owner, grant]) => owner !== id && (grant.prefixes || []).includes(id));
 const DEFAULTS = Object.freeze({ maxRequestBytes: 4096, maxResponseBytes: 262144, timeoutMs: 25000, framing: 'data' });
 
 const text = (max, extra = {}) => ({ type: 'string', minLength: 1, maxLength: max, ...extra });
@@ -309,8 +331,19 @@ function semantics(m, compileInput) {
       if (!httpsUrl(auth.oauth.discovery, { bare: true })) fail('/service/auth/oauth/discovery', 'url');
     }
   }
-  const prefixes = new Set([m.id, ...(m.legacy?.prefixes || [])]);
-  if (m.legacy?.prefixes?.some(prefix => prefix === m.id || prefix === 'mini-app')) fail('/legacy/prefixes', 'prefix_reserved');
+  // Reserved names and first-party grants, from the pinned table only (a manifest field never widens them).
+  const grant = own(FIRST_PARTY, m.id) ? FIRST_PARTY[m.id] : null;
+  if (!grant && reservedId(m.id)) fail('/id', 'reserved');
+  if (service.kind === 'internal' && !grant?.internal) fail('/service/kind', 'internal_first_party_only');
+  if (m.legacy) {
+    if (!grant) fail('/legacy', 'first_party_only');
+    else {
+      if ((m.legacy.provenance || null) !== (grant.provenance || null)) fail('/legacy/provenance', 'not_granted');
+      if (JSON.stringify(m.legacy.prefixes || []) !== JSON.stringify(grant.prefixes || [])) fail('/legacy/prefixes', 'not_granted');
+      if (m.legacy.personOnly && !grant.personOnly) fail('/legacy/personOnly', 'not_granted');
+    }
+  }
+  const prefixes = new Set([m.id, ...(grant && JSON.stringify(m.legacy?.prefixes || []) === JSON.stringify(grant.prefixes || []) ? grant.prefixes || [] : [])]);
   const byName = new Map();
   m.operations.forEach((op, i) => {
     const at = `/operations/${i}`;
@@ -440,6 +473,6 @@ function deepFreeze(value) {
 }
 
 module.exports = {
-  MANIFEST_VERSION, CODE, V1_CODE, SCHEMA, INDEX_SCHEMA, RELAY_OPERATION, CONTEXT_OPERATIONS, DEFAULTS,
+  MANIFEST_VERSION, CODE, V1_CODE, SCHEMA, INDEX_SCHEMA, RELAY_OPERATION, CONTEXT_OPERATIONS, DEFAULTS, FIRST_PARTY, RESERVED_IDS,
   checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze,
 };

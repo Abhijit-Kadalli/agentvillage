@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateProjection } from "../../install/install_miniapps";
 
@@ -22,9 +23,9 @@ import { validateProjection } from "../../install/install_miniapps";
 // Nothing on a box reads these files yet (no skill, plugin or installer step): data only, no roll.
 //   bun test scripts/tests/mini-app-manifests.test.ts
 
-const MODULE_SHA256 = "739b695164a133ac2ac2d9b5d80407778ab3e4676bcc85c095190446b18d328c";
+const MODULE_SHA256 = "5e64f8a3efbd315f628a6bf13cad35a47e0982501f29f70f3135d91a779775d4";
 const SCHEMA_SHA256 = "ff2e958db499c33150851224bd20cbcf4e02ed9a0789ccc407c940ffb27871b7";
-const PINS_SHA256 = "6e13afc53823acfd12505c7d9ac9ee78cd080f68d6696f390638f71212791308";
+const PINS_SHA256 = "7137bfeda58b0469b28783af3f054d967cba2f3f18a08eca9b68c7afa4913fed";
 const REPO = join(import.meta.dir, "..", "..");
 const DIR = join(REPO, "mini-apps");
 const m = createRequire(import.meta.url)("../mini-apps-manifests.cjs");
@@ -32,6 +33,35 @@ const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex
 const bytes = (path: string) => readFileSync(join(REPO, path));
 const index = JSON.parse(bytes("mini-apps/catalog.json").toString("utf8"));
 const manifest = (id: string) => JSON.parse(bytes(`mini-apps/${id}/manifest.json`).toString("utf8"));
+/**
+ * Fail closed on anything under mini-apps/ that is not a reviewed catalog file (security review
+ * "authorization-reserved-namespace", shape a): the tree is a closed list, never "whatever manifest.json files exist".
+ * Allowed: README.md, catalog.json, manifest.v2.schema.json, manifests.pins.json at the top; one directory
+ * per catalog.json id holding manifest.json and optionally README.md. No symlink anywhere, no other name,
+ * extension or case variant, no directory catalog.json does not list (and none it lists may be missing).
+ */
+const TOP_FILES = ["README.md", "catalog.json", "manifest.v2.schema.json", "manifests.pins.json"];
+function treeViolations(dir: string, ids: string[]): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    const st = lstatSync(join(dir, name));
+    if (st.isSymbolicLink()) out.push(`${name}: symlink`);
+    else if (st.isFile()) { if (!TOP_FILES.includes(name)) out.push(`${name}: unknown file`); }
+    else if (!st.isDirectory()) out.push(`${name}: not a file or directory`);
+    else if (!ids.includes(name)) out.push(`${name}/: not in catalog.json`);
+    else {
+      const inner = readdirSync(join(dir, name)).sort();
+      for (const file of inner) {
+        const fst = lstatSync(join(dir, name, file));
+        if (fst.isSymbolicLink()) out.push(`${name}/${file}: symlink`);
+        else if (!fst.isFile() || !["manifest.json", "README.md"].includes(file)) out.push(`${name}/${file}: unknown entry`);
+      }
+      if (!inner.includes("manifest.json")) out.push(`${name}/manifest.json: missing`);
+    }
+  }
+  for (const id of ids) if (!readdirSync(dir).includes(id)) out.push(`${id}/: listed but missing`);
+  return out;
+}
 const reasons = (result: { ok: boolean; errors?: { path: string; reason: string }[] }) =>
   result.ok ? [] : result.errors!.map(e => `${e.path} ${e.reason}`);
 
@@ -59,11 +89,35 @@ describe("the shared files", () => {
 });
 
 describe("mini-apps/: the published catalog", () => {
-  test("catalog.json is a valid index naming every manifest directory, in the order the cp serves", () => {
+  test("catalog.json is a valid index, in the order the cp serves, and mini-apps/ holds only reviewed catalog files", () => {
     expect(m.checkSchema(index, m.INDEX_SCHEMA)).toEqual([]);
     expect(index.apps).toEqual(["gold-stars", "dizko", "zzzbot", "slopfolio", "forkicks"]);
-    const dirs = readdirSync(DIR).filter(name => statSync(join(DIR, name)).isDirectory() && existsSync(join(DIR, name, "manifest.json")));
-    expect(dirs.sort()).toEqual([...index.apps].sort());
+    expect(treeViolations(DIR, index.apps)).toEqual([]);
+  });
+
+  test("the closed tree refuses every stray form (fail closed, never skipped)", () => {
+    const root = mkdtempSync(join(tmpdir(), "mini-app-tree-"));
+    try {
+      for (const file of TOP_FILES) writeFileSync(join(root, file), "{}");
+      mkdirSync(join(root, "acme"));
+      writeFileSync(join(root, "acme", "manifest.json"), "{}");
+      expect(treeViolations(root, ["acme"])).toEqual([]);
+      const cases: [string, () => void, string][] = [
+        ["an unlisted app directory", () => { mkdirSync(join(root, "evil")); writeFileSync(join(root, "evil", "manifest.json"), "{}"); }, "evil/: not in catalog.json"],
+        ["another extension", () => writeFileSync(join(root, "acme", "manifest.v3.json"), "{}"), "acme/manifest.v3.json: unknown entry"],
+        // A name absent from the directory, so the variant is a file of its own on a case-insensitive disk too.
+        ["a case variant", () => writeFileSync(join(root, "acme", "Readme.md"), "x"), "acme/Readme.md: unknown entry"],
+        ["a top-level manifest", () => writeFileSync(join(root, "manifest.json"), "{}"), "manifest.json: unknown file"],
+        ["a nested directory", () => mkdirSync(join(root, "acme", "sub")), "acme/sub: unknown entry"],
+        ["a symlinked manifest", () => { rmSync(join(root, "acme", "manifest.json")); symlinkSync(join(root, "catalog.json"), join(root, "acme", "manifest.json")); }, "acme/manifest.json: symlink"],
+        ["a symlinked app directory", () => symlinkSync(join(root, "acme"), join(root, "other")), "other: symlink"],
+        ["a listed app with no directory", () => {}, "gone/: listed but missing"],
+      ];
+      for (const [why, plant, want] of cases) {
+        plant();
+        expect([why, treeViolations(root, ["acme", "gone"].slice(0, why.startsWith("a listed") ? 2 : 1)).includes(want)]).toEqual([why, true]);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   test("every listed manifest is a valid v2 manifest, and the catalog builds with none dropped", () => {
@@ -101,6 +155,12 @@ describe("mini-apps/: the published catalog", () => {
       ["op of another app", x => { x.operations[0].name = "gold-stars.menu"; }, "/operations/0/name prefix"],
       ["an http: URL", x => { x.description = "http://example.com"; }, "/description http_url"],
       ["a code field", x => { x.operations[0].command = "bun run x.ts"; }, "/operations/0/command additionalProperties"],
+      // Reserved namespaces: what an app may claim is pinned in the validator (FIRST_PARTY, RESERVED_IDS).
+      ["a third party claiming a core prefix", x => { x.id = "acme"; x.skills[0] = { ...x.skills[0], name: "acme", path: "skills/acme/SKILL.md" };
+        x.legacy = { prefixes: ["rolodex"] }; x.operations = [{ name: "rolodex.person", class: "read" }]; }, "/legacy first_party_only"],
+      ["a reserved id", x => { x.id = "rolodex"; x.skills[0] = { ...x.skills[0], name: "rolodex", path: "skills/rolodex/SKILL.md" };
+        x.operations = [{ name: "rolodex.person", class: "read" }]; }, "/id reserved"],
+      ["internal kind for a non-core app", x => { x.service = { kind: "internal" }; }, "/service/kind internal_first_party_only"],
     ];
     for (const [why, mutate, want] of cases) {
       const value = fk();

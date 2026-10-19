@@ -2,7 +2,7 @@
   "manifest": 2,
   "note": "the sha256 of the two shared files of mini-app manifest v2: the validator module (agentvillage-controlplane control-plane/src/mini-apps-manifests.js = agentvillage-app src/lib/server/mini-apps/manifests/mini-apps-manifests.cjs = agentvillage scripts/mini-apps-manifests.cjs) and the JSON Schema (control-plane/src/mini-apps/manifest.v2.schema.json = src/lib/server/mini-apps/manifests/manifest.v2.schema.json = mini-apps/manifest.v2.schema.json). This file is byte-identical in the three repos, and each repo's test also hard-codes these two values and this file's own sha256: change all of them in all three repos together",
   "sha256": {
-    "module": "739b695164a133ac2ac2d9b5d80407778ab3e4676bcc85c095190446b18d328c",
+    "module": "5e64f8a3efbd315f628a6bf13cad35a47e0982501f29f70f3135d91a779775d4",
     "schema": "ff2e958db499c33150851224bd20cbcf4e02ed9a0789ccc407c940ffb27871b7"
   }
 }
