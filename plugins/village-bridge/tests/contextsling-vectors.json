@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "constants": {
+    "maxPayloadBytes": 16384,
+    "maxCardBytes": 4096,
+    "maxEscapedBytes": 3000,
+    "draftWindowMs": 3600000
+  },
+  "vectors": [
+    {
+      "id": "quotes-backslash",
+      "payload": {
+        "appId": "contextsling",
+        "operation": "contextsling.publish",
+        "preview": {
+          "appId": "contextsling",
+          "draftId": "AbCdEf0123456789_-abcdEF",
+          "expiresAt": "2026-10-19T12:00:00.000Z",
+          "connection": 1,
+          "file": {
+            "name": "a\"\\😀.md",
+            "bytes": 20,
+            "sha256": "d60e876f94a738a137c8f7b52dbe93b250429587711d8d4377fdf288de74b58a",
+            "lines": [
+              "# \"quote\" \\ path",
+              "<&>"
+            ],
+            "finalNewline": false
+          }
+        }
+      },
+      "canonical": "{\"appId\":\"contextsling\",\"operation\":\"contextsling.publish\",\"preview\":{\"appId\":\"contextsling\",\"connection\":1,\"draftId\":\"AbCdEf0123456789_-abcdEF\",\"expiresAt\":\"2026-10-19T12:00:00.000Z\",\"file\":{\"bytes\":20,\"finalNewline\":false,\"lines\":[\"# \\\"quote\\\" \\\\ path\",\"<&>\"],\"name\":\"a\\\"\\\\😀.md\",\"sha256\":\"d60e876f94a738a137c8f7b52dbe93b250429587711d8d4377fdf288de74b58a\"}}}",
+      "payloadHash": "c9bbec51c92e415c8de8be4faec51a29263d659319a7d7654ef3e8fe07524f52",
+      "summary": "Contextsling: publish 1 file to a public link\nAnyone with this link can read these files; copies cannot be recalled.\nIt must not contain other residents' messages or details.\nFile: \"a\\\"\\\\😀.md\" (20 bytes)\n│ # \"quote\" \\ path\n│ <&>\nBytes: 20; SHA256: d60e876f94a738a137c8f7b52dbe93b250429587711d8d4377fdf288de74b58a; final newline: no\nValid until: 2026-10-19T12:00:00.000Z (UTC)"
+    },
+    {
+      "id": "emoji-nonbmp",
+      "payload": {
+        "appId": "contextsling",
+        "operation": "contextsling.publish",
+        "preview": {
+          "appId": "contextsling",
+          "draftId": "AbCdEf0123456789_-abcdEF",
+          "expiresAt": "2026-10-19T12:00:00.000Z",
+          "connection": 1,
+          "file": {
+            "name": "a\"\\😀.md",
+            "bytes": 17,
+            "sha256": "2a5cfd378b94f3eafc7c71ea0ccee317ae6c102515344d499d579de4f548f9b4",
+            "lines": [
+              "😀 𐐷 café",
+              ""
+            ],
+            "finalNewline": true
+          }
+        }
+      },
+      "canonical": "{\"appId\":\"contextsling\",\"operation\":\"contextsling.publish\",\"preview\":{\"appId\":\"contextsling\",\"connection\":1,\"draftId\":\"AbCdEf0123456789_-abcdEF\",\"expiresAt\":\"2026-10-19T12:00:00.000Z\",\"file\":{\"bytes\":17,\"finalNewline\":true,\"lines\":[\"😀 𐐷 café\",\"\"],\"name\":\"a\\\"\\\\😀.md\",\"sha256\":\"2a5cfd378b94f3eafc7c71ea0ccee317ae6c102515344d499d579de4f548f9b4\"}}}",
+      "payloadHash": "d1d648223cda69c4b61d45dac5b7b9179f2f99f7422560003b57308125088c86",
+      "summary": "Contextsling: publish 1 file to a public link\nAnyone with this link can read these files; copies cannot be recalled.\nIt must not contain other residents' messages or details.\nFile: \"a\\\"\\\\😀.md\" (17 bytes)\n│ 😀 𐐷 café\n│ \nBytes: 17; SHA256: 2a5cfd378b94f3eafc7c71ea0ccee317ae6c102515344d499d579de4f548f9b4; final newline: yes\nValid until: 2026-10-19T12:00:00.000Z (UTC)"
+    },
+    {
+      "id": "empty",
+      "payload": {
+        "appId": "contextsling",
+        "operation": "contextsling.publish",
+        "preview": {
+          "appId": "contextsling",
+          "draftId": "AbCdEf0123456789_-abcdEF",
+          "expiresAt": "2026-10-19T12:00:00.000Z",
+          "connection": 1,
+          "file": {
+            "name": "a\"\\😀.md",
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "lines": [
+              ""
+            ],
+            "finalNewline": false
+          }
+        }
+      },
+      "canonical": "{\"appId\":\"contextsling\",\"operation\":\"contextsling.publish\",\"preview\":{\"appId\":\"contextsling\",\"connection\":1,\"draftId\":\"AbCdEf0123456789_-abcdEF\",\"expiresAt\":\"2026-10-19T12:00:00.000Z\",\"file\":{\"bytes\":0,\"finalNewline\":false,\"lines\":[\"\"],\"name\":\"a\\\"\\\\😀.md\",\"sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}}}",
+      "payloadHash": "d420d01f0b20260310590f27e0405e986dbcfe6ccf2ffe00af88876f2f63b79a",
+      "summary": "Contextsling: publish 1 file to a public link\nAnyone with this link can read these files; copies cannot be recalled.\nIt must not contain other residents' messages or details.\nFile: \"a\\\"\\\\😀.md\" (0 bytes)\n│ \nBytes: 0; SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855; final newline: no\nValid until: 2026-10-19T12:00:00.000Z (UTC)"
+    },
+    {
+      "id": "contextsling.update",
+      "payload": {
+        "appId": "contextsling",
+        "operation": "contextsling.update",
+        "preview": {
+          "appId": "contextsling",
+          "draftId": "AbCdEf0123456789_-abcdEF",
+          "expiresAt": "2026-10-19T12:00:00.000Z",
+          "connection": 1,
+          "file": {
+            "name": "a\"\\😀.md",
+            "bytes": 20,
+            "sha256": "d60e876f94a738a137c8f7b52dbe93b250429587711d8d4377fdf288de74b58a",
+            "lines": [
+              "# \"quote\" \\ path",
+              "<&>"
+            ],
+            "finalNewline": false
+          },
+          "target": {
+            "bundleId": "bundle-1",
+            "expectedRevision": 2
+          }
+        }
+      },
+      "canonical": "{\"appId\":\"contextsling\",\"operation\":\"contextsling.update\",\"preview\":{\"appId\":\"contextsling\",\"connection\":1,\"draftId\":\"AbCdEf0123456789_-abcdEF\",\"expiresAt\":\"2026-10-19T12:00:00.000Z\",\"file\":{\"bytes\":20,\"finalNewline\":false,\"lines\":[\"# \\\"quote\\\" \\\\ path\",\"<&>\"],\"name\":\"a\\\"\\\\😀.md\",\"sha256\":\"d60e876f94a738a137c8f7b52dbe93b250429587711d8d4377fdf288de74b58a\"},\"target\":{\"bundleId\":\"bundle-1\",\"expectedRevision\":2}}}",
+      "payloadHash": "9e8c1fbcfba407c130990a1c972bdce15f2abb4300bd72d65532aa826c898daf",
+      "summary": "Contextsling: update 1 file to a public link\nAnyone with this link can read these files; copies cannot be recalled.\nIt must not contain other residents' messages or details.\nReplaces bundle \"bundle-1\" at revision 2; earlier revisions stay readable until you revoke.\nFile: \"a\\\"\\\\😀.md\" (20 bytes)\n│ # \"quote\" \\ path\n│ <&>\nBytes: 20; SHA256: d60e876f94a738a137c8f7b52dbe93b250429587711d8d4377fdf288de74b58a; final newline: no\nValid until: 2026-10-19T12:00:00.000Z (UTC)"
+    },
+    {
+      "id": "contextsling.revoke",
+      "payload": {
+        "appId": "contextsling",
+        "operation": "contextsling.revoke",
+        "preview": {
+          "appId": "contextsling",
+          "draftId": "AbCdEf0123456789_-abcdEF",
+          "expiresAt": "2026-10-19T12:00:00.000Z",
+          "connection": 1,
+          "target": {
+            "bundleId": "bundle-1",
+            "title": "Title \"quote\" \\ 😀"
+          }
+        }
+      },
+      "canonical": "{\"appId\":\"contextsling\",\"operation\":\"contextsling.revoke\",\"preview\":{\"appId\":\"contextsling\",\"connection\":1,\"draftId\":\"AbCdEf0123456789_-abcdEF\",\"expiresAt\":\"2026-10-19T12:00:00.000Z\",\"target\":{\"bundleId\":\"bundle-1\",\"title\":\"Title \\\"quote\\\" \\\\ 😀\"}}}",
+      "payloadHash": "a7df65b78ec4bdf1a0bb3a9d63afcf1866a6f99eae8826cae98093fab9277459",
+      "summary": "Contextsling: revoke public link\nBundle: \"Title \\\"quote\\\" \\\\ 😀\" (\"bundle-1\")\nRevokes all revisions; copies already made are not recalled; restore only on contextsling.com.\nValid until: 2026-10-19T12:00:00.000Z (UTC)"
+    }
+  ],
+  "rejected": [
+    {
+      "value": "\n",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": "\t",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": "\r",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": "\u0000",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": " ",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": " ",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": "‮",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": "​",
+      "error": "approval_card_invalid"
+    },
+    {
+      "value": "\ud800",
+      "error": "approval_card_invalid"
+    }
+  ]
+}

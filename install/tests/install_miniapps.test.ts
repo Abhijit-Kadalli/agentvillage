@@ -52,7 +52,7 @@ test("reviewed skills are optional, disk-only staging has deterministic receipts
   expect(receipt).toEqual(reconcileMiniApps(all, root));
   expect(receipt).toEqual(reconcileMiniApps(all, root, undefined, true));
   expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(all)).digest("hex"));
-  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md", "skills/zzzbot/SKILL.md", "skills/slopfolio/SKILL.md"]);
+  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md", "skills/zzzbot/SKILL.md", "skills/slopfolio/SKILL.md", "skills/contextsling/SKILL.md"]);
   expect(receipt).not.toHaveProperty("active");
   writeFileSync(join(root, "skills", "gold-stars", "SKILL.md"), "tampered");
   expect(() => reconcileMiniApps(all, root, undefined, true)).toThrow("mini_apps_skill_mismatch");
@@ -318,4 +318,43 @@ test("For Kicks stages its exact reviewed skill and revokes only its permission 
   for (const operations of [app.operations.slice(0, -1), [...app.operations].reverse(), [...app.operations, "mini-app.read"]]) {
     expect(() => validateProjection({ version: 1, apps: [{ ...app, operations }] })).toThrow("mini_apps_unreviewed_bundle");
   }
+});
+
+
+test("CX-2 stages only its named operations and removes private draft cache on uninstall", () => {
+  const app = REVIEWED_MINI_APPS.find(x => x.id === "contextsling")!;
+  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps/contextsling/manifest.json"), "utf8"));
+  expect(app.operations).toEqual(manifest.operations);
+  expect(app.skills).toEqual(["contextsling"]);
+  expect(SHIPPED_SKILLS.has("contextsling")).toBe(false);
+  expect(app.operations).not.toContain("mini-app.context.read");
+  expect(app.operations).not.toContain("mini-app.context.write");
+  const root = home();
+  reconcileMiniApps({version: 1, apps: [app]}, root);
+  const folder = join(root, "contextsling-drafts");
+  mkdirSync(folder, {mode: 0o700});
+  const id = "abcdefghijklmnopqrstuv";
+  writeFileSync(join(folder, id + ".json"), "PRIVATE synthetic document", {mode: 0o600});
+  writeFileSync(join(folder, id + ".lock"), "", {mode: 0o600});
+  writeFileSync(join(folder, id + ".tmp-" + "a".repeat(32)), "orphan plaintext", {mode: 0o600});
+  writeFileSync(join(folder, "resident-note.txt"), "preserve unrelated");
+  reconcileMiniApps({version: 1, apps: []}, root);
+  expect(existsSync(join(folder, id + ".json"))).toBe(false);
+  expect(existsSync(join(folder, id + ".lock"))).toBe(false);
+  expect(existsSync(join(folder, id + ".tmp-" + "a".repeat(32)))).toBe(false);
+  expect(readFileSync(join(folder, "resident-note.txt"), "utf8")).toBe("preserve unrelated");
+});
+
+test("CX-2 uninstall refuses a cache symlink without touching its target", () => {
+  const app = REVIEWED_MINI_APPS.find(x => x.id === "contextsling")!;
+  const root = home(), target = home();
+  reconcileMiniApps({version: 1, apps: [app]}, root);
+  const folder = join(root, "contextsling-drafts");
+  mkdirSync(folder);
+  const secret = join(target, "secret");
+  writeFileSync(secret, "preserve");
+  symlinkSync(secret, join(folder, "abcdefghijklmnopqrstuv.json"));
+  expect(() => reconcileMiniApps({version: 1, apps: []}, root)).toThrow("mini_apps_symlink_refused");
+  expect(readFileSync(secret, "utf8")).toBe("preserve");
+  expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({version:1,apps:[]});
 });
