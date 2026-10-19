@@ -199,6 +199,50 @@ class InstallLinkTest(unittest.TestCase):
         self.assertIn(copy.STAFF_INTRO, skill); self.assertIn('> ' + copy.STAFF_TELL.format(name='Gold Stars'), skill)
         self.transport.assert_not_called()
 
+    def test_an_unlisted_manifest_reaches_no_install_surface(self):
+        # Product L14133 (ov#416 S1): `"listed": false` skips a manifest BEFORE any check, so an app that is not
+        # offered for install (and whose catalog text need not fit the install line) appears nowhere. Generic
+        # fixture: a synthetic app whose 179-character description fails plain() exactly as an unflagged one does.
+        committed_module = (REPO / 'plugins' / 'village-bridge' / '_install_catalog.py').read_text(encoding='utf-8')
+        committed_skill = (REPO / 'skills' / 'mini-apps' / 'SKILL.md').read_text(encoding='utf-8')
+        long_app = {'id': 'longapp', 'name': 'Long App', 'description': 'D' + 'x' * 178, 'version': '0.1.0',
+                    'operations': ['mini-app.read']}
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            for app_id, doc in MANIFESTS.items():
+                (root / app_id).mkdir(); (root / app_id / 'manifest.json').write_text(json.dumps(doc))
+            (root / 'longapp').mkdir()
+            manifest = root / 'longapp' / 'manifest.json'
+            # Without the flag (or with listed: true) it is checked as today and refused: 179 > 160.
+            for doc in (long_app, {**long_app, 'listed': True}):
+                manifest.write_text(json.dumps(doc))
+                with self.subTest(listed=doc.get('listed')), self.assertRaisesRegex(ValueError, 'description must be one line'):
+                    gen.entries(root)
+            # listed: false: skipped before any check, so the outputs are byte-identical to the committed ones.
+            for doc in ({**long_app, 'listed': False}, {'listed': False, 'id': 'NOT VALID', 'name': '[x](https://evil.example)'}):
+                manifest.write_text(json.dumps(doc))
+                with self.subTest(unlisted=doc['id']):
+                    apps = gen.entries(root)
+                    self.assertEqual(apps, gen.entries())
+                    self.assertEqual(gen.render(apps), committed_module)
+                    self.assertEqual(gen.render_skill(apps, copy), committed_skill)
+                    for text in (gen.render(apps), gen.render_skill(apps, copy)):
+                        self.assertNotIn('longapp', text); self.assertNotIn('Long App', text); self.assertNotIn('evil.example', text)
+            # Only a boolean false unlists; anything else is refused, never read as "unlisted".
+            for value in ('false', 0, None, [], 'no'):
+                manifest.write_text(json.dumps({**long_app, 'description': 'Short.', 'listed': value}))
+                with self.subTest(listed=value), self.assertRaisesRegex(ValueError, 'listed must be false or absent'):
+                    gen.entries(root)
+        # At runtime nothing unlisted is in the catalog, so the cp naming it gives no link and no installable entry.
+        self.assertNotIn('longapp', [a['id'] for a in catalog.INSTALLABLE + catalog.STAFF])
+        self.assertEqual([a['id'] for a in link.offered({'AV_MINI_APPS_OFFERED': 'forkicks,longapp'})], ['forkicks'])
+        self.offer('forkicks,longapp')
+        self.nothing_installed()
+        out = link.not_installed(Path(self.tmp.name), 'longapp', bridge.HANDLING)
+        self.assertEqual(out['instruction'], copy.NOT_OFFERED); self.assertNotIn('installUrl', out)
+        self.assertEqual([a['id'] for a in out['installable']], ['forkicks'])
+        self.assertNotIn('longapp', json.dumps(out))
+
     def test_post_approval_rechecks_carry_the_link_too(self):
         self.offer(ALL)
         Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'gold-stars', **mini.GOLD_STARS}]}))

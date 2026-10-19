@@ -6,7 +6,8 @@ one-tap Mini-apps link, and the agent may suggest the other installable apps. Ea
 comes from mini-apps/<id>/manifest.json (reviewed in this repository, mirrored by the control plane's
 control-plane/src/mini-apps-catalog.js), never from a tool argument, an upstream response or a hand-written list.
 A manifest marked `"staff": true` (the cp catalog's `staff: true`, cp#322: Gold Stars, which Rolodex rides) comes with
-every agent: it is written to STAFF with no installUrl and is never listed as installable.
+every agent: it is written to STAFF with no installUrl and is never listed as installable. A manifest marked
+`"listed": false` is skipped before any check and appears in neither output.
 
     python3 scripts/gen_install_catalog.py          # rewrite the module
     python3 scripts/gen_install_catalog.py --check  # exit 1 when either output is stale
@@ -45,6 +46,14 @@ def entries(manifests: Path = MANIFESTS) -> list[dict]:
     apps = []
     for path in sorted(manifests.glob("*/manifest.json")):
         doc = json.loads(path.read_text(encoding="utf-8"))
+        # UNLISTED (product L14133, ov#416 S1): `"listed": false` keeps a reviewed app out of every install surface.
+        # It is skipped BEFORE any other check, so its name and description are never read, and it never reaches
+        # INSTALLABLE, STAFF, the skill's examples, the general list or the installable list. Absent or true = listed.
+        listed = doc.get("listed", True) if isinstance(doc, dict) else True
+        if listed is False:
+            continue
+        if listed is not True:
+            raise ValueError(f"{path}: listed must be false or absent")
         app_id, name, description = doc.get("id"), doc.get("name"), doc.get("description")
         if not isinstance(app_id, str) or not APP_ID.fullmatch(app_id) or app_id != path.parent.name:
             raise ValueError(f"{path}: id must be the directory name and match {APP_ID.pattern}")
