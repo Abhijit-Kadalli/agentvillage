@@ -374,7 +374,7 @@ The feature-gated `zzz.pairs` read borrows `zzz.list_rooms` installedness and
 returns current enabled private-pair room IDs plus request/consent epoch. It
 does not add a CP catalog operation. The mini-app helper installs the
 Hermes-managed `Edge — zzz pairs` job only when the strict CP projection has
-both `zzzbot` and the separate empty-operation `zzz_bridge` entry. A zzzbot
+both `zzzbot` and the separate empty-operation `zzz-bridge` entry (a cp catalog/allowlist entry granted per tenant at activation, like Mosaic; no overlay constant or environment variable turns it on, and an unreadable or malformed projection is off). A zzzbot
 install by itself stages only the ordinary interactive skill: no job, shim,
 state directory or poll. Removing either entry revokes native access at once;
 the helper removes the job, shim and cursor state. If teardown fails after

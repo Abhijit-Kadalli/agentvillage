@@ -4,7 +4,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REVIEWED_MINI_APPS, SHIPPED_SKILLS, validateProjection } from "../install_miniapps";
+import * as installMiniApps from "../install_miniapps";
+import { PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REVIEWED_MINI_APPS, SHIPPED_SKILLS, validateProjection, ZZZ_BRIDGE_ID, zzzParticipation } from "../install_miniapps";
+import * as zzzManagedJob from "../zzz_managed_job";
 import { EDGE_SKILL_NAMES } from "../paths";
 
 const REPO = join(import.meta.dir, "..", "..");
@@ -258,7 +260,7 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   const receipt = reconcileMiniApps(projection, root);
   expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
   expect(existsSync(join(root, "skills", "zzzbot", "scripts", "agentvillage_zzz_pairs.sh"))).toBe(false);
-  const bridge = REVIEWED_MINI_APPS.find(app => app.id === "zzz_bridge")!;
+  const bridge = REVIEWED_MINI_APPS.find(app => app.id === "zzz-bridge")!;
   const enabled = { version: 1, apps: [app, bridge] };
   const enabledReceipt = reconcileMiniApps(enabled, root);
   expect(enabledReceipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md", "skills/zzzbot/scripts/agentvillage_zzz_pairs.sh", "skills/zzzbot/prompts/participate.md"]);
@@ -272,6 +274,58 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   expect(existsSync(join(root, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
   reconcileMiniApps({ version: 1, apps: [] }, root);
   expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(false);
+});
+
+test("ov#441 S1: managed ZZZ participation is the cp projection's zzzbot + zzz-bridge pair and nothing else", () => {
+  const zzzbot = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
+  const bridge = REVIEWED_MINI_APPS.find(app => app.id === ZZZ_BRIDGE_ID)!;
+  // The cp entry, exactly (cp/app ids match ^[a-z0-9][a-z0-9-]{0,39}$: a hyphen, never the underscore spelling).
+  expect(ZZZ_BRIDGE_ID).toBe("zzz-bridge");
+  expect(bridge).toEqual({ id: "zzz-bridge", version: "1.0.0", operations: [], skills: [] });
+  expect(REVIEWED_MINI_APPS.some(app => app.id === "zzz_bridge")).toBe(false);
+  const both = { version: 1, apps: [zzzbot, bridge] };
+  expect(validateProjection(both)).toEqual(both);
+  // (c) Any other shape of the entry (the underscore id included) refuses the whole projection.
+  for (const changed of [{ ...bridge, id: "zzz_bridge" }, { ...bridge, operations: ["zzz.pairs"] }, { ...bridge, skills: ["zzz-bridge"] },
+    { ...bridge, version: "1.0.1" }, { ...bridge, extra: true }]) {
+    expect(() => validateProjection({ version: 1, apps: [zzzbot, changed] })).toThrow();
+  }
+  expect(() => validateProjection({ version: 1, apps: [zzzbot, bridge, bridge] })).toThrow("mini_apps_unreviewed_bundle");
+  // (a)/(b) On only for the pair.
+  expect(zzzParticipation(validateProjection(both))).toBe(true);
+  expect(zzzParticipation(validateProjection({ version: 1, apps: [bridge, zzzbot] }))).toBe(true);
+  expect(zzzParticipation(validateProjection({ version: 1, apps: [zzzbot] }))).toBe(false);
+  expect(zzzParticipation(validateProjection({ version: 1, apps: [bridge] }))).toBe(false);
+  expect(zzzParticipation(validateProjection({ version: 1, apps: [] }))).toBe(false);
+  expect(zzzParticipation(validateProjection(all))).toBe(true);
+  // zzz-bridge alone stages nothing (no skill, no served bytes, no managed files).
+  const root = installedBox();
+  const offer = "a".repeat(64);
+  const bundle = JSON.stringify({ version: 1, skills: [] });
+  const receipt = reconcileMiniApps({ version: 1, apps: [bridge] }, root, undefined, false, { offer, skills: bundle });
+  expect(receipt.files).toEqual([]);
+  expect(receipt.apps).toEqual([{ id: "zzz-bridge", version: "1.0.0" }]);
+  expect(existsSync(join(root, "skills", "zzzbot"))).toBe(false);
+  expect(existsSync(join(root, "skills", "zzz-bridge"))).toBe(false);
+  // (d) No overlay constant or environment variable can turn it on: zzzbot alone with every would-be switch set.
+  const keys = ["ZZZ_BRIDGE", "AV_PAIR_ENABLED", "ZZZ_MANAGED_PARTICIPATION", "ZZZ_BRIDGE_ENABLED"];
+  const saved = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  try {
+    for (const key of keys) process.env[key] = "1";
+    const zzzOnly = reconcileMiniApps({ version: 1, apps: [zzzbot] }, root);
+    expect(zzzOnly.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
+    expect(existsSync(join(root, "skills", "zzzbot", "scripts", "agentvillage_zzz_pairs.sh"))).toBe(false);
+    expect(existsSync(join(root, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
+  } finally {
+    for (const key of keys) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
+  }
+  // Neither module exports a boolean switch, and the gate reads only the projection it is given.
+  for (const module of [installMiniApps, zzzManagedJob]) {
+    expect(Object.entries(module).filter(([, value]) => typeof value === "boolean")).toEqual([]);
+  }
+  expect(zzzParticipation.toString()).not.toMatch(/process\.env|Bun\.env|import\.meta\.env/);
+  const source = readFileSync(join(REPO, "install", "install_miniapps.ts"), "utf8");
+  expect(source.match(/const zzzManaged = .*;/g)).toEqual(["const zzzManaged = zzzParticipation(projection);"]);
 });
 
 test("Slopfolio manifest and native allowlist pin only private draft operations and stage the author skill", () => {

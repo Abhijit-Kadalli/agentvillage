@@ -16,6 +16,9 @@ sys.modules[SPEC.name] = bridge
 SPEC.loader.exec_module(bridge)
 managed = sys.modules["village_bridge._zzz_managed"]
 mini = sys.modules["village_bridge._mini_apps"]
+ZZZBOT = {"id": "zzzbot", **mini.ZZZBOT}
+BRIDGE = {"id": mini.ZZZ_BRIDGE_ID, **mini.ZZZ_BRIDGE}
+FLAGS = ("ZZZ_BRIDGE", "AV_PAIR_ENABLED", "ZZZ_MANAGED_PARTICIPATION", "ZZZ_BRIDGE_ENABLED")
 
 
 class ManagedPairsTest(unittest.TestCase):
@@ -24,7 +27,7 @@ class ManagedPairsTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [
-            {"id": "zzzbot", **mini.ZZZBOT}, managed.BRIDGE_ENTRY]}))
+            {"id": "zzzbot", **mini.ZZZBOT}, BRIDGE]}))
         self.pair = {"roomId": "room_a", "requestId": "req_a", "consentEpoch": 1,
                      "status": "agent_messaging_enabled"}
         self.items = []
@@ -68,12 +71,102 @@ class ManagedPairsTest(unittest.TestCase):
         self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
         self.next_slot()
 
-    def test_bridge_absent_never_polls_or_creates_state(self):
-        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [{"id": "zzzbot", **mini.ZZZBOT}]}))
+    def assert_off(self, label):
+        """Nothing runs: no poll, no bootstrap, no reply or read reservation, no network, no state dir."""
         def unexpected(*_args):
-            self.fail("bridge-off poll attempted network")
-        self.assertIsNone(managed.poll(self.home, unexpected, {}, mini.installed))
+            self.fail(label + ": participation off but network attempted")
+        self.assertFalse(managed.participation_on(self.home), label)
+        self.assertFalse(mini.zzz_participation(self.home), label)
+        self.assertIsNone(managed.poll(self.home, unexpected, {}, mini.installed), label)
+        self.assertIsNone(managed.reserve_bootstrap(self.home, unexpected, {}, "room_a"), label)
+        self.assertFalse(managed.reserve_reply(self.home, unexpected, {}, "thread_a"), label)
+        self.assertFalse(managed.allow_managed_read(self.home, unexpected, {}, "zzz.changes", "room_a"), label)
+        self.assertFalse((self.home / "zzzbot").exists(), label)
+
+    def test_s1_bridge_entry_present_turns_participation_on_and_grants_no_tool(self):
+        # (a) The projection's zzzbot + zzz-bridge pair is the switch; the entry itself grants no operation.
+        self.assertEqual(BRIDGE, {"id": "zzz-bridge", "version": "1.0.0", "operations": [], "skills": []})
+        self.assertTrue(managed.participation_on(self.home))
+        for op in ("zzz.pairs", "zzz.list_rooms", "zzz.reply", "mini-app.read"):
+            self.assertFalse(mini.installed(self.home, "zzz-bridge", op))
+        self.assertTrue(mini.installed(self.home, "zzzbot", "zzz.list_rooms"))
+        # It rides beside other apps without refusing them (the Mosaic restricted-entry pattern).
+        gold = {"id": "gold-stars", **mini.GOLD_STARS}
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [gold, ZZZBOT, BRIDGE]}))
+        self.assertTrue(mini.installed(self.home, "gold-stars", "rolodex.search"))
+        self.assertTrue(managed.participation_on(self.home))
+        self.assertEqual(managed.poll(self.home, self.transport, {}, mini.installed), {"kind": "bootstrap", "roomId": "room_a"})
+
+    def test_bridge_absent_never_polls_or_creates_state(self):
+        # (b) zzzbot without zzz-bridge, zzz-bridge without zzzbot, or nothing: off, nothing scheduled.
+        for apps in ([ZZZBOT], [BRIDGE], []):
+            (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": apps}))
+            self.assert_off(json.dumps([a["id"] for a in apps]))
+
+    def test_s1_unreadable_or_malformed_projection_is_off(self):
+        # (c) Absent, unreadable or malformed: off. The underscore spelling never turns it on.
+        path = self.home / "mini-apps.json"
+        path.unlink()
+        self.assert_off("absent")
+        cases = {
+            "not json": "not json", "truncated": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE]})[:-3],
+            "version 2": json.dumps({"version": 2, "apps": [ZZZBOT, BRIDGE]}),
+            "extra key": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE], "zzz": True}),
+            "underscore id": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "id": "zzz_bridge"}]}),
+            "underscore beside": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE, {**BRIDGE, "id": "zzz_bridge"}]}),
+            "bridge with op": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "operations": ["zzz.pairs"]}]}),
+            "bridge with skill": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "skills": ["zzz-bridge"]}]}),
+            "bridge version": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "version": "1.0.1"}]}),
+            "bridge extra": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "active": True}]}),
+            "duplicate bridge": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE, BRIDGE]}),
+            "bad zzzbot": json.dumps({"version": 1, "apps": [{**ZZZBOT, "operations": ["zzz.pairs"]}, BRIDGE]}),
+            "oversize": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE]}) + " " * 16384,
+        }
+        for label, text in cases.items():
+            path.write_text(text)
+            self.assert_off(label)
+        real = self.home / "real.json"
+        real.write_text(json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE]}))
+        path.unlink()
+        path.symlink_to(real)
+        self.assert_off("symlink")
+        path.unlink()
+        path.mkdir()
+        self.assert_off("directory")
+
+    def test_s1_no_constant_or_env_turns_participation_on(self):
+        # (d) Every would-be switch set, zzzbot alone projected: still off.
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [ZZZBOT]}))
+        with patch.dict(os.environ, {key: "1" for key in FLAGS}):
+            self.assert_off("flags")
+        # Neither module holds a boolean switch, and the gate never reads the environment.
+        for module in (managed, mini):
+            self.assertEqual([n for n, v in vars(module).items() if isinstance(v, bool)], [], module.__name__)
+        import inspect
+        for fn in (managed.participation_on, mini.zzz_participation, mini.projected_apps):
+            self.assertNotIn("environ", inspect.getsource(fn))
+            self.assertNotIn("getenv", inspect.getsource(fn))
+
+    def test_s1_pre_run_script_obeys_the_gate(self):
+        # The Hermes pre-run entry (python3 _zzz_managed.py) reads the same reader through the package.
+        import subprocess
+        (self.home / "village-bridge.json").write_text(json.dumps({
+            "origin": "https://127.0.0.1:9", "token": "avb_" + "A" * 43, "ownerTelegramId": "42",
+            "expiresAt": "2099-01-01T00:00:00Z"}))
+        def run():
+            env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+            env.update({"HERMES_HOME": str(self.home), **{key: "1" for key in FLAGS}})
+            done = subprocess.run([sys.executable, "-I", str(ROOT / "_zzz_managed.py")], env=env,
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            return done.stdout
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [ZZZBOT]}))
+        self.assertIn('"wakeAgent":false', run())
         self.assertFalse((self.home / "zzzbot").exists())
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE]}))
+        self.assertIn('"wakeAgent":false', run())
+        # On: the poll ran (its lock and state exist); the unreachable origin only backs it off.
+        self.assertTrue((self.home / "zzzbot" / "managed-pairs.lock").exists())
 
     def test_own_unknown_and_repaired_posts_never_wake(self):
         self.items = [{"cursor": "1", "kind": "room.status", "threadId": "thread_a", "postId": "post_a"}]
@@ -171,7 +264,7 @@ class ManagedPairsTest(unittest.TestCase):
             (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [{"id": "zzzbot", **mini.ZZZBOT}]}))
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
             (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [
-                {"id": "zzzbot", **mini.ZZZBOT}, managed.BRIDGE_ENTRY]}))
+                {"id": "zzzbot", **mini.ZZZBOT}, BRIDGE]}))
             job["enabled_toolsets"] = ["all"]
             path.write_text(json.dumps({"jobs": [job]}))
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))

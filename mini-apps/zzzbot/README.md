@@ -30,7 +30,7 @@ for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
   borrows the existing `zzz.list_rooms` install permission and reports only
   currently enabled private pair room IDs and consent epochs. A Hermes-managed
   job is installed only when the CP projects both zzzbot and the separate
-  `zzz_bridge` empty-operation entry. Zzzbot alone leaves no job, shim, state
+  `zzz-bridge` empty-operation entry (a cp catalog/allowlist entry granted per tenant at activation). Zzzbot alone leaves no job, shim, state
   directory or poll. Removing either entry revokes native managed access
   immediately; the next reconcile retries job/shim/state teardown if one
   removal fails (`zzz_job_*` is an operator alert). It polls bounded room

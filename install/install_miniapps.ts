@@ -24,9 +24,11 @@ export const REVIEWED_MINI_APPS = [
   { id: "forkicks", version: "1.0.0", operations: ["forkicks.menu", "forkicks.schedule", "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.status", "forkicks.order.cancel"], skills: ["forkicks"] },
   // P-6 ZZZ-MINIAPP: restricted zzz.bot, five named operations (plugins/village-bridge/_mini_apps.py ZZZBOT, exact).
   { id: "zzzbot", version: "1.0.0", operations: ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"], skills: ["zzzbot"] },
-  // Positive, separately projected CP authority for managed private-pair participation.
-  // Empty operations/skills: it grants no ordinary tool and stages no skill.
-  { id: "zzz_bridge", version: "1.0.0", operations: [], skills: [] },
+  // ov#441 S1 (lead RULING CLAIMS L16692/L16696): the ONLY gate for managed private-pair participation, a separate
+  // cp catalog/allowlist entry granted per tenant at activation (the Mosaic restricted-entry pattern). Spelled
+  // `zzz-bridge`: cp and app ids match ^[a-z0-9][a-z0-9-]{0,39}$ (no underscore; app#500 reads the same id).
+  // Empty operations/skills: it grants no ordinary tool and stages no skill (_mini_apps.py ZZZ_BRIDGE, exact).
+  { id: "zzz-bridge", version: "1.0.0", operations: [], skills: [] },
   { id: "slopfolio", version: "1.0.0", operations: ["slopfolio.prepare", "slopfolio.status"], skills: ["slopfolio"] },
   // MOSAIC (app#486, rides v2.1.9): restricted in the CP catalog (MINI_APPS_TENANT_ALLOWLIST key `mosaic`).
   // Dizko's shape: the public read first, then its own context namespace read and write, served per box.
@@ -60,6 +62,16 @@ const owned = (id: string) => !SHIPPED_SKILLS.has(id);
 const hasSkill = (app: ReviewedApp) => app.skills.length > 0;
 type Projection = { version: 1; apps: ReviewedApp[] };
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+export const ZZZ_BRIDGE_ID = "zzz-bridge";
+const ZZZ_MANAGED_FILES = ["scripts/agentvillage_zzz_pairs.sh", "prompts/participate.md"] as const;
+/**
+ * ov#441 S1: managed ZZZ participation (the "Edge — zzz pairs" job, its shim, prompt and cursor state) is on only
+ * when the validated cp projection carries BOTH zzzbot and zzz-bridge. Nothing else (no overlay constant, no
+ * environment variable, no probe of the app) is read; bridge without zzzbot stages nothing.
+ */
+export function zzzParticipation(projection: { apps: readonly { id: string }[] }): boolean {
+  return projection.apps.some(app => app.id === "zzzbot") && projection.apps.some(app => app.id === ZZZ_BRIDGE_ID);
+}
 function exists(path: string): boolean {
   try { lstatSync(path); return true; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
 }
@@ -120,6 +132,23 @@ function hasZzzManagedState(home: string): boolean {
   if (!exists(folder)) return false;
   if (!lstatSync(folder).isDirectory()) throw new Error("zzz_state_dir_invalid");
   return readdirSync(folder).some(name => name === "managed-pairs.json" || name === "managed-pairs.lock" || /^\.managed-[0-9]+$/.test(name));
+}
+/**
+ * ov#441 S1, fail closed: a stage whose projection is unreadable or malformed (or that fails for any other reason)
+ * leaves managed participation OFF. Best effort, each step on its own: remove the job (and its shim), the staged
+ * managed files and the cursor state. The stage still fails, so the cp retries; the next good stage reinstalls
+ * when the projection carries zzz-bridge. A failed removal is the same `zzz_job_*` operator alert as on revocation.
+ */
+export function failClosedZzz(home: string): void {
+  try { reconcileZzzManagedJob(home, false); } catch { /* next reconcile retries */ }
+  for (const relative of ZZZ_MANAGED_FILES) {
+    try {
+      const path = join(home, "skills", "zzzbot", relative);
+      regular(path);
+      if (exists(path)) unlinkSync(path);
+    } catch { /* refused path: left for the operator */ }
+  }
+  try { removeZzzManagedState(home); } catch { /* refused path: left for the operator */ }
 }
 /**
  * MINIAPPS v2 Phase 2, skill delivery (lanes-context/MINIAPPS-V2-SKILL-DELIVERY-design.md): the cp may
@@ -206,9 +235,8 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     files.push({ path: `skills/${app.id}/SKILL.md`, sha256: hash(content) });
     return { app, content };
   });
-  const zzzInstalled = projection.apps.some(app => app.id === "zzzbot");
-  const zzzManaged = zzzInstalled && projection.apps.some(app => app.id === "zzz_bridge");
-  const zzzManagedFiles = ["scripts/agentvillage_zzz_pairs.sh", "prompts/participate.md"] as const;
+  const zzzManaged = zzzParticipation(projection);
+  const zzzManagedFiles = ZZZ_MANAGED_FILES;
   for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
   const zzzFiles = zzzManaged ? zzzManagedFiles.map(relative => {
     const sourcePath = join(source, "zzzbot", relative);
@@ -240,8 +268,8 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     for (const { path, content } of zzzFiles) atomic(path, content);
-    // The job is inert until the reviewed projection grants zzzbot; a failed
-    // install never leaves a projected app without its managed participation job.
+    // The job is installed only when the projection grants zzzbot AND zzz-bridge (S1), before authority
+    // is published; a failed install fails the stage and the CLI then tears it down (failClosedZzz).
     if (import.meta.main && zzzManaged) reconcileZzzManagedJob(home, true);
     atomic(target, bytes);
     // On removal authority disappears before a best-effort job teardown.
@@ -259,13 +287,16 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     skills: { offer: served.offer, served: servedIds, fallback } };
 }
 if (import.meta.main) {
+  const verify = process.argv.includes("--verify");
   try {
     if (process.argv.slice(2).some(x => x !== "--verify")) throw new Error("mini_apps_invalid_argument");
     const input = await Bun.stdin.text();
     if (Buffer.byteLength(input) > 16384) throw new Error("mini_apps_projection_too_large");
     const delivery = { offer: process.env.MINI_APPS_SKILLS_OFFER, skills: process.env.MINI_APPS_SKILLS };
-    console.log(JSON.stringify(reconcileMiniApps(JSON.parse(input), hermesHome(), undefined, process.argv.includes("--verify"), delivery)));
+    console.log(JSON.stringify(reconcileMiniApps(JSON.parse(input), hermesHome(), undefined, verify, delivery)));
   } catch {
+    // S1: an unreadable or malformed projection (or any failed stage) is OFF for managed ZZZ participation.
+    if (!verify) failClosedZzz(hermesHome());
     console.error(JSON.stringify({ error: "mini_apps_reconcile_failed" }));
     process.exitCode = 1;
   }

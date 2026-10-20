@@ -18,7 +18,6 @@ from pathlib import Path
 JOB_NAME = "Edge — zzz pairs"
 JOB_SCRIPT = "agentvillage_zzz_pairs.sh"
 JOB_TOOLSETS = ["village", "no_mcp"]
-BRIDGE_ENTRY = {"id": "zzz_bridge", "version": "1.0.0", "operations": [], "skills": []}
 STATE_LIMIT = 65536
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
 CRON_SESSION = re.compile(r"cron_([0-9a-f]{12})_[0-9]{8}_[0-9]{6}\Z")
@@ -39,13 +38,14 @@ def _plain_json(path: Path, limit: int):
         return json.load(stream)
 
 
-def bridge_projected(home: Path) -> bool:
-    """Current CP projection must carry the separate positive pair authority."""
+def participation_on(home: Path) -> bool:
+    """ov#441 S1 (lead L16696): the cp projection's zzzbot + zzz-bridge entries, read by the one projection reader.
+
+    Fails closed: any error (including an import outside the package) is off. No constant or env var is read.
+    """
     try:
-        doc = _plain_json(home / "mini-apps.json", 16384)
-        return (isinstance(doc, dict) and set(doc) == {"version", "apps"}
-                and doc.get("version") == 1 and isinstance(doc.get("apps"), list)
-                and doc["apps"].count(BRIDGE_ENTRY) == 1)
+        from ._mini_apps import zzz_participation
+        return zzz_participation(home) is True
     except Exception:
         return False
 
@@ -60,10 +60,7 @@ def managed_context(home: Path, operation: str, session_id: object, task_id: obj
     if operation not in CRON_OPS:
         return None
     try:
-        if not bridge_projected(home):
-            return None
-        from ._mini_apps import installed
-        if not installed(home, "zzzbot", "zzz.list_rooms"):
+        if not participation_on(home):
             return None
         from gateway import session_context as sc
         from agent.delegation_context import is_delegated_child_context
@@ -154,7 +151,7 @@ def current_pairs(transport, config):
 
 def reserve_reply(home: Path, transport, config, thread: str) -> bool:
     """One pending exact thread, current pair, two replies per UTC day max."""
-    if not isinstance(thread, str) or not ID.fullmatch(thread):
+    if not isinstance(thread, str) or not ID.fullmatch(thread) or not participation_on(home):
         return False
     try:
         pairs = current_pairs(transport, config)
@@ -186,7 +183,7 @@ def reserve_bootstrap(home: Path, transport, config, room: str):
     A timeout after reservation sacrifices delivery rather than duplicating an
     introduction. The app also deduplicates the deterministic turn ID.
     """
-    if not isinstance(room, str) or not ID.fullmatch(room):
+    if not isinstance(room, str) or not ID.fullmatch(room) or not participation_on(home):
         return None
     try:
         pairs = current_pairs(transport, config)
@@ -217,6 +214,8 @@ def reserve_bootstrap(home: Path, transport, config, room: str):
 
 def allow_managed_read(home: Path, transport, config, operation: str, target: str) -> bool:
     """Managed cron reads stay in current pairs; a thread read is exact-pending."""
+    if not participation_on(home):
+        return False
     try:
         pairs = current_pairs(transport, config)
         if operation == "zzz.changes":
@@ -237,7 +236,7 @@ def allow_managed_read(home: Path, transport, config, operation: str, target: st
 
 def poll(home: Path, transport, config, installed):
     """Return at most one ID-only wake. First encounter drains history as baseline."""
-    if not bridge_projected(home) or not installed(home, "zzzbot", "zzz.list_rooms"):
+    if not participation_on(home) or not installed(home, "zzzbot", "zzz.list_rooms"):
         return None
     with locked_state(home) as state:
         now = datetime.now(timezone.utc).timestamp()
@@ -345,7 +344,9 @@ if __name__ == "__main__":
     home = bridge.hermes_home()
     try:
         config = _plain_json(home / "village-bridge.json", 2048)
-        event = poll(home, lambda cfg, payload: bridge.transport(cfg, payload, timeout=10), config, bridge.installed)
+        # The package's own copy of this module (loaded by __init__), so its gate reads the shared projection reader.
+        managed = sys.modules[package + "._zzz_managed"]
+        event = managed.poll(home, lambda cfg, payload: bridge.transport(cfg, payload, timeout=10), config, bridge.installed)
     except Exception:
         event = None
     if event:
