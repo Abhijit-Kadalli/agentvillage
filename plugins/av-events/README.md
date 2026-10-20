@@ -26,7 +26,7 @@ plugins/av-events/
   _code_run.py     code.run payload for an execute_code call: keyed hash, counts, closed risk tags (pure; P10-P1, dark behind AV_EVENTS_CODE_RUN)
   _negotiator_llm.py  llm.call (caller moralmod_negotiator) for each model step the Index plugin's bridge makes: wraps that bridge's own client only (MM-INFER-VIS, dark behind AV_EVENTS_NEGOTIATOR_LLM)
   _messages.py     message.in/out payloads and the punctuation flags (pure)
-  _edgeos.py       the curl parser, EdgeOS operations, the action ledger and planner
+  _edgeos.py       the curl and script-verb parsers, EdgeOS operations, the action ledger and planner
   _cron.py         cron.run from the executions ledger and usage audit (flusher thread only)
   _outcome_ask.py  the evening outcome ask: outcome.asked and the resident's answer (DATA-42)
   _headline_flagged.py  opportunity.headline_flagged from the proactive trigger's hand-off files: ids and codes, no text (DATA-487)
@@ -1553,6 +1553,22 @@ ran; when in doubt the call is just a `tool.call`):
   `-d`/`--data*`/`--json`/`-F` is POST; else GET. Combined short flags are read the way curl reads
   them (`-sX POST`, `-sXPOST`, `-sSfL`), and an option that takes a value consumes it;
 - the URL has no whitespace or control character; path parameters are UUIDs (full match).
+
+**The script verbs (v2.1.10, EDGEOS-BLOCK step B).** The skill no longer carries a curl: approval.md
+core 0.4.6 refuses a curl naming `$EDGEOS_API_KEY` from the Hermes folder (the terminal's default
+working directory, which holds `.env`) as `account.credential`. Every EdgeOS call is now a run of
+`bun skills/edgeos/scripts/edgeos.ts <verb> …` (`list`, `event`, `rsvp`, `cancel`, `participants`,
+`venues`), which reads the key and base itself, refuses any base but https on `api.edgeos.world` under
+`/api/v1`, sends one request and prints EdgeOS's JSON answer. `_edgeos.script_call` reads such a run as
+that request (method, `/api/v1/…` path, query) only when it is the whole command — first word `bun`,
+second exactly `skills/edgeos/scripts/edgeos.ts`, nothing before or after, no `$`, backtick,
+backslash, operator, redirect, brace, glob, `#`, `~`, `=` or inner newline — and the arguments are
+exactly ones the script accepts (UUID ids, zoned ISO instants, each flag once except `--tag`,
+`--venue`, `--track`). Each verb then carries the operation its curl recipe carried (`edgeos.rsvp`,
+`edgeos.cancel_rsvp`, `edgeos.event_read`, `edgeos.events_list`, `edgeos.participants_list`,
+`edgeos.venues_list`), and an RSVP waits for and gets its confirming read exactly as before
+(`tests/test_edgeos_skill_recipes.py` checks every verb against the curl recipe it replaced). The
+curl rules above stay for sessions that still hold an old recipe.
 
 **Known misses**, all conservative (the call is just a `tool.call`): a body built by command
 substitution (`-d "$(cat body.json)"`; the skill does not do this); a curl through `execute_code` or
