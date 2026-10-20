@@ -9,7 +9,7 @@ import {
   BRIDGE_ERROR_CODES, CHECKS, GENERIC_ERROR_CODES, REQUIRED, Refusal, SECRET_PATTERNS, allowedErrorCode, bumpOf, bumpVerdict,
   loadValidator, main, parseArgs, passedOf, redact, requiredBump, runConformance, secretFindings, secretPattern, show, strictJson,
   summary, withoutAnnotations, type Report, type Result,
-  MAX_SERVICE_REQUESTS, inputCompatibility, mainAsync, ownReport, runConformanceAsync, serviceTarget, shapeProblems, tlsDial, type ServiceDeps,
+  ADVISORY, MAX_SERVICE_REQUESTS, inputCompatibility, mainAsync, ownReport, runConformanceAsync, serviceTarget, shapeProblems, tlsDial, type ServiceDeps,
 } from "../mini-apps-conformance";
 import { createServer, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:tls";
@@ -150,7 +150,8 @@ describe("not_run is never a pass", () => {
       const results = all(true).map(x => x.check === check ? { ...x, pass: null } : x);
       expect([check, passedOf(results)]).toEqual([check, !REQUIRED.has(check)]);
       const failed = all(true).map(x => x.check === check ? { ...x, pass: false } : x);
-      expect([check, passedOf(failed)]).toEqual([check, false]);
+      // A failed check fails the run, except an advisory v1 service row (owner ruling on ov#438).
+      expect([check, passedOf(failed)]).toEqual([check, ADVISORY.has(check)]);
     }
     expect([...REQUIRED].sort()).toEqual(["hygiene.duplicate_keys", "hygiene.error_bodies", "hygiene.fixtures", "hygiene.secrets",
       "manifest.schema", "manifest.validator_pin", "skills.sha256"]);
@@ -1390,7 +1391,7 @@ describe("v1: not run by default, never REQUIRED", () => {
         const r = run(c);
         invariants(r);
         for (const check of ["service.reachability", "service.budgets", "service.error_bodies"]) {
-          expect([check, row(r, check).pass, row(r, check).note.startsWith("not run by default (conformance v1): ")]).toEqual([check, null, true]);
+          expect([check, row(r, check).pass, row(r, check).note.startsWith("advisory (v1): not run by default (conformance v1): ")]).toEqual([check, null, true]);
         }
         expect(row(r, "service.reachability").note).toContain("--service");
         expect(r.passed).toBe(true);
@@ -1404,10 +1405,40 @@ describe("v1: not run by default, never REQUIRED", () => {
       expect([s.resolves.length, s.dials.length, s.connections()]).toEqual([0, 0, 0]);
     });
   });
-  test("a v1 row that ran and failed fails the run (as any check), but a v1 row not run never does", () => {
+  test("advisory (owner ruling on ov#438): a v1 service row, run or not, passed or FAILED, never changes passed; a required row still does", () => {
+    expect([...ADVISORY].sort()).toEqual(["service.budgets", "service.error_bodies", "service.reachability"]);
+    for (const check of ADVISORY) expect(REQUIRED.has(check)).toBe(false);
     const base = CHECKS.map(check => ({ check, pass: REQUIRED.has(check) ? true : null, note: "" }));
     expect(passedOf(base as Result[])).toBe(true);
-    expect(passedOf(base.map(r => r.check === "service.budgets" ? { ...r, pass: false } : r) as Result[])).toBe(false);
+    for (const check of ADVISORY) {
+      for (const value of [false, true, null]) expect([check, value, passedOf(base.map(r => r.check === check ? { ...r, pass: value } : r) as Result[])]).toEqual([check, value, true]);
+    }
+    expect(passedOf(base.map(r => ADVISORY.has(r.check) ? { ...r, pass: false } : r) as Result[])).toBe(true);
+    // Everything else is unchanged: a failed optional v0 row and a missing required row still fail the run.
+    expect(passedOf(base.map(r => r.check === "version.bump" ? { ...r, pass: false } : r) as Result[])).toBe(false);
+    expect(passedOf(base.map(r => r.check === "hygiene.secrets" ? { ...r, pass: null } : r) as Result[])).toBe(false);
+  });
+  test("advisory end to end: every service row FAILS against the stub, yet passed is true, mainAsync exits 0, and the summary marks the rows advisory (v1)", async () => {
+    await withStub((req, res) => json(res, 500, { code: "unavailable", detail: "down" }), async s => {
+      const c = v1Catalog("https-json");
+      try {
+        const r = await runV1(c, s, "https://sandbox.acme-dev.example/");
+        invariants(r);
+        expect(Object.fromEntries([...ADVISORY].map(k => [k, row(r, k).pass]))).toEqual({ "service.reachability": false, "service.budgets": false, "service.error_bodies": false });
+        expect([...REQUIRED].every(k => row(r, k).pass === true)).toBe(true);
+        expect(r.passed).toBe(true);
+        const lines: string[] = [];
+        const code = await mainAsync([c.path, "--fixtures", c.fixtures, "--service", "https://sandbox.acme-dev.example/", "--out", c.out], { cwd: c.root, service: s.deps, print: x => lines.push(x), warn: () => {} });
+        expect(code).toBe(0);
+        expect(JSON.parse(readFileSync(c.out, "utf8")).passed).toBe(true);
+        const text = lines.join("\n");
+        for (const k of ADVISORY) expect(text).toContain(`FAIL    ${k}: advisory (v1): `);
+        expect(text.split("\n").at(-1)).toBe("passed: true");
+        // A failing REQUIRED row still fails the run with the same advisory rows.
+        writeFileSync(join(c.fixtures, "acme.lookup", "ok.json"), "{\"a\":1,\"a\":2}");
+        expect((await runV1(c, s, "https://sandbox.acme-dev.example/")).passed).toBe(false);
+      } finally { cleanup(c); }
+    });
   });
   test("the sync entries refuse --service (it needs the network): runConformance and main", () => {
     withCatalog({ fixtures: GOOD_FIXTURES }, c => {
@@ -1526,7 +1557,7 @@ describe("v1 network safety: the URL, the address, redirects, budgets, credentia
           const r = await runV1(c, s);
           invariants(r);
           expect(v1Rows(r)).toEqual({ "service.reachability": false, "service.budgets": null, "service.error_bodies": null, "approval.fake_cp": null });
-          expect(row(r, "service.reachability").note).toBe("sandbox.acme-dev.example does not resolve");
+          expect(row(r, "service.reachability").note).toBe("advisory (v1): sandbox.acme-dev.example does not resolve");
         } finally { cleanup(c); }
         expect([s.dials.length, s.connections()]).toEqual([0, 0]);
       }, resolveTo as any);
@@ -1667,8 +1698,8 @@ describe("v1 checks against a stub sandbox", () => {
           invariants(r);
           expect([sse, v1Rows(r)]).toEqual([sse, { "service.reachability": true, "service.budgets": true, "service.error_bodies": true, "approval.fake_cp": null }]);
           expect(row(r, "service.reachability").note).toContain("initialize answers 2025-06-18; tools/list holds every target.tool (3 tool(s))");
-          expect(row(r, "service.budgets").note).toStartWith("1 read call(s) answered within timeoutMs and maxResponseBytes");
-          expect(row(r, "service.error_bodies").note).toStartWith("1 error call(s) answered exactly {code, detail}");
+          expect(row(r, "service.budgets").note).toStartWith("advisory (v1): 1 read call(s) answered within timeoutMs and maxResponseBytes");
+          expect(row(r, "service.error_bodies").note).toStartWith("advisory (v1): 1 error call(s) answered exactly {code, detail}");
           expect(row(r, "approval.fake_cp").note).toContain("Not checkable without a card");
           expect(r.passed).toBe(true);
         } finally { cleanup(c); }
@@ -1709,7 +1740,8 @@ describe("v1 checks against a stub sandbox", () => {
         try {
           const r = await runV1(c, s, "https://sandbox.acme-dev.example/");
           expect([want, row(r, "service.budgets").pass, row(r, "service.budgets").note.includes(want)]).toEqual([want, false, true]);
-          expect(r.passed).toBe(false);
+          // Advisory: the failed v1 row is reported, and the run still passes on its required set.
+          expect(r.passed).toBe(true);
         } finally { cleanup(c); }
       });
     }
@@ -1777,7 +1809,7 @@ describe("v1 checks against a stub sandbox", () => {
         const r = await runV1(c, s);
         expect(v1Rows(r)).toEqual({ "service.reachability": true, "service.budgets": null, "service.error_bodies": null, "approval.fake_cp": null });
         expect(row(r, "service.reachability").note).toContain("refuses a call without a token (HTTP 401); oauth discovery answers 200 with a JSON object");
-        expect(row(r, "service.budgets").note).toBe("auth oauth: a read needs a credential, and conformance never sends one");
+        expect(row(r, "service.budgets").note).toBe("advisory (v1): auth oauth: a read needs a credential, and conformance never sends one");
       } finally { cleanup(c); }
       expect(s.seen.map(x => `${x.method} ${x.url}`)).toEqual(["POST /mcp", "GET /.well-known/oauth-authorization-server"]);
       expect(s.seen.every(x => !x.names.includes("authorization") && !x.names.includes("cookie"))).toBe(true);
@@ -1841,7 +1873,7 @@ describe("v1 checks against a stub sandbox", () => {
       const r = await gold;
       expect(row(r, "service.reachability").note).toContain("service.kind internal");
       const c = catalog({ manifest: { ...acme(), extra: 1 }, fixtures: GOOD_FIXTURES });
-      try { expect(row(await runV1(c, s), "service.budgets").note).toBe("the manifest is not a valid v2 manifest: no service is called"); } finally { cleanup(c); }
+      try { expect(row(await runV1(c, s), "service.budgets").note).toBe("advisory (v1): the manifest is not a valid v2 manifest: no service is called"); } finally { cleanup(c); }
       expect([s.resolves.length, s.dials.length]).toEqual([0, 0]);
     });
   });

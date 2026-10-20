@@ -10,7 +10,8 @@
  *
  * v0 runs section 5.3 items 1, 4 (template, static part) and 5. v1 adds items 2-3 (service reachability and
  * budgets) and live error bodies, run ONLY with --service against the developer's own sandbox endpoint:
- * without --service they are not_run, and they are never REQUIRED (v1 does not gate yet). The rest of item
+ * without --service they are not_run. They are ADVISORY (v1 does not gate yet): each note starts
+ * "advisory (v1): ", and pass, fail or not_run, they never change `passed` or the exit code. The rest of item
  * 4 (the fake cp: wrong draftId, changed hash, no grant, idempotency) needs a card: always not_run.
  *
  * Item 1  manifest.validator_pin  the ONE shared validator (scripts/mini-apps-manifests.cjs, P0-1) and the
@@ -59,7 +60,8 @@
  *
  * conformance.json (--out): {manifest, sha256, results: [{check, pass, note}], passed}. `manifest` is the
  * repo-relative path; `sha256` is over the manifest file's exact bytes. A not_run check has pass null.
- * `passed` is true only when every check that ran passed, and item 1 (pin, schema, skills) and item 5 ran.
+ * `passed` is true only when every check that ran passed, and item 1 (pin, schema, skills) and item 5 ran;
+ * the advisory v1 service.* rows are reported but never counted.
  * Output: the summary always goes to stdout. A file is written ONLY with --out, and never by default:
  * --out may not be the manifest, or anywhere inside the manifest's repo or the tool's root (compared by
  * dev+ino, and case-folded on a case-insensitive filesystem), so CI writes it to a temp dir, e.g.
@@ -90,7 +92,8 @@ export class Refusal extends Error {
 
 /**
  * Every check, in output order. REQUIRED must have run (pass not null) for `passed`. The v1 service.* rows
- * are not REQUIRED: not_run (no --service) never blocks `passed`; one that ran and failed does, as any check.
+ * are ADVISORY (owner ruling on ov#438: v1 does not gate yet): they report pass, fail or not_run, each note
+ * marked "advisory (v1): ", and none of them, run or not, passed or failed, ever changes `passed`.
  */
 export const CHECKS = [
   "manifest.validator_pin", "manifest.schema", "skills.sha256", "version.bump",
@@ -102,15 +105,21 @@ export const REQUIRED = new Set<string>([
   "manifest.validator_pin", "manifest.schema", "skills.sha256",
   "hygiene.fixtures", "hygiene.secrets", "hygiene.duplicate_keys", "hygiene.error_bodies",
 ]);
+/** The v1 service rows: reported, never gating (passedOf skips them). */
+export const ADVISORY = new Set<string>(["service.reachability", "service.budgets", "service.error_bodies"]);
+export const ADVISORY_MARK = "advisory (v1): ";
 const pass = (check: string, note: string): Result => ({ check, pass: true, note });
 const fail = (check: string, note: string): Result => ({ check, pass: false, note });
 const notRun = (check: string, note: string): Result => ({ check, pass: null, note });
 
-/** passed: every check that ran passed, and every REQUIRED check ran. not_run (null) is never a pass. */
+/**
+ * passed: every check that ran passed, and every REQUIRED check ran. not_run (null) is never a pass. An
+ * ADVISORY row (v1 service.*) is reported but skipped here: a failed one leaves `passed` as the rest say.
+ */
 export function passedOf(results: Result[]): boolean {
   if (!results.length) return false;
   if (![...REQUIRED].every(check => results.some(r => r.check === check && r.pass === true))) return false;
-  return results.every(r => r.pass === true || (r.pass === null && !REQUIRED.has(r.check)));
+  return results.every(r => ADVISORY.has(r.check) || r.pass === true || (r.pass === null && !REQUIRED.has(r.check)));
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -683,7 +692,7 @@ export async function runConformanceAsync(opts: Options, env: { cwd?: string; to
   return finalize(p);
 }
 function finalize(p: Prepared): Report {
-  for (const r of p.results) r.note = redact(r.note);
+  for (const r of p.results) r.note = (ADVISORY.has(r.check) ? ADVISORY_MARK : "") + redact(r.note);
   return { manifest: p.at.rel, sha256: sha256(p.bytes), results: p.results, passed: passedOf(p.results) };
 }
 function prepareRun(opts: Options, { cwd = process.cwd(), toolRoot = resolve(import.meta.dir, "..") }: { cwd?: string; toolRoot?: string }): Prepared {
