@@ -40,14 +40,43 @@ Use Dizko as the starting bundle for another **public read-only** service:
    description, exact native call examples, result attribution, error handling
    and explicit limitations. Do not embed credentials or ask an agent to fetch
    code, install packages, run shell helpers, create cron jobs or bypass refusal.
-2. Add `mini-apps/<app-id>/manifest.json` following the real Dizko manifest.
-   Set id, name, description, version, homepage, human-readable permissions,
-   `skills: ["<app-id>"]` and `operations: ["mini-app.read"]` (or the reviewed
-   context list below, only with a CP namespace review). Pin a reviewed
-   HTTPS MCP URL and explicit tools with their observed JSON input schemas.
+2. Add `mini-apps/<app-id>/manifest.json` following the real Dizko manifest,
+   and list the id in `mini-apps/catalog.json`. Manifests are **v2**
+   (`"manifest": 2`; the closed JSON Schema is
+   [manifest.v2.schema.json](manifest.v2.schema.json), validated by
+   `scripts/mini-apps-manifests.cjs`, the same module the control plane uses):
+   id, name, description, version, homepage, `visibility`, human-readable
+   permissions, `service` (`mcp` with `auth.mode: "none"` for a public read
+   app, and its reviewed HTTPS `baseUrl`), one op per reviewed tool
+   (`<app-id>.<tool>`, `class: "read"`, `target.tool`, and the tool's observed
+   JSON input schema as `input`), and `skills` (name, version and the sha256 of
+   `skills/<app-id>/SKILL.md`). The control plane serves such an app exactly as
+   today: `operations: ["mini-app.read"]` plus its tools (or the reviewed
+   context list below, only with a CP namespace review and a `data.context`
+   block). `bun test scripts/tests/mini-app-manifests.test.ts` checks it; a
+   skill edit changes its sha256, so it is also a manifest edit. Two optional
+   booleans mark the catalog entry: `"staff": true` (the app comes with every
+   agent and is never removable) and `"listed": false` (kept off every install
+   and discovery surface); absent means `false` and `true`, and any other type
+   is refused. A `baseUrl`, and an OAuth `resource` and `discovery` (every URL
+   the platform fetches), must be canonical (`new URL(s).href === s` exactly, so a bare origin is
+   written with its `/`) lower-case ASCII `https://` with no port, userinfo,
+   query, fragment, `%` in the host, `xn--` label, backslash or whitespace, and
+   name a public DNS host: any IP literal, a single-label name, `localhost` and
+   `*.localhost`, `*.internal`, `*.local`, `*.lan`, `*.home.arpa`, `*.intranet`
+   and `*.corp` are refused. This static check cannot stop DNS rebinding or a
+   public name that resolves to a private address: the fetcher must re-check
+   the resolved IP at connect time. A `target.path` has no empty (`//`) or
+   dot (`.`, `..`) segment. An `app-token` `secretRef` must be
+   `MINI_APP_<ID>_<NAME>` (`-` as `_`, no `_` in NAME); nesting deeper than 64
+   is refused; a relay app must have only `read` ops; and each file must be
+   canonical JSON (`JSON.stringify(value, null, 2)` plus a newline, so no
+   duplicate keys).
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
-3. Submit the same reviewed definition to the control-plane catalog. Update
+3. Submit the same reviewed definition to the control-plane catalog (Phase 0:
+   the cp vendors `mini-apps/` byte for byte and serves it only under
+   `MINI_APPS_MANIFESTS=1`; its five reviewed constants stay the default). Update
    `install/install_miniapps.ts`'s reviewed bundle table so only that exact id,
    version, skill and operations can be staged from the pinned overlay checkout.
    No native plugin change is needed for another reviewed public-read MCP app:
