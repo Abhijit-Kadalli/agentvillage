@@ -1137,12 +1137,14 @@ tool, before any `action.*` or `intention.*` the same call implies.
 - **Refs.** `tool_call_id` is Hermes's, nulled if it fails the id pattern; `run_id` as for
   `llm.call`; `occurred_at` is when the call returned and `occurred_at_earliest` that minus
   `duration_ms`.
-- **Skill scripts (B-169b, v2.1.10).** A `terminal` call whose command's first words are exactly
+- **Skill scripts (B-169b, v2.1.11+).** A `terminal` call whose command's first words are exactly
   `bun|python3|node skills/<name>/scripts/<file>` (the form every shipped recipe uses, run from the
   Hermes folder; no `cd`, assignment or other prefix) carries `target_system: "skill"` and
   `operation: "<name>"` when `<name>` is a skill the installer ships (`_skill_label.SHIPPED_SKILLS`,
-  kept equal to `install/paths.ts` `EDGE_SKILL_NAMES` by `tests/test_skill_label.py`) and matches
-  `^[a-z0-9_.-]{1,64}$`; any other name is `operation: "other"`. Nothing else of the command
+  kept equal to `install/paths.ts` `EDGE_SKILL_NAMES` by `tests/test_skill_label.py`) or one of
+  the two installed by their own steps (`recall`, `approval`), and matches `^[a-z0-9_.-]{1,64}$`;
+  any other name is `operation: "other"`. The label follows the script: Simocracy's recipes run
+  agent-commons' script, so a Simocracy block pages as `skill.agent-commons`. Nothing else of the command
   leaves: no argument, no file name, no path beyond the skill's name. Data keys the family
   `skill.<operation>` (unknowns pooled as `skill.other`); its door takes `skill` from data#608 on,
   which must be deployed before a box runs this. The EdgeOS labels come first: a run of

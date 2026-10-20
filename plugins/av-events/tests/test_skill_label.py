@@ -127,7 +127,12 @@ def test_shipped_skills_are_exactly_the_installers_edge_skill_names(labeller):
     body = "\n".join(line for line in body.splitlines() if not line.strip().startswith("//"))
     names = set(re.findall(r'"([^"]+)"', body))
     assert names and labeller.SHIPPED_SKILLS == names
-    # Every shipped name is also a valid operation token, so none is pooled.
+    assert not (labeller.SEPARATELY_INSTALLED_SKILLS & names)
+    for name in labeller.SEPARATELY_INSTALLED_SKILLS:
+        assert (REPO / "skills" / name / "scripts").is_dir(), name
+    names = names | labeller.SEPARATELY_INSTALLED_SKILLS
+    assert labeller.LABELLED_SKILLS == names
+    # Every labelled name is also a valid operation token, so none is pooled.
     assert all(re.fullmatch(r"[a-z0-9_.-]{1,64}", name) for name in names)
 
 
@@ -173,7 +178,11 @@ def test_every_skill_md_recipe_is_labelled_with_its_scripts_skill(live, ctx, av)
         ("bun skills/edgeos/scripts/events.ts --when today", "edgeos"),
         ('bun skills/edgeos/scripts/directory.ts --search "Priya"', "edgeos"),
         ("bun skills/edgeos/scripts/profile.ts --json", "edgeos"),
-        # simocracy's recipe runs agent-commons' script: labelled by the script's skill.
+        # Installed by their own steps: own keys (data L17038).
+        ("bun skills/recall/scripts/recall.ts rebuild", "recall"),
+        ("python3 skills/approval/scripts/live_selfcheck.py", "approval"),
+        # simocracy's recipe runs agent-commons' script: labelled by the script's skill,
+        # so a Simocracy block pages as skill.agent-commons (data L17038, for the runbook).
         ("python3 skills/agent-commons/scripts/search_forum.py \\\n  --surface simocracy_proposals \\\n"
          '  --query "grant budget"', "agent-commons"),
         # index-network's tools.md and the workspace AGENTS.md gates.
@@ -209,9 +218,6 @@ def test_inline_recipes_outside_skill_md_are_labelled(live, ctx, av):
         "python3 skills/my-own-skill/scripts/run.py --flag",
         # Retired from the installer (RETIRED_SKILL_DIRS).
         "bun skills/geo-esmeralda/scripts/geo.ts",
-        # Installed by their own steps, not the installer's shipped set.
-        "bun skills/recall/scripts/recall.ts rebuild",
-        "python3 skills/approval/scripts/live_selfcheck.py",
         "bun skills/../scripts/x.ts",
     ],
 )

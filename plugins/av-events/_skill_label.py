@@ -12,9 +12,10 @@ names the skill, and nothing else:
   `bun|python3|node skills/<name>/scripts/<file>` (the form every shipped
   recipe uses: no prefix, the path relative to the Hermes folder the skill
   says to run it from) and `<name>` is a skill the overlay ships
-  (`SHIPPED_SKILLS`, the installer's `EDGE_SKILL_NAMES`) matching
-  `^[a-z0-9_.-]{1,64}$`; any other name is `other` (target_system still
-  `skill`), so a name the agent makes up never reaches ingest.
+  (`SHIPPED_SKILLS`, the installer's `EDGE_SKILL_NAMES`, plus
+  `SEPARATELY_INSTALLED_SKILLS`, the two installed by their own steps)
+  matching `^[a-z0-9_.-]{1,64}$`; any other name is `other` (target_system
+  still `skill`), so a name the agent makes up never reaches ingest.
 
 Data keys the family `skill.<operation>` and pools unknowns as `skill.other`
 (data#608 fold 2 adds `skill` to the door's closed target_system enum).
@@ -71,6 +72,13 @@ SHIPPED_SKILLS = frozenset({
     "agent-profile",
 })
 
+#: Skills the overlay installs by their own steps, outside `EDGE_SKILL_NAMES`
+#: (data L17038: own keys, so a blocked one is not pooled with unknowns; data's
+#: door list already names both). `tests/test_skill_label.py` checks both
+#: directories ship scripts.
+SEPARATELY_INSTALLED_SKILLS = frozenset({"recall", "approval"})
+LABELLED_SKILLS = SHIPPED_SKILLS | SEPARATELY_INSTALLED_SKILLS
+
 _OPERATION = re.compile(r"^[a-z0-9_.-]{1,64}$")
 #: The command's first word sequence: a runner, then the script path, then
 #: whitespace or the end of the command. Leading spaces and tabs run nothing.
@@ -98,11 +106,11 @@ def skill_label(tool_name: Any, args: Any) -> Optional[tuple[str, str]]:
         if f"skills/{name}/scripts/{script}" == EDGEOS_SCRIPT:
             # ov#437 owns this script's label: edgeos.<verb>, or none.
             return None
-        if name in SHIPPED_SKILLS and _OPERATION.fullmatch(name):
+        if name in LABELLED_SKILLS and _OPERATION.fullmatch(name):
             return TARGET_SYSTEM, name
         return TARGET_SYSTEM, OTHER_OPERATION
     except Exception:  # noqa: BLE001 - pure string checks; belt and braces
         return None
 
 
-__all__ = ["MAX_COMMAND_CHARS", "OTHER_OPERATION", "SHIPPED_SKILLS", "TARGET_SYSTEM", "TOOL_NAME", "skill_label"]
+__all__ = ["LABELLED_SKILLS", "MAX_COMMAND_CHARS", "OTHER_OPERATION", "SEPARATELY_INSTALLED_SKILLS", "SHIPPED_SKILLS", "TARGET_SYSTEM", "TOOL_NAME", "skill_label"]
