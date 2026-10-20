@@ -93,6 +93,7 @@ import { type LockOptions, LockStuck, LockTimeout, releaseHeldLocks, withStateLo
 import { writeStateFile } from "./state-file";
 import { followUp } from "./summarize-negotiations";
 import { backfillAnnounced, clearStage, dueSubjects, intentionLink, listAcceptedConnections, outcomeQuestion, readAskedIds, recordAttempt, stageFor, writeStage } from "./outcome-ask";
+import { dueRatingSubjects, noteAccepted, ratingCardsOn, ratingStageFor, readRatedIds, recordStaged, textAskOn, writeRatingStage } from "./rating-cards";
 import { type Delivery, deliveryFor, inWindow, isTeamTenant, minuteOfDay, prunePreviewFiles, readJobSettings } from "./job-settings";
 import { DEFAULT_NAME, agentName, readProfile } from "../../agent-profile/scripts/profile";
 
@@ -1002,6 +1003,9 @@ export function outcomePluginOff(home: string): boolean {
  * the message was delivered, is what makes it asked.
  */
 async function outcomeAskDecision(run: Run): Promise<Decision | { fallback: string; withheld?: number }> {
+  // Superseded by the suggestion rating cards (rating-cards.ts): the text question runs only with
+  // AV_OUTCOME_TEXT_ASK on, for one release, then goes.
+  if (!textAskOn(run.home)) return { fallback: "outcome-ask-text-off" };
   // Nothing would record the ask: the same question every evening, for every connection.
   if (outcomePluginOff(run.home)) return { fallback: "outcome-ask-plugin-off" };
   const path = run.stateFile;
@@ -1062,6 +1066,66 @@ async function outcomeAskDecision(run: Run): Promise<Decision | { fallback: stri
   };
 }
 
+/**
+ * The suggestion rating cards (rating-cards.ts; data docs/design/suggestion-rating.md): on the
+ * installer's evening job, with AV_RATE_CARDS on, every connection Index lists accepted that the
+ * av-rate plugin has not asked about is staged for a card pair, oldest first seen first, at most
+ * CARDS_PER_EVENING tonight. Staged and recorded here, under the state lock, whatever the model
+ * turn does next: the cards are the plugin's, not the model's. A code for the run log, or null
+ * when the cards are off. Never throws.
+ */
+async function stageRatingCards(run: Run): Promise<string | null> {
+  if (run.action !== "evening" || run.preview || !ratingCardsOn(run.home)) return null;
+  let state: Record<string, unknown>;
+  try {
+    state = readState(run.stateFile);
+  } catch {
+    return "rating-cards-state";
+  }
+  const asked = readRatedIds(run.home);
+  // The plugin never writes over a ledger it refuses, so it could record no new card: staging
+  // tonight could send a card again and again.
+  if (asked === null) return "rating-cards-ledger-unreadable";
+  let accepted: BriefOpportunity[];
+  try {
+    accepted = await (run.options.accepted ?? listAcceptedConnections)();
+  } catch {
+    return "rating-cards-index-unavailable";
+  }
+  const listed = new Map(accepted.flatMap((card) => (card.opportunityId && card.status === "accepted" ? [[card.opportunityId, card] as const] : [])));
+  state = noteAccepted(state, [...listed.keys()], asked, run.date);
+  const due = dueRatingSubjects(state, [...listed.keys()], asked, run.date);
+  const w = new Withheld();
+  const agentName = agentNameFor(run.home);
+  const staged: string[] = [];
+  let withheld = 0;
+  for (const id of due) {
+    const card = listed.get(id)!;
+    const name = w.name(card.name);
+    if (!name) {
+      withheld++;
+      continue;
+    }
+    // Index's own headline, as the evening note shows it (matchHeadline, never the summary fallback).
+    const headline = w.matchField(card.matchHeadline, MATCH_HEADLINE_MAX);
+    const stage = ratingStageFor(card, { name, headline, agentName }, run.date, run.now);
+    if (!stage) continue;
+    try {
+      writeRatingStage(run.home, stage);
+    } catch {
+      return "rating-cards-unwritable";
+    }
+    staged.push(id);
+  }
+  try {
+    writeStateFile(run.stateFile, recordStaged(state, staged, run.date));
+  } catch {
+    return "rating-cards-state";
+  }
+  // A run-log code (reasonCode keeps letters, digits, `:`, `_` and `-`): `rating-cards:<staged>[:withheld:<n>]`.
+  return `rating-cards:${staged.length}${withheld ? `:withheld:${withheld}` : ""}`;
+}
+
 async function eveningAction(run: Run): Promise<Decision> {
   // A stage left by an earlier run is never this run's: without this, a
   // reminder written now could be armed as the ask. Only the installer's
@@ -1069,11 +1133,14 @@ async function eveningAction(run: Run): Promise<Decision> {
   // leaves a real run's stage alone (its model may still be writing).
   const stages = run.action === "evening" && !run.preview;
   if (stages) clearStage(run.home);
+  // The suggestion rating cards go out through the av-rate plugin, whatever the model says tonight.
+  const rating = await stageRatingCards(run);
   // The plugin arms the ask for the installer's evening job only: a template
   // job's ask would go out unrecorded and be asked again.
   const ask = run.action === "evening" ? await outcomeAskDecision(run) : { fallback: "outcome-ask-template-job" };
-  if (!("fallback" in ask)) return ask;
-  const detail = ask.fallback;
+  // The ask's code and the cards' code in one run-log field, joined by `_` (reasonCode keeps it).
+  if (!("fallback" in ask)) return rating ? { ...ask, detail: `${ask.detail ?? "outcome-ask"}_${rating}` } : ask;
+  const detail = rating ? `${ask.fallback}_${rating}` : ask.fallback;
   // Due names the ask passed over still count in the run log's `withheld`.
   const askWithheld = ("withheld" in ask ? ask.withheld : 0) ?? 0;
   const result = await (run.options.evening ?? askQuestions)({ date: run.date, stateFile: run.stateFile });
