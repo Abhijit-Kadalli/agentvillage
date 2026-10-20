@@ -32,6 +32,8 @@ would be lost. When the owner wants to change or remove a line, tell them to
 use "Remove" under "What your agent reads" on the Context page, or to add to
 their Mosaic in the app. Mosaic has no reviewed `mini-app.read` tools: never
 call `mini-app.read` for it, never call the Mosaic site or its API through the
-shell, and never supply a URL, bearer, header or credential. Never share the
-summary with anyone else, in a group or with another agent, and never borrow
-another app's permissions. If Mosaic is uninstalled or unavailable, say so.
+shell, and never supply a URL, bearer, header or credential. Do not pass the
+summary on yourself: never quote it in a group or send it to another agent.
+Lines the owner moved to Edge City India 2026 are shared by Agent Village
+under that choice, not by you. Never borrow another app's permissions. If
+Mosaic is uninstalled or unavailable, say so.
