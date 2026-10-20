@@ -298,6 +298,10 @@ test("ov#441 S1: managed ZZZ participation is the cp projection's zzzbot + zzz-b
   expect(zzzParticipation(validateProjection({ version: 1, apps: [bridge] }))).toBe(false);
   expect(zzzParticipation(validateProjection({ version: 1, apps: [] }))).toBe(false);
   expect(zzzParticipation(validateProjection(all))).toBe(true);
+  // The gate itself, before validation: only the exact id counts (validateProjection also refuses the rest).
+  for (const id of ["zzz_bridge", "ZZZ-BRIDGE", "zzz-bridge ", "zzz-bridge-v2", "zzzbridge"])
+    expect([id, zzzParticipation({ apps: [zzzbot, { id }] })]).toEqual([id, false]);
+  expect(zzzParticipation({ apps: [{ id: "zzzbot" }, { id: "zzz-bridge" }] })).toBe(true);
   // zzz-bridge alone stages nothing (no skill, no served bytes, no managed files).
   const root = installedBox();
   const offer = "a".repeat(64);
@@ -439,4 +443,43 @@ test("MOSAIC (app#486): Dizko's shape, its context read/write after mini-app.rea
     [read, ctxWrite, ctxRead], [read, read], [read, ctxRead], [read, ctxWrite], [ctxRead, ctxWrite], [],
   ];
   for (const operations of planted) expect(() => validateProjection({ version: 1, apps: [{ ...mosaic, operations }] })).toThrow("mini_apps_unreviewed_bundle");
+});
+
+test("ov#441 S1 (d): every projection this installer writes is accepted WHOLE by the plugin's strict reader", () => {
+  // The regression class nonav flagged (L17033): the WIP wrote `zzz_bridge`, which the plugin's reader refused,
+  // and its whole-projection refusal silently took Gold Stars and zzzbot down with it. The reader's refusal is
+  // pinned (plugins/village-bridge/tests/test_zzz_managed.py); this pins the other half: the installer never
+  // writes a file that reader refuses, for every reviewed entry and every earlier entry it still stages.
+  const zzzbot = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
+  const bridge = REVIEWED_MINI_APPS.find(app => app.id === ZZZ_BRIDGE_ID)!;
+  const projections: { version: 1; apps: readonly { id: string }[] }[] = [
+    all, { version: 1, apps: [zzzbot, bridge] }, { version: 1, apps: [bridge, zzzbot] }, { version: 1, apps: [zzzbot] }, { version: 1, apps: [bridge] },
+    ...PREVIOUS_REVIEWED_MINI_APPS.map(previous => ({ version: 1 as const, apps: REVIEWED_MINI_APPS.map(app => app.id === previous.id ? previous : app) })),
+  ];
+  const homes = projections.map(projection => {
+    const root = installedBox();
+    reconcileMiniApps(projection, root);
+    return root;
+  });
+  const which = Bun.which("python3");
+  expect(which).not.toBeNull();
+  const python = spawnSync(which!, ["-I", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
+  const probe = home();
+  writeFileSync(join(probe, "probe.py"), [
+    "import importlib.util, json, sys",
+    "from pathlib import Path",
+    'spec = importlib.util.spec_from_file_location("mini_apps_probe", sys.argv[1])',
+    "mini = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(mini)",
+    "out = []",
+    "for home in sys.argv[2:]:",
+    "    apps = mini.projected_apps(Path(home))",
+    "    out.append([None if apps is None else [app['id'] for app in apps], mini.zzz_participation(Path(home))])",
+    "print(json.dumps(out))",
+    "",
+  ].join("\n"));
+  const run = spawnSync(python, ["-I", join(probe, "probe.py"), join(REPO, "plugins", "village-bridge", "_mini_apps.py"), ...homes],
+    { cwd: probe, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" });
+  expect(run.status).toBe(0);
+  expect(JSON.parse(run.stdout)).toEqual(projections.map(projection => [projection.apps.map(app => app.id), zzzParticipation(projection)]));
 });

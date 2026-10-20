@@ -73,14 +73,18 @@ class ManagedPairsTest(unittest.TestCase):
 
     def assert_off(self, label):
         """Nothing runs: no poll, no bootstrap, no reply or read reservation, no network, no state dir."""
-        def unexpected(*_args):
-            self.fail(label + ": participation off but network attempted")
+        # Recorded, not raised: the reservations swallow a transport error, which would hide the attempt.
+        calls = []
+        def unexpected(*args):
+            calls.append(args)
+            raise RuntimeError(label + ": participation off but network attempted")
         self.assertFalse(managed.participation_on(self.home), label)
         self.assertFalse(mini.zzz_participation(self.home), label)
         self.assertIsNone(managed.poll(self.home, unexpected, {}, mini.installed), label)
         self.assertIsNone(managed.reserve_bootstrap(self.home, unexpected, {}, "room_a"), label)
         self.assertFalse(managed.reserve_reply(self.home, unexpected, {}, "thread_a"), label)
         self.assertFalse(managed.allow_managed_read(self.home, unexpected, {}, "zzz.changes", "room_a"), label)
+        self.assertEqual(calls, [], label)
         self.assertFalse((self.home / "zzzbot").exists(), label)
 
     def test_s1_bridge_entry_present_turns_participation_on_and_grants_no_tool(self):
@@ -142,10 +146,17 @@ class ManagedPairsTest(unittest.TestCase):
         # Neither module holds a boolean switch, and the gate never reads the environment.
         for module in (managed, mini):
             self.assertEqual([n for n, v in vars(module).items() if isinstance(v, bool)], [], module.__name__)
-        import inspect
+        # The names each gate's code (nested generators included) references, not its docstring's prose.
+        def names(code):
+            found = set(code.co_names)
+            for const in code.co_consts:
+                if hasattr(const, "co_names"):
+                    found |= names(const)
+            return found
         for fn in (managed.participation_on, mini.zzz_participation, mini.projected_apps):
-            self.assertNotIn("environ", inspect.getsource(fn))
-            self.assertNotIn("getenv", inspect.getsource(fn))
+            used = names(fn.__code__)
+            self.assertTrue(used, fn.__name__)
+            self.assertFalse(used & {"environ", "getenv", "environb", "getenvb"}, fn.__name__)
 
     def test_s1_pre_run_script_obeys_the_gate(self):
         # The Hermes pre-run entry (python3 _zzz_managed.py) reads the same reader through the package.
@@ -230,13 +241,19 @@ class ManagedPairsTest(unittest.TestCase):
         self.next_slot()
         self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
 
-    def test_cron_gate_requires_installer_job_and_rejects_other_operations(self):
+    def cron_job(self):
+        """The installer's job record and a credential, as a box with participation on holds them."""
         (self.home / "cron").mkdir()
         job = {"id": "abcdef123456", "name": managed.JOB_NAME, "script": managed.JOB_SCRIPT,
                "enabled": True, "no_agent": False, "enabled_toolsets": managed.JOB_TOOLSETS}
         path = self.home / "cron" / "jobs.json"
         path.write_text(json.dumps({"jobs": [job]}))
         (self.home / "village-bridge.json").write_text(json.dumps({"ownerTelegramId": "42"}))
+        return job, path
+
+    @staticmethod
+    def cron_modules():
+        """Hermes's cron scope, stubbed: only CRON_SESSION is bound; not a delegated child."""
         unset = object()
         sc = types.ModuleType("gateway.session_context")
         sc._UNSET = unset
@@ -253,10 +270,13 @@ class ManagedPairsTest(unittest.TestCase):
         gateway.session_context = sc
         delegation = types.ModuleType("agent.delegation_context")
         delegation.is_delegated_child_context = lambda: False
+        return {"gateway": gateway, "gateway.session_context": sc, "agent.delegation_context": delegation}
+
+    def test_cron_gate_requires_installer_job_and_rejects_other_operations(self):
+        job, path = self.cron_job()
         session = "cron_abcdef123456_20261020_120000"
         task = "cron:abcdef123456:0123456789abcdef"
-        with patch.dict(sys.modules, {"gateway": gateway, "gateway.session_context": sc,
-                                      "agent.delegation_context": delegation}):
+        with patch.dict(sys.modules, self.cron_modules()):
             self.assertEqual(managed.managed_context(self.home, "zzz.reply", session, task)["USER_ID"], "42")
             self.assertEqual(managed.managed_context(self.home, "zzz.create_thread", session, task)["USER_ID"], "42")
             self.assertIsNone(managed.managed_context(self.home, "rolodex.search", session, task))
@@ -280,6 +300,55 @@ class ManagedPairsTest(unittest.TestCase):
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
             self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply",
                 "cron_bbbbbbbbbbbb_20261020_120000", "cron:bbbbbbbbbbbb:0123456789abcdef"))
+
+    def test_s1_malformed_projection_with_the_job_present_is_off(self):
+        # nonav L17033 (iii): the installer's job is still scheduled but mini-apps.json is malformed. The gate is
+        # off everywhere: no poll, no cron-root tool context, no reservation. (The next install run removes the
+        # job: install/tests/zzz_managed_job.test.ts.)
+        job, _path = self.cron_job()
+        session = "cron_abcdef123456_20261020_120000"
+        task = "cron:abcdef123456:0123456789abcdef"
+        with patch.dict(sys.modules, self.cron_modules()):
+            self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply", session, task))
+            good = json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE]})
+            for label, text in {"truncated": good[:-2], "empty": "", "not an object": "[]", "extra key": good[:-1] + ', "x": 1}',
+                                "apps not a list": json.dumps({"version": 1, "apps": {}})}.items():
+                (self.home / "mini-apps.json").write_text(text)
+                self.assertTrue((self.home / "cron" / "jobs.json").is_file(), label)
+                for op in ("zzz.reply", "zzz.create_thread", "zzz.changes", "zzz.read_thread", "zzz.list_rooms"):
+                    self.assertIsNone(managed.managed_context(self.home, op, session, task), label + " " + op)
+                self.assert_off(label)
+
+    def test_s1_refused_projected_id_never_turns_participation_on(self):
+        # nonav L17033 (d), the regression class: an entry the strict reader refuses, beside a complete
+        # zzzbot + zzz-bridge pair, must never leave participation ON.
+        # PINNED, pre-existing: the reader refuses the WHOLE projection on one bad entry, so Gold Stars (and every
+        # other app) is refused with it. This is projected_apps()'s fail-closed contract, shared with installed();
+        # dropping only the bad entry would be a change to Gold Stars' authority reader that needs nonav's ruling.
+        # The installer never writes such a file (validateProjection refuses the whole stage, and
+        # install_miniapps.test.ts proves every projection it writes is accepted whole here), so this state is
+        # only reached by version skew or tampering, where refusing everything is the safe reading.
+        gold = {"id": "gold-stars", **mini.GOLD_STARS}
+        path = self.home / "mini-apps.json"
+        path.write_text(json.dumps({"version": 1, "apps": [gold, ZZZBOT, BRIDGE]}))
+        self.assertTrue(managed.participation_on(self.home))
+        self.assertTrue(mini.installed(self.home, "gold-stars", "rolodex.search"))
+        refused = {
+            "unknown app": {"id": "unknown-app", "version": "1.0.0", "skills": ["unknown-app"], "operations": ["zzz.pairs"]},
+            "underscore bridge": {**BRIDGE, "id": "zzz_bridge"},
+            "upper-case bridge": {**BRIDGE, "id": "ZZZ-BRIDGE"},
+            "look-alike bridge": {**BRIDGE, "id": "zzz-bridge-v2"},
+            "second zzzbot": {**ZZZBOT, "operations": [*ZZZBOT["operations"], "zzz.pairs"]},
+            "non-string id": {**BRIDGE, "id": 7},
+            "not an object": "zzz-bridge",
+        }
+        for label, entry in refused.items():
+            for apps in ([gold, ZZZBOT, BRIDGE, entry], [entry, ZZZBOT, BRIDGE, gold]):
+                path.write_text(json.dumps({"version": 1, "apps": apps}))
+                self.assertIsNone(mini.projected_apps(self.home), label)
+                self.assert_off(label)
+                self.assertFalse(mini.installed(self.home, "gold-stars", "rolodex.search"), label + ": pinned whole refusal")
+                self.assertFalse(mini.installed(self.home, "zzzbot", "zzz.list_rooms"), label + ": pinned whole refusal")
 
 
 if __name__ == "__main__":
