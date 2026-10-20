@@ -82,7 +82,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          bun --config=/dev/null --no-env-file --no-install tool/scripts/mini-apps-review.ts --repo tool \
+          bun --config=/dev/null --no-env-file --no-install --tsconfig-override=/dev/null ./tool/scripts/mini-apps-review.ts --repo tool \
             --base "$BASE_SHA" --head "$HEAD_SHA" --author "$PR_AUTHOR" \
             --out "$RUNNER_TEMP/mini-apps-review.json" --summary "$RUNNER_TEMP/mini-apps-review.md" \
             --conformance-dir "$RUNNER_TEMP/mini-apps-conformance"

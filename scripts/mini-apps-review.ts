@@ -270,8 +270,10 @@ function dataRepo(input: ConformanceInput): { root: string; base: string } {
  * TOOL's (`toolRoot`, in CI the base commit's tree), never the pull request's, and it runs on head's
  * manifest and skill bytes taken from git objects (`ConformanceInput`), in a throwaway repository whose one
  * commit is the merge base's manifest, so `--base` is always passed. Run with `bun --config=/dev/null
- * --no-env-file --no-install` from the tool tree; the output goes to a temp dir outside both trees.
+ * --no-env-file --no-install --tsconfig-override=/dev/null` (SUITE_FLAGS) from the tool tree, by its absolute
+ * path; the output goes to a temp dir outside both trees.
  */
+export const SUITE_FLAGS = Object.freeze(["--config=/dev/null", "--no-env-file", "--no-install", "--tsconfig-override=/dev/null"]);
 export function runConformance(input: ConformanceInput, opts: { toolRoot?: string; saveDir?: string; timeoutMs?: number } = {}): ConformanceRun {
   const toolRoot = opts.toolRoot ?? REPO_ROOT;
   const script = join(toolRoot, CONFORMANCE_PATH);
@@ -280,7 +282,7 @@ export function runConformance(input: ConformanceInput, opts: { toolRoot?: strin
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-conformance-"));
   const out = join(dir, "conformance.json");
   try {
-    const r = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", "--no-install", script, join(data.root, input.manifestPath), "--base", data.base, "--out", out],
+    const r = spawnSync(process.execPath, [...SUITE_FLAGS, script, join(data.root, input.manifestPath), "--base", data.base, "--out", out],
       { cwd: toolRoot, timeout: opts.timeoutMs ?? 120_000, maxBuffer: 16 * 1024 * 1024 });
     const said = `${String(r.stderr ?? "")}\n${String(r.stdout ?? "")}`.split("\n").map(l => l.trim()).filter(Boolean)[0] ?? "";
     if (r.error) return { status: "refused", exit: r.status, message: r.error.message.slice(0, 200) };

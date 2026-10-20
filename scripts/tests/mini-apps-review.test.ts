@@ -918,8 +918,8 @@ describe("git and the CLI", () => {
       const written = JSON.parse(readFileSync(join(saved, "tinyshop.conformance.json"), "utf8"));
       expect([written.manifest, written.sha256]).toEqual([MP, sha256(json(m))]);
       const [flags, cwd, manifestArg, ...rest] = written.results[0].note.split(" ");
-      // From the tool tree, with bun's config, .env and auto-install all off.
-      expect([flags, cwd]).toEqual(["--config=/dev/null,--no-env-file,--no-install", realpathSync(tool)]);
+      // From the tool tree, with bun's config, .env, auto-install and a cwd tsconfig.json all off (review-b N-a).
+      expect([flags, cwd]).toEqual(["--config=/dev/null,--no-env-file,--no-install,--tsconfig-override=/dev/null", realpathSync(tool)]);
       expect(manifestArg.endsWith(`/${MP}`) && !manifestArg.startsWith(realpathSync(g.dir))).toBe(true);
       expect([rest[0], rest[2]]).toEqual(["--base", "--out"]);
       // --base names the throwaway repository's one commit: the merge base's manifest, byte for byte.
@@ -1124,7 +1124,8 @@ describe("the workflow", () => {
     expect(fetch.env).toEqual({ PR_NUMBER: "${{ github.event.pull_request.number }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}" });
     expect(fetch.run).toContain('git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"');
     expect(review.env).toEqual({ BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_AUTHOR: "${{ github.event.pull_request.user.login }}" });
-    expect(review.run).toStartWith("bun --config=/dev/null --no-env-file --no-install tool/scripts/mini-apps-review.ts --repo tool \\\n");
+    // review-b N-a: by explicit path (no package.json script can shadow it) and with no cwd tsconfig.json.
+    expect(review.run).toStartWith("bun --config=/dev/null --no-env-file --no-install --tsconfig-override=/dev/null ./tool/scripts/mini-apps-review.ts --repo tool \\\n");
     expect(review.run).toContain('--base "$BASE_SHA" --head "$HEAD_SHA"');
     const runs = steps.map(s => s.run ?? "").join("\n");
     // Nothing from the pull request is checked out, installed or executed, and no step runs in another tree.
@@ -1191,6 +1192,56 @@ describe("the workflow", () => {
       const t = (...args: string[]) => String(spawnSync("git", ["-C", join(workspace, "tool"), ...args]).stdout).trim();
       expect([t("rev-parse", "HEAD"), t("status", "--porcelain"), existsSync(join(workspace, "tool", "bunfig.toml")), existsSync(join(workspace, "tool", "docs"))]).toEqual([base, "", false, false]);
       expect(readdirSync(workspace)).toEqual(["tool"]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true }); }
+  });
+  test("review-b N-a: a cwd tsconfig.json with a \"*\" path and a cwd package.json script named like the tool never run, the tool present or absent", () => {
+    const g = gitRepo();
+    const work = mkdtempSync(join(realpathSync(tmpdir()), "mini-apps-review-na-"));
+    try {
+      const tool: Files = {};
+      for (const rel of ["scripts/mini-apps-review.ts", R.VALIDATOR_PATH, R.SCHEMA_PATH, R.PINS_PATH, "install/paths.ts", ".github/workflows/mini-apps-review.yml"]) tool[rel] = readFileSync(join(REPO, rel), "utf8");
+      const base = g.commit({ ...tool, ...baseFiles() }, "base: the tool and tinyshop");
+      g.run("checkout", "-q", "-b", "lane");
+      const head = g.commit({ "mini-apps/tinyshop/README.md": "# Tiny Shop\n" }, "a lane README");
+      g.run("update-ref", "refs/pull/7/head", head);
+      g.run("checkout", "-q", "main");
+      g.run("branch", "-D", "lane");
+      const workspace = join(work, "workspace"), temp = join(work, "runner-temp"), canary = join(work, "CANARY");
+      mkdirSync(workspace); mkdirSync(temp);
+      expect(spawnSync("git", ["clone", "-q", "--no-checkout", `file://${g.dir}`, join(workspace, "tool")]).status).toBe(0);
+      expect(spawnSync("git", ["-C", join(workspace, "tool"), "checkout", "-q", "--detach", base]).status).toBe(0);
+      // Pull request bytes in the workspace root, the day a step writes them there (review-b's bisect, variants A and C).
+      writeFileSync(join(workspace, "evil.ts"), `require("fs").appendFileSync(${JSON.stringify(canary)}, "tsconfig\\n");\nexport const EDGE_SKILL_NAMES = [];\nexport {};\n`);
+      writeFileSync(join(workspace, "tsconfig.json"), JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "*": ["./evil.ts"] } } }) + "\n");
+      writeFileSync(join(workspace, "evil.sh"), `echo script >> ${JSON.stringify(canary)}\n`);
+      writeFileSync(join(workspace, "package.json"), JSON.stringify({ name: "x", scripts: { "tool/scripts/mini-apps-review.ts": "sh evil.sh", "./tool/scripts/mini-apps-review.ts": "sh evil.sh" } }) + "\n");
+      const steps = workflowSteps(readFileSync(join(REPO, ".github/workflows/mini-apps-review.yml"), "utf8"));
+      const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`, HOME: work, RUNNER_TEMP: temp, GIT_CONFIG_NOSYSTEM: "1",
+        PR_NUMBER: "7", BASE_SHA: base, HEAD_SHA: head, BASE_REF: "main", PR_AUTHOR: "someone" };
+      const bash = (script: string) => spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], { cwd: workspace, env, encoding: "utf8" });
+      const fired = () => (existsSync(canary) ? readFileSync(canary, "utf8").trim() : "none");
+      const report = join(temp, "mini-apps-review.json");
+      const review = steps.find(s => s.name === "Review")!.run!;
+      // fold 1's line, before review-b N-a: no tsconfig override, the tool by a bare relative path.
+      const fold1 = review.replace("--tsconfig-override=/dev/null ./tool/", "tool/");
+      expect(fold1).not.toBe(review);
+      expect(bash(steps.find(s => s.name === "Fetch the pull request head (data only)")!.run!).status).toBe(0);
+      // The tool present: the workflow's line runs the honest bot, and neither plant fires.
+      const r = bash(review);
+      expect([r.status, fired()]).toEqual([0, "none"]);
+      const honest = JSON.parse(readFileSync(report, "utf8")) as R.Report;
+      expect([honest.verdict, honest.lane, honest.head]).toEqual(["PASS", "sandbox", head]);
+      // Control: the fixture is live. fold 1's line in the same cwd runs the tsconfig plant.
+      bash(fold1);
+      expect(fired()).toBe("tsconfig");
+      rmSync(canary); rmSync(report);
+      // The tool absent (a base that predates the bot): the workflow's line fails closed, no report, neither plant fires.
+      rmSync(join(workspace, "tool", "scripts", "mini-apps-review.ts"));
+      const absent = bash(review);
+      expect([absent.status === 0, fired(), existsSync(report)]).toEqual([false, "none", false]);
+      // Control: fold 1's line, the tool absent, runs the package.json script instead.
+      bash(fold1);
+      expect(fired()).toBe("script");
     } finally { rmSync(g.dir, { recursive: true, force: true }); rmSync(work, { recursive: true, force: true }); }
   });
 });
