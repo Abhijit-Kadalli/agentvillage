@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reconcileMiniApps, REVIEWED_MINI_APPS } from "../install_miniapps";
+import { REVIEWED_MINI_APPS } from "../install_miniapps";
 import { reconcileZzzManagedJob, ZZZ_JOB_NAME, ZZZ_JOB_SCRIPT, ZZZ_JOB_TOOLSETS } from "../zzz_managed_job";
 
 const fake = join(import.meta.dir, "fake_hermes.ts");
@@ -38,8 +39,18 @@ test("installed ZZZ projection owns one Hermes agent job; revocation removes it"
   process.env.HERMES_BIN = bin;
   process.env.PYTHONPATH = join(home, "untrusted-imports");
   process.env.PYTHONHOME = join(home, "untrusted-home");
-  const projection = { version: 1, apps: [REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!] };
-  reconcileMiniApps(projection, home);
+  const zzzbot = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
+  const bridge = REVIEWED_MINI_APPS.find(app => app.id === "zzz_bridge")!;
+  const alone = { version: 1, apps: [zzzbot] };
+  const projection = { version: 1, apps: [zzzbot, bridge] };
+  const stage = (value: unknown) => spawnSync(process.execPath, ["--no-env-file", "--no-install", "install/install_miniapps.ts"],
+    { cwd: join(import.meta.dir, "../.."), input: JSON.stringify(value), env: { ...process.env, HERMES_HOME: home }, encoding: "utf8" });
+  expect(stage(alone).status).toBe(0);
+  expect(existsSync(join(home, "cron", "jobs.json"))).toBe(false);
+  expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
+  expect(existsSync(join(home, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
+  expect(existsSync(join(home, "zzzbot"))).toBe(false);
+  expect(stage(projection).status).toBe(0);
   reconcileZzzManagedJob(home, true);
   const jobs = () => JSON.parse(readFileSync(join(home, "cron", "jobs.json"), "utf8")).jobs;
   expect(jobs()).toHaveLength(1);
@@ -57,9 +68,13 @@ test("installed ZZZ projection owns one Hermes agent job; revocation removes it"
   reconcileZzzManagedJob(home, true);
   expect(jobs()[0].enabled_toolsets).toEqual([...ZZZ_JOB_TOOLSETS]);
   expect(jobs()[0].id).not.toBe(id);
-  reconcileMiniApps({ version: 1, apps: [] }, home);
-  reconcileZzzManagedJob(home, false);
+  mkdirSync(join(home, "zzzbot"));
+  writeFileSync(join(home, "zzzbot", "managed-pairs.json"), "{}");
+  writeFileSync(join(home, "zzzbot", "managed-pairs.lock"), "");
+  expect(stage(alone).status).toBe(0);
   expect(jobs()).toHaveLength(0);
   expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
   expect(existsSync(join(home, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
+  expect(existsSync(join(home, "zzzbot"))).toBe(false);
+  expect(existsSync(join(home, "skills", "zzzbot", "SKILL.md"))).toBe(true);
 });

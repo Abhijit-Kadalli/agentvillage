@@ -109,6 +109,11 @@ def installed(home: Path, app_id: str, operation: str) -> bool:
             elif name == "zzzbot":
                 if app != {"id": name, **ZZZBOT}:
                     return False
+            elif name == "zzz_bridge":
+                # CP's separate positive managed-pair authority; no interactive
+                # operation or skill is granted by this marker alone.
+                if app != {"id": "zzz_bridge", "version": "1.0.0", "operations": [], "skills": []}:
+                    return False
             elif name == "slopfolio":
                 if app != {"id": name, **SLOPFOLIO}:
                     return False

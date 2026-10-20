@@ -18,6 +18,7 @@ from pathlib import Path
 JOB_NAME = "Edge — zzz pairs"
 JOB_SCRIPT = "agentvillage_zzz_pairs.sh"
 JOB_TOOLSETS = ["village", "no_mcp"]
+BRIDGE_ENTRY = {"id": "zzz_bridge", "version": "1.0.0", "operations": [], "skills": []}
 STATE_LIMIT = 65536
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
 CRON_SESSION = re.compile(r"cron_([0-9a-f]{12})_[0-9]{8}_[0-9]{6}\Z")
@@ -38,6 +39,17 @@ def _plain_json(path: Path, limit: int):
         return json.load(stream)
 
 
+def bridge_projected(home: Path) -> bool:
+    """Current CP projection must carry the separate positive pair authority."""
+    try:
+        doc = _plain_json(home / "mini-apps.json", 16384)
+        return (isinstance(doc, dict) and set(doc) == {"version", "apps"}
+                and doc.get("version") == 1 and isinstance(doc.get("apps"), list)
+                and doc["apps"].count(BRIDGE_ENTRY) == 1)
+    except Exception:
+        return False
+
+
 def managed_context(home: Path, operation: str, session_id: object, task_id: object):
     """A Hermes-created cron root for our enabled job; IDs are handler kwargs, never model fields.
 
@@ -48,6 +60,11 @@ def managed_context(home: Path, operation: str, session_id: object, task_id: obj
     if operation not in CRON_OPS:
         return None
     try:
+        if not bridge_projected(home):
+            return None
+        from ._mini_apps import installed
+        if not installed(home, "zzzbot", "zzz.list_rooms"):
+            return None
         from gateway import session_context as sc
         from agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
@@ -220,7 +237,7 @@ def allow_managed_read(home: Path, transport, config, operation: str, target: st
 
 def poll(home: Path, transport, config, installed):
     """Return at most one ID-only wake. First encounter drains history as baseline."""
-    if not installed(home, "zzzbot", "zzz.list_rooms"):
+    if not bridge_projected(home) or not installed(home, "zzzbot", "zzz.list_rooms"):
         return None
     with locked_state(home) as state:
         now = datetime.now(timezone.utc).timestamp()

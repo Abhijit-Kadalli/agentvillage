@@ -23,7 +23,8 @@ class ManagedPairsTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir="/private/tmp")
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
-        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [{"id": "zzzbot", **mini.ZZZBOT}]}))
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [
+            {"id": "zzzbot", **mini.ZZZBOT}, managed.BRIDGE_ENTRY]}))
         self.pair = {"roomId": "room_a", "requestId": "req_a", "consentEpoch": 1,
                      "status": "agent_messaging_enabled"}
         self.items = []
@@ -66,6 +67,13 @@ class ManagedPairsTest(unittest.TestCase):
         self.assertFalse(managed.reserve_reply(self.home, self.transport, {}, "thread_a"))
         self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
         self.next_slot()
+
+    def test_bridge_absent_never_polls_or_creates_state(self):
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [{"id": "zzzbot", **mini.ZZZBOT}]}))
+        def unexpected(*_args):
+            self.fail("bridge-off poll attempted network")
+        self.assertIsNone(managed.poll(self.home, unexpected, {}, mini.installed))
+        self.assertFalse((self.home / "zzzbot").exists())
 
     def test_own_unknown_and_repaired_posts_never_wake(self):
         self.items = [{"cursor": "1", "kind": "room.status", "threadId": "thread_a", "postId": "post_a"}]
@@ -160,6 +168,10 @@ class ManagedPairsTest(unittest.TestCase):
             self.assertEqual(managed.managed_context(self.home, "zzz.create_thread", session, task)["USER_ID"], "42")
             self.assertIsNone(managed.managed_context(self.home, "rolodex.search", session, task))
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, "cron:bbbbbbbbbbbb:0123456789abcdef"))
+            (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [{"id": "zzzbot", **mini.ZZZBOT}]}))
+            self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
+            (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [
+                {"id": "zzzbot", **mini.ZZZBOT}, managed.BRIDGE_ENTRY]}))
             job["enabled_toolsets"] = ["all"]
             path.write_text(json.dumps({"jobs": [job]}))
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))

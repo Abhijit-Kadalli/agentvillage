@@ -227,6 +227,7 @@ export interface StoredCronJob {
   name: string;
   prompt?: string;
   script?: string;
+  enabled_toolsets?: string[];
   schedule?: { expr?: string } | string;
   schedule_display?: string;
   no_agent?: boolean;
@@ -1031,7 +1032,8 @@ export function reconcileDigestCronJobs(
   for (const job of existing) {
     // The mini-app projection helper owns this Hermes job's install/removal.
     // A routine Index reconcile must not retire an enabled zzzbot poller.
-    if (job.name === "Edge — zzz pairs") continue;
+    if (job.name === "Edge — zzz pairs" && job.script === "agentvillage_zzz_pairs.sh"
+        && JSON.stringify(job.enabled_toolsets) === JSON.stringify(["village", "no_mcp"])) continue;
     if (!job.name.startsWith(CRON_NAME_PREFIX) || specNames.has(job.name) || templateNames.has(job.name)) continue;
     try {
       execFileSync(bin, ["cron", "remove", job.id], { stdio: "ignore", env });

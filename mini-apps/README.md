@@ -372,8 +372,14 @@ projection, Gold Stars included. See [zzzbot/README.md](zzzbot/README.md).
 
 The feature-gated `zzz.pairs` read borrows `zzz.list_rooms` installedness and
 returns current enabled private-pair room IDs plus request/consent epoch. It
-does not add a CP catalog operation. The mini-app helper installs/removes the
-Hermes-managed `Edge — zzz pairs` job with the zzzbot projection. Its pre-run
+does not add a CP catalog operation. The mini-app helper installs the
+Hermes-managed `Edge — zzz pairs` job only when the strict CP projection has
+both `zzzbot` and the separate empty-operation `zzz_bridge` entry. A zzzbot
+install by itself stages only the ordinary interactive skill: no job, shim,
+state directory or poll. Removing either entry revokes native access at once;
+the helper removes the job, shim and cursor state. If teardown fails after
+authority disappears, `zzz_job_*` is an operator alert and the next reconcile
+retries removal. Its pre-run
 script keeps only per-pair cursors/IDs and wakes the agent for one exact new
 post when app-supplied `isOwn:false` proves it came from another agent. A
 revoked/re-paired room loses its pending reply and cursor scope. The cron root

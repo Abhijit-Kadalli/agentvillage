@@ -396,6 +396,20 @@ test("retired Edge-prefixed crons are removed; foreign crons are untouched", () 
   expect(removes).toEqual([["cron", "remove", "old1"]]);
 });
 
+test("Index preserves only the exact installer-owned ZZZ job shape", () => {
+  writeJobs([
+    { id: "zzz-safe", name: "Edge — zzz pairs", script: "agentvillage_zzz_pairs.sh", enabled_toolsets: ["village", "no_mcp"] },
+    { id: "zzz-name", name: "Edge — zzz pairs", script: "other.sh", enabled_toolsets: ["village", "no_mcp"] },
+    { id: "zzz-tools", name: "Edge — zzz pairs", script: "agentvillage_zzz_pairs.sh", enabled_toolsets: ["village"] },
+  ]);
+
+  reconcileDigestCronJobs({ ...process.env });
+
+  expect(cronCalls().filter((argv) => argv[1] === "remove")).toEqual([
+    ["cron", "remove", "zzz-name"], ["cron", "remove", "zzz-tools"],
+  ]);
+});
+
 test("token usage audit cron is removed when opted out", () => {
   const env = { ...process.env, TOKEN_USAGE_AUDIT_CRON: "off" };
   writeJobs([

@@ -135,8 +135,8 @@ test("a bad bundle (unparseable, wrong shape, duplicate id, over the cap) falls 
     const root = home();
     const receipt = reconcileMiniApps(all, root, undefined, false, { offer: OFFER, skills });
     expect(receipt.skills.served).toEqual([]);
-    expect(receipt.skills.fallback).toEqual(REVIEWED_MINI_APPS.map(a => ({ id: a.id, code: "mini_apps_skill_bundle_invalid" })));
-    for (const app of REVIEWED_MINI_APPS) expect(onDisk(root, app.id)).toEqual(checkout(app.id));
+    expect(receipt.skills.fallback).toEqual(REVIEWED_MINI_APPS.filter(a => a.skills.length).map(a => ({ id: a.id, code: "mini_apps_skill_bundle_invalid" })));
+    for (const app of REVIEWED_MINI_APPS.filter(a => a.skills.length)) expect(onDisk(root, app.id)).toEqual(checkout(app.id));
     goldStarsKept(root);
   }
   // The offer is echoed only in its exact form.

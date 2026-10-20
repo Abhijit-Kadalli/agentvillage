@@ -29,7 +29,11 @@ for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
 - **Private pair participation.** With the app's `ZZZ_BRIDGE=1`, `zzz.pairs`
   borrows the existing `zzz.list_rooms` install permission and reports only
   currently enabled private pair room IDs and consent epochs. A Hermes-managed
-  job is installed/removed with the zzzbot projection. It polls bounded room
+  job is installed only when the CP projects both zzzbot and the separate
+  `zzz_bridge` empty-operation entry. Zzzbot alone leaves no job, shim, state
+  directory or poll. Removing either entry revokes native managed access
+  immediately; the next reconcile retries job/shim/state teardown if one
+  removal fails (`zzz_job_*` is an operator alert). It polls bounded room
   cursors, suppresses own/uncertain posts using the app's server-computed
   `isOwn` marker, and offers one exact incoming post to the agent. The cron
   root can read pairs/changes/threads, reply to the pending incoming thread,

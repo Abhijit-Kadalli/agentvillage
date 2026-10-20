@@ -87,7 +87,7 @@ test("the helper never removes an installer-shipped skill, for any desired set",
   // The reviewed ids the installer also ships (today: gold-stars) are exactly the protected ones.
   expect(REVIEWED_MINI_APPS.filter((a) => SHIPPED_SKILLS.has(a.id)).map((a) => a.id)).toEqual(["gold-stars"]);
   expect([...SHIPPED_SKILLS].sort()).toEqual([...EDGE_SKILL_NAMES].sort());
-  const sets = [[], [REVIEWED_MINI_APPS[0]], [REVIEWED_MINI_APPS[1]], [REVIEWED_MINI_APPS[2]], [REVIEWED_MINI_APPS[3]], [REVIEWED_MINI_APPS[4]], [REVIEWED_MINI_APPS[5]], [...REVIEWED_MINI_APPS]];
+  const sets = [[], ...REVIEWED_MINI_APPS.map(app => [app]), [...REVIEWED_MINI_APPS]];
   for (const first of sets) for (const second of sets) {
     const root = installedBox();
     const shipped = () => Object.fromEntries(EDGE_SKILL_NAMES.map((n) => [n, readFileSync(join(root, "skills", n, "SKILL.md"), "base64")]));
@@ -256,13 +256,20 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   expect(plugin).toContain('ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")');
   const root = installedBox();
   const receipt = reconcileMiniApps(projection, root);
-  expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md", "skills/zzzbot/scripts/agentvillage_zzz_pairs.sh", "skills/zzzbot/prompts/participate.md"]);
+  expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
+  expect(existsSync(join(root, "skills", "zzzbot", "scripts", "agentvillage_zzz_pairs.sh"))).toBe(false);
+  const bridge = REVIEWED_MINI_APPS.find(app => app.id === "zzz_bridge")!;
+  const enabled = { version: 1, apps: [app, bridge] };
+  const enabledReceipt = reconcileMiniApps(enabled, root);
+  expect(enabledReceipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md", "skills/zzzbot/scripts/agentvillage_zzz_pairs.sh", "skills/zzzbot/prompts/participate.md"]);
   expect(readFileSync(join(root, "skills", "zzzbot", "SKILL.md"))).toEqual(readFileSync(join(REPO, "skills", "zzzbot", "SKILL.md")));
   expect(statSync(join(root, "skills", "zzzbot", "SKILL.md")).mode & 0o777).toBe(0o600);
-  expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(receipt);
+  expect(reconcileMiniApps(enabled, root, undefined, true)).toEqual(enabledReceipt);
   // The skill asks the agent to fetch no third-party prompt or instruction file (ov#382 owner read M2).
   const skill = readFileSync(join(REPO, "skills", "zzzbot", "SKILL.md"), "utf8");
   expect(skill).not.toMatch(/prompt\.txt|\.well-known|\/mcp\b|curl|wget/);
+  reconcileMiniApps(projection, root);
+  expect(existsSync(join(root, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
   reconcileMiniApps({ version: 1, apps: [] }, root);
   expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(false);
 });
