@@ -304,6 +304,23 @@ def test_every_recipe_is_one_script_run_and_none_names_the_key():
     assert "$EDGEOS_API_KEY" not in text
 
 
+def test_the_scripts_run_from_the_absolute_hermes_folder_and_no_curl_sentence_is_left():
+    """Replaces ov#436's pin (v2.1.9: curl from `~`, the bun scripts from the Hermes folder). With
+    no curl left, the curl-from-`~` sentence goes; every run names its absolute `HERMES_HOME`
+    workdir as AGENTS.md does (the approval gate refuses a `terminal` call without one), and a
+    script not found means the wrong folder, never "EdgeOS unreachable" (review-b N5)."""
+    text = SKILL.read_text(encoding="utf-8")
+    flat = re.sub(r"\s+", " ", text)
+    assert "workdir` set to your home directory (`~`)" not in text
+    assert "Run every `curl` command" not in text
+    assert ("Run every `bun skills/edgeos/scripts/…` command from your Hermes folder (the paths are relative to it): "
+            "call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) "
+            "and nothing else; the approval gate refuses a `terminal` call without that absolute `workdir`.") in flat
+    assert "(a `workdir` is fine)" not in text
+    assert ("If bun answers that the script or module was not found, the command ran from the wrong folder: run it "
+            "again with `workdir` set to your absolute `HERMES_HOME` directory; that is not EdgeOS being unreachable") in flat
+
+
 @pytest.mark.parametrize("base", [None, "https://api.edgeos.world/api/v1"])
 @pytest.mark.parametrize("heading,command", every_recipe())
 def test_each_verb_reads_as_the_curl_recipe_it_replaced(edgeos, monkeypatch, base, heading, command):
@@ -591,7 +608,8 @@ def test_section_9_runs_the_directory_script_and_no_curl():
     assert "EDGEOS_BEARER_TOKEN" not in body
     assert "/applications/my/directory" not in body
     # The terminal rule reads as §2's and §3's do.
-    assert "Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else." in body
+    assert ("Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) "
+            "and nothing else.") in body
 
 
 def test_section_9_maps_the_script_exit_codes_to_the_fail_soft_answers():
@@ -638,7 +656,8 @@ def test_section_8_runs_the_profile_script_reads_only_and_sends_edits_to_the_app
     assert PROFILE_SCRIPT.is_file()
     assert "curl -" not in body and "```bash" not in body
     assert "PATCH" not in SKILL.read_text(encoding="utf-8")
-    assert "Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else." in body
+    assert ("Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) "
+            "and nothing else.") in body
     flat = re.sub(r"\s+", " ", body)
     assert "**Edits are made in the Edge City portal app, never by you.** There is no write call" in flat
     # Refute O-N3: the owner's profile is read and shared in their private chat only.

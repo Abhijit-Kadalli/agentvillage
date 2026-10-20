@@ -54,8 +54,8 @@ Every command below is a script that reads the key from its own environment: no 
 - Times from the API are ISO-8601 in UTC (e.g. `2026-10-14T15:00:00Z`). **Before you show any event time, convert it to the village's local time and label it. Never read the UTC clock value out as the local time.** The village timezone is `$HERMES_TIMEZONE` (Edge City India: `Asia/Kolkata`, IST, UTC+5:30, no daylight saving): `15:00:00Z` is **8:30 PM IST**, not 3:00 PM. For "now" use the newest message stamp (`[Wed 2026-10-14 05:22:10 IST]`) or the schedule script's `Today is` line (§3), never the date in your system prompt: that is the day this chat began, which can be days ago. For the previous popup, Edge Esmeralda (Healdsburg), use `America/Los_Angeles`. Every time you display, every reminder you set, and every "is it soon?" judgment must be in local time. UUIDs are RFC-4122.
 - **"Today", "tomorrow", "this weekend" mean local dates.** For today, tomorrow and the weekend the schedule script does this for you (§3). Otherwise work out the local calendar day first, then convert its local midnight-to-midnight bounds to UTC for `--after` / `--before`. In IST, "today" on 2026-10-14 is `--after 2026-10-13T18:30:00Z --before 2026-10-14T18:30:00Z`. Don't use the UTC date: between midnight and 5:30 AM IST it is still yesterday in UTC.
 - Recurring events expand into virtual occurrences inside a date window, so every events list takes one (§3). When RSVPing to one instance of a recurring event, pass that occurrence's `start_time` as `--occurrence`.
-- **The EdgeOS script** (`bun skills/edgeos/scripts/edgeos.ts <verb> …`, §3, §6, §7) prints EdgeOS's JSON answer. **Exit 0** is that answer. **Exit 2** with "not set" means EdgeOS isn't connected to this agent (§0). **Exit 1** means EdgeOS was unreachable or answered an error; its line names the status and, when EdgeOS gave one, its short reason (`401` key refused · `403` not allowed for this key or popup · `404` not found or not visible · `409` conflict, e.g. already checked in · `422` invalid · `429` rate limited, retry later): say what that means in plain words, never the raw line. **Exit 3** is a usage error: fix the arguments.
-- Run every `bun skills/edgeos/scripts/…` command from your Hermes folder, the terminal's default working directory (the paths are relative to it; if you set a `workdir`, set it to that folder). Call `terminal` with exactly `command` and nothing else. Do not add `notify`, `heartbeat` or `background`: each call finishes in seconds and its output comes straight back. If the call returns an error about background commands, the request was not sent; make it once more without those arguments.
+- **The EdgeOS script** (`bun skills/edgeos/scripts/edgeos.ts <verb> …`, §3, §6, §7) prints EdgeOS's JSON answer. **Exit 0** is that answer. **Exit 2** with "not set" means EdgeOS isn't connected to this agent (§0). **Exit 1** with a line starting `edgeos: EdgeOS` means EdgeOS was unreachable or answered an error; that line names the status and, when EdgeOS gave one, its short reason (`401` key refused · `403` not allowed for this key or popup · `404` not found or not visible · `409` conflict, e.g. already checked in · `422` invalid · `429` rate limited, retry later): say what that means in plain words, never the raw line. **Exit 3** is a usage error: fix the arguments. If bun answers that the script or module was not found, the command ran from the wrong folder: run it again with `workdir` set to your absolute `HERMES_HOME` directory; that is not EdgeOS being unreachable, so never tell the person it is.
+- Run every `bun skills/edgeos/scripts/…` command from your Hermes folder (the paths are relative to it): call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else; the approval gate refuses a `terminal` call without that absolute `workdir`. Do not add `notify`, `heartbeat` or `background`: each call finishes in seconds and its output comes straight back. If the call returns an error about background commands, the request was not sent; make it once more without those arguments.
 
 ## 3. Reading events
 
@@ -68,7 +68,7 @@ bun skills/edgeos/scripts/events.ts --when 2026-10-20 --days 3 --search yoga
 bun skills/edgeos/scripts/events.ts --when today --days 7 --rsvped
 ```
 
-`--when` is `today`, `tomorrow`, `weekend` or a local date `YYYY-MM-DD`; `--days N` (up to 14) extends it (for `weekend`, N-1 more days after Sunday); each line carries the event's id and `start <ISO>`, which is the `--occurrence` to pass when RSVPing to one occurrence of a recurring event (§6); `--search WORDS` and `--rsvped` narrow it; `--json` prints the raw events instead. Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`: the script finishes in seconds and its output comes straight back. If the call returns an error about background commands, the script did not run; call it once more without those arguments. Exit 2 with "not set" means the schedule isn't connected to this agent (§0 above); exit 1 means EdgeOS was unreachable or refused, so say you can't reach the schedule right now. For anything the schedule script doesn't cover (a tag, venue or track filter, a single event, a longer window), use the EdgeOS script below.
+`--when` is `today`, `tomorrow`, `weekend` or a local date `YYYY-MM-DD`; `--days N` (up to 14) extends it (for `weekend`, N-1 more days after Sunday); each line carries the event's id and `start <ISO>`, which is the `--occurrence` to pass when RSVPing to one occurrence of a recurring event (§6); `--search WORDS` and `--rsvped` narrow it; `--json` prints the raw events instead. Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`: the script finishes in seconds and its output comes straight back. If the call returns an error about background commands, the script did not run; call it once more without those arguments. Exit 2 with "not set" means the schedule isn't connected to this agent (§0 above); exit 1 means EdgeOS was unreachable or refused, so say you can't reach the schedule right now. For anything the schedule script doesn't cover (a tag, venue or track filter, a single event, a longer window), use the EdgeOS script below.
 
 Each event line ends with `link <url>`, its portal page: when asked for an event's link, give that one exactly as printed and never build one; if a line has no `link`, send them to the Edge City portal's events page (`$AV_PORTAL_URL` when set).
 
@@ -80,7 +80,7 @@ Each event line ends with `link <url>`, its portal page: when asked for an event
 
 **Every events list is the current village's published events.** The script always sends the popup id (`$AV_POPUP_ID`) and `event_status=published`; your API key is bound to that popup, and `--popup <id>` naming any other popup answers `403` ("This API key does not have access to this popup"), so pass `--popup` only when the person asks about the previous popup. (Without a popup id, any token that is not bound to a popup ignores every filter except `search` and gets at most the 100 most recently created events across every popup it can see, which is why the script never leaves it out.)
 
-**Give every list a date window.** `--after` (required) and `--before` bound the event's start time, as literal ISO-8601 UTC instants (e.g. `2026-10-11T00:00:00Z`): compute them yourself, counting from the day in the newest message stamp, not via shell substitution. With a window, a recurring series comes back as one row per occurrence inside it; without `--before` the list runs to every future event, however far ahead. Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+**Give every list a date window.** `--after` (required) and `--before` bound the event's start time, as literal ISO-8601 UTC instants (e.g. `2026-10-11T00:00:00Z`): compute them yourself, counting from the day in the newest message stamp, not via shell substitution. With a window, a recurring series comes back as one row per occurrence inside it; without `--before` the list runs to every future event, however far ahead. Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **List upcoming events (next 30 days):**
 ```sh
@@ -93,7 +93,7 @@ bun skills/edgeos/scripts/edgeos.ts list --after {current_iso_timestamp} --befor
 bun skills/edgeos/scripts/edgeos.ts list --after {start_iso} --before {end_iso}
 ```
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **Search events by title:**
 ```sh
@@ -106,7 +106,7 @@ bun skills/edgeos/scripts/edgeos.ts list --after {start_iso} --before {end_iso} 
 ```
 `--tag` (repeat it for several) matches events carrying any of the given tags. The other filters are `--kind KIND`, `--venue <venue id>` (a venue's `id` from §7; repeat it for several) and `--track <track id>` (an event's `track_id`; repeat it for several).
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **Only events you've RSVPed to:**
 ```sh
@@ -118,7 +118,7 @@ bun skills/edgeos/scripts/edgeos.ts list --after {current_iso_timestamp} --rsvpe
 bun skills/edgeos/scripts/edgeos.ts event {event_id}
 ```
 
-For a recurring event, scope the RSVP lookup to one instance with `--occurrence {occurrence_iso}`. Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+For a recurring event, scope the RSVP lookup to one instance with `--occurrence {occurrence_iso}`. Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **No pagination:** the events list returns every matching event in one response. It takes no `skip` or `limit` (a `limit` you add is ignored), so don't loop over pages; narrow the call with `--after` / `--before`, `--search`, `--tag` and the other filters instead. Its `paging` is informational only: `paging.limit` is the number of results returned, and `paging.total` counts occurrences before visibility filtering, so it can be larger than `results.length`. Never fetch again because `total` looks bigger.
 
@@ -138,7 +138,7 @@ Agents cannot create, edit, cancel, or send invitations for village events, and 
 
 ## 6. RSVP (`rsvp:write`; ask first, every time, see §0)
 
-Each RSVP or cancel is one run of the EdgeOS script, only after the person said yes to that event (§0). It prints EdgeOS's participant record (its `status` is `registered`, or `cancelled` after a cancel); exit 1 means it did not happen, so say so plainly. Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Each RSVP or cancel is one run of the EdgeOS script, only after the person said yes to that event (§0). It prints EdgeOS's participant record (its `status` is `registered`, or `cancelled` after a cancel); exit 1 means it did not happen, so say so plainly. Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **RSVP to a one-off event:**
 ```sh
@@ -150,7 +150,7 @@ bun skills/edgeos/scripts/edgeos.ts rsvp {event_id}
 bun skills/edgeos/scripts/edgeos.ts rsvp {event_id} --occurrence {occurrence_iso}
 ```
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **Cancel a previous RSVP:**
 ```sh
@@ -163,7 +163,7 @@ For one occurrence of a recurring event, add `--occurrence {occurrence_iso}` (th
 bun skills/edgeos/scripts/edgeos.ts participants {event_id} --skip 0 --limit 100
 ```
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`: each run finishes in seconds. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`: each run finishes in seconds. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 This lists the participants of **one** event, the caller included if they RSVPed; it is not a list of the caller's own RSVPs. Each row carries a participation `status` (a cancelled RSVP stays in the list with its status). For a recurring event, always add `--occurrence {occurrence_iso}` (that occurrence's `start_time`, exactly). If you leave it out, the list holds only the RSVPs not tied to any occurrence (for an event with no host, it mixes the RSVPs of every occurrence instead); RSVPs are made per occurrence, so for a recurring event that list is usually empty or short, and it does **not** mean nobody is going. For the count alone, the single-event read with `--occurrence` returns `attendee_count` (§3). The event's host is not listed, and attendees who chose to hide their name on their application are left out entirely. It pages with `--skip` and `--limit` (default 100, at most 1000): run it again with a larger `--skip` only while `skip + results.length < paging.total`. To find the caller's own RSVPs, use the events list with `--rsvped` (§3).
 
@@ -174,7 +174,7 @@ This lists the participants of **one** event, the caller included if they RSVPed
 bun skills/edgeos/scripts/edgeos.ts venues --limit 100
 ```
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments. It pages with `--skip` and `--limit` as §6's participants list does.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat` or `background`. If the call returns an error about background commands, the script did not run; call it once more without those arguments. It pages with `--skip` and `--limit` as §6's participants list does.
 
 Creating, editing, or deleting venues needs `venues:write`, which agents don't have (§4).
 
@@ -187,7 +187,7 @@ bun skills/edgeos/scripts/profile.ts
 bun skills/edgeos/scripts/profile.ts --json
 ```
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`: the script finishes in seconds and its output comes straight back. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`: the script finishes in seconds and its output comes straight back. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 **Private chat only.** Read and share the person's profile only in your private chat with them (or in your own scheduled job delivering to that private chat); never in a group or shared chat, and never for anyone but the person whose agent you are.
 
@@ -207,7 +207,7 @@ bun skills/edgeos/scripts/directory.ts --search "priya@example.com" --json
 bun skills/edgeos/scripts/directory.ts --limit 100 --skip 100
 ```
 
-Call `terminal` with exactly `command` (a `workdir` is fine) and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`: the script finishes in seconds and its output comes straight back. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
+Call `terminal` with exactly `command` (plus `workdir` set to your absolute `HERMES_HOME` directory) and nothing else. Do not add `notify`, `heartbeat`, `background`, `watch_patterns`, `notify_on_complete` or `pty`: the script finishes in seconds and its output comes straight back. If the call returns an error about background commands, the script did not run; call it once more without those arguments.
 
 `--search` (1-120 characters) matches the first name, last name, full name, email and Telegram fields, and only where the attendee has shared them. It does not search `role` or `organization`; to find people by those, list the directory and filter the rows yourself. Leave `--search` out to list everyone. `--hide-empty` sends `hide_empty_rows=true`, which drops rows with no shared name, email, Telegram, role or organization. The script uses the current village (`$AV_POPUP_ID`); pass `--popup <id>` only when the person asks about the previous popup (the `edge-esmeralda` skill's id). Each line is one attendee, `hidden` where the attendee hid a field; `--json` prints the rows instead, as `{ results: Attendee[], paging: { offset, limit, total } }`.
 
