@@ -3,10 +3,11 @@
  * ruling CLAIMS L15681 (1), EDGEOS-BLOCK): scripts/approval-class-diff.sh and
  * the `class-diff` job in .github/workflows/test.yml.
  *
- * Always: the job runs the script against the base, approval.md's tool is
- * pinned by full sha, the script's pin reader reads APPROVAL_MD_PINNED as
- * this repo states it, and every allowlist entry has a reason and names a
- * recipe this tree ships.
+ * Always: the job runs the script against the PR's base or, on a push or a Tag
+ * release call, the previous release tag (fold 1 S-2); approval.md's tool is
+ * pinned by full sha; the script's pin reader reads APPROVAL_MD_PINNED as this
+ * repo states it; every allowlist entry has a reason, a scope, an acceptance
+ * field, and names a recipe this tree ships.
  *
  * With AV_APPROVAL_MD_TOOL_DIR (an approval.md checkout holding the B-167
  * scripts; the class-diff job sets it, and the npm registry must be
@@ -44,15 +45,27 @@ const TOOL = process.env.AV_APPROVAL_MD_TOOL_DIR;
 describe("the class-diff job and script (static)", () => {
   const wf = parse(readFileSync(join(REPO, ".github", "workflows", "test.yml"), "utf8"));
   const job = wf.jobs?.["class-diff"];
+  type Step = { id?: string; uses?: string; with?: Record<string, string | number>; run?: string; env?: Record<string, string> };
 
   test("test.yml carries the job, so Tag release runs it at the commit it tags", () => {
     expect(job).toBeDefined();
-    const steps: { uses?: string; with?: Record<string, string>; run?: string }[] = job.steps;
+    const steps: Step[] = job.steps;
     const tool = steps.find((s) => s.with?.repository === "approval-md/approval.md");
-    expect(tool?.with?.ref).toMatch(/^[0-9a-f]{40}$/);
-    expect(steps.some((s) => (s.run ?? "").includes("bash scripts/approval-class-diff.sh HEAD^1"))).toBe(true);
+    expect(String(tool?.with?.ref)).toMatch(/^[0-9a-f]{40}$/);
+    expect(steps.some((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'))).toBe(true);
     // No scope step: the gate runs on every event, docs-only pull requests included.
-    expect(steps.some((s) => (s as { id?: string }).id === "scope")).toBe(false);
+    expect(steps.some((s) => s.id === "scope")).toBe(false);
+  });
+
+  test("S-2: a push or a Tag release call measures against the previous release tag, a pull request against its base", () => {
+    const steps: Step[] = job.steps;
+    expect(steps[0]?.with?.["fetch-depth"]).toBe(0);
+    const base = steps.find((s) => s.id === "base");
+    expect(base?.run).toContain('if [ "$EVENT" = pull_request ]; then');
+    expect(base?.run).toContain("git rev-parse HEAD^1");
+    expect(base?.run).toContain("git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc*' HEAD^");
+    // No tag found is a failure, never a silent fall back to HEAD^1.
+    expect(base?.run).toContain("exit 1");
   });
 
   test("the script's pin reader reads APPROVAL_MD_PINNED exactly", () => {
@@ -65,11 +78,17 @@ describe("the class-diff job and script (static)", () => {
     expect(out.stdout.trim()).toBe(APPROVAL_MD_PINNED!);
   });
 
-  test("every allowlist entry has a reason and names a recipe this tree ships", () => {
-    const allowlist = JSON.parse(readFileSync(ALLOWLIST, "utf8")) as { entries: { file: string; command: string; reason: string }[] };
+  test("every allowlist entry has a reason, a scope and an acceptance field, and names a recipe or README this tree ships", () => {
+    const allowlist = JSON.parse(readFileSync(ALLOWLIST, "utf8")) as {
+      entries: { file: string; command: string; reason: string; scope?: string; accepted_by?: string; accepted_at?: string }[];
+    };
     for (const entry of allowlist.entries) {
-      expect(entry.reason.trim().length).toBeGreaterThan(0);
-      expect(flat(readFileSync(join(REPO, entry.file), "utf8"))).toContain(flat(entry.command));
+      expect(entry.reason.trim().length).toBeGreaterThan(12);
+      expect(["neutral", "box", "any"]).toContain(entry.scope ?? "any");
+      expect(typeof entry.accepted_by).toBe("string");
+      expect(typeof entry.accepted_at).toBe("string");
+      const text = readFileSync(join(REPO, entry.file), "utf8");
+      if (entry.command !== "*") expect(flat(text)).toContain(flat(entry.command));
     }
   });
 });
@@ -79,6 +98,7 @@ describe("the class-diff job and script (static)", () => {
 const TEMPLATE = readFileSync(join(REPO, "skills", "approval", "templates", "APPROVAL.md"), "utf8");
 const PRE_FIX = 'curl -s -H "Authorization: Bearer $EDGEOS_API_KEY" "${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events/{event_id}"';
 const FIXED = 'curl -s -H "Authorization: Bearer $EDGEOS_API_KEY" --url "${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events/{event_id}"';
+const OPAQUE = `${FIXED} | python3 -c "import json,sys; print(json.load(sys.stdin))"`;
 const STAY = "bun skills/edgeos/scripts/events.ts --when today";
 const NEW = "bun skills/edgeos/scripts/events.ts --when tomorrow";
 
@@ -101,26 +121,36 @@ function tree(dir: string, pin: string, recipes: string[]): void {
   put(dir, "scripts/tests/fetch-url-shape.test.ts", `export const APPROVAL_MD_PINNED = "${pin}";\n`);
   put(dir, "skills/approval/templates/APPROVAL.md", TEMPLATE);
   put(dir, "skills/edgeos/SKILL.md", `# EdgeOS\n\n\`\`\`bash\n${recipes.join("\n")}\n\`\`\`\n`);
+  put(dir, "skills/edgeos/scripts/events.ts", "console.log(1);\n");
   put(dir, "workspace/README.md", "# workspace\n");
   put(dir, "install/install_index.ts", "export const DIGEST_CRON_SPECS: { name: string; promptBody?: string }[] = [];\n");
   put(dir, "scripts/approval-class-diff/allowlist.json", '{ "entries": [] }\n');
 }
 
-function fixture(name: string, base: string[], head: string[]): { status: number | null; md: string } {
+/** A throwaway overlay repo: a base commit and a head commit, each with a pin and a recipe list. */
+function fixture(name: string, base: [string, string[]], head: [string, string[]]): { status: number | null; md: string; err: string } {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
   git(dir, "init", "-q");
-  tree(dir, "0.4.5", base);
+  tree(dir, base[0], base[1]);
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "base");
-  tree(dir, "0.4.6", head);
+  tree(dir, head[0], head[1]);
   git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", "head: move the pin");
+  git(dir, "commit", "-q", "-m", "head");
   const out = join(dir, "report");
   const run = spawnSync("bash", [SCRIPT, "HEAD^1"], {
     cwd: dir,
     encoding: "utf8",
-    env: { ...process.env, AV_APPROVAL_MD_TOOL_DIR: TOOL, AV_CLASS_DIFF_OUT: out, AV_CLASS_DIFF_CORES: cores },
+    env: {
+      ...process.env,
+      AV_APPROVAL_MD_TOOL_DIR: TOOL,
+      AV_CLASS_DIFF_OUT: out,
+      AV_CLASS_DIFF_CORES: cores,
+      // Sequential hook runs over the harness tools a recipe fixture can move.
+      AV_CLASS_DIFF_BOX_CONCURRENCY: "1",
+      AV_CLASS_DIFF_HARNESS_ONLY: "terminal,send_message",
+    },
   });
   let md = "";
   try {
@@ -128,50 +158,69 @@ function fixture(name: string, base: string[], head: string[]): { status: number
   } catch {
     md = `(no report) ${run.stderr}`;
   }
-  return { status: run.status, md };
+  return { status: run.status, md, err: run.stderr };
 }
 
-describe.skipIf(TOOL === undefined)("fixture overlays, core 0.4.5 -> 0.4.6, through the real script", () => {
+const LONG = 600_000;
+
+describe.skipIf(TOOL === undefined)("fixture overlays through the real script and the real hook in a box", () => {
   test(
-    "FLIP: the pre-#427 EdgeOS shape moves auto -> human-only and fails",
+    "FLIP: the pre-#427 EdgeOS shape, pin 0.4.5 -> 0.4.6, moves auto -> human-only at every workdir and fails",
     () => {
-      const run = fixture("flip", [STAY, PRE_FIX], [STAY, PRE_FIX]);
+      const run = fixture("flip", ["0.4.5", [STAY, PRE_FIX]], ["0.4.6", [STAY, PRE_FIX]]);
       expect(run.status).toBe(1);
-      expect(run.md).toMatch(/^CLASS-DIFF FAIL 2 BLOCKING: core 0\.4\.5 -> 0\.4\.6.*blocking by cwd: neutral 1, hermes-home 1\)/);
-      expect(run.md).toContain("network.call: auto | policy.core: human-only");
+      expect(run.md).toMatch(/^CLASS-DIFF FAIL 3 BLOCKING: core 0\.4\.5 .*blocking by column: hermes-home 1, home 1, workspace 1/);
     },
-    300_000,
+    LONG,
   );
 
   test(
-    "HOME: the --url shape with $EDGEOS_API_KEY in a header is denied from the Hermes home at 0.4.6, and fails",
+    "HOME: the --url shape with $EDGEOS_API_KEY, pin 0.4.5 -> 0.4.6, is denied from the Hermes home only, and fails",
     () => {
-      const run = fixture("home", [STAY, FIXED], [STAY, FIXED]);
+      const run = fixture("home", ["0.4.5", [STAY, FIXED]], ["0.4.6", [STAY, FIXED]]);
       expect(run.status).toBe(1);
-      expect(run.md).toMatch(/^CLASS-DIFF FAIL 1 BLOCKING: .*blocking by cwd: neutral 0, hermes-home 1\)/);
-      expect(run.md).toContain("network.call: auto | account.credential+network.call: human-only");
+      expect(run.md).toMatch(/^CLASS-DIFF FAIL 1 BLOCKING: .*blocking by column: hermes-home 1$/m);
     },
-    300_000,
+    LONG,
   );
 
   test(
-    "STAYS: a recipe with no $ word is unchanged in both directories and passes",
+    "STAYS: a recipe with no $ word, pin 0.4.5 -> 0.4.6, is unchanged everywhere and passes",
     () => {
-      const run = fixture("stays", [STAY], [STAY]);
+      const run = fixture("stays", ["0.4.5", [STAY]], ["0.4.6", [STAY]]);
       expect(run.status).toBe(0);
       expect(run.md).toMatch(/^CLASS-DIFF PASS: .*class-diff: none; 0 new, 0 removed/);
     },
-    300_000,
+    LONG,
   );
 
   test(
-    "NEW: a recipe only in the head is reported new and passes",
+    "NEW: a new recipe that runs is reported new and passes",
     () => {
-      const run = fixture("new", [STAY], [STAY, NEW]);
+      const run = fixture("new", ["0.4.6", [STAY]], ["0.4.6", [STAY, NEW]]);
       expect(run.status).toBe(0);
-      expect(run.md).toMatch(/^CLASS-DIFF PASS: .*; 1 new, 0 removed/);
-      expect(run.md).toContain("### New calls (reported, not gated): 1");
+      expect(run.md).toMatch(/^CLASS-DIFF PASS: .*; 4 new, 0 removed/);
     },
-    300_000,
+    LONG,
+  );
+
+  test(
+    "S-1 (ov#427 replayed): a recipe EDITED into a shape the hook denies from the Hermes home fails at an unchanged pin",
+    () => {
+      const run = fixture("ov427", ["0.4.6", [STAY, PRE_FIX]], ["0.4.6", [STAY, FIXED]]);
+      expect(run.status).toBe(1);
+      expect(run.err).toMatch(/denied by the real hook in the box layout/);
+    },
+    LONG,
+  );
+
+  test(
+    "S-1 (O2): a recipe edited into a refused (opaque) shape fails at an unchanged pin",
+    () => {
+      const run = fixture("o2", ["0.4.6", [STAY]], ["0.4.6", [STAY, OPAQUE]]);
+      expect(run.status).toBe(1);
+      expect(run.err).toMatch(/denied by the real hook in the box layout/);
+    },
+    LONG,
   );
 });

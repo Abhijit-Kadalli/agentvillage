@@ -18,12 +18,22 @@
 # a reason. The same run is approval.md's corpus check at the new pin: a recipe
 # (new or old) that resolves human-only there fails unless allowlisted.
 #
+# Every call runs through each core's REAL `approval hook hermes` in a box
+# layout (approval.md's scripts/overlay-recipes-box.mjs, B-167 fold 1): recipes
+# as terminal calls at $HERMES_HOME, $HOME and workspace, harness calls as Hermes
+# tool envelopes. Besides the diff, any shipped recipe the hook denies in the box
+# (human-only or refused) fails unless the allowlist lists it with Carter's
+# acceptance, so a recipe EDIT into a denied shape fails too (ov#427 replayed).
+#
 # Usage: scripts/approval-class-diff.sh <base ref>
 #   AV_APPROVAL_MD_TOOL_DIR  approval.md checkout holding the two scripts (required)
 #   AV_CLASS_DIFF_OUT        report directory (default ./class-diff)
 #   AV_CLASS_DIFF_HEAD_REF   classify this ref's tree instead of the working tree
 #   AV_CLASS_DIFF_OLD_PIN / AV_CLASS_DIFF_NEW_PIN   override a pin (replays, tests)
 #   AV_CLASS_DIFF_CORES      reuse npm core installs under this directory (tests)
+#   AV_CLASS_DIFF_ALLOWLIST  another allowlist (tests)
+#   AV_CLASS_DIFF_BOX_CONCURRENCY  hook runs at once per box (default 1; CI sets 4)
+#   AV_CLASS_DIFF_HARNESS_ONLY     tests only: limit the harness envelopes to these tools
 # Exit: 0 pass, 1 a blocking flip / held recipe / stale allowlist entry, 2 setup.
 set -euo pipefail
 
@@ -38,7 +48,7 @@ trap 'rm -rf "$work"' EXIT
 die() { echo "approval-class-diff: $*" >&2; exit 2; }
 pin_of() { sed -n 's/^export const APPROVAL_MD_PINNED = "\([0-9][0-9A-Za-z.+-]*\)";$/\1/p'; }
 
-for f in overlay-recipes-extract.mjs overlay-recipes-check.mjs; do
+for f in overlay-recipes-extract.mjs overlay-recipes-check.mjs overlay-recipes-box.mjs; do
   [ -f "$tool/scripts/$f" ] || die "no $tool/scripts/$f"
 done
 
@@ -80,11 +90,18 @@ bun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$head_tree" --sha "$h
 bun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$work/base" --sha "$base_sha" --out "$work/corpus-base.json" >&2
 
 mkdir -p "$out"
+# The boxes live outside /tmp on a runner: core treats /tmp as a scratch root,
+# and a box there would be judged more loosely than /home/hermes is.
+boxes="${RUNNER_TEMP:-$work}/class-diff-boxes"
+mkdir -p "$boxes"
 set +e
 node "$tool/scripts/overlay-recipes-check.mjs" \
   --corpus "$work/corpus-head.json" \
   --core "$cores/core-$new_pin/node_modules/approval-md" \
-  --allowlist "$repo/scripts/approval-class-diff/allowlist.json" \
+  --allowlist "${AV_CLASS_DIFF_ALLOWLIST:-$repo/scripts/approval-class-diff/allowlist.json}" \
+  --overlay-tree "$head_tree" --baseline-overlay-tree "$work/base" --box-root "$boxes" \
+  --box-concurrency "${AV_CLASS_DIFF_BOX_CONCURRENCY:-1}" \
+  ${AV_CLASS_DIFF_HARNESS_ONLY:+--harness-only "$AV_CLASS_DIFF_HARNESS_ONLY"} \
   --diff "$cores/core-$old_pin/node_modules/approval-md" \
   --baseline-corpus "$work/corpus-base.json" \
   --core-label "npm approval-md@$new_pin (this tree's pin)" \

@@ -1,12 +1,206 @@
 {
-  "about": "Overlay calls the approval.md CLASS-DIFF job (scripts/approval-class-diff.sh, .github/workflows/approval-class-diff.yml) lets resolve to a human-only class at the pinned core, or lets move from running to a deny when the pin moves. Read by approval.md's scripts/overlay-recipes-check.mjs: each entry is keyed by the recipe's file and its exact command text, carries the reason (Carter accepts a move by name), and may carry flip {from, to} to cover only that move. An entry no held recipe matches fails the job, so delete it when the recipe or the classifier moves.",
+  "about": "Shipped calls the approval.md CLASS-DIFF job (scripts/approval-class-diff.sh, the class-diff job in .github/workflows/test.yml) lets deny at the pinned core. Read by approval.md's scripts/overlay-recipes-check.mjs, same schema as its own allowlist: file, command (exact, or \"*\" for a whole operator README), scope (neutral/box/any), optional columns and flip, a reason that says why, and Carter's acceptance by name (accepted_by human:<id>, accepted_at YYYY-MM-DD). An entry without acceptance fails the job (awaiting acceptance); an entry nothing matches fails as stale. Mirrors approval.md's scripts/overlay-recipes/allowlist.json at the pin.",
   "entries": [
     {
       "file": "skills/agent-plaza/SKILL.md",
       "command": "python3 skills/agent-plaza/scripts/agent_plaza_selfie.py    --root \"$HERMES_HOME\"    --cooldown-hours 0",
       "class": "policy.core",
       "rule": "protected-path",
-      "reason": "OPEN, owner or Carter decides (EDGEOS-BLOCK sweep; approval-md#663 owner item 1; brief F3). Since core 0.4.6 (APRV-511, protected-path) the operator selfie recipe that names the Hermes home with --root classes policy.core, human-only under the template, so an agent following it is denied. Mirrors approval.md's own allowlist entry (scripts/overlay-recipes/allowlist.json). Delete it in the PR that changes the recipe or the rule: a stale entry fails this job."
+      "reason": "OPEN, owner or Carter decides (EDGEOS-BLOCK sweep, agentvillage #427 report). The operator selfie recipe names the Hermes home with --root and has classed policy.core since 0.4.6 (APRV-511, protected-path). Dropping --root would class exec.local but dodges a protected-path rule for a script that reads $HERMES_HOME/.env, so neither the overlay nor core was changed. Listed so the check gates every other recipe; remove it once the recipe or the rule is decided.",
+      "scope": "any",
+      "accepted_by": "",
+      "accepted_at": ""
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events?popup_id={popup_id}&event_status=published&start_after={current_iso_timestamp}&start_before={end_iso}\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events?popup_id={popup_id}&event_status=published&start_after={start_iso}&start_before={end_iso}\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events?popup_id={popup_id}&event_status=published&search=KEYWORD&start_after={start_iso}\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events?popup_id={popup_id}&event_status=published&tags=AI&tags=Privacy&start_after={start_iso}&start_before={end_iso}\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events?popup_id={popup_id}&event_status=published&rsvped_only=true&start_after={current_iso_timestamp}\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events/{event_id}\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -X POST -H \"Authorization: Bearer $EDGEOS_API_KEY\"    -H \"Content-Type: application/json\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/event-participants/portal/register/{event_id}\"    -d '{}'",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -X POST -H \"Authorization: Bearer $EDGEOS_API_KEY\"    -H \"Content-Type: application/json\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/event-participants/portal/register/{event_id}\"    -d '{\"occurrence_start\":\"{occurrence_iso}\"}'",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -X POST -H \"Authorization: Bearer $EDGEOS_API_KEY\"    -H \"Content-Type: application/json\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/event-participants/portal/cancel-registration/{event_id}\"    -d '{}'",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/event-participants/portal/participants?event_id={event_id}&skip=0&limit=100\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/edgeos/SKILL.md",
+      "command": "curl -s -H \"Authorization: Bearer $EDGEOS_API_KEY\"    --url \"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/event-venues/portal/venues?popup_id={popup_id}&limit=100\"",
+      "class": "account.credential",
+      "rule": "credential-path-resolved",
+      "scope": "box",
+      "reason": "B-162, ov#437 pending. Core 0.4.6's credential pass (APRV-522) adds account.credential to this curl's $EDGEOS_API_KEY header word when the terminal starts in the Hermes home, a human-only deny under the template (the second EdgeOS cause). Listed so the box check gates everything else until the overlay fix (ov#437) or the core fix lands; delete it then (a stale entry fails).",
+      "accepted_by": "",
+      "accepted_at": "",
+      "columns": [
+        "hermes-home"
+      ]
+    },
+    {
+      "file": "skills/README.md",
+      "command": "*",
+      "scope": "box",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "accepted_by": "",
+      "accepted_at": ""
+    },
+    {
+      "file": "skills/recall/README.md",
+      "command": "*",
+      "scope": "box",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "accepted_by": "",
+      "accepted_at": ""
+    },
+    {
+      "file": "skills/edge-india/README.md",
+      "command": "*",
+      "scope": "box",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "accepted_by": "",
+      "accepted_at": ""
+    },
+    {
+      "file": "skills/edge-esmeralda/README.md",
+      "command": "*",
+      "scope": "box",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "accepted_by": "",
+      "accepted_at": ""
+    },
+    {
+      "file": "skills/edge-india/SKILL.md",
+      "command": "bun skills/edge-india/scripts/refs.ts search <topic words>",
+      "scope": "box",
+      "reason": "Placeholder form (<topic words>, <path>): the agent runs a filled form, so the hook refuses the line as written (hook-unparseable) at every core since before 0.4.5.",
+      "accepted_by": "",
+      "accepted_at": ""
+    },
+    {
+      "file": "skills/edge-india/SKILL.md",
+      "command": "bun skills/edge-india/scripts/refs.ts read <path> --section <heading words>",
+      "scope": "box",
+      "reason": "Placeholder form (<topic words>, <path>): the agent runs a filled form, so the hook refuses the line as written (hook-unparseable) at every core since before 0.4.5.",
+      "accepted_by": "",
+      "accepted_at": ""
     }
   ]
 }
