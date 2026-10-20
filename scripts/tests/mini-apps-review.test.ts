@@ -607,6 +607,27 @@ describe("approval classes", () => {
     const r = pr(m => { m.operations.splice(2, 1); m.operations.push({ name: "tinyshop.order.place", class: "write" }); m.version = "2.0.0"; });
     expect([has(r, "needs_card_replaced", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
   });
+  test("review-b S (the two-PR split): removing a needs-card op is S needs_card_removed, the human read in every lane, never a PASS; each PR alone is NEEDS_HUMAN", () => {
+    const dropCard = (m: any) => { m.operations = m.operations.filter((op: any) => op.class !== "needs-card"); m.version = "1.1.0"; };
+    const quick = (m: any) => { m.operations.push({ name: "tinyshop.order.quick", class: "write", target: { tool: "place_order" } }); m.version = "2.0.0"; };
+    for (const visibility of ["sandbox", "admins", "everyone"]) {
+      // PR1 removes the card op and adds nothing: S needs_card_removed, NEEDS_HUMAN, sandbox and admins included.
+      const pr1 = pr(dropCard, { base: tooledManifest(visibility) });
+      expect([visibility, has(pr1, "needs_card_removed", "S"), pr1.verdict, noM(pr1)]).toEqual([visibility, true, "NEEDS_HUMAN", []]);
+      expect(R.HUMAN_CODES.has("needs_card_removed")).toBe(true);
+      // PR2, opened from the same base, adds a write on the card op's target: core.
+      const pr2 = pr(quick, { base: tooledManifest(visibility) });
+      expect([visibility, has(pr2, "needs_card_downgrade", "S"), pr2.lane, pr2.verdict, noM(pr2)]).toEqual([visibility, true, "core", "NEEDS_HUMAN", []]);
+      // PR2 still core once PR1 has merged: the base tip has no card op, but PR2's merge base does.
+      const after1 = tooledManifest(visibility); dropCard(after1);
+      const late = pr(quick, { base: tooledManifest(visibility), tip: { [MP]: json(after1) } });
+      expect([visibility, has(late, "needs_card_downgrade", "S"), late.lane, late.verdict]).toEqual([visibility, true, "core", "NEEDS_HUMAN"]);
+    }
+    // The removal is named per op; an unchanged card op is not a removal, nor is a renamed op's old name kept.
+    expect(has(pr(m => { m.description = "Other."; patch(m); }, { base: tooledManifest() }), "needs_card_removed")).toBe(false);
+    const renamed = pr(m => { m.operations[2].name = "tinyshop.order.place"; m.version = "2.0.0"; }, { base: tooledManifest() });
+    expect([has(renamed, "needs_card_removed", "S"), renamed.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+  });
   test("review-b N-d: a needs-card op main gained after the fork, plus a write alias on its target in the pull request: NEEDS_HUMAN, core", () => {
     const atTip = tooledManifest(); atTip.version = "1.1.0";
     atTip.operations.push({ name: "tinyshop.express.prepare", class: "prepare", target: { tool: "express_quote" } },

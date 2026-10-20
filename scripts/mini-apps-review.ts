@@ -84,7 +84,7 @@ export const LANE_CEILING: Readonly<Record<string, string>> = Object.freeze({ sa
 export const HUMAN_CODES = Object.freeze(new Set(["core_path", "baseline_skill", "new_app", "visibility_lowered_from_everyone", "auth_mode_review",
   "empty_diff", "multiple_apps", "gate_changed", "manifest_deleted", "no_manifest",
   "path_status_unknown", "path_mode_unusual", "binary_unscanned", "base_manifest_missing", "base_manifest_unexpected", "base_unparseable",
-  "base_invalid", "catalog_unreadable", "catalog_unlisted", "check_not_run", "needs_card_downgrade",
+  "base_invalid", "catalog_unreadable", "catalog_unlisted", "check_not_run", "needs_card_downgrade", "needs_card_removed",
   "needs_card_replaced", "needs_card_review", "oauth_review", "context_ceiling_above_private", "events_review",
   "events_entering_everyone", "visibility_raise_multi_step", "visibility_raise_with_major", "author_not_owner"]));
 /**
@@ -786,9 +786,12 @@ export function evaluate(src: Source, validator: Validator): Report {
       downgraded = true;
       add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${op.name} (${op.class}) calls ${t}, which a needs-card op calls (at the merge base, the base tip or head): a card-less alias is a downgrade, core` });
     }
-    const removedCard = [...bo.values()].some(op => op.class === "needs-card" && !ho.has(op.name));
+    // A needs-card op at the merge base with no op of that name at head is removed: the human read in every lane,
+    // never a PASS (review-b S, the two-pull-request split: PR1 removes the card, PR2 adds a write on its target).
+    const removed = [...bo.values()].filter(op => op.class === "needs-card" && !ho.has(op.name));
+    for (const op of removed) add({ code: "needs_card_removed", severity: "S", file: manifestPath!, text: `${op.name} (needs-card) is removed: dropping a card is the human read in every lane (a later op on its target would carry no card)` });
     const newPlain = [...ho.values()].some(op => !bo.has(op.name) && op.class !== "needs-card");
-    if (bm && removedCard && newPlain) add({ code: "needs_card_replaced", severity: "S", file: manifestPath!, text: "a needs-card op was removed and a new op without a card was added: the human read decides whether it is a renamed downgrade" });
+    if (bm && removed.length && newPlain) add({ code: "needs_card_replaced", severity: "S", file: manifestPath!, text: "a needs-card op was removed and a new op without a card was added: the human read decides whether it is a renamed downgrade" });
     if (downgraded) lane = "core";
   }
 
