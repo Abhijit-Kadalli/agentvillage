@@ -17,6 +17,7 @@ from pathlib import Path
 
 JOB_NAME = "Edge — zzz pairs"
 JOB_SCRIPT = "agentvillage_zzz_pairs.sh"
+JOB_TOOLSETS = ["village", "no_mcp"]
 STATE_LIMIT = 65536
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
 CRON_SESSION = re.compile(r"cron_([0-9a-f]{12})_[0-9]{8}_[0-9]{6}\Z")
@@ -62,7 +63,8 @@ def managed_context(home: Path, operation: str, session_id: object, task_id: obj
             return None
         good = [job for job in jobs["jobs"] if isinstance(job, dict) and job.get("id") == match[1]
                 and job.get("name") == JOB_NAME and job.get("script") == JOB_SCRIPT
-                and job.get("enabled") is True and job.get("no_agent") is not True]
+                and job.get("enabled") is True and job.get("no_agent") is not True
+                and job.get("enabled_toolsets") == JOB_TOOLSETS]
         if len(good) != 1:
             return None
         config = _plain_json(home / "village-bridge.json", 2048)
@@ -267,6 +269,9 @@ def poll(home: Path, transport, config, installed):
                 saw_item = saw_item or bool(items)
                 if first and not items and not response.get("nextCursor") and not state.get("pending"):
                     entry["bootstrapAttempted"] = True
+                    # The empty first page is a complete baseline. A peer post
+                    # arriving after our introduction must be examined normally.
+                    entry["baseline"] = False
                     event = {"kind": "bootstrap", "roomId": room, **identity, "at": now}
                     break
                 for change in items:

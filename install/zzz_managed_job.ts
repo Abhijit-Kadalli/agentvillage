@@ -1,18 +1,74 @@
 /** Installer-owned Hermes job for enabled zzzbot projections. No resident-created cron. */
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
 import { hermesAvailable } from "./install_index";
 
 export const ZZZ_JOB_NAME = "Edge — zzz pairs";
 export const ZZZ_JOB_SCRIPT = "agentvillage_zzz_pairs.sh";
 export const ZZZ_JOB_SCHEDULE = "*/10 * * * *";
+export const ZZZ_JOB_TOOLSETS = ["village", "no_mcp"] as const;
 const PROMPT = "skills/zzzbot/prompts/participate.md";
 const SCRIPT = "skills/zzzbot/scripts/agentvillage_zzz_pairs.sh";
 
-type Job = { id?: unknown; name?: unknown; script?: unknown; enabled?: unknown };
+type Job = { id?: unknown; name?: unknown; script?: unknown; enabled?: unknown; enabled_toolsets?: unknown; no_agent?: unknown };
 const ID = /^[0-9a-f]{12}$/;
+
+// Hermes v2026.9.24's CLI cannot set enabled_toolsets. Its cron.jobs API is
+// the same locked job store used by the cronjob tool. Create paused with the
+// exact allowlist, then resume; a failure leaves the job disabled.
+const JOB_API = String.raw`
+import json, sys
+from cron.jobs import create_job, get_job, pause_job, resume_job, remove_job, update_job
+r = json.load(sys.stdin)
+if r['action'] == 'remove':
+    old = get_job(r['id'])
+    if not old or old.get('name') != r['name']:
+        raise RuntimeError('zzz_job_mismatch')
+    pause_job(r['id'])
+    if not remove_job(r['id']):
+        raise RuntimeError('zzz_job_remove_failed')
+else:
+    if r.get('id'):
+        old = get_job(r['id'])
+        if not old or old.get('name') != r['name']:
+            raise RuntimeError('zzz_job_mismatch')
+        pause_job(r['id'])
+        job = update_job(r['id'], {'prompt': r['prompt'], 'script': r['script'],
+            'enabled_toolsets': r['toolsets'], 'no_agent': False,
+            'failure_deliver': 'local', 'workdir': r['home']})
+    else:
+        job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
+            script=r['script'], enabled_toolsets=r['toolsets'], workdir=r['home'],
+            failure_deliver='local', paused=True, paused_reason='Configuring ZZZ tool scope')
+    if not job or job.get('enabled_toolsets') != r['toolsets'] or job.get('enabled'):
+        raise RuntimeError('zzz_job_scope_failed')
+    resumed = resume_job(job['id'])
+    if not resumed or resumed.get('enabled_toolsets') != r['toolsets'] or resumed.get('enabled') is not True:
+        pause_job(job['id'])
+        raise RuntimeError('zzz_job_resume_failed')
+`;
+
+function jobPython(bin: string): string {
+  if (!isAbsolute(bin)) throw new Error("zzz_hermes_bin_unbound");
+  const resolved = realpathSync(bin);
+  const beside = join(dirname(resolved), "python");
+  if (existsSync(beside)) return beside;
+  // pipx/uv entrypoints can live outside their venv; their absolute shebang
+  // still selects the same interpreter. Never search PATH for another Python.
+  const shebang = readFileSync(resolved, "utf8").split("\n", 1)[0];
+  const match = /^#!(\/\S*\/python(?:[0-9.]*)?)$/.exec(shebang);
+  if (match && existsSync(match[1])) return match[1];
+  throw new Error("zzz_hermes_python_missing");
+}
+
+function jobApi(python: string, home: string, request: Record<string, unknown>): void {
+  execFileSync(python, ["-c", JOB_API], {
+    env: { ...hermesExecEnv(), HERMES_HOME: home }, input: JSON.stringify(request),
+    stdio: ["pipe", "ignore", "ignore"], timeout: 30_000,
+  });
+}
 
 function plainFile(path: string): boolean {
   try {
@@ -52,9 +108,10 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
   const env = hermesExecEnv();
   if (!installed) {
     if (current.length && !hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
+    const python = current.length ? jobPython(bin) : null;
     for (const job of current) {
       if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_job_invalid");
-      execFileSync(bin, ["cron", "remove", job.id], { env, stdio: "ignore", timeout: 30_000 });
+      jobApi(python!, home, { action: "remove", id: job.id, name: ZZZ_JOB_NAME });
     }
     const shim = join(scriptsDir(home), ZZZ_JOB_SCRIPT);
     if (plainFile(shim)) unlinkSync(shim);
@@ -62,6 +119,7 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
   }
   if (!hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
   if (current.length > 1) throw new Error("zzz_job_duplicate");
+  const python = jobPython(bin);
   const prompt = readFileSync(join(home, PROMPT), "utf8").trimEnd();
   const script = readFileSync(join(home, SCRIPT));
   const shim = join(scriptsDir(home), ZZZ_JOB_SCRIPT);
@@ -70,19 +128,13 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
   mkdirSync(scriptsDir(home), { recursive: true });
   writeFileSync(shim, script, { mode: 0o700 });
   chmodSync(shim, 0o700);
-  if (current.length) {
-    const job = current[0];
-    if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_job_invalid");
-    // This exact managed shape is reasserted on a stage; schedule stays with the job.
-    execFileSync(bin, ["cron", "edit", job.id, "--prompt", prompt, "--script", ZZZ_JOB_SCRIPT,
-      "--agent", "--failure-deliver", "local"], { env, stdio: "ignore", timeout: 30_000 });
-    if (job.enabled !== true) execFileSync(bin, ["cron", "resume", job.id], { env, stdio: "ignore", timeout: 30_000 });
-  } else {
-    execFileSync(bin, ["cron", "create", ZZZ_JOB_SCHEDULE, prompt, "--name", ZZZ_JOB_NAME,
-      "--script", ZZZ_JOB_SCRIPT, "--failure-deliver", "local", "--workdir", home],
-      { env, stdio: "ignore", timeout: 30_000 });
-  }
+  const id = current[0]?.id;
+  if (id !== undefined && (typeof id !== "string" || !ID.test(id))) throw new Error("zzz_job_invalid");
+  jobApi(python, home, { action: "install", ...(id ? { id } : {}), name: ZZZ_JOB_NAME,
+    prompt, script: ZZZ_JOB_SCRIPT, schedule: ZZZ_JOB_SCHEDULE,
+    toolsets: [...ZZZ_JOB_TOOLSETS], home });
   const after = jobs(home).filter(job => job.name === ZZZ_JOB_NAME);
-  if (after.length !== 1 || after[0].script !== ZZZ_JOB_SCRIPT || after[0].enabled !== true)
+  if (after.length !== 1 || after[0].script !== ZZZ_JOB_SCRIPT || after[0].enabled !== true
+      || after[0].no_agent === true || JSON.stringify(after[0].enabled_toolsets) !== JSON.stringify(ZZZ_JOB_TOOLSETS))
     throw new Error("zzz_job_not_confirmed");
 }
