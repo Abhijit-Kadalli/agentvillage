@@ -77,7 +77,12 @@ Use Dizko as the starting bundle for another **public read-only** service:
    the resolved IP at connect time. A `target.path` has no empty (`//`) or
    dot (`.`, `..`) segment. An `app-token` `secretRef` must be
    `MINI_APP_<ID>_<NAME>` (`-` as `_`, no `_` in NAME); nesting deeper than 64
-   is refused; a relay app must have only `read` ops; and each file must be
+   is refused; a relay app must have only `read` ops; `service.kind: "none"`
+   (no service: a context-only app whose page writes the resident's own
+   context namespace, served as `mini-app.read` plus its `data.context`) is a
+   first-party grant pinned in the validator, to Mosaic alone, with no
+   `baseUrl`, no `auth`, `operations: []` and a `data.context` block, while
+   every other kind has at least one op; and each file must be
    canonical JSON (`JSON.stringify(value, null, 2)` plus a newline, so no
    duplicate keys).
    Exclude profile/account/private-data/purchase/write tools. A service calling
