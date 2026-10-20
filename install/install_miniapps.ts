@@ -24,6 +24,9 @@ export const REVIEWED_MINI_APPS = [
   // P-6 ZZZ-MINIAPP: restricted zzz.bot, five named operations (plugins/village-bridge/_mini_apps.py ZZZBOT, exact).
   { id: "zzzbot", version: "1.0.0", operations: ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"], skills: ["zzzbot"] },
   { id: "slopfolio", version: "1.0.0", operations: ["slopfolio.prepare", "slopfolio.status"], skills: ["slopfolio"] },
+  // MOSAIC (app#486, rides v2.1.9): restricted in the CP catalog (MINI_APPS_TENANT_ALLOWLIST key `mosaic`).
+  // Dizko's shape: the public read first, then its own context namespace read and write, served per box.
+  { id: "mosaic", version: "1.0.0", operations: ["mini-app.read", "mini-app.context.read", "mini-app.context.write"], skills: ["mosaic"] },
 ] as const;
 /**
  * Earlier gold-stars entries, still staged byte for byte so this overlay can roll out BEFORE the CP
@@ -31,12 +34,15 @@ export const REVIEWED_MINI_APPS = [
  * eight-op entry (ov#350, _mini_apps.py GOLD_STARS_RESTORED; the CP's current entry, rolodex.person
  * refused under it) and the six-op entry before the restore (ov#343, GOLD_STARS_PREVIOUS; no meeting,
  * Skylight or person operation), and dizko's public read alone (NEW-03: the CP's entry until it
- * projects the context operations). Remove each after the CP catalog serves a newer list everywhere.
+ * projects the context operations), and mosaic's the same way. Remove each after the CP catalog serves a newer
+ * list everywhere.
  */
 export const PREVIOUS_REVIEWED_MINI_APPS = [
   { id: "gold-stars", version: "1.1.0", operations: ["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel", "rolodex.meeting", "skylight.status"], skills: ["gold-stars"] },
   { id: "gold-stars", version: "1.1.0", operations: ["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel"], skills: ["gold-stars"] },
   { id: "dizko", version: "1.0.0", operations: ["mini-app.read"], skills: ["dizko"] },
+  // MOSAIC: its read alone, the CP's entry for a box that does not take the context entry (as dizko's).
+  { id: "mosaic", version: "1.0.0", operations: ["mini-app.read"], skills: ["mosaic"] },
 ] as const;
 type ReviewedApp = typeof REVIEWED_MINI_APPS[number] | typeof PREVIOUS_REVIEWED_MINI_APPS[number];
 /**
