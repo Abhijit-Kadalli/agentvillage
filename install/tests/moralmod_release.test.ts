@@ -53,7 +53,7 @@ test("old hook, wrong runtime/plugin and additional release files fail before in
 describe("OV-249 post-hoc M2: the release must be the one pinned in MORALMOD_RELEASE_SHA256", () => {
   test("the prepared pin is the continuation-recovery candidate's release.json digest", () => {
     expect(MORALMOD_RELEASE_SHA256).toMatch(/^[0-9a-f]{64}$/);
-    expect(MORALMOD_RELEASE_SHA256).toBe("3971a47ec48581df63353d2afc635d23adac026e371fbe7a8f011b0e7e9011d6");
+    expect(MORALMOD_RELEASE_SHA256).toBe("8c8b44e578b6347f7e6dcc877c15a52773005079256bbdd2b584453385dca077");
   });
 
   test("a self-consistent bundle (every file matches its own release.json) is refused under the shipped pin; nothing is written", () => {
