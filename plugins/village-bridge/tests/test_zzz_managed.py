@@ -167,6 +167,14 @@ class ManagedPairsTest(unittest.TestCase):
             job["enabled"] = False
             path.write_text(json.dumps({"jobs": [job]}))
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
+            # Replacing a previously broad job leaves an in-flight agent with
+            # its old cron ID, which must remain refused after the new job runs.
+            job["id"] = "bbbbbbbbbbbb"
+            job["enabled"] = True
+            path.write_text(json.dumps({"jobs": [job]}))
+            self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
+            self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply",
+                "cron_bbbbbbbbbbbb_20261020_120000", "cron:bbbbbbbbbbbb:0123456789abcdef"))
 
 
 if __name__ == "__main__":

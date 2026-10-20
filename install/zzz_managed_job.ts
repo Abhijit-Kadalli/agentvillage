@@ -35,9 +35,20 @@ else:
         if not old or old.get('name') != r['name']:
             raise RuntimeError('zzz_job_mismatch')
         pause_job(r['id'])
-        job = update_job(r['id'], {'prompt': r['prompt'], 'script': r['script'],
-            'enabled_toolsets': r['toolsets'], 'no_agent': False,
-            'failure_deliver': 'local', 'workdir': r['home']})
+        safe = (old.get('script') == r['script'] and old.get('no_agent') is not True
+            and old.get('enabled_toolsets') == r['toolsets'])
+        if safe:
+            job = update_job(r['id'], {'prompt': r['prompt'], 'script': r['script'],
+                'enabled_toolsets': r['toolsets'], 'no_agent': False,
+                'failure_deliver': 'local', 'workdir': r['home']})
+        else:
+            # A running agent retains its tool snapshot. Removal invalidates
+            # that old cron ID at the native gate before the new job resumes.
+            if not remove_job(r['id']):
+                raise RuntimeError('zzz_unsafe_job_remove_failed')
+            job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
+                script=r['script'], enabled_toolsets=r['toolsets'], workdir=r['home'],
+                failure_deliver='local', paused=True, paused_reason='Configuring ZZZ tool scope')
     else:
         job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
             script=r['script'], enabled_toolsets=r['toolsets'], workdir=r['home'],
@@ -53,19 +64,32 @@ else:
 function jobPython(bin: string): string {
   if (!isAbsolute(bin)) throw new Error("zzz_hermes_bin_unbound");
   const resolved = realpathSync(bin);
-  const beside = join(dirname(resolved), "python");
-  if (existsSync(beside)) return beside;
+  const source = readFileSync(resolved, "utf8");
+  // install.sh's public launcher is a bash wrapper, even when an unrelated
+  // python happens to sit beside it. Bind to the interpreter in its one exec.
+  if (source.startsWith("#!/usr/bin/env bash\n")) {
+    const wrapper = /^#!\/usr\/bin\/env bash\nunset PYTHONPATH\nunset PYTHONHOME\nexec "(\/[^"\n]+\/python(?:[0-9.]*)?)" "(\/[^"\n]+)" "\$@"\n?$/.exec(source);
+    if (!wrapper || !/(?:\/hermes|\/hermes_cli\/main\.py)$/.test(wrapper[2])
+        || !existsSync(wrapper[1]) || !existsSync(wrapper[2]))
+      throw new Error("zzz_hermes_wrapper_unbound");
+    return wrapper[1];
+  }
   // pipx/uv entrypoints can live outside their venv; their absolute shebang
   // still selects the same interpreter. Never search PATH for another Python.
-  const shebang = readFileSync(resolved, "utf8").split("\n", 1)[0];
+  const shebang = source.split("\n", 1)[0];
   const match = /^#!(\/\S*\/python(?:[0-9.]*)?)$/.exec(shebang);
   if (match && existsSync(match[1])) return match[1];
+  const beside = join(dirname(resolved), "python");
+  if (/(?:^|\/)\.?venv\/bin\/[^/]+$/.test(resolved) && existsSync(beside)) return beside;
   throw new Error("zzz_hermes_python_missing");
 }
 
 function jobApi(python: string, home: string, request: Record<string, unknown>): void {
+  const env = { ...hermesExecEnv(), HERMES_HOME: home };
+  delete env.PYTHONPATH;
+  delete env.PYTHONHOME;
   execFileSync(python, ["-c", JOB_API], {
-    env: { ...hermesExecEnv(), HERMES_HOME: home }, input: JSON.stringify(request),
+    env, input: JSON.stringify(request),
     stdio: ["pipe", "ignore", "ignore"], timeout: 30_000,
   });
 }
