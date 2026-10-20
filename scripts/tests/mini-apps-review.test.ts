@@ -353,6 +353,84 @@ describe("version bump class", () => {
   });
 });
 
+describe("(e) the bump's $ref gate: P0-5's annotationOnlyEdit, copied, so the bot and the suite agree", () => {
+  const obj = (props: any, extra: any = {}) => ({ type: "object", properties: props, ...extra });
+  const o = (extra: any) => ({ type: "object", ...extra });
+  // P0-5's own cases (ov#422 5aacadf4, scripts/tests/mini-apps-conformance.test.ts, "S1 (review-b)"): 12 major, 3 patch.
+  const P05: [string, any, any, R.Level][] = [
+    ["review-b probe 1: $ref into examples[0], its maxLength dropped", obj({ q: { $ref: "#/examples/0" } }, { examples: [{ type: "string", maxLength: 3 }] }), obj({ q: { $ref: "#/examples/0" } }, { examples: [{ type: "string" }] }), "major"],
+    ["review-b probe 2: $ref into $defs/x/description, its maxLength dropped", obj({ q: { $ref: "#/$defs/x/description" } }, { $defs: { x: { type: "string", description: { type: "string", maxLength: 3 } } } }), obj({ q: { $ref: "#/$defs/x/description" } }, { $defs: { x: { type: "string", description: { type: "string" } } } }), "major"],
+    ["#/$defs/x, but no such def (in either)", obj({ q: { $ref: "#/$defs/x" } }), obj({ q: { $ref: "#/$defs/x", description: "q" } }), "major"],
+    ["#/$defs/x with an $id", obj({ q: { $ref: "#/$defs/x" } }, { $id: "https://acme.example/s", $defs: { x: { type: "string" } } }), obj({ q: { $ref: "#/$defs/x", description: "q" } }, { $id: "https://acme.example/s", $defs: { x: { type: "string" } } }), "major"],
+    ["#/title/x (an annotation, the length of #/$defs/)", obj({ q: { $ref: "#/title/x" } }, { title: { x: { type: "string", maxLength: 3 } }, $defs: { x: { type: "string" } } }), obj({ q: { $ref: "#/title/x" } }, { title: { x: { type: "string" } }, $defs: { x: { type: "string" } } }), "major"],
+    ["#/definitions/x (not #/$defs/<name>)", obj({ q: { $ref: "#/definitions/x" } }, { definitions: { x: { type: "string" } } }), obj({ q: { $ref: "#/definitions/x", description: "q" } }, { definitions: { x: { type: "string" } } }), "major"],
+    ["a nested pointer #/$defs/x/items", obj({ q: { $ref: "#/$defs/x/items" } }, { $defs: { x: { type: "array", items: { type: "string" } } } }), obj({ q: { $ref: "#/$defs/x/items", description: "q" } }, { $defs: { x: { type: "array", items: { type: "string" } } } }), "major"],
+    ["a remote $ref", obj({ q: { $ref: "https://acme.example/q.json" } }), obj({ q: { $ref: "https://acme.example/q.json", title: "Q" } }), "major"],
+    ["$dynamicRef to an anchor", obj({ q: { $dynamicRef: "#meta" } }), obj({ q: { $dynamicRef: "#meta", title: "Q" } }), "major"],
+    ["$recursiveRef", obj({ q: { $recursiveRef: "#" } }), obj({ q: { $recursiveRef: "#", title: "Q" } }), "major"],
+    ["a $ref only in the head, inside examples", obj({ q: { type: "string" } }), obj({ q: { type: "string" } }, { examples: [{ $ref: "#/$defs/x" }] }), "major"],
+    ["#/$defs/x, the def's maxLength dropped", obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string", maxLength: 3 } } }), obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string" } } }), "major"],
+    ["the def's description", obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string" } } }), obj({ q: { $ref: "#/$defs/x" } }, { $defs: { x: { type: "string", description: "the query" } } }), "patch"],
+    ["the property's title beside the $ref", obj({ q: { $ref: "#/$defs/x" }, r: { $ref: "#/$defs/y-2" } }, { $defs: { x: { type: "string" }, "y-2": { type: "number" } } }), obj({ q: { $ref: "#/$defs/x", title: "Q" }, r: { $ref: "#/$defs/y-2" } }, { $defs: { x: { type: "string" }, "y-2": { type: "number", $comment: "c" } } }), "patch"],
+    ["$dynamicRef #/$defs/x", obj({ q: { $dynamicRef: "#/$defs/x" } }, { $defs: { x: { type: "string" } } }), obj({ q: { $dynamicRef: "#/$defs/x" } }, { $defs: { x: { type: "string", examples: ["latte"] } } }), "patch"],
+  ];
+  // review-b's 26 probes (ov#422 delta read, fold 2), with the level P0-5's requiredBump gives each at 5aacadf4
+  // (20 major, 5 patch, 1 none: A8b's two inputs are the same). The bot before this fold said patch for 19 of them.
+  const REVIEW_B: [string, any, any, R.Level][] = [
+  ["P1 $ref #/examples/0", o({ properties: { q: { $ref: "#/examples/0" } }, examples: [{ type: "string", maxLength: 3 }] }), o({ properties: { q: { $ref: "#/examples/0" } }, examples: [{ type: "string" }] }), "major"],
+  ["P2 $ref #/$defs/x/description", o({ properties: { q: { $ref: "#/$defs/x/description" } }, $defs: { x: { description: { type: "string", maxLength: 3 } } } }), o({ properties: { q: { $ref: "#/$defs/x/description" } }, $defs: { x: { description: { type: "string" } } } }), "major"],
+  ["A1 #/$defs/x -> nested $ref #/examples/0", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { $ref: "#/examples/0" } }, examples: [{ type: "string", maxLength: 3 }] }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { $ref: "#/examples/0" } }, examples: [{ type: "string" }] }), "major"],
+  ["A1b #/$defs/x -> allOf[$ref #/$defs/x/title]", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { allOf: [{ $ref: "#/$defs/y/title" }] }, y: { title: { maxLength: 3 } } } }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { allOf: [{ $ref: "#/$defs/y/title" }] }, y: { title: {} } } }), "major"],
+  ["A2 $defs/x $anchor changed", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { $anchor: "a", type: "string", maxLength: 3 } } }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { $anchor: "b", type: "string", maxLength: 3 } } }), "major"],
+  ["A3 $ref #anchor into examples", o({ properties: { q: { $ref: "#lim" } }, examples: [{ $anchor: "lim", type: "string", maxLength: 3 }] }), o({ properties: { q: { $ref: "#lim" } }, examples: [{ $anchor: "lim", type: "string" }] }), "major"],
+  ["A3b $ref #anchor into $defs (title edit)", o({ properties: { q: { $ref: "#lim" } }, $defs: { x: { $anchor: "lim", type: "string", maxLength: 3, title: "a" } } }), o({ properties: { q: { $ref: "#lim" } }, $defs: { x: { $anchor: "lim", type: "string", maxLength: 3, title: "b" } } }), "major"],
+  ["A4 $dynamicRef #/$defs/x/description", o({ properties: { q: { $dynamicRef: "#/$defs/x/description" } }, $defs: { x: { description: { maxLength: 3 } } } }), o({ properties: { q: { $dynamicRef: "#/$defs/x/description" } }, $defs: { x: { description: {} } } }), "major"],
+  ["A4b $dynamicRef #meta (anchor in examples)", o({ $dynamicAnchor: "meta", properties: { q: { $dynamicRef: "#meta" } }, examples: [{ maxLength: 3 }] }), o({ $dynamicAnchor: "meta", properties: { q: { $dynamicRef: "#meta" } }, examples: [{}] }), "major"],
+  ["A4c $dynamicRef #/$defs/x (ok, desc edit)", o({ properties: { q: { $dynamicRef: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3, description: "a" } } }), o({ properties: { q: { $dynamicRef: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3, description: "b" } } }), "patch"],
+  ["A4d $recursiveRef #", o({ properties: { q: { $recursiveRef: "#" } }, examples: [1] }), o({ properties: { q: { $recursiveRef: "#" } }, examples: [2] }), "major"],
+  ["A5 ~1 escape #/$defs/a~1b", o({ properties: { q: { $ref: "#/$defs/a~1b" } }, $defs: { "a/b": { type: "string", maxLength: 3 } }, title: "a" }), o({ properties: { q: { $ref: "#/$defs/a~1b" } }, $defs: { "a/b": { type: "string", maxLength: 3 } }, title: "b" }), "major"],
+  ["A5b %24defs pointer to examples", o({ properties: { q: { $ref: "#/%24defs/x/examples/0" } }, $defs: { x: { examples: [{ maxLength: 3 }] } } }), o({ properties: { q: { $ref: "#/%24defs/x/examples/0" } }, $defs: { x: { examples: [{}] } } }), "major"],
+  ["A5c %2F in name", o({ properties: { q: { $ref: "#/$defs/x%2Fdescription" } }, $defs: { x: { description: { maxLength: 3 } } } }), o({ properties: { q: { $ref: "#/$defs/x%2Fdescription" } }, $defs: { x: { description: {} } } }), "major"],
+  ["A5d ~0 in name", o({ properties: { q: { $ref: "#/$defs/a~0b" } }, $defs: { "a~b": { maxLength: 3 } }, title: "a" }), o({ properties: { q: { $ref: "#/$defs/a~0b" } }, $defs: { "a~b": { maxLength: 3 } }, title: "b" }), "major"],
+  ["A6 ref in allOf/if/then/not -> examples", o({ allOf: [{ if: { $ref: "#/examples/0" }, then: { not: { $ref: "#/examples/1" } } }], examples: [{ properties: { q: { const: "abcdef" } }, required: ["q"] }, { properties: { q: { type: "string" } } }] }), o({ allOf: [{ if: { $ref: "#/examples/0" }, then: { not: { $ref: "#/examples/1" } } }], examples: [{ properties: { q: { const: "abcdef" } }, required: ["q"] }, { properties: { q: { type: "number" } } }] }), "major"],
+  ["A7 $id deep inside, ref #/$defs/x", o({ properties: { q: { $id: "https://e.x/q", $ref: "#/$defs/x", $defs: { x: { title: { maxLength: 3 } } } } }, $defs: { x: { type: "string" } } }), o({ properties: { q: { $id: "https://e.x/q", $ref: "#/$defs/x", $defs: { x: { title: {} } } } }, $defs: { x: { type: "string" } } }), "major"],
+  ["A7b $id only in examples (ref ok)", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3 } }, examples: [{ $id: "a" }] }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3 } }, examples: [{ $id: "b" }] }), "major"],
+  ["A8 #/definitions/x/description", o({ properties: { q: { $ref: "#/definitions/x/description" } }, definitions: { x: { description: { maxLength: 3 } } } }), o({ properties: { q: { $ref: "#/definitions/x/description" } }, definitions: { x: { description: {} } } }), "major"],
+  ["A8b #/$defs/x but def only in definitions", o({ properties: { q: { $ref: "#/$defs/x" } }, definitions: { x: { maxLength: 3 } }, $defs: {} }), o({ properties: { q: { $ref: "#/$defs/x" } }, definitions: { x: { maxLength: 3 } }, $defs: {} }), "none"],
+  ["A9 unevaluatedProperties + ref to def (desc edit)", o({ $ref: "#/$defs/x", unevaluatedProperties: false, $defs: { x: { properties: { q: { type: "string", description: "a" } } } } }), o({ $ref: "#/$defs/x", unevaluatedProperties: false, $defs: { x: { properties: { q: { type: "string", description: "b" } } } } }), "patch"],
+  ["A9b unevaluatedProperties: ref into examples", o({ properties: { q: {} }, allOf: [{ $ref: "#/examples/0" }], unevaluatedProperties: false, examples: [{}] }), o({ properties: { q: {} }, allOf: [{ $ref: "#/examples/0" }], unevaluatedProperties: false, examples: [{ properties: { z: true } }] }), "major"],
+  ["A10 __proto__ def name", o({ properties: { q: { $ref: "#/$defs/__proto__" } }, $defs: JSON.parse('{"__proto__":{"type":"string","maxLength":3}}'), title: "a" }), o({ properties: { q: { $ref: "#/$defs/__proto__" } }, $defs: JSON.parse('{"__proto__":{"type":"string","maxLength":3}}'), title: "b" }), "patch"],
+  ["A11 legit #/$defs/x desc edit (expect patch)", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3, description: "a" } } }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3, description: "b" } } }), "patch"],
+  ["A12 ref trailing newline", o({ properties: { q: { $ref: "#/$defs/x\n" } }, $defs: { x: { maxLength: 3 } }, title: "a" }), o({ properties: { q: { $ref: "#/$defs/x\n" } }, $defs: { x: { maxLength: 3 } }, title: "b" }), "major"],
+  ["A13 relative ref 'x' with $defs", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3 } }, $comment: "a" }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3 } }, $comment: "b" }), "patch"],
+  ];
+  // Each input is op 0's; base and head carry the same version, so the level is the input rule's alone.
+  const level = (from: any, to: any) => {
+    const a = manifest(), b = manifest();
+    a.operations[0].input = from; b.operations[0].input = to;
+    return R.requiredBump(a, b, V.operationBudgets).level;
+  };
+  test("the case lists are whole: P0-5's 15 and review-b's 26", () => {
+    expect([P05.length, REVIEW_B.length, REVIEW_B.filter(c => c[3] === "major").length, REVIEW_B.filter(c => c[3] === "patch").length]).toEqual([15, 26, 20, 5]);
+  });
+  for (const [why, from, to, want] of [...P05, ...REVIEW_B]) test(`${why}: ${want}`, () => expect(level(from, to)).toBe(want));
+  test("in a review the bump stays a note (BUMP_SEVERITY N): a $ref annotation edit at patch is version_bump_too_small, N", () => {
+    const [, from, to] = P05[0];
+    const base = manifest(); base.operations[0].input = from;
+    const r = pr(m => { m.operations[0].input = to; patch(m); }, { base });
+    expect([has(r, "version_bump_too_small", "N"), noM(r)]).toEqual([true, []]);
+    expect(r.findings.find(f => f.code === "version_bump_too_small")?.text).toContain("needs major");
+  });
+  test.skipIf(!existsSync(join(REPO, R.CONFORMANCE_PATH)))("with P0-5's suite in the tree: its requiredBump and the bot's give the same level on all 41 cases (the merged tree)", async () => {
+    const p05 = await import(join(REPO, R.CONFORMANCE_PATH));
+    for (const [why, from, to] of [...P05, ...REVIEW_B]) {
+      const a = manifest(), b = manifest();
+      a.operations[0].input = from; b.operations[0].input = to;
+      expect([why, R.requiredBump(a, b, V.operationBudgets).level]).toEqual([why, p05.requiredBump(a, b, V.operationBudgets).level]);
+    }
+  });
+});
+
 describe("secrets", () => {
   const T = {
     openai: "sk" + "-proj-" + "Ab12Cd34Ef56Gh78Ij90Kl12",

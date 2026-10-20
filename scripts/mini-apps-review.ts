@@ -401,7 +401,8 @@ export function requiredBump(base: any, head: any, budgets: Validator["operation
     if (b.class !== op.class) need("major", `${name} class ${b.class} -> ${op.class}`);
     if (canon(b.target) !== canon(op.target)) need("major", `${name} target changed`);
     if (canon(b.input) !== canon(op.input)) {
-      const same = canon(withoutAnnotations(b.input)) === canon(withoutAnnotations(op.input));
+      // P0-5's $ref gate (annotationOnlyEdit): an annotation edit is a patch only when no $ref could point into one.
+      const same = annotationOnlyEdit(b.input, op.input);
       need(same ? "patch" : "major", `${name} input schema ${same ? "annotations (description, title, examples) changed" : "changed"}`);
     }
     const bb = budgets(b), hb = budgets(op);
@@ -476,6 +477,43 @@ export function withoutAnnotations(schema: unknown, depth = 0): unknown {
     else out[k] = v;
   }
   return out;
+}
+/**
+ * Copied from P0-5's scripts/mini-apps-conformance.ts (ov#422 5aacadf4, fold 2: review-b S1 on ov#422), so
+ * the bot and the suite class an input edit alike (the test pins the two to the same cases). A reference can
+ * point INTO an annotation (`{$ref: "#/examples/0"}`, `#/$defs/x/description`), and then an "annotation" edit
+ * changes what is enforced. So the annotation-only patch holds only when neither input has a reference, or
+ * when every reference (any depth, any position) is exactly `#/$defs/<name>` to a def at the input's root
+ * that both inputs hold and that is unchanged beyond annotations, and neither input has an `$id` (which
+ * moves what `#` names). Anything else is major.
+ */
+const REF_KEYS = new Set(["$ref", "$dynamicRef", "$recursiveRef"]);
+const LOCAL_DEF_REF = /^#\/\$defs\/[A-Za-z0-9_-]+$/;
+const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+function refsOf(value: unknown, out: { refs: unknown[]; ids: boolean } = { refs: [], ids: false }) {
+  if (Array.isArray(value)) for (const item of value) refsOf(item, out);
+  else if (isObject(value)) {
+    for (const [key, v] of Object.entries(value)) {
+      if (REF_KEYS.has(key)) out.refs.push(v);
+      if (key === "$id") out.ids = true;
+      refsOf(v, out);
+    }
+  }
+  return out;
+}
+export function annotationOnlyEdit(from: unknown, to: unknown): boolean {
+  const same = (a: unknown, b: unknown) => canon(a) === canon(b);
+  if (!same(withoutAnnotations(from), withoutAnnotations(to))) return false;
+  const a = refsOf(from), b = refsOf(to);
+  if (!a.refs.length && !b.refs.length) return true;
+  if (a.ids || b.ids) return false;
+  const defs = (schema: unknown) => isObject(schema) && isObject(schema.$defs) ? schema.$defs : null;
+  const x = defs(from), y = defs(to);
+  return [...a.refs, ...b.refs].every(ref => {
+    if (typeof ref !== "string" || !LOCAL_DEF_REF.test(ref)) return false;
+    const name = ref.slice("#/$defs/".length);
+    return !!x && !!y && own(x, name) && own(y, name) && same(withoutAnnotations(x[name]), withoutAnnotations(y[name]));
+  });
 }
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 /** The bump `from -> to` is (by the numeric triple), "down" for a decrease, or null if either is not semver. */
