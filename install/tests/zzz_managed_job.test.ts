@@ -225,6 +225,25 @@ test("S1 teardown is idempotent (nonav L17033): a second failed run on a clean b
   expectOff(home, jobs);
 });
 
+test("S1 review follow-up: after a failed stage the pair may stay in mini-apps.json, but only a fresh good stage reinstalls", () => {
+  const { home, stage, jobs } = fakeBox();
+  expect(stage(projection).status).toBe(0);
+  seedState(home);
+  expect(stage("not json").status).toBe(1);
+  expectOff(home, jobs);
+  // Teardown never touches the projection file (Gold Stars and the other apps keep their authority).
+  expect(JSON.parse(readFileSync(join(home, "mini-apps.json"), "utf8"))).toEqual(projection);
+  // Nothing short of a good stage carrying the pair puts the job back: --verify of the pair, failed stages,
+  // zzzbot alone, the bridge alone.
+  for (const [input, args, status] of [[projection, ["--verify"], 1], ["not json", [], 1], [alone, [], 0],
+    [{ version: 1, apps: [bridge] }, [], 0], [{ version: 1, apps: [zzzbot, { ...bridge, id: "zzz_bridge" }] }, [], 1]] as [unknown, string[], number][]) {
+    expect(stage(input, args).status).toBe(status);
+    expectOff(home, jobs);
+  }
+  expect(stage(projection).status).toBe(0);
+  expect(jobs()).toHaveLength(1);
+});
+
 const PLUGIN = join(import.meta.dir, "..", "..", "plugins", "village-bridge");
 /** The plugin's participation_on(home), through its package (python3 -I, the probe outside the plugin folder). */
 function pluginParticipation(home: string): string {

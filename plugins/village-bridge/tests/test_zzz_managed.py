@@ -319,6 +319,26 @@ class ManagedPairsTest(unittest.TestCase):
                     self.assertIsNone(managed.managed_context(self.home, op, session, task), label + " " + op)
                 self.assert_off(label)
 
+    def test_s1_pair_still_projected_but_job_gone_is_off(self):
+        # Review follow-up: a failed stage tears the job, shim, files and state down but leaves mini-apps.json (it
+        # also holds Gold Stars and every other app), so the pair can still be projected there. Every managed path
+        # needs the installer's exact job record (managed_context), and the poll runs only from that job, so with
+        # the job gone nothing managed runs whatever mini-apps.json says.
+        session = "cron_abcdef123456_20261020_120000"
+        task = "cron:abcdef123456:0123456789abcdef"
+        (self.home / "village-bridge.json").write_text(json.dumps({"ownerTelegramId": "42"}))
+        jobs = self.home / "cron" / "jobs.json"
+        other = {"id": "aaaaaaaaaaaa", "name": "Morning digest", "script": "digest.sh", "enabled": True}
+        with patch.dict(sys.modules, self.cron_modules()):
+            for label, doc in {"no jobs.json": None, "no jobs": {"jobs": []}, "other jobs only": {"jobs": [other]}}.items():
+                if doc is None:
+                    jobs.unlink(missing_ok=True)
+                else:
+                    jobs.parent.mkdir(exist_ok=True)
+                    jobs.write_text(json.dumps(doc))
+                for op in managed.CRON_OPS:
+                    self.assertIsNone(managed.managed_context(self.home, op, session, task), label + " " + op)
+
     def test_s1_refused_projected_id_never_turns_participation_on(self):
         # nonav L17033 (d), the regression class: an entry the strict reader refuses, beside a complete
         # zzzbot + zzz-bridge pair, must never leave participation ON.
