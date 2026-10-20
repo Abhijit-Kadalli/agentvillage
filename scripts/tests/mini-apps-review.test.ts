@@ -893,6 +893,40 @@ describe("git and the CLI", () => {
       rmSync(out); rmSync(md);
     } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
+  test("review-b N-e (mutant k12) and N-d, real git: main moves the manifest after the fork; the bump is judged against the MERGE base, and the base tip's card op still counts", () => {
+    const g = gitRepo();
+    try {
+      const fork = g.commit(baseFiles(tooledManifest()), "base");
+      g.run("checkout", "-q", "-b", "pr");
+      // The pull request: a write on express_order, at 2.0.0.
+      const h = tooledManifest(); h.version = "2.0.0";
+      h.operations.push({ name: "tinyshop.express.quick", class: "write", target: { tool: "express_order" } });
+      const head = g.commit({ [MP]: json(h) }, "pr: a write on express_order");
+      // main, after the fork: a needs-card op on express_order, at 1.1.0.
+      g.run("checkout", "-q", "main");
+      const t = tooledManifest(); t.version = "1.1.0";
+      t.operations.push({ name: "tinyshop.express.prepare", class: "prepare", target: { tool: "express_quote" } },
+        { name: "tinyshop.express.confirm", class: "needs-card", target: { tool: "express_order" }, maxRequestBytes: 65536, timeoutMs: 60000, approval: { prepare: "tinyshop.express.prepare" } });
+      const tip = g.commit({ [MP]: json(t) }, "main: an express card op");
+      const bumpText = (r: R.Report) => r.findings.find(f => f.code.startsWith("version"))?.text ?? "";
+      // As CI calls it (--base = the base sha, the tip): the diff and the bump are from the merge base (1.0.0),
+      // never the tip (1.1.0), and main's own ops are not "removed" by this pull request (k12: mergeBase = base).
+      const ci = R.review({ repo: g.dir, base: tip, head });
+      expect([bumpText(ci).startsWith("version 1.0.0 -> 2.0.0"), has(ci, "needs_card_removed"), has(ci, "version_not_monotonic")]).toEqual([true, false, false]);
+      expect(ci.findings.filter(f => f.code === "core_path")).toEqual([]);
+      // N-d: the tip's card op makes the pull request's write an alias: core.
+      expect([has(ci, "needs_card_downgrade", "S"), ci.lane, ci.verdict]).toEqual([true, "core", "NEEDS_HUMAN"]);
+      // The same through --base-tip, with --base at the fork: the tip is read as data.
+      const viaTip = cli(["--base", fork, "--head", head, "--base-tip", "main", "--repo", g.dir]);
+      expect([viaTip.code, viaTip.report.verdict, viaTip.report.lane, has(viaTip.report, "needs_card_downgrade", "S")]).toEqual([0, "NEEDS_HUMAN", "core", true]);
+      // Control: judged at the fork with no tip, the write is a plain new op (admins PASS): the tip is what catches it.
+      const forkOnly = R.review({ repo: g.dir, base: fork, head });
+      expect([forkOnly.verdict, forkOnly.lane, has(forkOnly, "needs_card_downgrade")]).toEqual(["PASS", "admins", false]);
+      // A tip that does not resolve is a bot error (exit 2), never "no tip".
+      const bad = cli(["--base", fork, "--head", head, "--base-tip", "no-such-branch-xyz", "--repo", g.dir]);
+      expect([bad.code, bad.report.verdict, bad.report.findings[0].text]).toEqual([2, "FAIL", expect.stringMatching(/^git_failed: git rev-parse/)]);
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
   test("real git: added-line numbers, the symlink mode, a core path", () => {
     const g = gitRepo();
     try {
