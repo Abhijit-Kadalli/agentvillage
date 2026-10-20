@@ -108,7 +108,7 @@ test("non-cohort box: an empty projection on a box with no mini-app state writes
   const root = installedBox();
   const before = snapshot(root);
   const receipt = reconcileMiniApps(empty, root);
-  expect(receipt).toEqual({ version: 1, projectionSha256: createHash("sha256").update(JSON.stringify(empty)).digest("hex"), files: [], apps: [], staged: true });
+  expect(receipt).toEqual({ version: 1, projectionSha256: createHash("sha256").update(JSON.stringify(empty)).digest("hex"), files: [], apps: [], staged: true, skills: { offer: null, served: [], fallback: [] } });
   expect(reconcileMiniApps(empty, root, undefined, true)).toEqual(receipt);
   expect(snapshot(root)).toEqual(before);
   // The exact command the control plane runs (stdin JSON, `bun install/install_miniapps.ts`), with and without --verify.
