@@ -219,6 +219,19 @@ URL_FLAG = '--url "${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/'
 POSITIONAL = '"${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/'
 
 
+def test_the_recipes_say_to_run_from_the_home_directory_not_the_hermes_folder():
+    # EDGEOS-BLOCK, second cause (20 Oct): the installer sets terminal.cwd = $HERMES_HOME
+    # (install/config.ts), and core 0.4.6 holds a curl that reads `$EDGEOS_API_KEY` as
+    # account.credential when the workdir holds the box's .env; from the home directory it runs.
+    text = SKILL.read_text()
+    # approval@edge2's final wording (CLAIMS L15946), verbatim: curl from ~, the bun scripts from the Hermes folder.
+    assert ("Run every `curl` command in this skill through `terminal` with `workdir` set to your home "
+            "directory (`~`), not your Hermes folder; from the Hermes folder these calls are refused.") in text
+    assert ("Run the `bun skills/edgeos/scripts/...` commands from your Hermes folder as before "
+            "(their paths are relative to it).") in text
+    assert "(a `workdir` is fine)" not in text.split("## 3")[0]
+
+
 def test_every_recipe_passes_its_url_with_the_url_flag():
     recipes = every_recipe()
     assert len(recipes) == len(RECIPE_OPERATIONS) == 11
