@@ -10,7 +10,7 @@ Three things hold for everything below.
 - A manifest is a review artifact. It is not an upload. Nothing you write here runs code on a resident's box.
 - Where a section says a thing is not built, do not build against it.
 
-Every behaviour claim has a `Source:` line under its section. Paths with no prefix are in this repo on the branch `context/miniapps-manifest-v2`. A path marked `cp` is in the control-plane repo on its `main`. A path marked `ov#422` or `ov#423` is on that draft branch and is not on this branch yet.
+Every behaviour claim has a `Source:` line under its section. Paths with no prefix are in this repo on the branch `context/miniapps-manifest-v2`. A path marked `cp` is in the control-plane repo on its `main` (line numbers checked at `3fde1677`). A path marked `ov#422` or `ov#423` is on that draft branch and is not on this branch yet.
 
 ## 1. How to get a sandbox
 
@@ -37,7 +37,7 @@ The staffer keeps every other app's key and list when they add yours. A malforme
 
 - Your app is in the catalog for your tenant only.
 - You can install it. The install reaches your box through the normal mini-app staging.
-- Removing your tenant from the list hides the app again. It does not uninstall it. Only an explicit uninstall removes it.
+- Removing your tenant from the list hides the app again and stops it working for you: your box's projection omits it and its context answers `403 app_not_installed`. It does not uninstall it. Your install intent is kept, so adding you back restores the same install. Only an explicit uninstall removes it.
 
 ### What the sandbox does not give you yet
 
@@ -57,9 +57,9 @@ Source:
 - `install/install_miniapps.ts:20-27` (reviewed table), `:74-75` (unknown id refused), `:91,105` (skills come from the checkout's `skills` directory).
 - `scripts/tests/mini-app-manifests.test.ts:138-147` (every catalog entry must pass the installer).
 - cp `control-plane/src/mini-apps-tenant-allowlist.js:45-48` (a restricted app is allowed only for a listed tenant) and `:18-29` (unset or invalid denies).
-- cp `control-plane/src/mini-apps.js:210-216` (`404 mini_app_not_reviewed`, and `503 tenant_allowlist_invalid` for a set-but-invalid value).
-- cp `README.md:77-84`, `:93-108` (cohort still required, hiding is not revoking) and `:129` (no tenant scope: restricted apps omitted).
-- cp `docs/RAILWAY.md:136-141` (the variable, and "Variable edits are human-only").
+- cp `control-plane/src/mini-apps.js:231-243` (`404 mini_app_not_reviewed`, and `503 tenant_allowlist_invalid` for a set-but-invalid value).
+- cp `README.md:77-84`, `:93-108` (cohort still required; removal hides the app, withdraws its operations and context, and keeps the install intent) and `:129` (no tenant scope: restricted apps omitted).
+- cp `docs/RAILWAY.md:136-142` (the variable, and "Variable edits are human-only" at `:142`).
 - Design `MINIAPPS-PLATFORM-v2-design.md` section 0, row "skill delivery" (private to Edge City; not a repo file).
 
 ## 2. Manifest v2, field by field
@@ -80,7 +80,7 @@ Required fields are marked **req**.
 | Field | Rule |
 | --- | --- |
 | `manifest` **req** | The number `2`. |
-| `id` **req** | `^[a-z0-9][a-z0-9-]{0,39}$`. Some ids are reserved (`village`, `approval`, `rolodex`, `zzz`, names starting `av-`, `core-`, `admin-` and similar). A reserved id is refused. |
+| `id` **req** | `^[a-z0-9][a-z0-9-]{0,39}$`, and it must start with a letter, because `skills[0].name` must equal it and that name must start with a letter. Some ids are reserved (`village`, `approval`, `rolodex`, `zzz`, names starting `av-`, `core-`, `admin-` and similar). A reserved id is refused. |
 | `name` **req** | 1 to 160 characters. |
 | `version` **req** | Semver, such as `0.1.0`. |
 | `description` **req** | 1 to 2000 characters. |
@@ -89,7 +89,7 @@ Required fields are marked **req**.
 | `credit` | `role` (`app` or `product`), `attendeeId` (a UUID), `name`. It names a reviewed attribution. Leave it out unless Edge City gives you the values. |
 | `visibility` **req** | `sandbox`, `admins` or `everyone`. |
 | `staff` | Only the Gold Stars app may set `true`. Anyone else is refused. |
-| `listed` | `false` keeps the app off every install and discovery surface. Absent means listed. |
+| `listed` | `false` hides the app from discovery: the grid, search, counts, staff lists and offers. A tenant the app's audience admits (the cohort, and for a `sandbox` or `admins` app the allowlist) can still open its direct link, install it and use it; nobody else can. Absent means listed. The schema's own description of this field is older and wrong on this point. Honouring the field is not fully built (section 5). |
 | `permissions` **req** | 1 to 32 items of `{kind, label, description}`. `kind` is `read` or `action`. Name every third party that receives data. |
 | `service` **req** | See below. |
 | `operations` **req** | 1 to 32 operations. See below. |
@@ -123,7 +123,7 @@ Every URL the platform fetches (`baseUrl`, `oauth.resource`, `oauth.discovery`) 
 | `timeoutMs` | Default 25000. Only a `needs-card` op may go above that. The hard maximum is 60000. |
 | `framing` | `data` (default) or `media`. |
 | `returns` | `prepare` ops only: `draftIdPath`, `previewPath`, `previewMaxBytes` (at most 65536), `previewTtlSeconds` (at most 86400). |
-| `approval` | `needs-card` ops only, and required for them: `prepare` (the name of a `prepare` op in the same file), `summary` (1 to 32 lines), `summaryMaxBytes` (at most 3000). |
+| `approval` | `needs-card` ops only, and required for them. It holds `prepare` (required: the name of a `prepare` op in the same file), and optionally `summary` (1 to 32 lines) and `summaryMaxBytes` (at most 3000). With no `summary` the review bot adds a note (`approval_summary_missing`). |
 
 The four classes:
 
@@ -287,7 +287,7 @@ echo "exit=$?"
 
 This lane ran exactly this on the manifest above, against the validator at the base of this branch. It printed `{"ok":true}` and the exit code was 0.
 
-A pass here is not a publish. To appear in the catalog an app also needs a row in `mini-apps/catalog.json`, the control-plane catalog and the installer table (section 1). The repo test `bun test scripts/tests/mini-app-manifests.test.ts` checks every listed manifest, its canonical form and its skill hash.
+A pass here is not a publish. To appear in the catalog an app also needs a row in `mini-apps/catalog.json`, the control-plane catalog and the installer table (section 1). The repo test `bun test scripts/tests/mini-app-manifests.test.ts` checks every listed manifest, its canonical form and its skill hash. On a pull request that adds a new app this test is red until Edge City acts, and that is expected: it pins `catalog.json` to the five current ids, it refuses an app directory the index does not list, and once the id is listed it also needs the id in the installer's reviewed table.
 
 Some failures you will see:
 
@@ -308,6 +308,10 @@ Some failures you will see:
 Source:
 - Schema: `mini-apps/manifest.v2.schema.json:6-19` (required keys, closed), `:21-119` (top-level scalars, owner, credit, visibility, staff, listed), `:120-150` (permissions), `:151-219` (service), `:220-227` (operations), `:228-254` (data), `:255-289` (skills), `:290-314` (events), `:315-364` (legacy), `:371-514` (operation), `:515-519` (JSON path).
 - Validator: `scripts/mini-apps-manifests.cjs:306-311` (forbidden text), `:61-66` (reserved ids), `:365-382` (endpoint rules), `:385-405` (target path rules), `:461-466` (16 KiB input), `:474-485` (auth rules), `:488` (reserved id), `:492-495` (secretRef), `:496` (internal), `:499` (staff), `:514` (op prefix), `:517-522` (target kind and path), `:525-529` (ceilings, returns, approval), `:539-543` (prepare pair), `:544` (lane ceiling), `:545-548` (skill and event names).
+- Letter-first id: `mini-apps/manifest.v2.schema.json:271` (`skills[].name` pattern) and `scripts/mini-apps-manifests.cjs:546` (`skills[0].name` must equal `id`).
+- `approval`: `mini-apps/manifest.v2.schema.json:484-512` (only `prepare` is required) and `scripts/mini-apps-manifests.cjs:529` (required on a `needs-card` op, refused on any other). The `approval_summary_missing` note: ov#423 `scripts/mini-apps-review.ts:812`.
+- `listed`: `scripts/mini-apps-manifests.cjs:497-498` ("`listed: false` only hides an app") and `:627` (the served entry carries `listed: false`); the schema's older description is at `mini-apps/manifest.v2.schema.json:117`. The rule (hidden from discovery, not locked) is Edge City's product ruling of 20 Oct 2026. cp `control-plane/src/mini-apps-catalog.js:239` (`offered()`), `control-plane/src/mini-apps.js:207` (the tenant-scoped catalog still serves a hidden app its tenant is admitted to), `:211` (counts read offered apps only) and `:231-243` (install is gated by the allowlist, not by `listed`).
+- The new-app repo test: `scripts/tests/mini-app-manifests.test.ts:94` (the five ids), `:95` and `:106` (an unlisted directory is refused), `:138-147` (every listed entry must pass the installer).
 - Defaults: `scripts/mini-apps-manifests.cjs:67`.
 - Served form: `scripts/mini-apps-manifests.cjs:616-643` (v1 entry; the relay form at `:621`; the non-read refusal at `:638`).
 - Canonical form and skill hash: `scripts/tests/mini-app-manifests.test.ts:129-136`, `:174`.
@@ -366,31 +370,37 @@ The verdict is one of three words:
 - `FAIL`. A finding you must fix. The job is red.
 - `NEEDS_HUMAN`. A person must read the change. The job stays green. Do not read green as approval.
 
-The report holds a `lane` (`sandbox`, `admins`, `everyone` or `core`), a list of findings and a list of checks that ran. A finding has a `code`, a severity, a file and a line. A severity `M` fails. A severity `S` passes in `sandbox` and needs a human in `admins` and `everyone`.
+The report holds a `lane` (`sandbox`, `admins`, `everyone` or `core`), a list of findings and a list of checks that ran. A finding has a `code`, a severity and a text, and usually a file and a line. A severity `M` fails. A severity `S` whose code is on the bot's always-human list (for example `new_app`, `core_path`, `needs_card_review`, `oauth_review`, `auth_mode_review`, `context_ceiling_above_private`, `events_review`) needs a human in every lane, `sandbox` included. Any other `S` passes in `sandbox` and needs a human in `admins` and `everyone`.
 
 The bot is not a required check. A pull request can edit the workflow file and run its own copy. Treat the bot as a mirror to check yourself in, not as a gate.
 
 Source:
 - ov#422 `scripts/mini-apps-conformance.ts:1-51` (header: checks, fixtures, output, exit codes), `:70-73` (required checks), `:78-83` (what `passed` means), `:358-361` (generic error codes), `:822-831` (flags). ov#422 `package.json:11` (the `conformance` script). ov#422 `mini-apps/README.md:75-92`.
-- ov#423 `scripts/mini-apps-review.ts:1-51` (header: lanes, verdicts, exit codes, known limits), `:93-99` (codes that always need a human), `:656` (a new app is core), `:897` (visibility may rise one step). ov#423 `.github/workflows/mini-apps-review.yml:25-41` (advisory, no comment, known limits) and `:44-49` (trigger paths).
+- ov#423 `scripts/mini-apps-review.ts:1-51` (header: lanes, verdicts, exit codes, known limits), `:93-99` (codes that always need a human), `:115` (a finding's `file` and `line` are optional), `:550-556` (the verdict), `:656` (a new app is core), `:897` (visibility may rise one step). ov#423 `.github/workflows/mini-apps-review.yml:25-41` (advisory, no comment, known limits) and `:44-49` (trigger paths).
 - Operating rule `P0-3-BOT-operating-rule.md` (private to Edge City; not a repo file): one comment edited in place, `DRY RUN` marker, never approve or merge, no check run in the first week.
 
 ## 4. What needs a human, and what still needs a fleet roll
 
 ### Needs a human
 
-Plan for a person to read these. The bot says `NEEDS_HUMAN` for them.
+Plan for a person to read these. The bot flags the ones a diff can show as `NEEDS_HUMAN`, in every lane:
 
-- Anything for the `everyone` lane. One person reads the manifest diff and the conformance and bot output.
-- Any path outside your own `mini-apps/<id>/` and `skills/<id>/`. That is `core`.
+- Any path outside your own `mini-apps/<id>/` and `skills/<id>/`, or a skill that ships on every box (Gold Stars is one). That is `core`.
 - A new app. The bot treats a new app as `core` in Phase 0.
-- A new `service.auth.mode` for an app. The first OAuth client needs a person to register it and set the environment variables.
-- The first `needs-card` op an app publishes, and any change to one.
-- A `data.context.ceiling` above `private` for an `everyone` app.
-- Any `events` block. A data release is a data-team matter.
-- Changing a first-party app, or an app that ships on every box.
+- A change to `service.auth.mode`, or a new or changed `oauth` block. The first OAuth client needs a person to register it and set the environment variables.
+- A `needs-card` op added or changed.
+- A `data.context.ceiling` above `private` that is new in the pull request. For an `everyone` app the ceiling may not go above `village`; `public` there is a `FAIL`.
+- A new or changed `events` block, or one that enters the `everyone` lane. A data release is a data-team matter.
+
+The rest are a reviewer's rule, not a bot verdict. They need a person even when the bot says `PASS`:
+
+- Any change in the `everyone` lane. One person reads the manifest diff and the conformance and bot output.
+- Changing a first-party app.
+
+Edge City does these outside your pull request, so the bot never sees them:
+
 - The allowlist entry for your sandbox tenant (section 1).
-- Registering a GitHub App for the bot. Edge City does this, not you.
+- Registering a GitHub App for the bot.
 
 ### Needs a fleet roll
 
@@ -409,7 +419,7 @@ The design says that after Phase 2 these will be catalog data and will not need 
 Source:
 - Design `MINIAPPS-PLATFORM-v2-design.md` section 6.5 (what still needs a human), section 5 (lane rules) and section 2.3 (what still needs a roll). Private to Edge City; not repo files.
 - `install/install_miniapps.ts:20-27`, `:74-75`, `:91,105` (the installer table and the skill source).
-- ov#423 `scripts/mini-apps-review.ts:93-99` and `:656`, `:815`, `:897-905` (the codes for a new app, a needs-card change, an OAuth change and an events block).
+- ov#423 `scripts/mini-apps-review.ts:550-556` (the verdict: `FAIL` on any `M`; `NEEDS_HUMAN` for `core` or an always-human code; nothing else is added for the `everyone` lane by itself), `:93-99` (the always-human codes), `:76-80` and `:629-630` (baseline skills and other paths are `core`), `:656` (new app), `:797-798` (ceiling over the lane is `M`; a new ceiling above `private` is `S` in any lane), `:815` (needs-card added or changed), `:899-901` (OAuth and auth-mode changes), `:902-905` (events).
 - Operating rule `P0-3-BOT-operating-rule.md`, "NEEDS_HUMAN cases" (private).
 
 ## 5. What is not built yet
@@ -432,13 +442,13 @@ Phase 2:
 
 Also not done:
 
-- Honouring `listed: false` in the catalog and in the app, and keeping an installed app that has dropped out of the v2 catalog. Neither is built yet.
+- Honouring `listed: false`, and keeping an installed app that has dropped out of the v2 catalog. The control-plane half is merged on its `main` (cp#335). The app half (the grid, search and the direct link) is in review (app#491), not merged. Neither half does anything while `MINI_APPS_MANIFESTS` is off.
 - Turning `MINI_APPS_MANIFESTS` on. It stays off.
 - The bot's pull request comment, and its LLM half.
 
 Source:
 - Design `MINIAPPS-PLATFORM-v2-design.md` section 8 (Phase 0 to Phase 3) and section 3.3. Private to Edge City; not repo files.
-- `MINIAPPS-V2-REMAINING-LANES.md`, table "Where v2 stands", row "Second landing" (private): the `listed: false` filter and the persisted-desired behaviour are not built.
+- cp `control-plane/src/mini-apps-catalog.js:124` (the manifest catalog loads only when `MINI_APPS_MANIFESTS` is exactly `1`), `:222-239` (cp#335: everything it adds is inert with the switch off; `offered()`), `:290` and `:309` (an installed app the v2 catalog lacks is kept). cp#335 is merged; app#491 is an open draft pull request in the app repo.
 - `mini-apps/README.md:79` on the base commit (the manifest switch and the five constants).
 - cp `control-plane/src/mini-apps-approval.js:105,108` (only two operation pairs get a card).
 - cp `README.md:58` (no credit is recorded without a reviewed attribution).
