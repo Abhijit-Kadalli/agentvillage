@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, parse } from "node:path";
 import { EDGE_SKILL_NAMES, hermesHome } from "./paths";
+import { reconcileZzzManagedJob } from "./zzz_managed_job";
 
 /**
  * ROLODEX.PERSON (rc42, CLAIMS 7799): the gold-stars entry also carries `rolodex.person` (a read of
@@ -163,11 +164,13 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     let content: Buffer;
     // review-b S1: a baseline skill this installer ships to every box (SHIPPED_SKILLS: gold-stars) is never
     // replaced by served bytes, valid or not; any entry for one is refused with its own code.
-    if (entry?.bytes && owned(app.id)) {
+    // The managed participation prompt and native gate are reviewed with the
+    // zzzbot skill as one overlay contract; do not take unreviewed served copy.
+    if (entry?.bytes && owned(app.id) && app.id !== "zzzbot") {
       content = entry.bytes;
       servedIds.push(app.id);
     } else {
-      const code: FallbackCode | undefined = entry && !owned(app.id) ? "mini_apps_skill_baseline" : entry?.code ?? served.code;
+      const code: FallbackCode | undefined = entry && (!owned(app.id) || app.id === "zzzbot") ? "mini_apps_skill_baseline" : entry?.code ?? served.code;
       if (code) fallback.push({ id: app.id, code });
       // The pinned checkout copy: today's source, today's checks.
       const path = join(source, app.id, "SKILL.md");
@@ -177,10 +180,22 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     files.push({ path: `skills/${app.id}/SKILL.md`, sha256: hash(content) });
     return { app, content };
   });
+  const zzzInstalled = projection.apps.some(app => app.id === "zzzbot");
+  const zzzManagedFiles = ["scripts/agentvillage_zzz_pairs.sh", "prompts/participate.md"] as const;
+  for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
+  const zzzFiles = zzzInstalled ? zzzManagedFiles.map(relative => {
+    const sourcePath = join(source, "zzzbot", relative);
+    regular(sourcePath);
+    const content = readFileSync(sourcePath);
+    const path = `skills/zzzbot/${relative}`;
+    files.push({ path, sha256: hash(content) });
+    return { path: join(home, path), content };
+  }) : [];
   if (verify) {
     if (!(projection.apps.length === 0 && stateless()) && (!exists(target) || readFileSync(target, "utf8") !== bytes)) throw new Error("mini_apps_projection_mismatch");
     if (projection.apps.length === 0 && exists(credential)) throw new Error("mini_apps_credential_removal_pending");
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
+    for (const { path, content } of zzzFiles) if (!readFileSync(path).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
   } else if (!(projection.apps.length === 0 && stateless())) {
     // Fail closed even if copying/removal is interrupted. Publish desired authority last.
@@ -190,8 +205,21 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
       const path = join(home, "skills", app.id, "SKILL.md");
       if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(path)) unlinkSync(path);
     }
+    if (!zzzInstalled) for (const relative of zzzManagedFiles) {
+      const path = join(home, "skills", "zzzbot", relative);
+      if (exists(path)) unlinkSync(path);
+    }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
+    for (const { path, content } of zzzFiles) atomic(path, content);
+    // The job is inert until the reviewed projection grants zzzbot; a failed
+    // install never leaves a projected app without its managed participation job.
+    if (import.meta.main && zzzInstalled) reconcileZzzManagedJob(home, true);
     atomic(target, bytes);
+    // On removal authority disappears before a best-effort job teardown.
+    if (import.meta.main && !zzzInstalled) reconcileZzzManagedJob(home, false);
+  } else if (import.meta.main && !verify) {
+    // Heal a previous interrupted uninstall even when the projection is gone.
+    reconcileZzzManagedJob(home, false);
   }
   // `skills` also marks an installer that can take served bytes (an older one never writes it).
   return { version: 1, projectionSha256: hash(bytes), files, apps: projection.apps.map(({ id, version }) => ({ id, version })), staged: true,

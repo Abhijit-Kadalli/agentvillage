@@ -1029,6 +1029,9 @@ export function reconcileDigestCronJobs(
   const staggerSeed = process.env.INDEX_API_KEY?.trim() || readPersistedEnvVar("INDEX_API_KEY");
 
   for (const job of existing) {
+    // The mini-app projection helper owns this Hermes job's install/removal.
+    // A routine Index reconcile must not retire an enabled zzzbot poller.
+    if (job.name === "Edge — zzz pairs") continue;
     if (!job.name.startsWith(CRON_NAME_PREFIX) || specNames.has(job.name) || templateNames.has(job.name)) continue;
     try {
       execFileSync(bin, ["cron", "remove", job.id], { stdio: "ignore", env });

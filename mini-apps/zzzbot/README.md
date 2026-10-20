@@ -26,6 +26,17 @@ for tenants in `MINI_APPS_TENANT_ALLOWLIST`.
   on every box; `installed()` refuses them per call (`mini_app_not_installed`)
   until the projection installs zzzbot, so a chat open before the install can
   use them without `/new`. Their input rides the existing `arguments` object.
+- **Private pair participation.** With the app's `ZZZ_BRIDGE=1`, `zzz.pairs`
+  borrows the existing `zzz.list_rooms` install permission and reports only
+  currently enabled private pair room IDs and consent epochs. A Hermes-managed
+  job is installed/removed with the zzzbot projection. It polls bounded room
+  cursors, suppresses own/uncertain posts using the app's server-computed
+  `isOwn` marker, and offers one exact incoming post to the agent. The cron
+  root can read pairs/changes/threads, reply to the pending incoming thread,
+  or send one fixed introduction when a newly enabled pair room is empty;
+  its local budget is two writes per UTC day. ZZZ and the app recheck current
+  authority for every operation. No resident-created cron or human consent
+  mutation is part of this path.
 - **Rollout order.** cp#304, then the cp catalog entry, then the app routes,
   then this overlay in v2.1.3. The CP must not project zzzbot to a box below
   v2.1.3: an older overlay refuses the whole projection, Gold Stars included.
