@@ -161,3 +161,19 @@ test("the CLI reads the two variables; without them its output is the library's 
     expect(JSON.parse(verify.stdout)).toEqual(receipt);
   }
 });
+
+test("review-b S1: a served gold-stars entry, even one whose sha matches, never replaces the shipped baseline SKILL.md; owned apps are still served", () => {
+  const root = home();
+  const text = servedText("gold-stars");
+  const receipt = reconcileMiniApps(all, root, undefined, false, bundle(entry("gold-stars", text), entry("dizko", servedText("dizko"))));
+  expect(onDisk(root, "gold-stars")).toEqual(checkout("gold-stars"));
+  expect(receipt.files.find(f => f.path === "skills/gold-stars/SKILL.md")?.sha256).toBe(sha(checkout("gold-stars")));
+  expect(receipt.skills).toEqual({ offer: OFFER, served: ["dizko"], fallback: [{ id: "gold-stars", code: "mini_apps_skill_baseline" }] });
+  expect(onDisk(root, "dizko").toString("utf8")).toBe(servedText("dizko"));
+  goldStarsKept(root);
+  expect(reconcileMiniApps(all, root, undefined, true, bundle(entry("gold-stars", text), entry("dizko", servedText("dizko"))))).toEqual(receipt);
+  // An invalid gold-stars entry gets the baseline code too (the entry is never considered).
+  const other = home();
+  expect(reconcileMiniApps(all, other, undefined, false, bundle(entry("gold-stars", text, sha("x")))).skills.fallback).toEqual([{ id: "gold-stars", code: "mini_apps_skill_baseline" }]);
+  expect(onDisk(other, "gold-stars")).toEqual(checkout("gold-stars"));
+});

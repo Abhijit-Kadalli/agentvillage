@@ -97,14 +97,15 @@ function atomic(path: string, bytes: string | Buffer): void {
  *   MINI_APPS_SKILLS        {"version":1,"skills":[{"id","sha256","bytes":<base64>}]}.
  * An app's served bytes are used only when they decode (strict base64, at most SKILL_MAX_BYTES, UTF-8)
  * and hash to the entry's sha256. ANY failure falls back to the pinned checkout copy (today's bytes) for
- * that app alone, with a code in the receipt; a bad bundle falls back for every app. A skill problem
+ * that app alone, with a code in the receipt; a bad bundle falls back for every app. A baseline skill
+ * (SHIPPED_SKILLS) always keeps its checkout copy (code mini_apps_skill_baseline when one is offered). A skill problem
  * never fails the stage, so it never takes Gold Stars (or any other app) down. Nothing is fetched: no
  * URL, no path from the cp is ever opened; the target is always skills/<id>/SKILL.md for an id
  * validateProjection accepted.
  */
 export const SKILL_MAX_BYTES = 32768;
 export const BUNDLE_MAX_CHARS = 98304;
-export const SKILL_FALLBACK_CODES = ["mini_apps_skill_bundle_invalid", "mini_apps_skill_invalid_entry", "mini_apps_skill_oversize", "mini_apps_skill_hash_mismatch", "mini_apps_skill_not_utf8"] as const;
+export const SKILL_FALLBACK_CODES = ["mini_apps_skill_bundle_invalid", "mini_apps_skill_invalid_entry", "mini_apps_skill_oversize", "mini_apps_skill_hash_mismatch", "mini_apps_skill_not_utf8", "mini_apps_skill_baseline"] as const;
 type FallbackCode = typeof SKILL_FALLBACK_CODES[number];
 export type SkillDelivery = { offer?: string; skills?: string };
 type ServedEntry = { bytes: Buffer; code?: undefined } | { bytes?: undefined; code: FallbackCode };
@@ -154,11 +155,13 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   const desired = projection.apps.map(app => {
     const entry = served.entries.get(app.id);
     let content: Buffer;
-    if (entry?.bytes) {
+    // review-b S1: a baseline skill this installer ships to every box (SHIPPED_SKILLS: gold-stars) is never
+    // replaced by served bytes, valid or not; any entry for one is refused with its own code.
+    if (entry?.bytes && owned(app.id)) {
       content = entry.bytes;
       servedIds.push(app.id);
     } else {
-      const code = entry?.code ?? served.code;
+      const code: FallbackCode | undefined = entry && !owned(app.id) ? "mini_apps_skill_baseline" : entry?.code ?? served.code;
       if (code) fallback.push({ id: app.id, code });
       // The pinned checkout copy: today's source, today's checks.
       const path = join(source, app.id, "SKILL.md");
