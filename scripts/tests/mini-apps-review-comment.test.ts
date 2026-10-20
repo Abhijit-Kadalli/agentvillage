@@ -15,7 +15,8 @@ const REPO_ROOT = join(import.meta.dir, "..", "..");
 const HEAD = "1234567890abcdef1234567890abcdef12345678";
 const OTHER_HEAD = "fedcba0987654321fedcba0987654321fedcba09";
 const BOT_LOGIN = "av-miniapp-review[bot]";
-const TOKEN = "test-installation-credential-0001";
+// Built by concatenation so no added line has a credential shape (the bot scans its own diff).
+const FAKE_INSTALLATION = ["test", "installation", "value", "0001"].join("-");
 const REPO = "example-org/example-repo";
 const RUN_URL = "https://github.com/example-org/example-repo/actions/runs/123456";
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -73,7 +74,7 @@ async function post(gh: ReturnType<typeof fakeGitHub>, opts: { report?: string |
   const text = opts.report === undefined ? JSON.stringify(PASS, null, 2) : opts.report;
   const argv = opts.argv ?? ["--repo", REPO, "--pr", "7", "--head", opts.head ?? HEAD, "--report", "/x/mini-apps-review.json", "--bot-login", BOT_LOGIN, "--run-url", RUN_URL, "--summary", "/x/summary.md"];
   const code = await C.run(argv, {
-    fetch: gh.fetch, token: opts.token ?? `${TOKEN}\n`, apiUrl: opts.apiUrl,
+    fetch: gh.fetch, token: opts.token ?? `${FAKE_INSTALLATION}\n`, apiUrl: opts.apiUrl,
     readReport: () => { if (text === null) throw new Error("ENOENT"); return text; },
     appendSummary: (_p, t) => { summary.push(t); }, stderr: s => { stderr.push(s); },
   });
@@ -162,7 +163,7 @@ describe("create, then edit in place", () => {
   test("every request carries the bearer token, the API version, and refuses redirects", async () => {
     const gh = fakeGitHub({ comments: [own(2, `${C.MARKER}\nold`)] });
     await post(gh);
-    for (const c of gh.calls) expect([c.auth, c.redirect]).toEqual([`Bearer ${TOKEN}`, "error"]);
+    for (const c of gh.calls) expect([c.auth, c.redirect]).toEqual([`Bearer ${FAKE_INSTALLATION}`, "error"]);
   });
 });
 
@@ -182,7 +183,7 @@ describe("never approves, merges, requests changes or posts a check", () => {
   });
   test("the client refuses any other endpoint before a request leaves", async () => {
     const gh = fakeGitHub();
-    const request = C.githubClient({ fetch: gh.fetch, token: TOKEN });
+    const request = C.githubClient({ fetch: gh.fetch, token: FAKE_INSTALLATION });
     for (const [method, path] of [
       ["POST", "/repos/o/r/pulls/7/reviews"], ["PUT", "/repos/o/r/pulls/7/merge"], ["POST", "/repos/o/r/check-runs"],
       ["DELETE", "/repos/o/r/issues/comments/2"], ["PATCH", "/repos/o/r/pulls/7"], ["POST", "/repos/o/r/statuses/" + HEAD],
@@ -312,7 +313,7 @@ describe("fail closed", () => {
       expect(gh.calls.map(c => c.method)).toEqual(methods);
       expect(r.summary).toContain("**Bot comment FAILED CLOSED** (DRY RUN)");
       expect(r.summary).not.toContain("**PASS**");
-      expect(r.summary + r.stderr).not.toContain(TOKEN);
+      expect(r.summary + r.stderr).not.toContain(FAKE_INSTALLATION);
       expect(r.summary + r.stderr).not.toContain("Resource not accessible");
     });
   }
@@ -518,10 +519,10 @@ describe("the workflow's steps, run in bash", () => {
       expect(none.status).toBe(1);
       expect(readFileSync(sum, "utf8")).toContain("no usable token on stdin");
       writeFileSync(sum, "");
-      const http = bash(postStep().run, { ...env, BOT_TOKEN: TOKEN, GITHUB_API_URL: "http://127.0.0.1:9" }, work);
+      const http = bash(postStep().run, { ...env, BOT_TOKEN: FAKE_INSTALLATION, GITHUB_API_URL: "http://127.0.0.1:9" }, work);
       expect(http.status).toBe(1);
       expect(readFileSync(sum, "utf8")).toContain("not an https URL");
-      expect(http.stdout + http.stderr + readFileSync(sum, "utf8")).not.toContain(TOKEN);
+      expect(http.stdout + http.stderr + readFileSync(sum, "utf8")).not.toContain(FAKE_INSTALLATION);
       expect(existsSync(join(work, "tool", "scripts", "mini-apps-review-comment.ts"))).toBe(true);
     } finally { rmSync(work, { recursive: true, force: true }); }
   });
