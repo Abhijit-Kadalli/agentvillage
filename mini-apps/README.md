@@ -94,13 +94,15 @@ half of the PR-review bot. It runs `bun scripts/mini-apps-review.ts --base <sha>
 `NEEDS_HUMAN`) to the job summary and to an artifact. Run the same line
 locally before you open the pull request. A pull request that stays inside one
 app's `mini-apps/<id>/` and `skills/<id>/` is judged in the wider of that
-app's base and head `visibility` lane (lowering an app out of `everyone` takes
-the human read). Anything else is core and goes to the human gate, including a
-new app, listing a new id in `catalog.json`, and any baseline skill
-(`gold-stars` among them). CI runs the bot from the base commit's tree with the
-pull request as data only (git objects, never checked out or executed); a pull
-request that edits the workflow file itself still runs its own copy, so a
-verdict is trustworthy only when the workflow is unchanged. The bot checks:
+app's base, base-tip and head `visibility` lane (lowering an app out of
+`everyone` takes the human read). Anything else is core and goes to the human
+gate, including a new app, listing a new id in `catalog.json`, any baseline
+skill (`gold-stars` among them), and an app whose baseUrl host or op target is
+another app's. Removing a needs-card op always takes the human read. CI runs
+the bot from the base commit's tree with the pull request as data only (git
+objects, never checked out or executed). It also reads the base branch's
+current tip as data, so a needs-card op that main gained after the fork still
+counts. The bot checks:
 
 - the shared validator;
 - the skill hash and the version bump;
@@ -111,7 +113,19 @@ verdict is trustworthy only when the workflow is unchanged. The bot checks:
 - the one-step visibility rule.
 
 In Phase 0 it is not a required check and it posts no comment. A `FAIL`
-turns the job red (exit 1).
+turns the job red (exit 1); `NEEDS_HUMAN` exits 0 and stays green.
+
+It must stay non-required until the gate itself changes. Two things stand in
+the way:
+
+- A pull request that edits the workflow file still runs its own copy.
+- A pull request can add a workflow of its own with the same workflow, job
+  and artifact names. A check required by name is then satisfied by a forgery,
+  or by a green `NEEDS_HUMAN`.
+
+Real gating needs a ruleset-required workflow pinned to the base
+(`pull_request_target` alone is not enough). The verdict must be read from that
+run's JSON artifact by run id, never from a check's name or colour.
 
 The manifest is the review artifact. The **CP catalog is authoritative** for
 what may be installed. The app server retrieves it and enforces the exact

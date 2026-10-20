@@ -4,11 +4,13 @@
  * their rules), §6.1 (the checks), §6.3 (the output), §6.4 and §8 Phase 0 item 3. jmill's LLM half
  * (§6.2) reads this JSON and posts the PR comment later; this script posts nothing.
  *
- *   bun scripts/mini-apps-review.ts --base <rev> --head <rev> [--author <login>] [--repo <dir>]
- *       [--out <file.json>] [--summary <file.md>] [--conformance-dir <dir>]
+ *   bun scripts/mini-apps-review.ts --base <rev> --head <rev> [--base-tip <rev>] [--author <login>]
+ *       [--repo <dir>] [--out <file.json>] [--summary <file.md>] [--conformance-dir <dir>]
  *
  * It reads `git diff --raw --no-renames base...head` (the --name-status list plus the file modes), the
- * files at the merge base and at head, and judges the pull request:
+ * files at the merge base and at head, and judges the pull request. The base branch's current tip
+ * (--base-tip, default --base) is read too, as data: what main gained after the fork (a needs-card op, a
+ * wider visibility, another app's host) still counts (review-b N-d).
  *   lane     changed files ⊆ mini-apps/<id>/** ∪ skills/<id>/** for exactly one id that has a manifest at
  *            head is a manifest lane, and the lane is that manifest's visibility (sandbox | admins |
  *            everyone; v1's `restricted` is sandbox or admins, as v1Entry serves them). Anything else is
@@ -29,15 +31,23 @@
  *
  * Trust (release S1, CLAIMS L14538): the pull request is DATA, never code. The tool (this script, the
  * validator and P0-5's suite) is read from its own tree, `toolRoot` (default: this file's repository); in
- * CI that tree is the BASE commit's, checked out on its own, run with `bun --config=/dev/null --no-env-file
- * --no-install`, and the pull request head is only fetched as git objects. Everything the bot knows about
- * the head comes from `git diff`, `git ls-tree` and `git cat-file` on the head sha; P0-5's suite runs from
- * the tool tree on the head's manifest and skill bytes, written out of git into a throwaway directory.
- * Nothing from the pull request's tree is executed, installed or read as configuration.
- * Known limit: on pull_request GitHub runs the pull request's own copy of the WORKFLOW file, so a pull
- * request that edits .github/workflows/mini-apps-review.yml can change what runs (it is a gate file, core
- * by the honest bot). The check must not be required until it runs from the base's workflow definition
- * (pull_request_target with the PR as data, or a required workflow), design §6.4.
+ * CI that tree is the BASE commit's, checked out on its own, run by explicit path (`./tool/scripts/...`,
+ * never a bare name a package.json script could shadow) with `bun --config=/dev/null --no-env-file
+ * --no-install --tsconfig-override=/dev/null` (no bunfig, no .env, no auto-install, no cwd tsconfig.json
+ * path mapping: review-b N-a), and the pull request head is only fetched as git objects. Everything the bot
+ * knows about the head comes from `git diff`, `git ls-tree` and `git cat-file` on the head sha; P0-5's suite
+ * runs from the tool tree on the head's manifest and skill bytes, written out of git into a throwaway
+ * directory. Nothing from the pull request's tree is executed, installed or read as configuration.
+ * Known limits, so this check is NOT a required check (review-b N-b, a design item for the lead and release):
+ *   - on pull_request GitHub runs the pull request's own copy of the WORKFLOW file, so a pull request that
+ *     edits .github/workflows/mini-apps-review.yml can change what runs (it is a gate file, core by the
+ *     honest bot);
+ *   - a pull request can ADD a workflow of its own with the same workflow name, job name and artifact name,
+ *     and NEEDS_HUMAN exits 0 (green), so a check required by name is satisfied by a forgery or by a
+ *     NEEDS_HUMAN alike.
+ *   Real gating needs a ruleset-required workflow pinned to the base (pull_request_target alone is not
+ *   enough), with the verdict read from that run's JSON artifact by run id, never from a check's name or
+ *   colour. Design §6.4.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";

@@ -8,9 +8,13 @@
 # commit's tree, checked out alone into tool/. The pull request head is fetched
 # as git objects only and read with git diff / ls-tree / cat-file on its sha:
 # never checked out, never installed, never executed, its bunfig.toml, .env and
-# tsconfig.json never read. bun runs with --config=/dev/null --no-env-file
-# --no-install. The bot judges exactly the head sha it fetched (--head
-# "$HEAD_SHA"), never the merge ref.
+# tsconfig.json never read. bun runs the tool by explicit path
+# (./tool/scripts/..., which no package.json script name can shadow) with
+# --config=/dev/null --no-env-file --no-install --tsconfig-override=/dev/null,
+# from a workspace that holds only tool/ (review-b N-a: the flags, not an empty
+# cwd, are the guard). The bot judges exactly the head sha it fetched (--head
+# "$HEAD_SHA"), never the merge ref. The base branch's tip is fetched as data
+# too (--base-tip), so what main gained after the fork still counts (N-d).
 #
 # Conformance (release's owner read of P0-5, CLAIMS L14465): the bot runs the
 # TOOL's copy of P0-5's suite, when present, on head's manifest and skill bytes
@@ -24,12 +28,17 @@
 # 1 for FAIL (the job is red; the check is still not required), exit 2 when the
 # bot cannot judge (the report then says FAIL with bot_error).
 #
-# Known limit: on pull_request GitHub runs the pull request's own copy of THIS
-# FILE, so a pull request that edits it can change what runs. Such a pull
-# request touches a gate file, which the honest bot classes core. The check must
-# not become required until it runs from the base's workflow definition
-# (pull_request_target with the pull request as data, or a required workflow;
-# design §6.4).
+# NON-REQUIRED, by design (review-b N-b, a design item for the lead and release):
+# - on pull_request GitHub runs the pull request's own copy of THIS FILE, so a
+#   pull request that edits it can change what runs (a gate file: the honest
+#   bot classes it core);
+# - a pull request can ADD a workflow of its own with this workflow name, job
+#   name and artifact name, and NEEDS_HUMAN exits 0 (green), so a check that is
+#   required by name is satisfied by a forgery or by a NEEDS_HUMAN alike.
+# Real gating needs a ruleset-required workflow pinned to the base (not
+# pull_request_target alone), with the verdict read from that run's JSON
+# artifact by run id, never from a check's name or colour (design §6.4). Until
+# then this check stays non-required.
 name: mini-apps review
 
 on:
