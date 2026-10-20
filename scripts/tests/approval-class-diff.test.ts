@@ -14,8 +14,11 @@
  * commit pinning core 0.4.5 and a head commit pinning 0.4.6, run through the
  * real script, exit codes read alone:
  * - FLIP: the pre-#427 EdgeOS curl shape, auto at 0.4.5 and a human-only deny
- *   at 0.4.6, fails (exit 1);
- * - STAYS: the --url shape passes (exit 0);
+ *   at 0.4.6 from both working directories, fails (exit 1);
+ * - HOME: the --url shape with `$EDGEOS_API_KEY` in a header, auto from a
+ *   neutral directory at both cores, is a human-only deny at 0.4.6 from the
+ *   box's Hermes home (the APRV-522 credential pass), and fails (exit 1);
+ * - STAYS: a recipe with no `$` word passes (exit 0);
  * - NEW: a recipe only in the head is reported as new and passes (exit 0).
  */
 import { afterAll, describe, expect, test } from "bun:test";
@@ -76,6 +79,7 @@ describe("the class-diff job and script (static)", () => {
 const TEMPLATE = readFileSync(join(REPO, "skills", "approval", "templates", "APPROVAL.md"), "utf8");
 const PRE_FIX = 'curl -s -H "Authorization: Bearer $EDGEOS_API_KEY" "${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events/{event_id}"';
 const FIXED = 'curl -s -H "Authorization: Bearer $EDGEOS_API_KEY" --url "${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}/events/portal/events/{event_id}"';
+const STAY = "bun skills/edgeos/scripts/events.ts --when today";
 const NEW = "bun skills/edgeos/scripts/events.ts --when tomorrow";
 
 const root = mkdtempSync(join(tmpdir(), "class-diff-fixture-"));
@@ -131,18 +135,29 @@ describe.skipIf(TOOL === undefined)("fixture overlays, core 0.4.5 -> 0.4.6, thro
   test(
     "FLIP: the pre-#427 EdgeOS shape moves auto -> human-only and fails",
     () => {
-      const run = fixture("flip", [FIXED, PRE_FIX], [FIXED, PRE_FIX]);
+      const run = fixture("flip", [STAY, PRE_FIX], [STAY, PRE_FIX]);
       expect(run.status).toBe(1);
-      expect(run.md).toMatch(/^CLASS-DIFF FAIL 1 BLOCKING: core 0\.4\.5 -> 0\.4\.6/);
+      expect(run.md).toMatch(/^CLASS-DIFF FAIL 2 BLOCKING: core 0\.4\.5 -> 0\.4\.6.*blocking by cwd: neutral 1, hermes-home 1\)/);
       expect(run.md).toContain("network.call: auto | policy.core: human-only");
     },
     300_000,
   );
 
   test(
-    "STAYS: the --url shape is unchanged and passes",
+    "HOME: the --url shape with $EDGEOS_API_KEY in a header is denied from the Hermes home at 0.4.6, and fails",
     () => {
-      const run = fixture("stays", [FIXED], [FIXED]);
+      const run = fixture("home", [STAY, FIXED], [STAY, FIXED]);
+      expect(run.status).toBe(1);
+      expect(run.md).toMatch(/^CLASS-DIFF FAIL 1 BLOCKING: .*blocking by cwd: neutral 0, hermes-home 1\)/);
+      expect(run.md).toContain("network.call: auto | account.credential+network.call: human-only");
+    },
+    300_000,
+  );
+
+  test(
+    "STAYS: a recipe with no $ word is unchanged in both directories and passes",
+    () => {
+      const run = fixture("stays", [STAY], [STAY]);
       expect(run.status).toBe(0);
       expect(run.md).toMatch(/^CLASS-DIFF PASS: .*class-diff: none; 0 new, 0 removed/);
     },
@@ -152,7 +167,7 @@ describe.skipIf(TOOL === undefined)("fixture overlays, core 0.4.5 -> 0.4.6, thro
   test(
     "NEW: a recipe only in the head is reported new and passes",
     () => {
-      const run = fixture("new", [FIXED], [FIXED, NEW]);
+      const run = fixture("new", [STAY], [STAY, NEW]);
       expect(run.status).toBe(0);
       expect(run.md).toMatch(/^CLASS-DIFF PASS: .*; 1 new, 0 removed/);
       expect(run.md).toContain("### New calls (reported, not gated): 1");
