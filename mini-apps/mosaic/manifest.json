@@ -1,0 +1,20 @@
+{
+  "id": "mosaic",
+  "name": "Mosaic",
+  "description": "A guided way to add to your Context. Mosaic writes your agent a short summary.",
+  "version": "1.0.0",
+  "homepage": "https://agents.edgecity.live",
+  "permissions": [
+    {
+      "kind": "read",
+      "label": "Keep your Mosaic summary",
+      "description": "Save the short summary Mosaic writes for your agent in your Context, Private until you move it."
+    }
+  ],
+  "skills": [
+    "mosaic"
+  ],
+  "operations": [
+    "mini-app.read"
+  ]
+}
