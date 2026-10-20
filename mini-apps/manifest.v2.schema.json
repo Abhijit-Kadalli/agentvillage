@@ -159,7 +159,8 @@
           "enum": [
             "mcp",
             "https-json",
-            "internal"
+            "internal",
+            "none"
           ]
         },
         "baseUrl": {
@@ -218,8 +219,8 @@
       }
     },
     "operations": {
+      "description": "At least one, except for service kind none (a context-only app), which has none: the validator checks it, by kind.",
       "type": "array",
-      "minItems": 1,
       "maxItems": 32,
       "items": {
         "$ref": "#/$defs/operation"

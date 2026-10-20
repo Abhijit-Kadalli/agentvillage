@@ -2,7 +2,7 @@
  * Mini-apps manifest v2: the JSON Schema and the ONE validator (MINIAPPS-PLATFORM-v2-design.md §1.1, §1.3,
  * §8 Phase 0 item 1). One JSON document per app is its whole definition; this module decides whether a
  * document is one, and derives from it the v1 catalog entry the cp serves today (byte for byte), so the
- * five reviewed constants can be served from five manifests.
+ * six reviewed constants can be served from six manifests.
  *
  * This file is byte-identical in three repos (each pins its sha256 twice: a pins file and its test):
  *   agentvillage-controlplane  control-plane/src/mini-apps-manifests.js
@@ -17,7 +17,7 @@
  * Phase 0 (dark): nothing reads a manifest at runtime unless the cp's MINI_APPS_MANIFESTS=1 is set. The
  * `legacy` block carries what today's exact-equality v1 entry needs and v2 does not model (provenance,
  * the per-box person entry, the op prefixes that predate "first segment = id"); it retires with the
- * signed projection (design §1.2, §2.3, Phase 2). Only the five first-party ids may carry it, and only
+ * signed projection (design §1.2, §2.3, Phase 2). Only the six first-party ids may carry it, and only
  * as FIRST_PARTY below grants: a manifest's own content never widens what it may claim.
  */
 'use strict';
@@ -39,9 +39,12 @@ const TRIMMED = '^\\S(.*\\S)?$';
 const RELAY_OPERATION = 'mini-app.read';
 const CONTEXT_OPERATIONS = Object.freeze(['mini-app.context.read', 'mini-app.context.write']);
 const PROVENANCE = 'first-party-reviewed-external';
-// The five first-party apps, pinned HERE, never by a manifest field (security review "authorization-
+// The six first-party apps, pinned HERE, never by a manifest field (security review "authorization-
 // reserved-namespace"): what only each may carry. `internal`: service.kind "internal" (core handlers in
-// app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `prefixes`: the op
+// app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `none`: service.kind
+// "none" (no service at all: a context-only app, whose page in the app writes the resident's own context
+// namespace; served as Dizko's `mini-app.read` with no mcp block; lead ruling CLAIMS L16434, Mosaic alone,
+// cp#334's MOSAIC and MOSAIC_CONTEXT); `prefixes`: the op
 // namespaces it owns beyond its id; `provenance`, `personOnly`: its exact Phase 0 legacy block;
 // `secretRef`: the one app-server env var outside MINI_APP_<ID>_ it may name (the token the app sends
 // today, forkicks-client.ts); `staff`: it may say `"staff": true` (fold 2: kept installed for every agent,
@@ -54,6 +57,7 @@ const FIRST_PARTY = deepFreeze({
   zzzbot: { provenance: PROVENANCE, prefixes: ['zzz'] },
   slopfolio: { provenance: PROVENANCE },
   forkicks: { secretRef: 'FORKICKS_AV_TOKEN' },
+  mosaic: { none: true },
 });
 // Ids no manifest may take: the platform's own op namespaces and the overlay's baseline (non-app) skill
 // names (an app's skill is named for its id, so such an id would shadow a shipped skill on the box), and
@@ -109,7 +113,7 @@ const SCHEMA = {
     service: {
       type: 'object', required: ['kind'], additionalProperties: false,
       properties: {
-        kind: { enum: ['mcp', 'https-json', 'internal'] },
+        kind: { enum: ['mcp', 'https-json', 'internal', 'none'] },
         baseUrl: { type: 'string', pattern: HTTPS_URL },
         auth: {
           type: 'object', required: ['mode'], additionalProperties: false,
@@ -128,7 +132,10 @@ const SCHEMA = {
         },
       },
     },
-    operations: { type: 'array', minItems: 1, maxItems: 32, items: { $ref: '#/$defs/operation' } },
+    operations: {
+      description: 'At least one, except for service kind none (a context-only app), which has none: the validator checks it, by kind.',
+      type: 'array', maxItems: 32, items: { $ref: '#/$defs/operation' },
+    },
     data: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -474,6 +481,9 @@ function semantics(m, compileInput) {
   if (service.kind === 'internal') {
     if (own(service, 'baseUrl')) fail('/service/baseUrl', 'internal_has_endpoint');
     if (auth) fail('/service/auth', 'internal_has_auth');
+  } else if (service.kind === 'none') {
+    if (own(service, 'baseUrl')) fail('/service/baseUrl', 'none_has_endpoint');
+    if (auth) fail('/service/auth', 'none_has_auth');
   } else if (!auth) fail('/service/auth', 'auth_required');
   if (auth) {
     if ((auth.mode === 'oauth') !== own(auth, 'oauth')) fail('/service/auth', 'oauth_mismatch');
@@ -494,6 +504,14 @@ function semantics(m, compileInput) {
     if (!auth.secretRef.startsWith(prefix) || !/^[A-Z0-9]+$/.test(auth.secretRef.slice(prefix.length))) fail('/service/auth/secretRef', 'not_granted');
   }
   if (service.kind === 'internal' && !grant?.internal) fail('/service/kind', 'internal_first_party_only');
+  // service.kind "none" is the pinned grant's alone (Mosaic): no ops of its own (the cp serves it the generic
+  // `mini-app.read`, and the context ops per box) and a data.context block, the one thing it has. Every
+  // other kind keeps at least one op (the schema's minItems before kind "none").
+  if (service.kind === 'none') {
+    if (!grant?.none) fail('/service/kind', 'none_first_party_only');
+    if (m.operations.length) fail('/operations', 'none_has_operations');
+    if (!m.data?.context) fail('/data/context', 'none_without_context');
+  } else if (!m.operations.length) fail('/operations', 'operations_required');
   // `staff: true` installs the app on every agent for good: only the pinned grant may say it. `listed: false`
   // only hides an app, so any app may say it; `listed: true` is the default and widens nothing.
   if (m.staff === true && !grant?.staff) fail('/staff', 'staff_reserved');
@@ -610,7 +628,10 @@ const v1Unrepresentable = reason => Object.assign(new Error(V1_CODE), { code: V1
  * `person`: the per-box person entry (legacy.personOnly kept); `context`: the per-box context entry (the
  * generic context ops after the app's own, for an app that declares data.context). A public MCP app
  * (service mcp, auth none) is served as today's generic relay: `mini-app.read` plus an `mcp` block of its
- * ops' tools; every op must be a `read`, or it throws (the relay is a read on the box). A v2 `admins` app is served restricted (the narrower v1 audience: allowlisted tenants only).
+ * ops' tools; every op must be a `read`, or it throws (the relay is a read on the box). A context-only app
+ * (service none, FIRST_PARTY `none`: Mosaic) is served as `mini-app.read` and its data.context with no `mcp`
+ * block, as cp#334's MOSAIC and MOSAIC_CONTEXT; any other kind-none document throws (it never passed the
+ * validator). A v2 `admins` app is served restricted (the narrower v1 audience: allowlisted tenants only).
  * @returns {Record<string, any>}
  */
 function v1Entry(m, { person = false, context = false } = {}) {
@@ -619,6 +640,9 @@ function v1Entry(m, { person = false, context = false } = {}) {
   const keepOp = op => person || !personOnly || !personOnly.operations.includes(op.name);
   const keepPermission = p => person || !personOnly || !personOnly.permissions.includes(p.label);
   const relay = m.service.kind === 'mcp' && m.service.auth?.mode === 'none';
+  const contextOnly = m.service.kind === 'none';
+  if (contextOnly && (!(own(FIRST_PARTY, m.id) && FIRST_PARTY[m.id].none === true) || m.operations.length || !m.data?.context ||
+      own(m.service, 'baseUrl') || own(m.service, 'auth'))) throw v1Unrepresentable('none_not_context_only');
   const entry = { id: m.id, name: m.name, description: m.description, version: m.version, homepage: m.homepage };
   if (m.legacy?.provenance) entry.provenance = m.legacy.provenance;
   if (m.service.auth?.mode === 'oauth') entry.auth = 'oauth';
@@ -629,7 +653,7 @@ function v1Entry(m, { person = false, context = false } = {}) {
   entry.permissions = m.permissions.filter(keepPermission).map(p => ({ kind: p.kind, label: p.label, description: p.description }));
   entry.skills = m.skills.map(skill => skill.name);
   const ops = m.operations.filter(keepOp);
-  entry.operations = relay ? [RELAY_OPERATION] : ops.map(op => op.name);
+  entry.operations = relay || contextOnly ? [RELAY_OPERATION] : ops.map(op => op.name);
   if (context && m.data?.context) entry.operations.push(...CONTEXT_OPERATIONS);
   if (m.data?.context) entry.data = { context: { maxEntries: m.data.context.maxEntries } };
   if (relay) {

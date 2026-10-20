@@ -6,6 +6,7 @@
   "description": "Recognize someone in your village with a Gold Star.",
   "homepage": "https://agents.edgecity.live",
   "visibility": "everyone",
+  "staff": true,
   "permissions": [
     {
       "kind": "read",
