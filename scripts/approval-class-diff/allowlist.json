@@ -1,0 +1,12 @@
+{
+  "about": "Overlay calls the approval.md CLASS-DIFF job (scripts/approval-class-diff.sh, .github/workflows/approval-class-diff.yml) lets resolve to a human-only class at the pinned core, or lets move from running to a deny when the pin moves. Read by approval.md's scripts/overlay-recipes-check.mjs: each entry is keyed by the recipe's file and its exact command text, carries the reason (Carter accepts a move by name), and may carry flip {from, to} to cover only that move. An entry no held recipe matches fails the job, so delete it when the recipe or the classifier moves.",
+  "entries": [
+    {
+      "file": "skills/agent-plaza/SKILL.md",
+      "command": "python3 skills/agent-plaza/scripts/agent_plaza_selfie.py    --root \"$HERMES_HOME\"    --cooldown-hours 0",
+      "class": "policy.core",
+      "rule": "protected-path",
+      "reason": "OPEN, owner or Carter decides (EDGEOS-BLOCK sweep; approval-md#663 owner item 1; brief F3). Since core 0.4.6 (APRV-511, protected-path) the operator selfie recipe that names the Hermes home with --root classes policy.core, human-only under the template, so an agent following it is denied. Mirrors approval.md's own allowlist entry (scripts/overlay-recipes/allowlist.json). Delete it in the PR that changes the recipe or the rule: a stale entry fails this job."
+    }
+  ]
+}

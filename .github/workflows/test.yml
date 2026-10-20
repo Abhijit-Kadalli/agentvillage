@@ -179,3 +179,82 @@ jobs:
         run: python -m pytest -q
         env:
           AV_INDEX_PLUGIN_TEST_DIR: ${{ github.workspace }}/.test-deps/index-hermes-plugin
+
+  # CLASS-DIFF release gate (B-167; lead ruling CLAIMS L15681 (1); EDGEOS-BLOCK).
+  #
+  # Core 0.4.6 reached the boxes on 19 Oct and every EdgeOS recipe this overlay
+  # ships moved from auto (network.call) to a human-only deny (policy.core):
+  # nothing had run the fleet's own recipes through the new core. This job runs
+  # them on every pull request, every push to main and every Tag release call
+  # (so a tag is only cut from a commit where it passed): the overlay's whole
+  # shipped corpus (every skills/ and workspace/ recipe, the inline cron
+  # prompts, and the template's tools: lines for the box harness calls) at the
+  # approval.md core the base pins and at the core this tree pins
+  # (APPROVAL_MD_PINNED in scripts/tests/fetch-url-shape.test.ts, the control
+  # plane's APPROVAL_MD_VERSION). A pull request that moves the pin shows every
+  # call whose class, decision or card style moves, and fails when an existing
+  # call moves from auto, sampled or card to human-only or refused, unless
+  # scripts/approval-class-diff/allowlist.json names it with a reason. At an
+  # unchanged pin it is approval.md's corpus check for this tree: a recipe that
+  # resolves human-only at the pin fails unless allowlisted.
+  #
+  # One source of truth: the extractor and the check are approval.md's own
+  # scripts, checked out at the pinned commit below (approval-md/approval.md is
+  # public, so no token). Move the ref to the v0.4.7 tag once that release
+  # carries them; until then it names the head commit of the approval.md B-167 PR.
+  #
+  # The report (first line: the GATE line) is the job summary and the
+  # `class-diff` artifact (markdown + JSON).
+  class-diff:
+    name: approval class-diff (shipped corpus at the pinned core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Depth 2: on a pull request HEAD is GitHub's merge commit and HEAD^1 is
+      # the base branch; on a push HEAD^1 is the main this push moved from.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: check out approval.md's extractor and check at the pinned ref
+        uses: actions/checkout@v4
+        with:
+          repository: approval-md/approval.md
+          ref: c3021fa40ddc1a574d9263a4416031f3903f6ddf # APPROVAL_MD_TOOL_REF, see the comment above
+          path: .test-deps/approval-md-tool
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: class-diff, base pin -> this pin
+        env:
+          AV_APPROVAL_MD_TOOL_DIR: ${{ github.workspace }}/.test-deps/approval-md-tool
+          AV_CLASS_DIFF_OUT: ${{ github.workspace }}/class-diff
+        run: |
+          set +e
+          bash scripts/approval-class-diff.sh HEAD^1
+          status=$?
+          if [ -f class-diff/class-diff.md ]; then cat class-diff/class-diff.md >> "$GITHUB_STEP_SUMMARY"; fi
+          exit $status
+      # The gate's own fixtures (flip fails, stay passes, new is reported) through the same script and tool.
+      - name: class-diff fixtures
+        if: always()
+        env:
+          AV_APPROVAL_MD_TOOL_DIR: ${{ github.workspace }}/.test-deps/approval-md-tool
+        # A block, not a one-line `run: bun test`: Tag release reads test.yml's one such line as the suite
+        # list (tag-release.ts suiteDirs), and this file already sits in that list's scripts/tests.
+        run: |
+          bun test scripts/tests/approval-class-diff.test.ts
+      - name: upload the class-diff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: class-diff
+          path: class-diff/
+          if-no-files-found: warn
