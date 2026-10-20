@@ -6,7 +6,7 @@
       "command": "python3 skills/agent-plaza/scripts/agent_plaza_selfie.py    --root \"$HERMES_HOME\"    --cooldown-hours 0",
       "class": "policy.core",
       "rule": "protected-path",
-      "reason": "OPEN, owner or Carter decides (EDGEOS-BLOCK sweep, agentvillage #427 report). The operator selfie recipe names the Hermes home with --root and has classed policy.core since 0.4.6 (APRV-511, protected-path). Dropping --root would class exec.local but dodges a protected-path rule for a script that reads $HERMES_HOME/.env, so neither the overlay nor core was changed. Listed so the check gates every other recipe; remove it once the recipe or the rule is decided.",
+      "reason": "operator recipe; an agent run is human-only by design (approval L16259). The script reads $HERMES_HOME/.env, so an agent following --root \"$HERMES_HOME\" classes policy.core (protected-path) and is denied, which is the correct answer; dropping --root would only dodge the rule. Permanent entry.",
       "scope": "any",
       "accepted_by": "",
       "accepted_at": ""
@@ -158,7 +158,7 @@
       "file": "skills/README.md",
       "command": "*",
       "scope": "box",
-      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating. A whole-file entry is safe only because the corpus is pinned at 63 recipes (ci.yml CORPUS_RECIPES and PIN_CORPUS) and drift fails the job, so a new README line cannot ride the wildcard.",
       "accepted_by": "",
       "accepted_at": ""
     },
@@ -166,7 +166,7 @@
       "file": "skills/recall/README.md",
       "command": "*",
       "scope": "box",
-      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating. A whole-file entry is safe only because the corpus is pinned at 63 recipes (ci.yml CORPUS_RECIPES and PIN_CORPUS) and drift fails the job, so a new README line cannot ride the wildcard.",
       "accepted_by": "",
       "accepted_at": ""
     },
@@ -174,7 +174,7 @@
       "file": "skills/edge-india/README.md",
       "command": "*",
       "scope": "box",
-      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating. A whole-file entry is safe only because the corpus is pinned at 63 recipes (ci.yml CORPUS_RECIPES and PIN_CORPUS) and drift fails the job, so a new README line cannot ride the wildcard.",
       "accepted_by": "",
       "accepted_at": ""
     },
@@ -182,7 +182,7 @@
       "file": "skills/edge-esmeralda/README.md",
       "command": "*",
       "scope": "box",
-      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating.",
+      "reason": "Operator README: install lines, env samples and placeholder lines a human runs or reads, never an agent recipe. Refused by the hook at every core since before 0.4.5 (hook-unclassified, hook-unparseable, hook-harness-launch-unruled); #663 already reports them without gating. A whole-file entry is safe only because the corpus is pinned at 63 recipes (ci.yml CORPUS_RECIPES and PIN_CORPUS) and drift fails the job, so a new README line cannot ride the wildcard.",
       "accepted_by": "",
       "accepted_at": ""
     },
