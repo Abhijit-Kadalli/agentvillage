@@ -37,6 +37,10 @@
  * `EDGEOS_HOSTS`) under the documented `/api/v1` base; anything else is refused before any request.
  * Every id must be a UUID and every timestamp an ISO-8601 instant with its zone; the query goes through
  * URLSearchParams, so no argument can change the host or the path. Redirects are refused.
+ * One limit, shared with events.ts, directory.ts and profile.ts (ov#437 review-b N2): Bun's own verbose-fetch
+ * setting (`BUN_CONFIG_VERBOSE_FETCH`, from the environment or a cwd `.env.local`) makes bun print each request
+ * with its Authorization header; this script cannot turn that off, and on a box the approval hook refuses both
+ * ways to set it (an export is unclassified, a write to `$HERMES_HOME/.env*` human-only).
  *
  * Exit codes (the skill's fail-soft, as events.ts, directory.ts and profile.ts):
  *   0 printed EdgeOS's answer;

@@ -673,8 +673,8 @@ def _script_instant(value: str) -> bool:
 
 def _script_cwd_trusted(workdir: Any) -> bool:
     """True when `skills/edgeos/scripts/edgeos.ts` resolves to the installed
-    script: the call runs in the Hermes folder and nothing makes bun load other
-    code first (security review 1).
+    script: the call runs in the Hermes folder and no bunfig file this check
+    can see would make bun load other code first (security review 1).
 
     The path is relative, so it names the installed script only from
     `$HERMES_HOME`: the terminal's default directory (no `workdir`, as the
@@ -685,6 +685,13 @@ def _script_cwd_trusted(workdir: Any) -> bool:
     A directory a previous call `cd`'d into without a `workdir` is outside what
     an observer sees (module docstring); the overlay's terminal starts every
     call in its configured cwd.
+
+    Not checked here (ov#437 review-b N1): a preload through the environment
+    (`BUN_OPTIONS`, an `.env.local` bun reads in the cwd). This function cannot
+    see the terminal's environment; on a box the approval hook refuses both
+    ways to set it (an `export` or a `NAME=value` prefix is unclassified, a
+    write to `$HERMES_HOME/.env*` is human-only), which is the same "an
+    `export` in an earlier call" limit the module docstring names.
     """
     home = hermes_home()
     if workdir is None or workdir == "":

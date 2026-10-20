@@ -90,6 +90,40 @@ export function skillCommands(text = readFileSync(SKILL, "utf8")): { where: stri
   });
 }
 
+/** The 11 v2.1.9 curl recipes (continuations joined, placeholders filled), by the heading the verb kept. */
+const ID = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+const B = "${EDGEOS_API_BASE:-https://api.edgeos.world/api/v1}";
+const AUTH = '-H "Authorization: Bearer $EDGEOS_API_KEY"';
+const POST = `-X POST ${AUTH} -H "Content-Type: application/json"`;
+const EV = `${B}/events/portal/events?popup_id=${ID}&event_status=published`;
+export const LEGACY: Record<string, string> = {
+  "List upcoming events": `curl -s ${AUTH} --url "${EV}&start_after=2026-10-21T10:00:00Z&start_before=2026-10-22T10:00:00Z"`,
+  "List events in a date range": `curl -s ${AUTH} --url "${EV}&start_after=2026-10-21T10:00:00Z&start_before=2026-10-22T10:00:00Z"`,
+  "Search events by title": `curl -s ${AUTH} --url "${EV}&search=KEYWORD&start_after=2026-10-21T10:00:00Z"`,
+  "Filter by tag, kind, venue, or track": `curl -s ${AUTH} --url "${EV}&tags=AI&tags=Privacy&start_after=2026-10-21T10:00:00Z&start_before=2026-10-22T10:00:00Z"`,
+  "Only events you've RSVPed to": `curl -s ${AUTH} --url "${EV}&rsvped_only=true&start_after=2026-10-21T10:00:00Z"`,
+  "Fetch a single event": `curl -s ${AUTH} --url "${B}/events/portal/events/${ID}"`,
+  "RSVP to a one-off event": `curl -s ${POST} --url "${B}/event-participants/portal/register/${ID}" -d '{}'`,
+  "RSVP to one occurrence of a recurring event": `curl -s ${POST} --url "${B}/event-participants/portal/register/${ID}" -d '{"occurrence_start":"2026-10-21T10:00:00Z"}'`,
+  "Cancel a previous RSVP": `curl -s ${POST} --url "${B}/event-participants/portal/cancel-registration/${ID}" -d '{}'`,
+  "List who is going to one event": `curl -s ${AUTH} --url "${B}/event-participants/portal/participants?event_id=${ID}&skip=0&limit=100"`,
+  "List active venues for a popup": `curl -s ${AUTH} --url "${B}/event-venues/portal/venues?popup_id=${ID}&limit=100"`,
+};
+
+/** (heading, filled command) for each EdgeOS-script run in the skill, the heading being the last bold text before it. */
+function verbRuns(): [string, string][] {
+  const text = readFileSync(SKILL, "utf8");
+  const out: [string, string][] = [];
+  for (const m of text.matchAll(/```sh\n(.*?)```/gs)) {
+    let command = m[1].trim();
+    if (!command.startsWith("bun skills/edgeos/scripts/edgeos.ts ")) continue;
+    for (const [re, v] of FILL) command = command.replace(re, v);
+    const bold = [...text.slice(0, m.index).matchAll(/\*\*(.+?)\*\*/g)];
+    out.push([bold[bold.length - 1][1].replace(/\s*\(.*\)/, "").replace(/:$/, "").trim(), command]);
+  }
+  return out;
+}
+
 /** The v2.1.9 RSVP recipe (continuations joined): the positive control. */
 const LEGACY_RSVP =
   'curl -s -X POST -H "Authorization: Bearer $EDGEOS_API_KEY" -H "Content-Type: application/json" ' +
@@ -149,6 +183,20 @@ function hook(b: Box, command: string, workdir: string): Verdict {
   return { exit: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 }
 
+/** The command's classes as core's `classifyForHook` gives them from `cwd` (the hook's own classifier). */
+async function classesOf(command: string, cwd: string, hermes: string): Promise<string> {
+  const { classifyForHook } = await import(join(CORE, "dist", "src", "cli", "hook.js"));
+  const saved = process.env.HERMES_HOME;
+  process.env.HERMES_HOME = hermes;
+  try {
+    const res = classifyForHook(command, [], cwd, []).result;
+    return res.ok ? [...res.classes].sort().join("+") : `refused:${res.code}`;
+  } finally {
+    if (saved === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = saved;
+  }
+}
+
 const denied = (v: Verdict) => v.exit !== 0 || /account\.credential|human-only|"block"|deny/i.test(v.out);
 
 describe.skipIf(!HAVE_CORE)("the real approval hook allows every edgeos skill command from the Hermes folder (AV_APPROVAL_MD_CORE_DIR)", () => {
@@ -156,21 +204,41 @@ describe.skipIf(!HAVE_CORE)("the real approval hook allows every edgeos skill co
     expect(JSON.parse(readFileSync(join(CORE, "package.json"), "utf8")).version).toBe(APPROVAL_MD_PINNED);
   });
 
-  test("every command: allowed with workdir = HERMES_HOME; the v2.1.9 curl is denied there (control)", () => {
+  test("every command: allowed with workdir = HERMES_HOME; the v2.1.9 curl is denied there (control)", async () => {
     const b = box();
     const commands = skillCommands();
     expect(commands.length).toBeGreaterThanOrEqual(11 + 4 + 2 + 3);
     const rows: string[] = [];
     const held: string[] = [];
+    const classes: string[] = [];
     for (const { where, command } of commands) {
       const atHermes = hook(b, command, b.hermes);
       const atHome = hook(b, command, b.home);
-      rows.push(`${where}\thh=${atHermes.exit}\thome=${atHome.exit}\t${command}`);
+      const cls = await classesOf(command, b.hermes, b.hermes);
+      classes.push(cls);
+      rows.push(`${where}\thh=${atHermes.exit}\thome=${atHome.exit}\tclass=${cls}\t${command}`);
       if (denied(atHermes)) held.push(`${where} ${command} -> exit ${atHermes.exit} ${atHermes.out.slice(0, 300)}`);
     }
+    // approval N1: the class of every skill command, so the class-diff table reads off this test.
+    expect([...new Set(classes)]).toEqual(["exec.local"]);
     const control = hook(b, LEGACY_RSVP, b.hermes);
     rows.push(`control\thh=${control.exit}\t-\t${LEGACY_RSVP}`);
     if (process.env.EDGEOS_CORPUS_PRINT) console.log(rows.join("\n"));
+    // The class-diff table, v2.1.9 curl -> v2.1.10 verb, per recipe (ov#437 PR body "Class change").
+    const diff: string[] = ["recipe\tv2.1.9 class from HERMES_HOME (hook exit)\tv2.1.9 class from ~ (hook exit)\tv2.1.10 class (hook exit from HERMES_HOME)"];
+    const seen = new Set<string>();
+    for (const [heading, command] of verbRuns()) {
+      expect(heading in LEGACY).toBe(true);
+      seen.add(heading);
+      const old = LEGACY[heading];
+      const oldHh = await classesOf(old, b.hermes, b.hermes);
+      const oldHome = await classesOf(old, b.home, b.hermes);
+      expect([heading, oldHh]).toEqual([heading, "account.credential+network.call"]);
+      expect([heading, oldHome]).toEqual([heading, "network.call"]);
+      diff.push(`${heading}\t${oldHh} (${hook(b, old, b.hermes).exit})\t${oldHome} (${hook(b, old, b.home).exit})\t${await classesOf(command, b.hermes, b.hermes)} (${hook(b, command, b.hermes).exit})`);
+    }
+    expect([...seen].sort()).toEqual(Object.keys(LEGACY).sort());
+    if (process.env.EDGEOS_CORPUS_PRINT) console.log(diff.join("\n"));
     expect(held).toEqual([]);
     expect(control.exit).not.toBe(0);
     expect(control.out).toContain("account.credential");
