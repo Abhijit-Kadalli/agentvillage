@@ -224,9 +224,11 @@ def test_the_recipes_say_to_run_from_the_home_directory_not_the_hermes_folder():
     # (install/config.ts), and core 0.4.6 holds a curl that reads `$EDGEOS_API_KEY` as
     # account.credential when the workdir holds the box's .env; from the home directory it runs.
     text = SKILL.read_text()
-    # approval@edge2's wording (CLAIMS L15934), verbatim.
-    assert ("Run every curl command in this skill with the terminal's working directory set to your home "
+    # approval@edge2's final wording (CLAIMS L15946), verbatim: curl from ~, the bun scripts from the Hermes folder.
+    assert ("Run every `curl` command in this skill through `terminal` with `workdir` set to your home "
             "directory (`~`), not your Hermes folder; from the Hermes folder these calls are refused.") in text
+    assert ("Run the `bun skills/edgeos/scripts/...` commands from your Hermes folder as before "
+            "(their paths are relative to it).") in text
     assert "(a `workdir` is fine)" not in text.split("## 3")[0]
 
 
