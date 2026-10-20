@@ -141,6 +141,12 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # The App's two secrets live ONLY in this GitHub Environment, restricted to
+    # the main branch with no required reviewers (lead ruling 20 Oct). A run on
+    # any other ref, a same-repo PR branch included, gets no secrets, so the
+    # gate below skips green; the comment posts once a workflow_run follow-up
+    # runs this job from main.
+    environment: mini-apps-bot
     permissions:
       contents: read
     steps:
