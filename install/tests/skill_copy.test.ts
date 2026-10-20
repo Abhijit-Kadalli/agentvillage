@@ -42,13 +42,13 @@ function collect(): { lines: string[]; log: (line: string) => void } {
   return { lines, log: (line: string) => lines.push(line) };
 }
 
-test("geo-esmeralda is retired, and no name is both shipped and retired", () => {
+test("geo-esmeralda and edge-esmeralda are retired, and no name is both shipped and retired", () => {
   expect(RETIRED_SKILL_DIRS).toContain("geo-esmeralda");
   const shipped = new Set<string>(EDGE_SKILL_NAMES);
   expect(RETIRED_SKILL_DIRS.filter((name) => shipped.has(name))).toEqual([]);
-  // edge-esmeralda stays installed as background (orchestrator's call).
-  expect(EDGE_SKILL_NAMES).toContain("edge-esmeralda");
-  expect(RETIRED_SKILL_DIRS as readonly string[]).not.toContain("edge-esmeralda");
+  // BUG-esmeralda: the previous popup's background skill leaves the boxes too.
+  expect(EDGE_SKILL_NAMES as readonly string[]).not.toContain("edge-esmeralda");
+  expect(RETIRED_SKILL_DIRS as readonly string[]).toContain("edge-esmeralda");
 });
 
 test("every retired name is one plain directory name", () => {
@@ -105,11 +105,11 @@ test("Hermes bundled skills, a resident's own skill and every shipped Edge skill
 
 test("a name still shipped in EDGE_SKILL_NAMES is never removed, even if passed in", () => {
   const root = temp("av-skills-");
-  skill(root, "edge-esmeralda");
+  skill(root, "edge-india");
   const { lines, log } = collect();
 
-  expect(removeRetiredSkillDirs(root, ["edge-esmeralda"], log)).toEqual([]);
-  expect(existsSync(join(root, "edge-esmeralda", "SKILL.md"))).toBe(true);
+  expect(removeRetiredSkillDirs(root, ["edge-india"], log)).toEqual([]);
+  expect(existsSync(join(root, "edge-india", "SKILL.md"))).toBe(true);
   expect(lines).toEqual([]);
 });
 
