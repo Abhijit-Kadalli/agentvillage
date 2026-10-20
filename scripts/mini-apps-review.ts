@@ -85,7 +85,7 @@ export const HUMAN_CODES = Object.freeze(new Set(["core_path", "baseline_skill",
   "empty_diff", "multiple_apps", "gate_changed", "manifest_deleted", "no_manifest",
   "path_status_unknown", "path_mode_unusual", "binary_unscanned", "base_manifest_missing", "base_manifest_unexpected", "base_unparseable",
   "base_invalid", "catalog_unreadable", "catalog_unlisted", "check_not_run", "needs_card_downgrade", "needs_card_removed",
-  "needs_card_replaced", "needs_card_review", "oauth_review", "context_ceiling_above_private", "events_review",
+  "needs_card_replaced", "needs_card_review", "cross_app_target", "cross_app_host", "oauth_review", "context_ceiling_above_private", "events_review",
   "events_entering_everyone", "visibility_raise_multi_step", "visibility_raise_with_major", "author_not_owner"]));
 /**
  * The files a manifest lane may hold: P0-1's closed mini-apps/ tree. No conformance.json: anyone can hand-write
@@ -556,6 +556,44 @@ const ownerLogins = (m: any): string[] | null => {
   return list.length ? list : null;
 };
 
+// ---- Targets, normalised for matching (review-b N-c) -----------------------------------------------------
+/** A path for matching: %XX of an unreserved character decoded, lower case, "//" collapsed, no trailing "/". */
+const matchPath = (p: string) => {
+  const s = p.replace(/%([0-9A-Fa-f]{2})/g, (m, hex) => { const c = String.fromCharCode(parseInt(hex, 16)); return /[A-Za-z0-9._~-]/.test(c) ? c : m.toUpperCase(); })
+    .toLowerCase().replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+  return s.startsWith("/") ? s : `/${s}`;
+};
+/** The host (lower case, no trailing dot) and base path of a baseUrl, or null when there is none. */
+export function endpointOf(baseUrl: unknown): { host: string; path: string } | null {
+  if (typeof baseUrl !== "string") return null;
+  try {
+    const u = new URL(baseUrl);
+    return u.hostname ? { host: u.hostname.toLowerCase().replace(/\.$/, ""), path: matchPath(u.pathname) } : null;
+  } catch { return null; }
+}
+/**
+ * The keys one op's target is matched by. `local` ignores the host (one app against itself, across a
+ * baseUrl change); `global` is host-qualified (one app against another). A path is keyed both as written
+ * and joined under the baseUrl's path, since either reading can be what is fetched; matching on any key is
+ * the fail-closed direction (more matches, never fewer). A tool name is lower-cased for the same reason.
+ */
+export function targetKeys(op: any, baseUrl: unknown): { local: string[]; global: string[] } {
+  const t = op?.target;
+  if (!isObject(t)) return { local: [], global: [] };
+  const ep = endpointOf(baseUrl);
+  const at = ep ? `${ep.host}${ep.path === "/" ? "" : ep.path}` : null;
+  if (typeof t.tool === "string") {
+    const k = `tool ${t.tool.toLowerCase()}`;
+    return { local: [k], global: at ? [`${at} ${k}`] : [] };
+  }
+  if (typeof t.path === "string") {
+    const forms = [...new Set([matchPath(t.path), ...(ep ? [matchPath(`${ep.path}/${t.path}`)] : [])])].map(p => `path ${p}`);
+    return { local: forms, global: ep ? forms.map(f => `${ep.host} ${f}`) : [] };
+  }
+  return { local: [canon(t).toLowerCase()], global: [] };
+}
+const overlaps = (a: readonly string[], b: ReadonlySet<string>) => a.some(k => b.has(k));
+
 /** Judge one pull request. Pure over `src` and `validator`; throws BotError only for a broken input. */
 export function evaluate(src: Source, validator: Validator): Report {
   const findings: Finding[] = [];
@@ -777,14 +815,18 @@ export function evaluate(src: Source, validator: Validator): Report {
     }
     // An alias: a card-less op on a target a needs-card op uses, at the merge base, the base tip or the head
     // (review-b S1, N-d). Keeping X.confirm (needs-card) and adding X.quick (write) or X.peek (read) on the same
-    // tool or path is a downgrade.
-    const targetOf = (op: any) => !isObject(op?.target) ? null : typeof op.target.tool === "string" ? `tool ${op.target.tool}` : typeof op.target.path === "string" ? `path ${op.target.path}` : canon(op.target);
-    const cardTargets = new Set([...bo.values(), ...byName(tm).values(), ...ho.values()].filter(op => op.class === "needs-card").map(targetOf).filter((t): t is string => t !== null));
+    // tool or path is a downgrade. Targets are matched normalised (targetKeys: trailing "/", case, the baseUrl's
+    // path; review-b N-c), each manifest's ops under its own baseUrl.
+    const tipOps = byName(tm);
+    const cardKeys = new Set<string>();
+    for (const [m, list] of [[bm, bo], [tm, tipOps], [hm, ho]] as const) {
+      for (const op of list.values()) if (op.class === "needs-card") for (const k of targetKeys(op, m?.service?.baseUrl).local) cardKeys.add(k);
+    }
     for (const op of ho.values()) {
-      const t = targetOf(op);
-      if (op.class === "needs-card" || t === null || !cardTargets.has(t)) continue;
+      const keys = targetKeys(op, hm?.service?.baseUrl).local;
+      if (op.class === "needs-card" || !overlaps(keys, cardKeys)) continue;
       downgraded = true;
-      add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${op.name} (${op.class}) calls ${t}, which a needs-card op calls (at the merge base, the base tip or head): a card-less alias is a downgrade, core` });
+      add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${op.name} (${op.class}) calls ${keys.find(k => cardKeys.has(k))}, which a needs-card op calls (at the merge base, the base tip or head): a card-less alias is a downgrade, core` });
     }
     // A needs-card op at the merge base with no op of that name at head is removed: the human read in every lane,
     // never a PASS (review-b S, the two-pull-request split: PR1 removes the card, PR2 adds a write on its target).
@@ -793,6 +835,38 @@ export function evaluate(src: Source, validator: Validator): Report {
     const newPlain = [...ho.values()].some(op => !bo.has(op.name) && op.class !== "needs-card");
     if (bm && removed.length && newPlain) add({ code: "needs_card_replaced", severity: "S", file: manifestPath!, text: "a needs-card op was removed and a new op without a card was added: the human read decides whether it is a renamed downgrade" });
     if (downgraded) lane = "core";
+
+    // Another first-party app's endpoint (review-b N-c): an op whose target resolves to an op target another
+    // app in catalog.json calls (cross_app_target), or a baseUrl on another app's host (cross_app_host), is core.
+    let crossApp = false;
+    const others = new Map<string, any[]>();
+    const listed = (read: ((p: string) => Bytes) | undefined) => { const c = read ? parseJson(read(CATALOG_PATH)) : { ok: false as const }; return c.ok && Array.isArray(c.value?.apps) ? c.value.apps.filter((x: unknown): x is string => typeof x === "string") : []; };
+    for (const read of [src.head, src.baseTip]) {
+      if (!read) continue;
+      for (const other of new Set<string>([...listed(src.head), ...listed(src.baseTip)])) {
+        if (other === laneId || !APP_ID.test(other)) continue;
+        const p = parseJson(read(`mini-apps/${other}/manifest.json`));
+        if (p.ok && isObject(p.value)) others.set(other, [...(others.get(other) ?? []), p.value]);
+      }
+    }
+    const mine = endpointOf(hm?.service?.baseUrl);
+    const myKeys = [...ho.values()].map(op => ({ op, keys: targetKeys(op, hm?.service?.baseUrl).global }));
+    for (const [other, manifests] of [...others].sort(([a], [b]) => a.localeCompare(b))) {
+      const theirs = new Map<string, any>();
+      for (const m of manifests) for (const op of ops(m)) for (const k of targetKeys(op, m.service?.baseUrl).global) if (!theirs.has(k)) theirs.set(k, op);
+      for (const { op, keys } of myKeys) {
+        const hit = keys.find(k => theirs.has(k));
+        if (!hit) continue;
+        crossApp = true;
+        add({ code: "cross_app_target", severity: "S", file: manifestPath!, text: `${op.name} calls ${hit}, which ${other}'s ${String(theirs.get(hit)?.name).slice(0, 80)} (${String(theirs.get(hit)?.class)}) calls: another app's endpoint is core` });
+      }
+      const host = mine ? manifests.map(m => endpointOf(m.service?.baseUrl)).find(e => e?.host === mine.host) : undefined;
+      if (mine && host) {
+        crossApp = true;
+        add({ code: "cross_app_host", severity: "S", file: manifestPath!, text: `service.baseUrl's host ${mine.host} is ${other}'s host: an app on another first-party app's host is core` });
+      }
+    }
+    if (crossApp) lane = "core";
   }
 
   // conformance: the bot runs P0-5's suite itself (release, L14465 (a)); a committed conformance.json is never

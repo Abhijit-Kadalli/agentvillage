@@ -82,6 +82,35 @@ function tooledManifest(visibility = "admins"): any {
   ];
   return m;
 }
+/** tinyshop as an https-json app: its needs-card op is POST /orders under https://api.tinyshop.example.org/v1. */
+function pathedManifest(visibility = "admins"): any {
+  const m = manifest(visibility);
+  m.operations = [
+    { name: "tinyshop.order.prepare", class: "prepare", target: { method: "POST", path: "/quote" } },
+    { name: "tinyshop.order.confirm", class: "needs-card", target: { method: "POST", path: "/orders" }, maxRequestBytes: 65536, timeoutMs: 60000, approval: { prepare: "tinyshop.order.prepare" } },
+  ];
+  return m;
+}
+/** A second invented first-party app, on its own host. */
+const OSKILL = "---\nname: othershop\ndescription: Another invented shop used only by these tests.\nversion: 1.0.0\nauthor: Test\n---\n\n# Other Shop\n\nUse the village tool only.\n";
+const OMP = "mini-apps/othershop/manifest.json", OSP = "skills/othershop/SKILL.md";
+function othershop(visibility = "admins"): any {
+  return {
+    manifest: 2, id: "othershop", name: "Other Shop", version: "1.0.0", description: "Another invented shop used only by these tests.",
+    homepage: "https://othershop.example.org", visibility,
+    permissions: [{ kind: "read", label: "Read the menu", description: "Read the invented menu." }],
+    service: { kind: "https-json", baseUrl: "https://api.othershop.example.org/v1", auth: { mode: "app-token", secretRef: "MINI_APP_OTHERSHOP_TOKEN" } },
+    operations: [{ name: "othershop.menu", class: "read", target: { method: "GET", path: "/menu" } }],
+    skills: [{ name: "othershop", version: "1.0.0", sha256: sha256(OSKILL), path: OSP }],
+  };
+}
+/** Both apps listed, as the base; a pull request that edits othershop's manifest only. */
+const twoApps = (tiny: any, other: any): Files => ({ "mini-apps/catalog.json": json({ catalog: 2, apps: ["tinyshop", "othershop"] }), [MP]: json(tiny), [SP]: SKILL, [OMP]: json(other), [OSP]: OSKILL });
+function onOther(edit: (m: any) => void, o: { tiny?: any; tip?: Files } = {}) {
+  const b = othershop(), h = clone(b);
+  edit(h);
+  return R.evaluate(source(twoApps(o.tiny ?? pathedManifest(), b), { [OMP]: json(h) }, { tip: o.tip }), V);
+}
 
 describe("the fixture", () => {
   test("is a valid v2 manifest by the shared validator, so every finding below is the check under test", () => {
@@ -627,6 +656,58 @@ describe("approval classes", () => {
     expect(has(pr(m => { m.description = "Other."; patch(m); }, { base: tooledManifest() }), "needs_card_removed")).toBe(false);
     const renamed = pr(m => { m.operations[2].name = "tinyshop.order.place"; m.version = "2.0.0"; }, { base: tooledManifest() });
     expect([has(renamed, "needs_card_removed", "S"), renamed.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+  });
+  test("review-b N-c: targets are matched normalised (a trailing slash, the case, the baseUrl's host and path)", () => {
+    const alias = (path: string, base = pathedManifest(), edit: (m: any) => void = () => {}) =>
+      pr(m => { edit(m); m.operations.push({ name: "tinyshop.orders", class: "read", target: { method: "GET", path } }); m.version = "2.0.0"; }, { base });
+    for (const path of ["/orders/", "/Orders", "/ORDERS/"]) {
+      const r = alias(path);
+      expect([path, has(r, "needs_card_downgrade", "S"), r.lane, r.verdict, noM(r)]).toEqual([path, true, "core", "NEEDS_HUMAN", []]);
+    }
+    // The base path moved out of the baseUrl into the target: the same endpoint.
+    const moved = alias("/v1/orders", pathedManifest(), m => { m.service.baseUrl = "https://api.tinyshop.example.org/"; });
+    expect([has(moved, "needs_card_downgrade", "S"), moved.lane, noM(moved)]).toEqual([true, "core", []]);
+    // An MCP tool name in another case.
+    const tool = pr(m => { m.operations.push({ name: "tinyshop.order.peek", class: "read", target: { tool: "Place_Order" } }); m.version = "2.0.0"; }, { base: tooledManifest() });
+    expect([has(tool, "needs_card_downgrade", "S"), tool.lane]).toEqual([true, "core"]);
+    // Controls: another path or tool stays in the lane.
+    const other = alias("/orders-history");
+    expect([has(other, "needs_card_downgrade"), other.lane]).toEqual([false, "admins"]);
+    // The helpers: the host is lower case with no trailing dot, the path has no trailing slash.
+    expect(R.endpointOf("https://API.TinyShop.example.org./v1/")).toEqual({ host: "api.tinyshop.example.org", path: "/v1" });
+    expect(R.endpointOf("https://api.tinyshop.example.org")).toEqual({ host: "api.tinyshop.example.org", path: "/" });
+    expect(R.endpointOf(undefined)).toBeNull();
+    expect(R.targetKeys({ target: { method: "GET", path: "/Orders/" } }, "https://API.TinyShop.example.org/v1/"))
+      .toEqual(R.targetKeys({ target: { method: "POST", path: "/orders" } }, "https://api.tinyshop.example.org/v1"));
+    expect(R.targetKeys({ target: { method: "GET", path: "/orders" } }, "https://api.tinyshop.example.org/v1"))
+      .toEqual({ local: ["path /orders", "path /v1/orders"], global: ["api.tinyshop.example.org path /orders", "api.tinyshop.example.org path /v1/orders"] });
+    expect(R.targetKeys({ target: { tool: "Place_Order" } }, "https://MCP.tinyshop.example.org/mcp")).toEqual({ local: ["tool place_order"], global: ["mcp.tinyshop.example.org/mcp tool place_order"] });
+  });
+  test("review-b N-c: a target on another first-party app's endpoint is core (cross_app_target), and so is a baseUrl on its host (cross_app_host)", () => {
+    expect(V.validateManifest(othershop()).errors ?? []).toEqual([]);
+    const untouched = onOther(m => { m.description = "Reworded."; patch(m); });
+    expect([untouched.lane, untouched.verdict, codes(untouched).filter(c => c.startsWith("cross_app"))]).toEqual(["admins", "PASS", []]);
+    // review-b's probe: othershop's baseUrl pointed at tinyshop's host, and a write on tinyshop's needs-card target.
+    const probe = onOther(m => { m.service.baseUrl = "https://api.tinyshop.example.org/v1"; m.operations.push({ name: "othershop.order", class: "write", target: { method: "POST", path: "/orders" } }); m.version = "2.0.0"; });
+    expect([has(probe, "cross_app_target", "S"), has(probe, "cross_app_host", "S"), probe.lane, probe.verdict, noM(probe)]).toEqual([true, true, "core", "NEEDS_HUMAN", []]);
+    expect(probe.findings.find(f => f.code === "cross_app_target")?.text).toContain("tinyshop's tinyshop.order.confirm (needs-card)");
+    // The same endpoint reached through another split of baseUrl and path.
+    const split = onOther(m => { m.service.baseUrl = "https://api.tinyshop.example.org/"; m.operations.push({ name: "othershop.order", class: "write", target: { method: "POST", path: "/v1/Orders/" } }); m.version = "2.0.0"; });
+    expect([has(split, "cross_app_target", "S"), split.lane]).toEqual([true, "core"]);
+    // The host rule alone: tinyshop's host, no shared target.
+    const host = onOther(m => { m.service.baseUrl = "https://api.tinyshop.example.org/v2"; m.version = "2.0.0"; });
+    expect([has(host, "cross_app_host", "S"), has(host, "cross_app_target"), host.lane, host.verdict]).toEqual([true, false, "core", "NEEDS_HUMAN"]);
+    expect(R.HUMAN_CODES.has("cross_app_target") && R.HUMAN_CODES.has("cross_app_host")).toBe(true);
+    // Control: othershop's own /orders on its own host is not another app's endpoint.
+    const own = onOther(m => { m.operations.push({ name: "othershop.order", class: "write", target: { method: "POST", path: "/orders" } }); m.version = "2.0.0"; });
+    expect([codes(own).filter(c => c.startsWith("cross_app")), own.lane]).toEqual([[], "admins"]);
+    // An app main listed after the fork counts too (read at the base tip).
+    const NMP = "mini-apps/newshop/manifest.json";
+    const newshop = { ...othershop(), id: "newshop", service: { ...othershop().service, baseUrl: "https://api.newshop.example.org/v1" } };
+    const tip = { "mini-apps/catalog.json": json({ catalog: 2, apps: ["tinyshop", "othershop", "newshop"] }), [NMP]: json(newshop) };
+    const late = onOther(m => { m.service.baseUrl = "https://api.newshop.example.org/v1"; m.version = "2.0.0"; }, { tip });
+    expect([has(late, "cross_app_host", "S"), late.lane]).toEqual([true, "core"]);
+    expect(has(onOther(m => { m.service.baseUrl = "https://api.newshop.example.org/v1"; m.version = "2.0.0"; }), "cross_app_host")).toBe(false);
   });
   test("review-b N-d: a needs-card op main gained after the fork, plus a write alias on its target in the pull request: NEEDS_HUMAN, core", () => {
     const atTip = tooledManifest(); atTip.version = "1.1.0";
