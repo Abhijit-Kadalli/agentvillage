@@ -1021,9 +1021,10 @@ describe("git and the CLI", () => {
       // The same through --base-tip, with --base at the fork: the tip is read as data.
       const viaTip = cli(["--base", fork, "--head", head, "--base-tip", "main", "--repo", g.dir]);
       expect([viaTip.code, viaTip.report.verdict, viaTip.report.lane, has(viaTip.report, "needs_card_downgrade", "S")]).toEqual([0, "NEEDS_HUMAN", "core", true]);
-      // Control: judged at the fork with no tip, the write is a plain new op (admins PASS): the tip is what catches it.
+      // Control: judged at the fork with no tip, the write is a plain new op (no alias, the admins lane): the tip is
+      // what catches it. (No verdict here: with P0-5's suite in the tree, its incomplete run is S in admins.)
       const forkOnly = R.review({ repo: g.dir, base: fork, head });
-      expect([forkOnly.verdict, forkOnly.lane, has(forkOnly, "needs_card_downgrade")]).toEqual(["PASS", "admins", false]);
+      expect([forkOnly.lane, has(forkOnly, "needs_card_downgrade"), noM(forkOnly)]).toEqual(["admins", false, []]);
       // A tip that does not resolve is a bot error (exit 2), never "no tip".
       const bad = cli(["--base", fork, "--head", head, "--base-tip", "no-such-branch-xyz", "--repo", g.dir]);
       expect([bad.code, bad.report.verdict, bad.report.findings[0].text]).toEqual([2, "FAIL", expect.stringMatching(/^git_failed: git rev-parse/)]);
