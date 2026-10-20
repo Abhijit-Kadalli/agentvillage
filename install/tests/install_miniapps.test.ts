@@ -323,7 +323,7 @@ test("For Kicks stages its exact reviewed skill and revokes only its permission 
 
 test("CX-2 stages only its named operations and removes private draft cache on uninstall", () => {
   const app = REVIEWED_MINI_APPS.find(x => x.id === "contextsling")!;
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps/contextsling/manifest.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(join(REPO, "plugins/village-bridge/contextsling/manifest.json"), "utf8"));
   expect(app.operations).toEqual(manifest.operations);
   expect(manifest.listed).toBe(false);
   expect(app.skills).toEqual(["contextsling"]);

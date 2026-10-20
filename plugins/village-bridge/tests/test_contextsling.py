@@ -249,11 +249,11 @@ class ContextslingTest(unittest.TestCase):
 
     def test_manifest_ceiling_and_closed_event_declarations_are_safe(self):
         root=Path(__file__).resolve().parents[3]
-        manifest=json.loads((root/'mini-apps/contextsling/manifest.json').read_text())
+        manifest=json.loads((root/'plugins/village-bridge/contextsling/manifest.json').read_text())
         self.assertEqual(manifest['contextCeiling'],cx.CONTEXT_CEILING)
         self.assertIs(manifest['listed'],False)
         self.assertEqual(manifest['operations'],mini.CONTEXTSLING['operations'])
-        schemas=json.loads((root/'mini-apps/contextsling/events.schema.json').read_text())['events']
+        schemas=json.loads((root/'plugins/village-bridge/contextsling/events.schema.json').read_text())['events']
         self.assertEqual(set(schemas),{'miniapp.'+op+'@1' for op in mini.CONTEXTSLING['operations']})
         for schema in schemas.values():
             self.assertFalse(schema['additionalProperties'])
