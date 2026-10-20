@@ -23,9 +23,9 @@ import { validateProjection } from "../../install/install_miniapps";
 // Nothing on a box reads these files yet (no skill, plugin or installer step): data only, no roll.
 //   bun test scripts/tests/mini-app-manifests.test.ts
 
-const MODULE_SHA256 = "0ef8aad53dbe3fb59c60ea93fbdfac0031df58432d7feb94af6e925055846657";
-const SCHEMA_SHA256 = "8d349a4356a066d1deb7f4284e1146f013e3602548a0bc799c546cdd140a13e3";
-const PINS_SHA256 = "2831f6c6008cc262879d616940346c6fe5507ae6239e002346e8c38beed093b9";
+const MODULE_SHA256 = "177a48d1c2320689a1e08724f5ed9a109433d15c12d0396a0262d98f9cf2afbb";
+const SCHEMA_SHA256 = "ab1af282cb667b2116331879bd4c390d545a4452c944a0a6159edf1a4ac9f729";
+const PINS_SHA256 = "7394b24f925f293af386cef5962eda27b28dbb72cb02ba1dd94e787dc7899df1";
 const REPO = join(import.meta.dir, "..", "..");
 const DIR = join(REPO, "mini-apps");
 const m = createRequire(import.meta.url)("../mini-apps-manifests.cjs");
@@ -91,7 +91,7 @@ describe("the shared files", () => {
 describe("mini-apps/: the published catalog", () => {
   test("catalog.json is a valid index, in the order the cp serves, and mini-apps/ holds only reviewed catalog files", () => {
     expect(m.checkSchema(index, m.INDEX_SCHEMA)).toEqual([]);
-    expect(index.apps).toEqual(["gold-stars", "dizko", "zzzbot", "slopfolio", "forkicks"]);
+    expect(index.apps).toEqual(["gold-stars", "dizko", "zzzbot", "slopfolio", "forkicks", "mosaic"]);
     expect(treeViolations(DIR, index.apps)).toEqual([]);
   });
 
@@ -143,6 +143,41 @@ describe("mini-apps/: the published catalog", () => {
     for (const opts of [{}, { person: true }, { person: true, context: true }]) {
       const projection = { version: 1, apps: index.apps.map(entry(opts)) };
       expect(validateProjection(projection)).toEqual(projection);
+    }
+  });
+
+  test("service.kind none: Mosaic's manifest serves the installer's two Mosaic lists, no mcp block; every other form is refused", () => {
+    const mosaic = manifest("mosaic");
+    expect(mosaic).toMatchObject({ service: { kind: "none" }, operations: [], data: { context: { maxEntries: 12 } } });
+    expect(m.FIRST_PARTY.mosaic).toEqual({ none: true });
+    expect(Object.entries(m.FIRST_PARTY).filter(([, grant]: [string, any]) => Object.hasOwn(grant, "none")).map(([id]) => id)).toEqual(["mosaic"]);
+    const base = m.v1Entry(mosaic), context = m.v1Entry(mosaic, { person: true, context: true });
+    expect([base.operations, context.operations]).toEqual([["mini-app.read"], ["mini-app.read", "mini-app.context.read", "mini-app.context.write"]]);
+    for (const entry of [base, context]) {
+      expect([entry.restricted, entry.data, Object.hasOwn(entry, "mcp")]).toEqual([true, { context: { maxEntries: 12 } }, false]);
+      const projection = { version: 1, apps: [{ id: entry.id, version: entry.version, operations: entry.operations, skills: entry.skills }] };
+      expect(validateProjection(projection)).toEqual(projection);
+    }
+    const as = (id: string) => (x: any) => { x.id = id; x.skills = [{ ...x.skills[0], name: id, path: `skills/${id}/SKILL.md` }]; };
+    const cases: [string, (x: any) => void, string[]][] = [
+      ["a third party", as("acme-notes"), ["/service/kind none_first_party_only"]],
+      ["dizko (first party, not granted)", as("dizko"), ["/service/kind none_first_party_only"]],
+      ["an op of its own", x => { x.operations = [{ name: "mosaic.summary", class: "read" }]; }, ["/operations none_has_operations"]],
+      ["no data.context", x => { delete x.data; }, ["/data/context none_without_context"]],
+      ["a baseUrl", x => { x.service.baseUrl = "https://agents.edgecity.live/"; }, ["/service/baseUrl none_has_endpoint"]],
+      ["auth", x => { x.service.auth = { mode: "none" }; }, ["/service/auth none_has_auth"]],
+      ["an mcp block", x => { x.mcp = { url: "https://agents.edgecity.live/mcp", tools: [] }; }, ["/mcp additionalProperties"]],
+    ];
+    for (const [why, mutate, want] of cases) {
+      const x = manifest("mosaic");
+      mutate(x);
+      expect([why, reasons(m.validateManifest(x))]).toEqual([why, want]);
+    }
+    // Every other kind still needs an op of its own.
+    for (const id of index.apps.filter((id: string) => id !== "mosaic" && id !== "gold-stars")) {
+      const x = manifest(id);
+      x.operations = [];
+      expect([id, reasons(m.validateManifest(x))]).toEqual([id, ["/operations operations_required"]]);
     }
   });
 
@@ -274,7 +309,7 @@ describe("the validator: secretRef, baseUrl hosts, nesting depth", () => {
     const byId = Object.fromEntries(index.apps.map((id: string) => [id, manifest(id)]));
     byId.dizko = deep(20000);
     const built = m.buildCatalog(index, byId);
-    expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "zzzbot", "slopfolio", "forkicks"]);
+    expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "zzzbot", "slopfolio", "forkicks", "mosaic"]);
     expect(built.dropped).toEqual([{ id: "dizko", code: m.CODE, errors: [{ path: "/operations/0/input", reason: "too_large" }] }]);
   });
 
@@ -293,7 +328,7 @@ describe("the validator: secretRef, baseUrl hosts, nesting depth", () => {
     const byId: Record<string, any> = Object.fromEntries(index.apps.map((id: string) => [id, manifest(id)]));
     Object.defineProperty(byId.zzzbot, "name", { enumerable: true, get() { throw new RangeError("Maximum call stack size exceeded"); } });
     const built = m.buildCatalog(index, byId);
-    expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "dizko", "slopfolio", "forkicks"]);
+    expect(built.manifests.map((x: { id: string }) => x.id)).toEqual(["gold-stars", "dizko", "slopfolio", "forkicks", "mosaic"]);
     expect(built.dropped).toEqual([{ id: "zzzbot", code: m.CODE, errors: [{ path: "/", reason: "unvalidatable" }] }]);
   });
 });

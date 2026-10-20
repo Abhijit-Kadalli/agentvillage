@@ -93,19 +93,19 @@ Required fields are marked **req**.
 | `listed` | `false` hides the app from discovery: the grid, search, counts, staff lists and offers. A tenant the app's audience admits (the cohort, and for a `sandbox` or `admins` app the allowlist) can still open its direct link, install it and use it; nobody else can. Absent means listed. The schema's own description of this field is older and wrong on this point. Honouring the field is not fully built (section 5). |
 | `permissions` **req** | 1 to 32 items of `{kind, label, description}`. `kind` is `read` or `action`. Name every third party that receives data. |
 | `service` **req** | See below. |
-| `operations` **req** | 1 to 32 operations. See below. |
+| `operations` **req** | 1 to 32 operations (exactly none for service kind `none`). See below. |
 | `data` | Only `data.context`: `maxEntries` (1 to 64) and `ceiling` (`private`, `village` or `public`). An `everyone` app may not declare `public`. What the store is, and what the ceiling does today: section 6. |
 | `skills` **req** | Exactly one item: `{name, version, sha256, path}`. |
 | `events` | Declared event verbs with closed payloads of `string`, `integer` or `boolean`. Needs a human. See section 4. |
-| `legacy` | Phase 0 only. Only the five first-party apps may carry it. Do not use it. |
+| `legacy` | Phase 0 only. Only the six first-party apps may carry it. Do not use it. |
 
 ### `service`
 
 | Field | Rule |
 | --- | --- |
-| `kind` | `mcp`, `https-json` or `internal`. `internal` is for first-party apps only. |
+| `kind` | `mcp`, `https-json`, `internal` or `none`. `internal` is for first-party apps only. `none` is context-only (no `baseUrl`, no `auth`, no operations, a `data.context` block) and reserved for the first-party `mosaic`, so third-party apps cannot use it. |
 | `baseUrl` | The one endpoint the platform calls. Rules below. |
-| `auth.mode` | `none`, `oauth` or `app-token`. Every non-`internal` service needs an `auth` block. |
+| `auth.mode` | `none`, `oauth` or `app-token`. Every service but `internal` and `none` needs an `auth` block. |
 | `auth.oauth` | Needed with `oauth`, and only then: `resource`, `scopes` (1 to 16) and `discovery`. |
 | `auth.secretRef` | Needed with `app-token`, and only then. It names an environment variable. It must be `MINI_APP_<ID>_<NAME>` (the id upper-cased, `-` as `_`, and no `_` in `NAME`). It is a name, never a value. |
 
@@ -288,7 +288,7 @@ echo "exit=$?"
 
 This lane ran exactly this on the manifest above, against the validator at the base of this branch. It printed `{"ok":true}` and the exit code was 0.
 
-A pass here is not a publish. To appear in the catalog an app also needs a row in `mini-apps/catalog.json`, the control-plane catalog and the installer table (section 1). The repo test `bun test scripts/tests/mini-app-manifests.test.ts` checks every listed manifest, its canonical form and its skill hash. On a pull request that adds a new app this test is red until Edge City acts, and that is expected: it pins `catalog.json` to the five current ids, it refuses an app directory the index does not list, and once the id is listed it also needs the id in the installer's reviewed table.
+A pass here is not a publish. To appear in the catalog an app also needs a row in `mini-apps/catalog.json`, the control-plane catalog and the installer table (section 1). The repo test `bun test scripts/tests/mini-app-manifests.test.ts` checks every listed manifest, its canonical form and its skill hash. On a pull request that adds a new app this test is red until Edge City acts, and that is expected: it pins `catalog.json` to the six current ids, it refuses an app directory the index does not list, and once the id is listed it also needs the id in the installer's reviewed table.
 
 Some failures you will see:
 
@@ -312,7 +312,7 @@ Source:
 - Letter-first id: `mini-apps/manifest.v2.schema.json:271` (`skills[].name` pattern) and `scripts/mini-apps-manifests.cjs:546` (`skills[0].name` must equal `id`).
 - `approval`: `mini-apps/manifest.v2.schema.json:484-512` (only `prepare` is required) and `scripts/mini-apps-manifests.cjs:529` (required on a `needs-card` op, refused on any other). The `approval_summary_missing` note: ov#423 `scripts/mini-apps-review.ts:812`.
 - `listed`: `scripts/mini-apps-manifests.cjs:497-498` ("`listed: false` only hides an app") and `:627` (the served entry carries `listed: false`); the schema's older description is at `mini-apps/manifest.v2.schema.json:117`. The rule (hidden from discovery, not locked) is Edge City's product ruling of 20 Oct 2026. cp `control-plane/src/mini-apps-catalog.js:239` (`offered()`), `control-plane/src/mini-apps.js:207` (the tenant-scoped catalog still serves a hidden app its tenant is admitted to), `:211` (counts read offered apps only) and `:231-243` (install is gated by the allowlist, not by `listed`).
-- The new-app repo test: `scripts/tests/mini-app-manifests.test.ts:94` (the five ids), `:95` and `:106` (an unlisted directory is refused), `:138-147` (every listed entry must pass the installer).
+- The new-app repo test: `scripts/tests/mini-app-manifests.test.ts:94` (the six ids), `:95` and `:106` (an unlisted directory is refused), `:138-147` (every listed entry must pass the installer).
 - Defaults: `scripts/mini-apps-manifests.cjs:67`.
 - Served form: `scripts/mini-apps-manifests.cjs:616-643` (v1 entry; the relay form at `:621`; the non-read refusal at `:638`).
 - Canonical form and skill hash: `scripts/tests/mini-app-manifests.test.ts:129-136`, `:174`.

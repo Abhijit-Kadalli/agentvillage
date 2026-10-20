@@ -342,10 +342,14 @@ test("MOSAIC (app#486): Dizko's shape, its context read/write after mini-app.rea
   const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
   expect(plugin).toContain('app["skills"] != [name] or not any(app["operations"] == list(ops) for ops in APP_OPERATIONS_ACCEPTED)');
   expect(plugin).not.toContain('"mosaic"');
-  // The reviewed manifest is the CP's base entry (no restricted marker, no data block, no MCP, no credit).
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps", "mosaic", "manifest.json"), "utf8"));
+  // The reviewed manifest (v2, service kind "none": a context-only app, the validator's grant to mosaic alone)
+  // serves the CP's two entries: its base entry is the previous list, its context entry the current one,
+  // restricted with the 12-line namespace declaration, and never an MCP block or a credit.
+  const manifest = reviewedManifest("mosaic");
   expect(manifest).toMatchObject({ id: "mosaic", version: "1.0.0", skills: ["mosaic"], operations: [read], homepage: "https://agents.edgecity.live" });
-  expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "skills", "version"]);
+  expect(Object.keys(manifest).sort()).toEqual(["data", "description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
+  expect([manifest.restricted, manifest.data]).toEqual([true, { context: { maxEntries: 12 } }]);
+  expect([[...manifest.operations], [...reviewedManifest("mosaic", { person: true, context: true }).operations]]).toEqual([[...previous.operations], [...mosaic.operations]]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read"]);
   // Only ever staged on install: not shipped to every box, never a references path.
   expect(EDGE_SKILL_NAMES).not.toContain("mosaic");
