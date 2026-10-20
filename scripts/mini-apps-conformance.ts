@@ -686,7 +686,16 @@ export function runConformance(opts: Options, env: { cwd?: string; toolRoot?: st
 export async function runConformanceAsync(opts: Options, env: { cwd?: string; toolRoot?: string; service?: ServiceDeps } = {}): Promise<Report> {
   const p = prepareRun(opts, env);
   if (opts.service !== undefined) {
-    const rows = await serviceChecks({ url: opts.service, manifest: p.manifest, valid: p.valid, files: p.files, validator: p.validator, deps: env.service });
+    let rows: Result[];
+    try {
+      rows = await serviceChecks({ url: opts.service, manifest: p.manifest, valid: p.valid, files: p.files, validator: p.validator, deps: env.service });
+    } catch (e) {
+      // A refused URL or address stays a refusal (exit 2). Anything else a sandbox provokes is an advisory
+      // FAIL with a fixed note (review-b S1 on ov#438): it never costs the run its required verdict or its report.
+      if (e instanceof Refusal) throw e;
+      const name = e instanceof Error && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : "Error";
+      rows = [...ADVISORY].map(check => fail(check, `internal error ${name} in the service checks; the other rows stand`));
+    }
     p.results = p.results.map(r => rows.find(x => x.check === r.check) ?? r);
   }
   return finalize(p);
@@ -937,10 +946,18 @@ function hygiene(dir: string | null, absentNote: string, manifest: any, validato
 export type Resolved = { address: string; family: number };
 export type Dial = (to: { address: string; family: number; host: string; port: number }) => Duplex;
 /** Test seams (in-process only, never a CLI flag): the resolver and the dialer. */
-export type ServiceDeps = { resolve?: (host: string) => Promise<Resolved[]>; dial?: Dial };
-/** Agent Village's own hosts: --service is a developer's sandbox, never ours (the lane brief). */
-export const OUR_HOSTS: readonly string[] = Object.freeze(["edgecity.live", "control-plane-production-606c.up.railway.app"]);
+export type ServiceDeps = { resolve?: (host: string) => Promise<Resolved[]>; dial?: Dial; deadlineMs?: number };
+/**
+ * Agent Village's own hosts (each with its subdomains): --service is a developer's sandbox, never ours (the
+ * lane brief; review-b N1 on ov#438): the app and portal, EdgeOS, the cp (current and the old Esmeralda
+ * one) and the app's Railway domain.
+ */
+export const OUR_HOSTS: readonly string[] = Object.freeze(["edgecity.live", "edgeos.world",
+  "control-plane-production-606c.up.railway.app", "control-plane-production-b752.up.railway.app", "agentvillage-app-production.up.railway.app"]);
 export const MAX_SERVICE_REQUESTS = 64;
+/** The whole run's service checks end by this (review-b N3: 64 requests x 60 s would be 64 min). */
+export const SERVICE_DEADLINE_MS = 10 * 60_000;
+const DEADLINE_FAILURE = "the whole-run deadline passed";
 const MAX_HEAD_BYTES = 16384;
 const PROTOCOL = "2025-06-18";
 const SENT_HEADERS = new Set(["host", "user-agent", "accept", "accept-encoding", "connection", "content-type", "content-length",
@@ -994,7 +1011,7 @@ async function pinAddress(host: string, validator: Validator, resolver: (host: s
   } catch { return { failure: "does not resolve" }; } finally { clearTimeout(timer); }
   if (!Array.isArray(answers) || !answers.length) return { failure: "does not resolve" };
   for (const a of answers) {
-    const refused = addressRefusal(String(a?.address), validator);
+    const refused = addressRefusal(typeof a?.address === "string" ? a.address : "", validator);
     if (refused) throw new Refusal(`service_${refused}`);
   }
   return { address: answers[0].address, family: answers[0].family };
@@ -1012,7 +1029,7 @@ export const tlsDial: Dial = to => {
   return socket;
 };
 
-type Wire = { host: string; basePath: string; address: string; family: number; dial: Dial; requests: number; dials: number };
+type Wire = { host: string; basePath: string; address: string; family: number; dial: Dial; requests: number; dials: number; deadline: number; late: boolean };
 type Answer = { status: number; headers: Map<string, string>; body: Buffer; packet?: unknown; ms: number };
 type Failed = { failure: string; ms: number };
 type Caps = { timeoutMs: number; maxBytes: number; rpcId?: number; headOnly?: boolean };
@@ -1155,6 +1172,8 @@ class ResponseReader {
 /** Rules 3-5: one request on a fresh connection to the pinned address; never follows anything. */
 function exchange(w: Wire, method: string, path: string, extra: [string, string][], body: Buffer | null, caps: Caps): Promise<Answer | Failed> {
   const started = Date.now();
+  const left = w.deadline - started;
+  if (left <= 0) { w.late = true; return Promise.resolve({ failure: DEADLINE_FAILURE, ms: 0 }); }
   if (++w.requests > MAX_SERVICE_REQUESTS) return Promise.resolve({ failure: `over the suite's ${MAX_SERVICE_REQUESTS}-request cap`, ms: 0 });
   const headers: [string, string][] = [["Host", w.host], ["User-Agent", "agent-village-conformance/1"], ["Accept-Encoding", "identity"],
     ["Connection", "close"], ...extra];
@@ -1176,7 +1195,11 @@ function exchange(w: Wire, method: string, path: string, extra: [string, string]
       try { socket?.destroy(); } catch { /* closing only */ }
       resolveAnswer({ ...r, ms: Date.now() - started } as Answer | Failed);
     };
-    const timer = setTimeout(() => settle({ failure: `no complete answer within ${caps.timeoutMs} ms` }), caps.timeoutMs);
+    const cut = left < caps.timeoutMs;
+    const timer = setTimeout(() => {
+      if (cut) w.late = true;
+      settle({ failure: cut ? DEADLINE_FAILURE : `no complete answer within ${caps.timeoutMs} ms` });
+    }, Math.min(caps.timeoutMs, left));
     try {
       w.dials++;
       socket = w.dial({ address: w.address, family: w.family, host: w.host, port: 443 });
@@ -1184,7 +1207,7 @@ function exchange(w: Wire, method: string, path: string, extra: [string, string]
     socket.on("data", (chunk: Buffer) => { const r = reader.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); if (r) settle(r); });
     socket.on("end", () => settle(reader.end()));
     socket.on("close", () => settle(reader.end()));
-    socket.on("error", (e: any) => settle({ failure: `could not connect or read (${show([String(e?.code ?? "error")]).slice(1)})` }));
+    socket.on("error", (e: any) => settle({ failure: `could not connect or read (${said(typeof e?.code === "string" ? e.code : "error")})` }));
     socket.write(body ? Buffer.concat([head, body]) : head);
   });
 }
@@ -1228,7 +1251,7 @@ async function mcpOpen(w: Wire, caps: Omit<Caps, "rpcId">): Promise<{ session: S
   const s: Session = { headers: [], nextId: 1 };
   const init = await rpc(w, s, "initialize", { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "agent-village-conformance", version: "1" } }, caps);
   if ("problem" in init) return { problem: `initialize: ${init.problem}`, answer: init.answer };
-  if (init.result.protocolVersion !== PROTOCOL) return { problem: `initialize answers protocol ${show([String(init.result.protocolVersion)]).slice(1)}, not ${PROTOCOL}` };
+  if (init.result.protocolVersion !== PROTOCOL) return { problem: `initialize answers protocol ${said(init.result.protocolVersion)}, not ${PROTOCOL}` };
   s.headers.push(["MCP-Protocol-Version", PROTOCOL]);
   // The server-issued session id is echoed (the protocol's only state); it is not a credential of ours.
   const sessionId = init.headers.get("mcp-session-id");
@@ -1250,18 +1273,18 @@ export function inputCompatibility(manifestInput: unknown, toolSchema: unknown):
   const tProps = isObject(toolSchema.properties) ? toolSchema.properties : null;
   const mRequired = new Set(Array.isArray(m.required) ? m.required : []);
   for (const name of Array.isArray(toolSchema.required) ? toolSchema.required : []) {
-    if (!mRequired.has(name)) out.push(`the tool requires ${show([String(name)]).slice(1)}, the manifest does not`);
+    if (!mRequired.has(name)) out.push(`the tool requires ${said(name)}, the manifest does not`);
   }
   for (const name of Object.keys(mProps)) {
     if (!tProps || !own(tProps, name)) {
       if (toolSchema.additionalProperties === false) out.push(`the manifest allows ${show([name]).slice(1)}, the tool does not`);
       continue;
     }
-    const types = (t: unknown) => new Set((Array.isArray(t) ? t : [t]).map(String));
+    const types = (t: unknown) => new Set((Array.isArray(t) ? t : [t]).map(describeValue));
     const a = mProps[name]?.type, b = tProps[name]?.type;
     if (a === undefined || b === undefined) continue;
     const tool = types(b);
-    if (![...types(a)].every(x => tool.has(x) || (x === "integer" && tool.has("number")))) out.push(`${show([name]).slice(1)} is ${JSON.stringify(a)} here, ${JSON.stringify(b)} in the tool`);
+    if (![...types(a)].every(x => tool.has(x) || (x === "integer" && tool.has("number")))) out.push(`${show([name]).slice(1)} is ${quoted(a)} here, ${quoted(b)} in the tool`);
   }
   return out;
 }
@@ -1274,6 +1297,23 @@ function mcpErrorBody(result: any): unknown {
   return parsed.ok && !parsed.duplicates.length ? parsed.value : undefined;
 }
 
+/**
+ * A server-supplied (or any untrusted) value for a note, without String() or a template on it: an object
+ * with a non-callable toString/valueOf ({"toString":1}) makes those throw (review-b S1 on ov#438). A
+ * string is itself; anything else is its bounded JSON, or its JSON type when that cannot be produced.
+ */
+export function describeValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    const text = JSON.stringify(value);
+    if (typeof text === "string") return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+  } catch { /* fall through to the type */ }
+  return value === undefined ? "undefined" : jsonType(value);
+}
+/** describeValue() through show(): one printable segment for a note. */
+const said = (value: unknown) => show([describeValue(value)]).slice(1);
+/** Like said(), but a string keeps its JSON quotes (a schema `type` reads "string", not string). */
+const quoted = (value: unknown) => show([typeof value === "string" ? JSON.stringify(value) : describeValue(value)]).slice(1);
 // ---- Fixture shape --------------------------------------------------------------------------------------
 const jsonType = (v: unknown) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 /**
@@ -1306,7 +1346,7 @@ function plan(manifest: any, files: Fixture[]): { calls: Call[]; unchecked: stri
     const mine = files.filter(f => f.op === op.name && f.request);
     const kind = manifest.service.kind;
     const method = kind === "https-json" ? op.target?.method : "POST";
-    if (kind === "https-json" && method !== "GET" && method !== "POST") { unchecked.push(`${op.name}: a read op with method ${show([String(method)]).slice(1)} is never called (it could change state)`); continue; }
+    if (kind === "https-json" && method !== "GET" && method !== "POST") { unchecked.push(`${op.name}: a read op with method ${said(method)} is never called (it could change state)`); continue; }
     if (!mine.length) { unchecked.push(`${op.name}: no <name>.request.json`); continue; }
     for (const f of mine) {
       const response = files.find(x => x.op === op.name && x.name === f.pair);
@@ -1358,7 +1398,7 @@ async function call(w: Wire, c: Call, kind: string, session: Session | null, app
   if (c.error) {
     error.push(...errorBodyProblems(`${c.label} (live)`, value, appId));
     const want = isObject(c.expected) ? c.expected.code : undefined;
-    if (isObject(value) && value.code !== want) error.push(`${c.label}: code ${show([String(value.code)]).slice(1)}, the fixture says ${show([String(want)]).slice(1)}`);
+    if (isObject(value) && value.code !== want) error.push(`${c.label}: code ${said(value.code)}, the fixture says ${said(want)}`);
   } else {
     for (const p of shapeProblems(c.expected, value)) budget.push(`${c.label}: ${p}`);
   }
@@ -1370,16 +1410,29 @@ async function call(w: Wire, c: Call, kind: string, session: Session | null, app
  * Throws Refusal for a refused URL or address (rules 1-2), before any connection.
  */
 export async function serviceChecks(input: { url: string; manifest: any; valid: boolean; files: Fixture[]; validator: Validator; deps?: ServiceDeps }): Promise<Result[]> {
+  const held: { w?: Wire } = {};
+  const rows = await serviceRows(input, held);
+  if (!held.w?.late) return rows;
+  // Past the whole-run deadline (review-b N3): a row whose failure the deadline did not cause stays a FAIL;
+  // every other row is "not run (deadline)", since it was not checked to the end.
+  const ms = input.deps?.deadlineMs ?? SERVICE_DEADLINE_MS;
+  return rows.map(r => r.pass === false && !r.note.includes(DEADLINE_FAILURE) ? r
+    : notRun(r.check, `not run (deadline): the service checks stop after ${ms} ms in all, and this one was not finished`));
+}
+async function serviceRows(input: { url: string; manifest: any; valid: boolean; files: Fixture[]; validator: Validator; deps?: ServiceDeps }, held: { w?: Wire }): Promise<Result[]> {
+  const started = Date.now();
   const R = "service.reachability", B = "service.budgets", E = "service.error_bodies";
   const { manifest, validator } = input;
   const target = serviceTarget(input.url, validator);
   const all = (note: string) => [notRun(R, note), notRun(B, note), notRun(E, note)];
   if (!input.valid) return all("the manifest is not a valid v2 manifest: no service is called");
   const kind = manifest.service.kind;
-  if (kind !== "mcp" && kind !== "https-json") return all(`service.kind ${show([String(kind)]).slice(1)}: first-party handlers in the app, no service to call`);
+  if (kind !== "mcp" && kind !== "https-json") return all(`service.kind ${said(kind)}: first-party handlers in the app, no service to call`);
   const pinned = await pinAddress(target.host, validator, input.deps?.resolve ?? defaultResolve);
   if ("failure" in pinned) return [fail(R, `${target.host} ${pinned.failure}`), notRun(B, "the service did not resolve"), notRun(E, "the service did not resolve")];
-  const w: Wire = { host: target.host, basePath: target.basePath, address: pinned.address, family: pinned.family, dial: input.deps?.dial ?? tlsDial, requests: 0, dials: 0 };
+  const w: Wire = { host: target.host, basePath: target.basePath, address: pinned.address, family: pinned.family, dial: input.deps?.dial ?? tlsDial,
+    requests: 0, dials: 0, deadline: started + (input.deps?.deadlineMs ?? SERVICE_DEADLINE_MS), late: false };
+  held.w = w;
   const defaults = validator.operationBudgets({});
   const sessionCaps = { timeoutMs: defaults.timeoutMs, maxBytes: defaults.maxResponseBytes };
   const mode = manifest.service.auth?.mode ?? "none";

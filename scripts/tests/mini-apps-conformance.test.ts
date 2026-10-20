@@ -9,7 +9,7 @@ import {
   BRIDGE_ERROR_CODES, CHECKS, GENERIC_ERROR_CODES, REQUIRED, Refusal, SECRET_PATTERNS, allowedErrorCode, bumpOf, bumpVerdict,
   loadValidator, main, parseArgs, passedOf, redact, requiredBump, runConformance, secretFindings, secretPattern, show, strictJson,
   summary, withoutAnnotations, type Report, type Result,
-  ADVISORY, MAX_SERVICE_REQUESTS, inputCompatibility, mainAsync, ownReport, runConformanceAsync, serviceTarget, shapeProblems, tlsDial, type ServiceDeps,
+  ADVISORY, MAX_SERVICE_REQUESTS, OUR_HOSTS, SERVICE_DEADLINE_MS, describeValue, inputCompatibility, mainAsync, ownReport, runConformanceAsync, serviceTarget, shapeProblems, tlsDial, type ServiceDeps,
 } from "../mini-apps-conformance";
 import { createServer, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:tls";
@@ -1474,6 +1474,12 @@ describe("v1 network safety: the URL, the address, redirects, budgets, credentia
       ["https://agents.edgecity.live/api/v1/village-bridge/tool", "service_is_an_agent_village_host"],
       ["https://edgecity.live/", "service_is_an_agent_village_host"],
       ["https://control-plane-production-606c.up.railway.app/", "service_is_an_agent_village_host"],
+      // review-b N1 on ov#438: EdgeOS, the old Esmeralda cp and the app's Railway domain.
+      ["https://api.edgeos.world/", "service_is_an_agent_village_host"],
+      ["https://edgecity.edgeos.world/mcp", "service_is_an_agent_village_host"],
+      ["https://edgeos.world/", "service_is_an_agent_village_host"],
+      ["https://control-plane-production-b752.up.railway.app/", "service_is_an_agent_village_host"],
+      ["https://agentvillage-app-production.up.railway.app/api/v1/village-bridge/tool", "service_is_an_agent_village_host"],
     ];
     for (const [url, reason] of refused) {
       let got = "";
@@ -1482,6 +1488,11 @@ describe("v1 network safety: the URL, the address, redirects, budgets, credentia
     }
     expect(serviceTarget(SERVICE, validator)).toEqual({ url: SERVICE, host: "sandbox.acme-dev.example", basePath: "/mcp" });
     expect(serviceTarget("https://my-app.up.railway.app/", validator).host).toBe("my-app.up.railway.app");
+    for (const ok of ["https://edgecity.live.attacker.example/", "https://edgeos.world.attacker.example/", "https://notedgeos.world/", "https://zzz.bot/mcp"]) {
+      expect([ok, serviceTarget(ok, validator).url]).toEqual([ok, ok]);
+    }
+    expect([...OUR_HOSTS].sort()).toEqual(["agentvillage-app-production.up.railway.app", "control-plane-production-606c.up.railway.app",
+      "control-plane-production-b752.up.railway.app", "edgecity.live", "edgeos.world"]);
     await withStub(mcpServer(), async s => {
       const c = v1Catalog("mcp");
       try {
@@ -2027,6 +2038,109 @@ describe("P0-5 follow-ups (review-b's fold-2 delta read on ov#422)", () => {
         expect([why, ownReport(c.out, rel)]).toEqual([why, false]);
         expect([why, main([c.path, "--fixtures", c.fixtures, "--out", c.out], { cwd: c.root, print: () => {}, warn: () => {} }), readFileSync(c.out, "utf8") === text]).toEqual([why, 2, true]);
       }
+    });
+  });
+});
+
+describe("fold 2 (review-b on ov#438): a hostile sandbox never crashes the run; a whole-run deadline", () => {
+  const raw = (res: ServerResponse, text: string) => { res.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(text)) }); res.end(text); };
+  const hostile: [string, (req: Seen, res: ServerResponse) => void, string, string][] = [
+    ["initialize protocolVersion {toString:1}", mcpServer({ init: res => { raw(res, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":{"toString":1}}}'); return true; } }),
+      "service.reachability", 'initialize answers protocol {"toString":1}, not 2025-06-18'],
+    ["tools/list required [{toString:1}]", (req, res) => {
+      const msg = JSON.parse(req.body || "{}");
+      if (msg.method === "tools/list") return raw(res, `{"jsonrpc":"2.0","id":${msg.id},"result":{"tools":[{"name":"lookup","inputSchema":{"type":"object","required":[{"toString":1}]}},{"name":"quote","inputSchema":{}},{"name":"place","inputSchema":{}}]}}`);
+      return mcpServer()(req, res);
+    }, "service.reachability", 'the tool requires {"toString":1}, the manifest does not'],
+    ["tools/list property type {toString:1}", (req, res) => {
+      const msg = JSON.parse(req.body || "{}");
+      if (msg.method === "tools/list") return raw(res, `{"jsonrpc":"2.0","id":${msg.id},"result":{"tools":[{"name":"lookup","inputSchema":{"type":"object","properties":{"q":{"type":{"toString":1}}}}},{"name":"quote","inputSchema":{}},{"name":"place","inputSchema":{}}]}}`);
+      return mcpServer()(req, res);
+    }, "service.reachability", 'q is "string" here, {"toString":1} in the tool'],
+    ["error call code {toString:1}", mcpServer({ lookup: (args, res, id) => args.q === "missing"
+      ? raw(res, `{"jsonrpc":"2.0","id":${id},"result":{"isError":true,"structuredContent":{"code":{"toString":1},"detail":"x"}}}`)
+      : raw(res, `{"jsonrpc":"2.0","id":${id},"result":{"content":[{"type":"text","text":"Two things."}],"structuredContent":{"items":[{"name":"a","rank":1}]}}}`) }),
+      "service.error_bodies", 'code {"toString":1}, the fixture says not_found'],
+    ["toString and valueOf both null (protocolVersion)", mcpServer({ init: res => { raw(res, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":{"toString":null,"valueOf":null}}}'); return true; } }),
+      "service.reachability", 'initialize answers protocol {"toString":null,"valueOf":null}'],
+  ];
+  for (const [name, handler, check, want] of hostile) {
+    test(`S1 ${name}: exit 0, conformance.json written, passed as without --service; the value is described, never String()-ed`, async () => {
+      await withStub(handler, async s => {
+        const c = v1Catalog("mcp");
+        try {
+          const without = run(c);
+          expect(without.passed).toBe(true);
+          const warned: string[] = [];
+          const code = await mainAsync([c.path, "--fixtures", c.fixtures, "--service", SERVICE, "--out", c.out], { cwd: c.root, service: s.deps, print: () => {}, warn: x => warned.push(x) });
+          expect([name, code, warned]).toEqual([name, 0, []]);
+          const report = JSON.parse(readFileSync(c.out, "utf8")) as Report;
+          invariants(report);
+          expect(report.passed).toBe(without.passed);
+          expect([name, row(report, check).pass, row(report, check).note.includes(want)]).toEqual([name, false, true]);
+        } finally { cleanup(c); }
+      });
+    });
+  }
+  test("S1 over https-json: an error body whose code is {toString:1} is a FAIL row, not a crash", async () => {
+    await withStub((req, res) => JSON.parse(req.body).q === "missing" ? (res.writeHead(404, { "content-type": "application/json", "content-length": "36" }), res.end('{"code":{"toString":1},"detail":"x"}')) : json(res, 200, { items: [{ name: "a", rank: 1 }], asOf: "x" }), async s => {
+      const c = v1Catalog("https-json");
+      try {
+        const code = await mainAsync([c.path, "--fixtures", c.fixtures, "--service", "https://sandbox.acme-dev.example/", "--out", c.out], { cwd: c.root, service: s.deps, print: () => {}, warn: () => {} });
+        expect(code).toBe(0);
+        const report = JSON.parse(readFileSync(c.out, "utf8")) as Report;
+        expect(row(report, "service.error_bodies").pass).toBe(false);
+        expect(row(report, "service.error_bodies").note).toContain("code (not a string) is not in the closed set for acme");
+      } finally { cleanup(c); }
+    });
+  });
+  test("S1 (a): any other throw inside the service checks is three advisory FAIL rows with a fixed note; a refusal still exits 2", async () => {
+    await withStub(mcpServer(), async s => {
+      s.deps.resolve = async () => [{ get address(): string { throw new TypeError("sandbox-chosen text " + "A1b2".repeat(8)); }, family: 4 }];
+      const c = v1Catalog("mcp");
+      try {
+        const code = await mainAsync([c.path, "--fixtures", c.fixtures, "--service", SERVICE, "--out", c.out], { cwd: c.root, service: s.deps, print: () => {}, warn: () => {} });
+        expect(code).toBe(0);
+        const report = JSON.parse(readFileSync(c.out, "utf8")) as Report;
+        expect(report.passed).toBe(true);
+        for (const k of ADVISORY) expect([k, row(report, k)]).toEqual([k, { check: k, pass: false, note: "advisory (v1): internal error TypeError in the service checks; the other rows stand" }]);
+        expect(readFileSync(c.out, "utf8")).not.toContain("A1b2A1b2");
+        // A failing required row keeps its verdict: exit 1, not 2.
+        writeFileSync(join(c.fixtures, "acme.lookup", "ok.json"), "{\"a\":1,\"a\":2}");
+        expect(await mainAsync([c.path, "--fixtures", c.fixtures, "--service", SERVICE, "--out", c.out], { cwd: c.root, service: s.deps, print: () => {}, warn: () => {} })).toBe(1);
+      } finally { cleanup(c); }
+      expect(s.dials.length).toBe(0);
+    });
+    expect(describeValue({ toString: 1 })).toBe('{"toString":1}');
+    expect(describeValue("x")).toBe("x");
+    const cyclic: any = {}; cyclic.self = cyclic;
+    expect([describeValue(cyclic), describeValue(undefined), describeValue(10n as any), describeValue("y".repeat(300))])
+      .toEqual(["object", "undefined", "bigint", "y".repeat(300)]);
+    expect(describeValue({ k: "z".repeat(300) }).length).toBe(120);
+  });
+  test("N3: past the whole-run deadline the unfinished rows are advisory \"not run (deadline)\"; a failure the deadline did not cause stays FAIL; requests stop", async () => {
+    expect(SERVICE_DEADLINE_MS).toBe(600_000);
+    await withStub((req, res) => {
+      if (JSON.parse(req.body).q === "missing") return json(res, 500, { code: "unavailable", detail: "x" });
+      setTimeout(() => json(res, 200, { items: [{ name: "a", rank: 1 }], asOf: "x" }), 300);
+    }, async s => {
+      s.deps.deadlineMs = 700;
+      const c = v1Catalog("https-json", httpsJsonAcme(), files => {
+        for (let i = 0; i < 8; i++) { files[`acme.lookup/r${i}.json`] = files["acme.lookup/ok.json"]; files[`acme.lookup/r${i}.request.json`] = "{}"; }
+      });
+      try {
+        const started = Date.now();
+        const r = await runV1(c, s, "https://sandbox.acme-dev.example/");
+        expect(Date.now() - started).toBeLessThan(2500);
+        invariants(r);
+        expect(row(r, "service.budgets")).toEqual({ check: "service.budgets", pass: null, note: "advisory (v1): not run (deadline): the service checks stop after 700 ms in all, and this one was not finished" });
+        // error-not-found sorts first and failed fast (a 500): those failures are real, so they stay FAIL.
+        expect(row(r, "service.error_bodies").pass).toBe(false);
+        expect(row(r, "service.reachability").pass).toBe(false);
+        expect(row(r, "service.reachability").note).not.toContain("deadline");
+        expect(r.passed).toBe(true);
+      } finally { cleanup(c); }
+      expect(s.seen.length).toBeLessThanOrEqual(4);
     });
   });
 });
