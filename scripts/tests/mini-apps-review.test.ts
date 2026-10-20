@@ -38,8 +38,8 @@ const CATALOG = json({ catalog: 2, apps: ["tinyshop"] });
 type Files = Record<string, string | null>;
 const baseFiles = (m = manifest()): Files => ({ "mini-apps/catalog.json": CATALOG, [MP]: json(m), [SP]: SKILL });
 
-/** An in-memory pull request: base and head file maps (null deletes), modes optional. */
-function source(base: Files, head: Files, opts: { author?: string; modes?: Record<string, string>; conf?: R.ConformanceRun } = {}): R.Source {
+/** An in-memory pull request: base and head file maps (null deletes), modes optional; `tip` is what the base branch gained after the fork. */
+function source(base: Files, head: Files, opts: { author?: string; modes?: Record<string, string>; conf?: R.ConformanceRun; tip?: Files } = {}): R.Source {
   const after: Files = { ...base, ...head };
   const files: R.Change[] = [];
   for (const path of [...new Set([...Object.keys(base), ...Object.keys(head)])].sort()) {
@@ -51,6 +51,7 @@ function source(base: Files, head: Files, opts: { author?: string; modes?: Recor
   return {
     files, base: blob(base), head: blob(after), headSha: "f".repeat(40), author: opts.author ?? "someone",
     ...(opts.conf ? { conformance: () => opts.conf! } : {}),
+    ...(opts.tip ? { baseTip: blob({ ...base, ...opts.tip }) } : {}),
     added: path => {
       const old = new Set((base[path] ?? "").split("\n"));
       return (after[path] ?? "").split("\n").map((text, i) => ({ line: i + 1, text })).filter(l => !old.has(l.text));
@@ -58,18 +59,29 @@ function source(base: Files, head: Files, opts: { author?: string; modes?: Recor
   };
 }
 /** Review a change to the tinyshop manifest: `edit` mutates a copy of the base manifest. */
-function pr(edit: (m: any) => void, o: { base?: any; extra?: Files; skill?: string; author?: string; modes?: Record<string, string>; conf?: R.ConformanceRun | ((head: any) => R.ConformanceRun) } = {}) {
+function pr(edit: (m: any) => void, o: { base?: any; extra?: Files; skill?: string; author?: string; modes?: Record<string, string>; conf?: R.ConformanceRun | ((head: any) => R.ConformanceRun); tip?: Files } = {}) {
   const b = o.base ?? manifest();
   const h = clone(b);
   edit(h);
   const head: Files = { [MP]: json(h), ...(o.skill !== undefined ? { [SP]: o.skill } : {}), ...(o.extra ?? {}) };
   const conf = typeof o.conf === "function" ? o.conf(h) : o.conf;
-  return R.evaluate(source(baseFiles(b), head, { author: o.author, modes: o.modes, conf }), V);
+  return R.evaluate(source(baseFiles(b), head, { author: o.author, modes: o.modes, conf, tip: o.tip }), V);
 }
 const codes = (r: R.Report) => r.findings.map(f => f.code);
 const has = (r: R.Report, code: string, severity?: string) => r.findings.some(f => f.code === code && (!severity || f.severity === severity));
 const noM = (r: R.Report) => r.findings.filter(f => f.severity === "M").map(f => `${f.code} ${f.text}`);
 const patch = (m: any) => { m.version = "1.0.1"; };
+/** tinyshop as an MCP app: its needs-card op calls the tool place_order. */
+function tooledManifest(visibility = "admins"): any {
+  const m = manifest(visibility);
+  m.service = { kind: "mcp", baseUrl: "https://mcp.tinyshop.example.org/mcp", auth: { mode: "none" } };
+  m.operations = [
+    { name: "tinyshop.menu", class: "read", target: { tool: "menu" } },
+    { name: "tinyshop.order.prepare", class: "prepare", target: { tool: "quote" } },
+    { name: "tinyshop.order.confirm", class: "needs-card", target: { tool: "place_order" }, maxRequestBytes: 65536, timeoutMs: 60000, approval: { prepare: "tinyshop.order.prepare" } },
+  ];
+  return m;
+}
 
 describe("the fixture", () => {
   test("is a valid v2 manifest by the shared validator, so every finding below is the check under test", () => {
@@ -594,6 +606,22 @@ describe("approval classes", () => {
   test("a needs-card op removed while a card-less op is added: the human read", () => {
     const r = pr(m => { m.operations.splice(2, 1); m.operations.push({ name: "tinyshop.order.place", class: "write" }); m.version = "2.0.0"; });
     expect([has(r, "needs_card_replaced", "S"), r.verdict]).toEqual([true, "NEEDS_HUMAN"]);
+  });
+  test("review-b N-d: a needs-card op main gained after the fork, plus a write alias on its target in the pull request: NEEDS_HUMAN, core", () => {
+    const atTip = tooledManifest(); atTip.version = "1.1.0";
+    atTip.operations.push({ name: "tinyshop.express.prepare", class: "prepare", target: { tool: "express_quote" } },
+      { name: "tinyshop.express.confirm", class: "needs-card", target: { tool: "express_order" }, maxRequestBytes: 65536, timeoutMs: 60000, approval: { prepare: "tinyshop.express.prepare" } });
+    expect(V.validateManifest(atTip).errors ?? []).toEqual([]);
+    const write = (m: any) => { m.operations.push({ name: "tinyshop.express.quick", class: "write", target: { tool: "express_order" } }); m.version = "2.0.0"; };
+    const r = pr(write, { base: tooledManifest(), tip: { [MP]: json(atTip) } });
+    expect([has(r, "needs_card_downgrade", "S"), r.lane, r.verdict, noM(r)]).toEqual([true, "core", "NEEDS_HUMAN", []]);
+    // Judged against the merge base alone the same pull request is a PASS: the base tip is what catches it.
+    expect(pr(write, { base: tooledManifest() }).verdict).toBe("PASS");
+    // The tip's visibility widens the lane too: main raised the app to everyone after the fork.
+    const everyone = tooledManifest("everyone"); everyone.version = "1.1.0";
+    expect(pr(m => { m.description = "Reworded."; patch(m); }, { base: tooledManifest("admins"), tip: { [MP]: json(everyone) } }).lane).toBe("everyone");
+    // An unreadable tip manifest is ignored (the merge base still counts), never a crash.
+    expect(pr(write, { base: tooledManifest(), tip: { [MP]: "{ nope" } }).verdict).toBe("PASS");
   });
   test("a new or changed needs-card op needs the human read, even in sandbox", () => {
     const r = pr(m => { m.operations[2].approval.summary = ["Order"]; m.version = "2.0.0"; });
@@ -1121,12 +1149,14 @@ describe("the workflow", () => {
     expect(checkouts[0].with).toEqual({ ref: "${{ github.event.pull_request.base.sha }}", path: "tool", "fetch-depth": "0", "persist-credentials": "false" });
     const fetch = steps.find(s => s.name === "Fetch the pull request head (data only)")!;
     const review = steps.find(s => s.name === "Review")!;
-    expect(fetch.env).toEqual({ PR_NUMBER: "${{ github.event.pull_request.number }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}" });
+    expect(fetch.env).toEqual({ PR_NUMBER: "${{ github.event.pull_request.number }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", BASE_REF: "${{ github.event.pull_request.base.ref }}" });
     expect(fetch.run).toContain('git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"');
+    // review-b N-d: the base branch's tip, as data too.
+    expect(fetch.run).toContain('git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/base/tip"');
     expect(review.env).toEqual({ BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_AUTHOR: "${{ github.event.pull_request.user.login }}" });
     // review-b N-a: by explicit path (no package.json script can shadow it) and with no cwd tsconfig.json.
     expect(review.run).toStartWith("bun --config=/dev/null --no-env-file --no-install --tsconfig-override=/dev/null ./tool/scripts/mini-apps-review.ts --repo tool \\\n");
-    expect(review.run).toContain('--base "$BASE_SHA" --head "$HEAD_SHA"');
+    expect(review.run).toContain('--base "$BASE_SHA" --head "$HEAD_SHA" --base-tip refs/remotes/base/tip');
     const runs = steps.map(s => s.run ?? "").join("\n");
     // Nothing from the pull request is checked out, installed or executed, and no step runs in another tree.
     expect(runs.replaceAll("--no-install", "")).not.toMatch(/\b(?:checkout|switch|worktree|install|npm|npx|bunx|yarn|pnpm|reset|restore)\b/);
@@ -1178,7 +1208,7 @@ describe("the workflow", () => {
       expect(spawnSync("git", ["-C", join(workspace, "tool"), "cat-file", "-e", `${head}^{commit}`]).status).not.toBe(0);
       const steps = workflowSteps(readFileSync(join(REPO, ".github/workflows/mini-apps-review.yml"), "utf8"));
       const env = { PATH: `${dirname(process.execPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`, HOME: work, RUNNER_TEMP: temp, GIT_CONFIG_NOSYSTEM: "1",
-        PR_NUMBER: "7", BASE_SHA: base, HEAD_SHA: head, PR_AUTHOR: "someone" };
+        PR_NUMBER: "7", BASE_SHA: base, HEAD_SHA: head, BASE_REF: "main", PR_AUTHOR: "someone" };
       for (const name of ["Fetch the pull request head (data only)", "Review"]) {
         const step = steps.find(s => s.name === name)!;
         const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", step.run!], { cwd: workspace, env, encoding: "utf8" });

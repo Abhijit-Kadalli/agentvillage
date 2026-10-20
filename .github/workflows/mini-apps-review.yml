@@ -69,13 +69,16 @@ jobs:
       # The pull request head: objects only, into a ref of the tool's repository.
       # Nothing is checked out. The event's values go through env, never into the
       # shell text.
+      # The base branch's current tip too, as data (review-b N-d).
       - name: Fetch the pull request head (data only)
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
           git -C tool cat-file -e "${HEAD_SHA}^{commit}"
+          git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/base/tip"
       - name: Review
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -83,7 +86,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           bun --config=/dev/null --no-env-file --no-install --tsconfig-override=/dev/null ./tool/scripts/mini-apps-review.ts --repo tool \
-            --base "$BASE_SHA" --head "$HEAD_SHA" --author "$PR_AUTHOR" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --base-tip refs/remotes/base/tip --author "$PR_AUTHOR" \
             --out "$RUNNER_TEMP/mini-apps-review.json" --summary "$RUNNER_TEMP/mini-apps-review.md" \
             --conformance-dir "$RUNNER_TEMP/mini-apps-conformance"
       - name: Job summary

@@ -119,8 +119,11 @@ export type ConformanceRun =
   | { status: "ran"; exit: number | null; bytes: Buffer };
 export type Source = {
   files: Change[];
+  /** The file at the MERGE BASE (what the diff is against). */
   base: (path: string) => Bytes;
   head: (path: string) => Bytes;
+  /** The file at the base branch's current tip, read as data (review-b N-d); absent means "the merge base". */
+  baseTip?: (path: string) => Bytes;
   added: (path: string) => { line: number; text: string }[] | "binary";
   headSha: string;
   author: string;
@@ -300,15 +303,18 @@ export function runConformance(input: ConformanceInput, opts: { toolRoot?: strin
 }
 /**
  * A Source from a real repository: everything head-side is read from git objects at the head sha, and
- * everything base-side at the merge base, as the diff is. The repository's working tree is never read.
+ * everything base-side at the merge base, as the diff is. `baseTip` (default `base`) is the base branch's
+ * current tip, also read only from git objects. The repository's working tree is never read.
  */
-export function gitSource(repo: string, base: string, head: string, author: string, opts: { conformanceDir?: string; toolRoot?: string } = {}): Source {
-  for (const rev of [base, head]) if (!REV.test(rev)) throw new BotError(`bad_revision: ${JSON.stringify(rev).slice(0, 80)}`);
+export function gitSource(repo: string, base: string, head: string, author: string, opts: { conformanceDir?: string; toolRoot?: string; baseTip?: string } = {}): Source {
+  const tip = opts.baseTip ?? base;
+  for (const rev of [base, head, tip]) if (!REV.test(rev)) throw new BotError(`bad_revision: ${JSON.stringify(rev).slice(0, 80)}`);
   // P0-5's suite reads base blobs with git cat-file and no lazy fetch: full history, never shallow or blob-less.
   if (git(repo, ["rev-parse", "--is-shallow-repository"])!.toString("utf8").trim() === "true") throw new BotError("shallow_checkout: fetch the full history (fetch-depth: 0)");
   if (git(repo, ["config", "--get", "extensions.partialClone"], true)?.toString("utf8").trim()) throw new BotError("partial_clone: a blob-less or tree-less clone cannot be judged; clone with full history");
   const headSha = git(repo, ["rev-parse", "--verify", `${head}^{commit}`])!.toString("utf8").trim();
   git(repo, ["rev-parse", "--verify", `${base}^{commit}`]);
+  const tipSha = git(repo, ["rev-parse", "--verify", `${tip}^{commit}`])!.toString("utf8").trim();
   const mergeBase = git(repo, ["merge-base", base, head])!.toString("utf8").trim();
   const headBlob = (path: string) => blobAt(repo, headSha, path);
   const baseBlob = (path: string) => blobAt(repo, mergeBase, path);
@@ -316,6 +322,7 @@ export function gitSource(repo: string, base: string, head: string, author: stri
     files: changedFiles(repo, base, head),
     base: baseBlob,
     head: headBlob,
+    baseTip: path => blobAt(repo, tipSha, path),
     added: path => addedLines(repo, base, head, path),
     headSha,
     author,
@@ -617,11 +624,16 @@ export function evaluate(src: Source, validator: Validator): Report {
   const baseWhy = "the base manifest is missing or unreadable";
   if (!laneId) for (const c of CHECKED.filter(c => c !== "paths" && c !== "secrets")) skip(c, id && !headBytes ? "the app has no manifest at head (core)" : "no single app manifest: core");
   else if (!head.ok) for (const c of ["author", "schema", "hashes", "version_bump", "data_context", "approval_classes", "lane_rules"]) skip(c, "the manifest is not JSON");
-  // The lane is the WIDER of the base's and the head's visibility (release S2): lowering an app out of a lane
-  // never moves its review into a narrower one, and lowering it out of everyone takes the human read.
+  // The base branch's tip, as data (review-b N-d): main may have gained a needs-card op or a wider visibility
+  // after the fork, and that is what the merge lands on. Unreadable or absent there: the merge base alone.
+  const tipParsed = laneId && src.baseTip ? parseJson(src.baseTip(manifestPath!)) : { ok: false as const };
+  const tm: any = tipParsed.ok && isObject(tipParsed.value) ? tipParsed.value : null;
+  // The lane is the WIDEST of the merge base's, the base tip's and the head's visibility (release S2, review-b
+  // N-d): lowering an app out of a lane never moves its review into a narrower one, and lowering it out of
+  // everyone takes the human read.
   if (laneId) {
-    const to = VISIBILITY.indexOf(hm?.visibility), from = bm ? VISIBILITY.indexOf(bm.visibility) : -1;
-    lane = to < 0 ? "core" : (VISIBILITY[Math.max(to, from)] as Lane);
+    const to = VISIBILITY.indexOf(hm?.visibility), from = bm ? VISIBILITY.indexOf(bm.visibility) : -1, atTip = tm ? VISIBILITY.indexOf(tm.visibility) : -1;
+    lane = to < 0 ? "core" : (VISIBILITY[Math.max(to, from, atTip)] as Lane);
     if (bm?.visibility === "everyone" && to >= 0 && hm.visibility !== "everyone") {
       add({ code: "visibility_lowered_from_everyone", severity: "S", file: manifestPath!, text: `visibility everyone -> ${hm.visibility} takes the app away from every resident: the human read (judged in the everyone lane)` });
     }
@@ -763,15 +775,16 @@ export function evaluate(src: Source, validator: Validator): Report {
         add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${was.name} was needs-card and is now ${now.class}: a downgrade is core` });
       }
     }
-    // An alias: a card-less op on a target a needs-card op uses, at the base or the head (review-b S1). Keeping
-    // X.confirm (needs-card) and adding X.quick (write) or X.peek (read) on the same tool or path is a downgrade.
+    // An alias: a card-less op on a target a needs-card op uses, at the merge base, the base tip or the head
+    // (review-b S1, N-d). Keeping X.confirm (needs-card) and adding X.quick (write) or X.peek (read) on the same
+    // tool or path is a downgrade.
     const targetOf = (op: any) => !isObject(op?.target) ? null : typeof op.target.tool === "string" ? `tool ${op.target.tool}` : typeof op.target.path === "string" ? `path ${op.target.path}` : canon(op.target);
-    const cardTargets = new Set([...bo.values(), ...ho.values()].filter(op => op.class === "needs-card").map(targetOf).filter((t): t is string => t !== null));
+    const cardTargets = new Set([...bo.values(), ...byName(tm).values(), ...ho.values()].filter(op => op.class === "needs-card").map(targetOf).filter((t): t is string => t !== null));
     for (const op of ho.values()) {
       const t = targetOf(op);
       if (op.class === "needs-card" || t === null || !cardTargets.has(t)) continue;
       downgraded = true;
-      add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${op.name} (${op.class}) calls ${t}, which a needs-card op calls: a card-less alias is a downgrade, core` });
+      add({ code: "needs_card_downgrade", severity: "S", file: manifestPath!, text: `${op.name} (${op.class}) calls ${t}, which a needs-card op calls (at the merge base, the base tip or head): a card-less alias is a downgrade, core` });
     }
     const removedCard = [...bo.values()].some(op => op.class === "needs-card" && !ho.has(op.name));
     const newPlain = [...ho.values()].some(op => !bo.has(op.name) && op.class !== "needs-card");
@@ -851,10 +864,10 @@ export function judgeConformance(run: ConformanceRun, manifestPath: string, head
  * Review a real pull request. `toolRoot` (default REPO_ROOT, this script's tree; in CI the base commit's) is
  * where the validator and P0-5's suite are read from; `repo` is only ever read through git objects.
  */
-export function review(opts: { repo: string; base: string; head: string; author?: string; toolRoot?: string; validatorRoot?: string; conformanceDir?: string; validator?: Validator }): Report {
+export function review(opts: { repo: string; base: string; head: string; baseTip?: string; author?: string; toolRoot?: string; validatorRoot?: string; conformanceDir?: string; validator?: Validator }): Report {
   const toolRoot = opts.toolRoot ?? opts.validatorRoot ?? REPO_ROOT;
   const validator = opts.validator ?? loadValidator(toolRoot);
-  return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? "", { conformanceDir: opts.conformanceDir, toolRoot }), validator);
+  return evaluate(gitSource(opts.repo, opts.base, opts.head, opts.author ?? "", { conformanceDir: opts.conformanceDir, toolRoot, baseTip: opts.baseTip }), validator);
 }
 
 /** The fail-closed report: the bot could not judge, so it never says PASS. */
@@ -883,13 +896,13 @@ export function summary(r: Report): string {
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
-  const known = new Set(["--base", "--head", "--author", "--repo", "--out", "--summary", "--conformance-dir"]);
+  const known = new Set(["--base", "--head", "--base-tip", "--author", "--repo", "--out", "--summary", "--conformance-dir"]);
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 2) {
     if (!known.has(argv[i]) || argv[i + 1] === undefined) throw new BotError(`usage: unknown or empty option ${JSON.stringify(argv[i]).slice(0, 40)}`);
     out[argv[i].slice(2)] = argv[i + 1];
   }
-  if (!out.base || !out.head) throw new BotError("usage: --base <rev> --head <rev> [--author <login>] [--repo <dir>] [--out <file>] [--summary <file>] [--conformance-dir <dir>]");
+  if (!out.base || !out.head) throw new BotError("usage: --base <rev> --head <rev> [--base-tip <rev>] [--author <login>] [--repo <dir>] [--out <file>] [--summary <file>] [--conformance-dir <dir>]");
   if (out.author && !LOGIN.test(out.author) && !/^[A-Za-z0-9-]{1,39}\[bot\]$/.test(out.author)) throw new BotError("usage: --author is not a GitHub login");
   return out;
 }
@@ -902,7 +915,7 @@ export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?
   let report: Report, code = 0;
   try {
     args = parseArgs(argv);
-    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, author: args.author ?? "", validatorRoot: io.validatorRoot, validator: io.validator, conformanceDir: args["conformance-dir"] });
+    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, baseTip: args["base-tip"], author: args.author ?? "", validatorRoot: io.validatorRoot, validator: io.validator, conformanceDir: args["conformance-dir"] });
   } catch (e) {
     const message = e instanceof BotError ? e.message : `bot_crashed: ${(e as Error)?.stack ?? String(e)}`;
     report = errorReport(message);
