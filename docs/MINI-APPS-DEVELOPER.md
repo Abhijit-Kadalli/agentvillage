@@ -471,6 +471,23 @@ There is no Public container. Everything is bounded to the Edge City India netwo
 
 For an app's lines it is narrower still. Skylight never reads an app's lines, in either container. An app line in Edge City India 2026 is read by the resident's agent and by Index; never by Skylight. If the resident has given research consent, such a line can also go into a frozen research snapshot of what Index sees. A Private app line never goes into any snapshot.
 
+### The visibility tags (`agentvillage.visibility/1`)
+
+The two places have one tag vocabulary, `agentvillage.visibility/1`. The app and the control plane hold the same file, byte for byte. It has two ids, and no public one:
+
+| Id | On the page | Who may read the line |
+| --- | --- | --- |
+| `agentvillage/private` | Private | The resident's own agent. |
+| `agentvillage/edgecityindia2026` | Edge City India 2026 | The agent and Index. Skylight too, but only on the eight profile cards it reads (`here`, `work`, `meet`, `offer`, `curious`, `prefs`, `fun`, `about`), never on an `apps.*` line. |
+
+The three stored tiers map onto the two ids: `public` and `village` are `agentvillage/edgecityindia2026`; `private` is `agentvillage/private`.
+
+- No line stores its id. It is worked out from the line's scopes: a line holding `index` or `skylight` is Edge City India 2026, and anything else is Private.
+- It fails closed. A guess, a removed line, a line with no claim, an unknown status and an unknown mark or section are all Private.
+- Your app's new lines are stored with the scopes `agent` and `app:<your-id>`, so they are Private. Only the resident moves them (below). Your app cannot set or ask for an id.
+- On the box, a line's mark may be an old word (`public`, `village`, `private`) or one of the two ids. The box's readers take both. The app and the control plane still write the old words.
+- With the containers switched on, a reader outside the box asks with `{"vocab": "agentvillage.visibility/1", "audience": "agentvillage/edgecityindia2026"}` and its own token. Only that audience can be asked for, and only with a token allowed to ask for it: Skylight's or the lab's (the vocabulary's table), or, for now, the older shared Skylight token. Any other request is refused whole, with `403 {"error":"audience_refused"}`. No audience reads a Private line or a guess.
+
 ### Your app's namespace
 
 - Its card is `apps.<your-id>`, with its own scope `app:<your-id>`. Only the control plane writes it.
@@ -532,12 +549,16 @@ These are in Edge City's app-context proposal (an internal note, not a repo file
 
 Where the proposal and the code disagree, the code is what runs. For example, the proposal makes a line's place the narrowest of the app's request, the manifest's ceiling and the resident's setting. The code reads none of the first two.
 
+Edge City has also decided that what feeds Index is pinned: the resident's cards that feed Index (the decision names `here`, `curious`, `work` and `meet`) stay in Edge City India 2026, and the resident cannot change their visibility. That is not built yet. It names those four cards, not your app's block, so the rules above for your lines are what runs today.
+
 cp#341 is open, not merged and not live. It does not help a partner's app. With `MINI_APPS_MANIFESTS` on, if an app's manifest fails to load at boot, its namespace answers `403 app_no_context` today. cp#341 would keep it open at the installed version only for the five first-party apps, whose reviewed built-in definition stands in. For any other app nothing changes, and with the switch off it changes nothing at all.
 
 Source:
 - Namespace: cp `control-plane/src/context-app-namespaces.js:7-10` (card, origin, scopes, the resident moves it), `:15-25` (GET and PUT, `suppressed`, `replace`, a moved line keeps its scopes), `:26-33` (refusals), `:68-73` (only `maxEntries` is read), `:83-90` (one line, 200 code points), `:96-110` (a claim is exactly `{ text }`), `:113-124` (new lines `{agent, app:<id>}`), `:138-151` (the gate), `:252-262` (neutralised lines, the heading), `:271-299` (the `_profile.md` section).
 - Store rules: cp `control-plane/src/context-claims.js:19-26` (suppression, a producer's scopes apply to new claims only), `:128-138` (app rows: the generic routes refuse them; a move keeps `app:<id>`), `:844-846`, `:862-863` (a PATCH keeps the app row on its card and scope).
 - Tiers: cp `control-plane/src/context-sections.js:8-11` and `:44-48` (the three scope sets), `:61` (an app block with no row is Private), `:129-133` (a block's container only narrows a new line). cp `control-plane/src/visibility/vocab.js:6-7` (the two visibilities), `:72-76` (Skylight only for its own cards); `control-plane/src/visibility/visibility-vocab.v1.json:9-17` (readers; `apps.*` never Skylight), `:32-36` (`public` and `village` are both Edge City India 2026), `:51-54` (a move into Edge City India 2026 writes agent and index). cp `control-plane/src/context-snapshots.js:20-31` (a snapshot needs the resident's research consent) and `:124-134` (an app line enters a snapshot only of scope `index` or `skylight`).
+- Tags: app `src/lib/visibility/visibility-vocab.v1.json:2` (the vocabulary), `:4-8` (two ids, their words), `:9-17` (readers; Skylight's eight cards), `:18` and `:20-50` (fail closed; scopes, guess, removed, sections and marks to ids), `:55-66` (the audience request, the two tokens, the refusal); cp `control-plane/src/visibility/visibility-vocab.v1.json` is the same bytes (both sha256 `b7a02a21`). cp `control-plane/src/visibility/vocab.js:39-43` (an id from scopes), `:51-57` (fail closed; a guess is Private), `:84-85` (the stored tiers). App `src/lib/visibility/vocab.ts:152-160` (only that audience, only within the token's allowance; a reader reads only its own id). App `src/lib/server/skylight/context.ts:100-113` (the request, the tokens, `403 audience_refused`, never a guess or a Private line), `:121-128` (the older shared token, for now). New app lines: cp `control-plane/src/context-app-namespaces.js:113-124`. Box marks: `skills/index-network/scripts/context-tags.ts:89-113`, `skills/index-network/scripts/memory_signal_gate.py:202-207`.
+- Pinned Index cards: a decision in Edge City's lanes log, 20 Oct (private to Edge City; not a repo file). Not in code yet: app `src/lib/agent/sections.ts:435-436` pins only Profile, Recently learned and Message transcripts.
 - Page: app `src/lib/agent/sections.ts:19-24` (two containers, no public container, no `skylight` on a move), `:54`, `:61-67`, `:70-76` (the containers and their words), `:466` (an app block starts Private), `:476-480` (every move writes `village` or `private`). App `src/lib/server/agent/context-sections.ts:62-70`, `:79-86`, `:96-99` (Move is one PATCH; an app line keeps its scope). App `src/lib/server/agent/context-apps.ts:11-27` (the block, the remove, an uninstalled app's lines stay). App `src/components/context/ContextPage.tsx:1280-1289` (the block with the sections off or on), `:1563-1583` (the block as a widget, badges). Block drag: cp `control-plane/src/context-widgets.js:14-24`, `:28-36`.
 - Box: cp `control-plane/src/context-profile-render.js:11-13`, `:370-374` (app sections after "Shared on the Context page"), `:603` (only with `CONTEXT_APP_NAMESPACES`). `plugins/village-memory/__init__.py:46-48`, `:299-304` (a group chat or cron run stops before that heading). `mini-apps/README.md:343-371` (the two operations; saves only when asked; the gate).
 - Ceiling: `mini-apps/manifest.v2.schema.json:228-254` (`ceiling` optional), `scripts/mini-apps-manifests.cjs:544` (no `public` for `everyone`), `:633-634` (the served entry carries `maxEntries` only). ov#423 `scripts/mini-apps-review.ts:92` (lane ceilings), `:795-798` (missing is `S`, over the lane is `M`, new above private is `S`), `:93-99` (`context_ceiling_missing` is not an always-human code) and `:550-556` (so it passes in `sandbox`). No other reader: `git grep` for `ceiling` in cp `control-plane/src` (outside the validator and the vendored manifests), app `src` and this repo's `plugins`, `install` and `skills` finds no context-ceiling read.
