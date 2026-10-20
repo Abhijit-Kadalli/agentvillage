@@ -445,6 +445,14 @@ describe("(e) the bump's $ref gate: P0-5's annotationOnlyEdit, copied, so the bo
   ["A12 ref trailing newline", o({ properties: { q: { $ref: "#/$defs/x\n" } }, $defs: { x: { maxLength: 3 } }, title: "a" }), o({ properties: { q: { $ref: "#/$defs/x\n" } }, $defs: { x: { maxLength: 3 } }, title: "b" }), "major"],
   ["A13 relative ref 'x' with $defs", o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3 } }, $comment: "a" }), o({ properties: { q: { $ref: "#/$defs/x" } }, $defs: { x: { type: "string", maxLength: 3 } }, $comment: "b" }), "patch"],
   ];
+  // Fold 2's mutant e3 (any "#/$defs/" pointer accepted): a def whose literal key is an escaped pointer sits beside
+  // the def the pointer really names, so only the strict #/$defs/<name> pattern keeps these major (P0-5 says major).
+  const ESCAPED: [string, any, any, R.Level][] = [
+    ["a def literally named x%2Fdescription beside x (the ref reaches x's description)", o({ properties: { q: { $ref: "#/$defs/x%2Fdescription" } }, $defs: { "x%2Fdescription": { type: "string" }, x: { description: { type: "string", maxLength: 3 } } } }),
+      o({ properties: { q: { $ref: "#/$defs/x%2Fdescription" } }, $defs: { "x%2Fdescription": { type: "string" }, x: { description: { type: "string" } } } }), "major"],
+    ["a def literally named a~1b beside a/b (the ref reaches a/b)", o({ properties: { q: { $ref: "#/$defs/a~1b" } }, $defs: { "a~1b": { type: "string" }, "a/b": { type: "string" } }, title: "a" }),
+      o({ properties: { q: { $ref: "#/$defs/a~1b" } }, $defs: { "a~1b": { type: "string" }, "a/b": { type: "string" } }, title: "b" }), "major"],
+  ];
   // Each input is op 0's; base and head carry the same version, so the level is the input rule's alone.
   const level = (from: any, to: any) => {
     const a = manifest(), b = manifest();
@@ -454,7 +462,7 @@ describe("(e) the bump's $ref gate: P0-5's annotationOnlyEdit, copied, so the bo
   test("the case lists are whole: P0-5's 15 and review-b's 26", () => {
     expect([P05.length, REVIEW_B.length, REVIEW_B.filter(c => c[3] === "major").length, REVIEW_B.filter(c => c[3] === "patch").length]).toEqual([15, 26, 20, 5]);
   });
-  for (const [why, from, to, want] of [...P05, ...REVIEW_B]) test(`${why}: ${want}`, () => expect(level(from, to)).toBe(want));
+  for (const [why, from, to, want] of [...P05, ...REVIEW_B, ...ESCAPED]) test(`${why}: ${want}`, () => expect(level(from, to)).toBe(want));
   test("in a review the bump stays a note (BUMP_SEVERITY N): a $ref annotation edit at patch is version_bump_too_small, N", () => {
     const [, from, to] = P05[0];
     const base = manifest(); base.operations[0].input = from;
@@ -462,9 +470,9 @@ describe("(e) the bump's $ref gate: P0-5's annotationOnlyEdit, copied, so the bo
     expect([has(r, "version_bump_too_small", "N"), noM(r)]).toEqual([true, []]);
     expect(r.findings.find(f => f.code === "version_bump_too_small")?.text).toContain("needs major");
   });
-  test.skipIf(!existsSync(join(REPO, R.CONFORMANCE_PATH)))("with P0-5's suite in the tree: its requiredBump and the bot's give the same level on all 41 cases (the merged tree)", async () => {
+  test.skipIf(!existsSync(join(REPO, R.CONFORMANCE_PATH)))("with P0-5's suite in the tree: its requiredBump and the bot's give the same level on all 43 cases (the merged tree)", async () => {
     const p05 = await import(join(REPO, R.CONFORMANCE_PATH));
-    for (const [why, from, to] of [...P05, ...REVIEW_B]) {
+    for (const [why, from, to] of [...P05, ...REVIEW_B, ...ESCAPED]) {
       const a = manifest(), b = manifest();
       a.operations[0].input = from; b.operations[0].input = to;
       expect([why, R.requiredBump(a, b, V.operationBudgets).level]).toEqual([why, p05.requiredBump(a, b, V.operationBudgets).level]);
