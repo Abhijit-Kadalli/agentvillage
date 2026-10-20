@@ -357,7 +357,7 @@ test("CX-2 uninstall refuses a cache symlink without touching its target", () =>
   symlinkSync(secret, join(folder, "abcdefghijklmnopqrstuv.json"));
   expect(() => reconcileMiniApps({version: 1, apps: []}, root)).toThrow("mini_apps_symlink_refused");
   expect(readFileSync(secret, "utf8")).toBe("preserve");
-  expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({version:1,apps:[]});
+  expect(JSON.parse(readFileSync(join(root, "mini-apps.json"), "utf8"))).toEqual({version:1,apps:[app]});
 });
 
 
@@ -393,4 +393,48 @@ test("CX-2 same-app restage preserves in-flight draft bytes and mode", () => {
   expect(snapshot(folder)).toEqual(before);
   expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(first);
   expect(snapshot(folder)).toEqual(before);
+});
+
+
+test("CX-2 unsafe cache paths refuse before any manifest, credential, skill or draft mutation", () => {
+  const gold = REVIEWED_MINI_APPS[0];
+  const contextsling = REVIEWED_MINI_APPS.find(x => x.id === "contextsling")!;
+  const id = "abcdefghijklmnopqrstuv";
+  const cases = ["file", "symlink", "dangling-symlink", ...["json", "lock", "tmp-" + "a".repeat(32)].flatMap(ext => ["child-directory:" + ext, "child-symlink:" + ext])];
+  for (const bad of cases) {
+    for (const previous of [{version: 1, apps: [gold]}, {version: 1, apps: [gold, contextsling]}]) {
+      for (const desired of [{version: 1, apps: [gold]}, {version: 1, apps: []}]) {
+        const root = home(), outside = home();
+        reconcileMiniApps(previous, root);
+        writeFileSync(join(root, "village-bridge.json"), "synthetic managed bearer", {mode: 0o600});
+        const manifest = readFileSync(join(root, "mini-apps.json"));
+        const skills = snapshot(join(root, "skills"));
+        const folder = join(root, "contextsling-drafts");
+        const secret = join(outside, "secret");
+        writeFileSync(secret, "synthetic outside content", {mode: 0o600});
+        let validDraft: string | undefined;
+        if (bad === "file") writeFileSync(folder, "resident file");
+        else if (bad === "symlink") symlinkSync(outside, folder);
+        else if (bad === "dangling-symlink") symlinkSync(join(outside, "absent"), folder);
+        else {
+          mkdirSync(folder, {mode: 0o700});
+          // A valid entry sorts before the hostile entry: preflight must inspect ALL children first.
+          validDraft = join(folder, "A".repeat(22) + ".json");
+          writeFileSync(validDraft, "synthetic pending draft", {mode: 0o600});
+          const child = join(folder, id + "." + bad.split(":")[1]);
+          if (bad.startsWith("child-directory:")) mkdirSync(child);
+          else symlinkSync(secret, child);
+        }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const error = bad.includes("symlink") ? "mini_apps_symlink_refused" : bad === "file" ? "mini_apps_non_directory" : "mini_apps_non_file";
+          expect(() => reconcileMiniApps(desired, root)).toThrow(error);
+          expect(readFileSync(join(root, "mini-apps.json"))).toEqual(manifest);
+          expect(readFileSync(join(root, "village-bridge.json"), "utf8")).toBe("synthetic managed bearer");
+          expect(snapshot(join(root, "skills"))).toEqual(skills);
+          expect(readFileSync(secret, "utf8")).toBe("synthetic outside content");
+          if (validDraft) expect(readFileSync(validDraft, "utf8")).toBe("synthetic pending draft");
+        }
+      }
+    }
+  }
 });

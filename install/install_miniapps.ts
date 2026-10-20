@@ -79,19 +79,30 @@ export function validateProjection(value: unknown): Projection {
   });
   return { version: 1, apps };
 }
-/** Delete only CX-2-owned regular cache filenames on uninstall; never follow links. */
-function clearContextslingDrafts(home: string): void {
+/** Validate the complete cleanup set before changing authority or deleting any draft. */
+function contextslingDrafts(home: string): string[] {
   const folder = join(home, "contextsling-drafts");
   safePath(folder);
-  if (!exists(folder)) return;
+  if (!exists(folder)) return [];
   if (!lstatSync(folder).isDirectory()) throw new Error("mini_apps_non_directory");
+  const paths: string[] = [];
   for (const name of readdirSync(folder)) {
     if (!/^[A-Za-z0-9_-]{22,100}\.(json|lock|tmp-[a-f0-9]{32})$/.test(name)) continue;
     const path = join(folder, name);
     regular(path);
+    paths.push(path);
+  }
+  return paths;
+}
+/** Delete only CX-2-owned regular cache filenames on uninstall; never follow links. */
+function clearContextslingDrafts(home: string): void {
+  const folder = join(home, "contextsling-drafts");
+  // Recheck after authority is withdrawn: a concurrent path change still fails closed.
+  for (const path of contextslingDrafts(home)) {
+    regular(path);
     unlinkSync(path);
   }
-  if (readdirSync(folder).length === 0) rmdirSync(folder);
+  if (exists(folder) && readdirSync(folder).length === 0) rmdirSync(folder);
 }
 function atomic(path: string, bytes: string | Buffer): void {
   regular(path);
@@ -129,6 +140,8 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
   } else if (!(projection.apps.length === 0 && stateless())) {
+    // A deterministic bad cache path must refuse without revoking unrelated installed apps.
+    if (!projection.apps.some(app => app.id === "contextsling")) contextslingDrafts(home);
     // Fail closed even if copying/removal is interrupted. Publish desired authority last.
     atomic(target, JSON.stringify({ version: 1, apps: [] }));
     if (!projection.apps.some(app => app.id === "contextsling")) clearContextslingDrafts(home);
