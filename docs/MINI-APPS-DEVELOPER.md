@@ -486,7 +486,7 @@ The three stored tiers map onto the two ids: `public` and `village` are `agentvi
 - It fails closed. A guess, a removed line, a line with no claim, an unknown status and an unknown mark or section are all Private.
 - Your app's new lines are stored with the scopes `agent` and `app:<your-id>`, so they are Private. Only the resident moves them (below). Your app cannot set or ask for an id.
 - On the box, a line's mark may be an old word (`public`, `village`, `private`) or one of the two ids. The box's readers take both. The app and the control plane still write the old words.
-- With the containers switched on, a reader outside the box asks with `{"vocab": "agentvillage.visibility/1", "audience": "agentvillage/edgecityindia2026"}` and its own token. Only that audience can be asked for, and only with a token allowed to ask for it: Skylight's or the lab's (the vocabulary's table), or, for now, the older shared Skylight token. Any other request is refused whole, with `403 {"error":"audience_refused"}`. No audience reads a Private line or a guess.
+- With the containers switched on, a reader outside the box asks with `{"vocab": "agentvillage.visibility/1", "audience": "agentvillage/edgecityindia2026"}` and its own token. Only that audience can be asked for, and only with a token allowed to ask for it: Skylight's or the lab's (the vocabulary's table), or, for now, the older shared Skylight token. With that older token, a request that names no audience is also served Edge City India 2026. Any other audience is refused whole, with `403 {"error":"audience_refused"}`. No audience reads a Private line or a guess.
 
 ### Your app's namespace
 
