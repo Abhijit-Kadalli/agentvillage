@@ -111,7 +111,7 @@ class ForKicksTest(unittest.TestCase):
         self.transport.assert_called_once_with(self.config, {'operation': 'forkicks.order.prepare', **order})
         self.assertIn('Note: ' + json.dumps(note), fk.approval_summary(result['approvalPayload']))
         self.transport.reset_mock()
-        for invalid in ('x' * 141, 17, {'text': 'less ice'}):
+        for invalid in ('x' * 141, 17, {'text': 'less ice'}, 'less\nice', 'less ice\u202e', 'less ice\x1f', 'less\u2028ice'):
             self.assertNotIn('data', self.call({'operation': 'forkicks.order.prepare', **{**order, 'note': invalid}}))
         self.transport.assert_not_called()
 
