@@ -6,9 +6,26 @@ import json
 import os
 import re
 import stat
-import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
 from ._mini_apps import approval_modules, installed
+
+# Runtime data ships beside this plugin, not in its excluded tests directory.
+UNICODE_RULE = json.loads(Path(__file__).with_name("contextsling-unicode.json").read_text())
+DEFAULT_IGNORABLE_RANGES = tuple(tuple(int(part, 16) for part in item.split("-")) for item in UNICODE_RULE["defaultIgnorableRanges"].split(","))
+
+def in_ranges(cp, ranges):
+    lo, hi = 0, len(ranges) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        parts = ranges[mid]
+        if cp < parts[0]:
+            hi = mid - 1
+        elif cp > parts[-1]:
+            lo = mid + 1
+        else:
+            return True
+    return False
 
 OPERATIONS = ("contextsling.publish", "contextsling.update", "contextsling.revoke")
 MAX_PAYLOAD_BYTES = 16384
@@ -28,7 +45,14 @@ def closed(value, keys):
         raise ValueError("approval_card_invalid")
 
 def text(value, empty=False):
-    if not isinstance(value, str) or (not empty and not value.strip()) or any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} for c in value):
+    if not isinstance(value, str):
+        raise ValueError("approval_card_invalid")
+    for i, c in enumerate(value):
+        selector = ord(c) in {0xFE0E, 0xFE0F} and i > 0 and in_ranges(ord(value[i - 1]), UNICODE_RULE["extendedPictographicRanges"])
+        if in_ranges(ord(c), UNICODE_RULE["forbiddenRanges"]) or (in_ranges(ord(c), DEFAULT_IGNORABLE_RANGES) and not selector):
+            raise ValueError("approval_card_invalid")
+    # Exact Markdown lines may be blank; nonempty-required metadata needs visible content.
+    if not empty and not any(in_ranges(ord(c), UNICODE_RULE["visibleRanges"]) for c in value):
         raise ValueError("approval_card_invalid")
     return json.dumps(value, ensure_ascii=False)
 
