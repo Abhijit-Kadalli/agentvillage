@@ -6,6 +6,14 @@ endpoint, package installer, shell hook, custom runtime or automatic approval
 of user-supplied MCP URLs. Submit changes for review in this repository and the
 control-plane catalog; a manifest in a checkout alone does not publish an app.
 
+**New here?** Read the [developer guide](../docs/MINI-APPS-DEVELOPER.md). It
+covers how to get a sandbox, the v2 manifest field by field with one worked
+example that passes the validator, how to run the checks before you open a pull
+request, what still needs a human and a fleet roll, and what is not built yet.
+This file is the reference for the rules and the native contracts below.
+`MINI_APPS_MANIFESTS` is off in production: a manifest in this repo does not
+change what a resident sees.
+
 ## Start from a working app
 
 Two complete starters are maintained with their real native skills:
