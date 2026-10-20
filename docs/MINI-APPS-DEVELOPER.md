@@ -37,7 +37,7 @@ The staffer keeps every other app's key and list when they add yours. A malforme
 
 - Your app is in the catalog for your tenant only.
 - You can install it. The install reaches your box through the normal mini-app staging.
-- Removing your tenant from the list hides the app again and stops it working for you: your box's projection omits it and its context answers `403 app_not_installed`. It does not uninstall it. Your install intent is kept, so adding you back restores the same install. Only an explicit uninstall removes it.
+- Removing your tenant from the list hides the app again and stops it working for you: your box's projection omits it, and your agent's context operations for it are refused (`403 mini_app_not_installed`; the control plane's own code is `app_not_installed`). It does not uninstall it. Your install intent is kept, so adding you back restores the same install. Only an explicit uninstall removes it.
 
 ### What the sandbox does not give you yet
 
@@ -60,6 +60,7 @@ Source:
 - cp `control-plane/src/mini-apps.js:231-243` (`404 mini_app_not_reviewed`, and `503 tenant_allowlist_invalid` for a set-but-invalid value).
 - cp `README.md:77-84`, `:93-108` (cohort still required; removal hides the app, withdraws its operations and context, and keeps the install intent) and `:129` (no tenant scope: restricted apps omitted).
 - cp `docs/RAILWAY.md:136-142` (the variable, and "Variable edits are human-only" at `:142`).
+- app `src/lib/server/mini-apps/catalog.ts:155` and `src/lib/server/mini-apps/context.ts:94-95` (what the agent's tool answers: `403 mini_app_not_installed`).
 - Design `MINIAPPS-PLATFORM-v2-design.md` section 0, row "skill delivery" (private to Edge City; not a repo file).
 
 ## 2. Manifest v2, field by field
@@ -457,24 +458,24 @@ Source:
 
 ## 6. Context store (per-app namespaces)
 
-An app that declares `data.context` gets a small store of one-line notes about the resident. The control plane keeps it. The resident's agent reads and writes it for the app, and the resident sees and controls it on the Context page. Today only Dizko has one.
+An app that declares `data.context` gets a small store of one-line notes about the resident. The control plane keeps it. The resident's agent reads and writes it for the app. Once Edge City switches the Context page's parts on (see "What is switched on" below), the resident sees and controls it there. Today only Dizko has one.
 
 ### The two places on the Context page
 
-The resident sees two containers:
+When Edge City switches the page's containers on, the resident sees two of them:
 
 - **Private**: only the resident's own agent.
 - **Edge City India 2026**: residents of Edge City India 2026 and their agents. In code its identifier is `village`.
 
 There is no Public container. Everything is bounded to the Edge City India network. The control plane still stores three tiers as scopes: `public` (agent, index, skylight), `village` (agent, index) and `private` (agent). On the page, `public` and `village` both show as Edge City India 2026, and a move into Edge City India 2026 never adds `skylight`.
 
-For an app's lines it is narrower still. Skylight never reads an app's lines, in either container. An app line in Edge City India 2026 is read by the resident's agent and by Index; never by Skylight.
+For an app's lines it is narrower still. Skylight never reads an app's lines, in either container. An app line in Edge City India 2026 is read by the resident's agent and by Index; never by Skylight. If the resident has given research consent, such a line can also go into a frozen research snapshot of what Index sees. A Private app line never goes into any snapshot.
 
 ### Your app's namespace
 
 - Its card is `apps.<your-id>`, with its own scope `app:<your-id>`. Only the control plane writes it.
-- Every new line starts Private. Your app cannot choose a line's place: each claim in a write must be exactly `{ text }`, and any other key is refused (`400 bad_body`).
-- At most `data.context.maxEntries` current lines. A line is one line of at most 200 characters, with hidden characters taken out.
+- Every new line starts Private. Your app cannot choose a line's place. Through the tool, each line is a plain string; anything else (an object such as `{ "text": ..., "section": ... }`, a line break, an empty line) is refused with `422 mini_app_context_invalid`. The app server sends each line to the control plane as `{ text }`, which is the only shape the control plane accepts.
+- At most `data.context.maxEntries` current lines; more is refused with `422 mini_app_context_full`. A line is one line of at most 200 characters, with hidden characters taken out.
 - A write is `add` (adds or keeps lines) or `replace` (the namespace becomes exactly the lines sent; your other lines are deleted, nothing else is).
 - A line the resident removed is never saved again, by either mode. It comes back as `suppressed`.
 - A line the resident moved keeps the place they gave it. Your later writes do not change its place, though a `replace` that leaves it out still deletes it.
@@ -482,14 +483,14 @@ For an app's lines it is narrower still. Skylight never reads an app's lines, in
 
 The agent uses two operations of the `village` tool: `mini-app.context.read` with `{}` and `mini-app.context.write` with `{"claims": ["<one line>"], "mode": "add"}`. The agent saves only when the resident asks. [mini-apps/README.md](../mini-apps/README.md), "Per-app context", has the exact calls.
 
-When the resident uninstalls your app, the namespace answers `403 app_not_installed`. Your lines stay in the resident's file and on the page until the resident removes them.
+When the resident uninstalls your app, the two operations are refused with `403 mini_app_not_installed`. An app with no `data.context` gets `403 mini_app_no_context`. Your lines stay in the resident's file and on the page until the resident removes them.
 
 ### What `data.context.ceiling` does today
 
 Nothing on the platform reads it today. The control plane serves only `maxEntries` from a manifest; the served entry drops `ceiling`. No control-plane, app-server or overlay code reads a context ceiling. It is a review declaration:
 
 - The validator accepts `private`, `village` or `public`, and refuses `public` for an `everyone` app.
-- The review bot sends a new ceiling above `private` to a human, and fails one above `village` in the `everyone` lane. With no ceiling, it notes that and reads it as `private`.
+- The review bot sends a new ceiling above `private` to a human, and fails one above `village` in the `everyone` lane. With no ceiling it reads it as `private` and raises an `S` finding (`context_ceiling_missing`): that passes in `sandbox` and needs a human in `admins` and `everyone`. Declare it.
 - There is no Public container, and Skylight never reads app lines. So `public` gives your app nothing that `village` does not.
 
 Declare `private` unless the resident may want your lines in Edge City India 2026. Then declare `village`.
@@ -531,15 +532,15 @@ These are in Edge City's app-context proposal (an internal note, not a repo file
 
 Where the proposal and the code disagree, the code is what runs. For example, the proposal makes a line's place the narrowest of the app's request, the manifest's ceiling and the resident's setting. The code reads none of the first two.
 
-cp#341 is open, not merged and not live. With `MINI_APPS_MANIFESTS` on, if your manifest fails to load at boot, the namespace answers `403 app_no_context` today. cp#341 would keep it open at the version the resident installed, for a tenant the allowlist admits. With the switch off it changes nothing.
+cp#341 is open, not merged and not live. It does not help a partner's app. With `MINI_APPS_MANIFESTS` on, if an app's manifest fails to load at boot, its namespace answers `403 app_no_context` today. cp#341 would keep it open at the installed version only for the five first-party apps, whose reviewed built-in definition stands in. For any other app nothing changes, and with the switch off it changes nothing at all.
 
 Source:
 - Namespace: cp `control-plane/src/context-app-namespaces.js:7-10` (card, origin, scopes, the resident moves it), `:15-25` (GET and PUT, `suppressed`, `replace`, a moved line keeps its scopes), `:26-33` (refusals), `:68-73` (only `maxEntries` is read), `:83-90` (one line, 200 code points), `:96-110` (a claim is exactly `{ text }`), `:113-124` (new lines `{agent, app:<id>}`), `:138-151` (the gate), `:252-262` (neutralised lines, the heading), `:271-299` (the `_profile.md` section).
 - Store rules: cp `control-plane/src/context-claims.js:19-26` (suppression, a producer's scopes apply to new claims only), `:128-138` (app rows: the generic routes refuse them; a move keeps `app:<id>`), `:844-846`, `:862-863` (a PATCH keeps the app row on its card and scope).
-- Tiers: cp `control-plane/src/context-sections.js:8-11` and `:44-48` (the three scope sets), `:61` (an app block with no row is Private), `:129-133` (a block's container only narrows a new line). cp `control-plane/src/visibility/vocab.js:6-7` (the two visibilities), `:72-76` (Skylight only for its own cards); `control-plane/src/visibility/visibility-vocab.v1.json:9-17` (readers; `apps.*` never Skylight), `:32-36` (`public` and `village` are both Edge City India 2026), `:51-54` (a move into Edge City India 2026 writes agent and index). cp `control-plane/src/context-snapshots.js:124-134` (an app line enters a snapshot only of scope `index` or `skylight`).
+- Tiers: cp `control-plane/src/context-sections.js:8-11` and `:44-48` (the three scope sets), `:61` (an app block with no row is Private), `:129-133` (a block's container only narrows a new line). cp `control-plane/src/visibility/vocab.js:6-7` (the two visibilities), `:72-76` (Skylight only for its own cards); `control-plane/src/visibility/visibility-vocab.v1.json:9-17` (readers; `apps.*` never Skylight), `:32-36` (`public` and `village` are both Edge City India 2026), `:51-54` (a move into Edge City India 2026 writes agent and index). cp `control-plane/src/context-snapshots.js:20-31` (a snapshot needs the resident's research consent) and `:124-134` (an app line enters a snapshot only of scope `index` or `skylight`).
 - Page: app `src/lib/agent/sections.ts:19-24` (two containers, no public container, no `skylight` on a move), `:54`, `:61-67`, `:70-76` (the containers and their words), `:466` (an app block starts Private), `:476-480` (every move writes `village` or `private`). App `src/lib/server/agent/context-sections.ts:62-70`, `:79-86`, `:96-99` (Move is one PATCH; an app line keeps its scope). App `src/lib/server/agent/context-apps.ts:11-27` (the block, the remove, an uninstalled app's lines stay). App `src/components/context/ContextPage.tsx:1280-1289` (the block with the sections off or on), `:1563-1583` (the block as a widget, badges). Block drag: cp `control-plane/src/context-widgets.js:14-24`, `:28-36`.
 - Box: cp `control-plane/src/context-profile-render.js:11-13`, `:370-374` (app sections after "Shared on the Context page"), `:603` (only with `CONTEXT_APP_NAMESPACES`). `plugins/village-memory/__init__.py:46-48`, `:299-304` (a group chat or cron run stops before that heading). `mini-apps/README.md:343-371` (the two operations; saves only when asked; the gate).
-- Ceiling: `mini-apps/manifest.v2.schema.json:228-254` (`ceiling` optional), `scripts/mini-apps-manifests.cjs:544` (no `public` for `everyone`), `:633-634` (the served entry carries `maxEntries` only). ov#423 `scripts/mini-apps-review.ts:92` (lane ceilings), `:795-798` (missing, over the lane, above private). No other reader: `git grep` for `ceiling` in cp `control-plane/src` (outside the validator and the vendored manifests), app `src` and this repo's `plugins`, `install` and `skills` finds no context-ceiling read.
-- Switches: cp `control-plane/src/context-sources.js:151-154` (the values the control plane takes), `control-plane/src/mini-apps.js:84-91` (no context operations while the routes are off), `control-plane/src/mini-apps-catalog.js:27` and `:79-82` (Dizko's namespace and its operations), `:363` and `:371-372` (rc44 and later, proven). App `src/lib/server/mini-apps/context.ts:52-55`, `:137`, `:152` (both operations need claims mode), `:72` (the write's arguments). App `src/lib/server/agent/context-apps.ts:27` (the control plane's claims routes off: no app block).
-- cp#341 `control-plane/src/context-app-namespaces.js:145-152` (`namespaceDefinitionOf`) and `:177-192` (the gate). On cp `main`: `:146-149` (a dropped app has no definition, so `app_no_context`).
+- Ceiling: `mini-apps/manifest.v2.schema.json:228-254` (`ceiling` optional), `scripts/mini-apps-manifests.cjs:544` (no `public` for `everyone`), `:633-634` (the served entry carries `maxEntries` only). ov#423 `scripts/mini-apps-review.ts:92` (lane ceilings), `:795-798` (missing is `S`, over the lane is `M`, new above private is `S`), `:93-99` (`context_ceiling_missing` is not an always-human code) and `:550-556` (so it passes in `sandbox`). No other reader: `git grep` for `ceiling` in cp `control-plane/src` (outside the validator and the vendored manifests), app `src` and this repo's `plugins`, `install` and `skills` finds no context-ceiling read.
+- Switches: cp `control-plane/src/context-sources.js:151-154` (the values the control plane takes), `control-plane/src/mini-apps.js:84-91` (no context operations while the routes are off), `control-plane/src/mini-apps-catalog.js:27` and `:79-82` (Dizko's namespace and its operations), `:363` and `:371-372` (rc44 and later, proven). App `src/lib/server/mini-apps/context.ts:52-55`, `:137`, `:152` (both operations need claims mode), `:72`, `:75-87` (the write's arguments: plain strings, sent on as `{ text }`; `mini_app_context_invalid`, `mini_app_context_full`), `:89-107` (the control plane's refusals as the tool's codes: `mini_app_not_installed`, `mini_app_no_context`, `mini_app_context_full`). App `src/lib/server/mini-apps/catalog.ts:155` (an app not installed: `403 mini_app_not_installed` before any context call). App `src/lib/server/agent/context-apps.ts:27` (the control plane's claims routes off: no app block).
+- cp#341 `control-plane/src/context-app-namespaces.js:145-152` (`namespaceDefinitionOf`, through `catalog.servedDefinition`) and `:177-192` (the gate). The fallback exists only for the five built-in apps: cp `control-plane/src/mini-apps-catalog.js:245-255` (`lastValidSource` is built from the five constants). On cp `main`: `:146-149` (a dropped app has no definition, so `app_no_context`).
 - Proposal: `APP-CONTEXT-MODEL-proposal.md` sections 2, 3 and 5 (private to Edge City; not a repo file).
