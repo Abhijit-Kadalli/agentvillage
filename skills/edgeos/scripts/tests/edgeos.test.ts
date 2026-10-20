@@ -160,6 +160,9 @@ describe("verbs and arguments", () => {
       ["list", "--after", "2026-10-11T00:00:00Z", "--search", " "], ["list", "--after", "2026-10-11T00:00:00Z", "--venue", "x"],
       ["venues", "--limit", "0"], ["venues", "--limit", "1001"], ["venues", "--skip", "-1"], ["venues", "--popup", "x"],
       ["participants", EVENT, "--limit", "1e3"],
+      // Security review 2: only ASCII digits (the av-events observer refuses the others too).
+      ["venues", "--limit", "\u0661\u0662"], ["venues", "--skip", "\uff11\uff12"],
+      ["rsvp", EVENT, "--occurrence", "2026-10-2\u0660T10:00:00Z"],
     ]) bad(argv);
     expect(validInstant("2026-10-20T10:00Z")).toBe(true);
     expect(validInstant("2026-10-20T10:00:00.123+05:30")).toBe(true);

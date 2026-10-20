@@ -90,7 +90,7 @@ import urllib.parse
 from collections import OrderedDict
 from typing import Any, Callable, Optional
 
-from ._core import DIR_MODE, FILE_MODE, iso_from_text
+from ._core import DIR_MODE, FILE_MODE, hermes_home, iso_from_text
 from ._intentions import _first_json, valid_id
 
 SEED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edgeos_tool_allowlist.json")
@@ -583,7 +583,7 @@ def http_call(tool_name: Any, args: Any, allowlist: Allowlist = ALLOWLIST) -> Op
         return None
     if command.lstrip(" \t").startswith("bun"):
         # EDGEOS-BLOCK step B (v2.1.10): the skill's own script verbs.
-        return script_call(command)
+        return script_call(command, args.get("workdir"))
     # Line continuations are joined and the skill's base reference expanded,
     # as the shell would (the skill's recipes are written that way,
     # `skills/edgeos/SKILL.md` §6). Leading and trailing whitespace (a final
@@ -645,7 +645,13 @@ SCRIPT_API_PATH = "/api/v1"
 #: refused, so the words read here are the words the script receives. A `~`
 #: or `=` is refused too (tilde expansion; `--flag=value` the script rejects).
 _SCRIPT_NEVER = frozenset("$`\\;|&<>(){}[]*?#~!=\r\0\n")
-_SCRIPT_ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})")
+#: ASCII digits only (security review 2): Python's `\d` also matches other
+#: scripts' digits (`١٢`, `１２`), which the script's JavaScript `\d` does not.
+_SCRIPT_ISO = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2})")
+_SCRIPT_COUNT = re.compile(r"[0-9]{1,6}")
+#: Files that make `bun` run other code before the script (`preload`) or
+#: resolve differently: one in the working directory, or bun's global ones.
+_BUNFIG = "bunfig.toml"
 _SCRIPT_TEXT = re.compile(r"[^\x00-\x1f\x7f]+")
 _SCRIPT_FLAGS = {
     "list": ("--after", "--before", "--search", "--tag", "--kind", "--venue", "--track", "--rsvped", "--popup"),
@@ -665,7 +671,43 @@ def _script_instant(value: str) -> bool:
     return _SCRIPT_ISO.fullmatch(value) is not None and iso_from_text(value) is not None
 
 
-def script_call(command: str) -> Optional[HttpCall]:
+def _script_cwd_trusted(workdir: Any) -> bool:
+    """True when `skills/edgeos/scripts/edgeos.ts` resolves to the installed
+    script: the call runs in the Hermes folder and nothing makes bun load other
+    code first (security review 1).
+
+    The path is relative, so it names the installed script only from
+    `$HERMES_HOME`: the terminal's default directory (no `workdir`, as the
+    skill says) or a `workdir` that resolves to exactly that folder. Any other
+    directory could hold a different file at the same relative path. A
+    `bunfig.toml` in that directory, or bun's global `~/.bunfig.toml` /
+    `$XDG_CONFIG_HOME/.bunfig.toml`, can `preload` other code: not read either.
+    A directory a previous call `cd`'d into without a `workdir` is outside what
+    an observer sees (module docstring); the overlay's terminal starts every
+    call in its configured cwd.
+    """
+    home = hermes_home()
+    if workdir is None or workdir == "":
+        cwd = home
+    elif isinstance(workdir, str):
+        cwd = os.path.expanduser(workdir)
+        if not os.path.isabs(cwd):
+            return False
+    else:
+        return False
+    try:
+        if os.path.realpath(cwd) != os.path.realpath(home):
+            return False
+        globals_ = [os.path.join(os.path.expanduser("~"), "." + _BUNFIG)]
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        if xdg:
+            globals_.append(os.path.join(xdg, "." + _BUNFIG))
+        return not any(os.path.lexists(p) for p in [os.path.join(cwd, _BUNFIG), *globals_])
+    except (OSError, ValueError):
+        return False
+
+
+def script_call(command: str, workdir: Any = None) -> Optional[HttpCall]:
     """The EdgeOS request `bun skills/edgeos/scripts/edgeos.ts <verb> …` makes, or None.
 
     The script (`skills/edgeos/scripts/edgeos.ts`) reads its key and base
@@ -680,6 +722,8 @@ def script_call(command: str) -> Optional[HttpCall]:
     (module docstring): an observer cannot see a script file changed on disk.
     """
     text = command.strip(" \t\n")
+    if not _script_cwd_trusted(workdir):
+        return None
     if not text or any(c in _SCRIPT_NEVER for c in text):
         return None
     try:
@@ -729,7 +773,7 @@ def script_call(command: str) -> Optional[HttpCall]:
             value = value.lower()
         elif flag in ("--skip", "--limit"):
             low, high = (0, 100_000) if flag == "--skip" else (1, 1000)
-            if not re.fullmatch(r"\d{1,6}", value) or not low <= int(value) <= high:
+            if not _SCRIPT_COUNT.fullmatch(value) or not low <= int(value) <= high:
                 return None
             value = str(int(value))
         if flag in _SCRIPT_REPEATABLE:

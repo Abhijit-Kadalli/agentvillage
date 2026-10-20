@@ -656,3 +656,77 @@ def test_section_8_runs_the_profile_script_reads_only_and_sends_edits_to_the_app
     # The directory script gives the same exit 4 for the same cause.
     assert "**Exit 4** means the person's sign-in to the Agent Village app has lapsed: follow §0." in re.sub(r"\s+", " ", section(9))
     assert 'signinLapsed("directory"' in DIRECTORY_SCRIPT.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# Security review of #437 (20 Oct): a script run is read only when the
+# relative path names the installed script, and only with ASCII digits.
+# --------------------------------------------------------------------------
+
+RSVP_RUN = f"bun skills/edgeos/scripts/edgeos.ts rsvp {EVENT}"
+
+
+@pytest.fixture()
+def box(home, tmp_path_factory, monkeypatch):
+    """`home` is $HERMES_HOME; HOME is a separate clean directory (no global bunfig)."""
+    user = tmp_path_factory.mktemp("user-home")
+    monkeypatch.setenv("HOME", str(user))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    return home, user
+
+
+def read(edgeos, command, **extra):
+    return edgeos.http_call("terminal", {"command": command, **extra})
+
+
+def test_review1_a_script_run_is_read_from_the_hermes_folder_only(edgeos, box, tmp_path_factory):
+    hermes, user = box
+    alias = tmp_path_factory.mktemp("alias") / "hermes-link"
+    alias.symlink_to(hermes)
+    for workdir in (None, "", str(hermes), str(hermes) + "/", str(alias)):
+        extra = {} if workdir is None else {"workdir": workdir}
+        assert read(edgeos, RSVP_RUN, **extra) is not None, workdir
+    # Another directory could hold another file at the same relative path.
+    other = tmp_path_factory.mktemp("other")
+    (other / "skills" / "edgeos" / "scripts").mkdir(parents=True)
+    (other / "skills" / "edgeos" / "scripts" / "edgeos.ts").write_text("console.log('{}')\n")
+    for workdir in (str(user), "~", str(other), "skills", ".", str(hermes / "skills"), 7, ["/"]):
+        assert read(edgeos, RSVP_RUN, workdir=workdir) is None, workdir
+
+
+def test_review1_a_bunfig_that_could_preload_code_stops_the_read(edgeos, box):
+    hermes, user = box
+    assert read(edgeos, RSVP_RUN) is not None
+    (hermes / "bunfig.toml").write_text('preload = ["./x.ts"]\n')
+    assert read(edgeos, RSVP_RUN) is None
+    assert read(edgeos, RSVP_RUN, workdir=str(hermes)) is None
+    (hermes / "bunfig.toml").unlink()
+    (user / ".bunfig.toml").write_text('preload = ["./x.ts"]\n')
+    assert read(edgeos, RSVP_RUN) is None
+
+
+def test_review1_a_run_elsewhere_forges_no_receipt(plugin, ctx, monkeypatch, av, box, tmp_path_factory):
+    monkeypatch.setenv("AV_EVENTS_TOKEN", "test-token")
+    plugin.register(ctx)
+    other = tmp_path_factory.mktemp("elsewhere")
+    participant = {"id": str(uuid.uuid4()), "event_id": EVENT, "status": "registered"}
+    for command, body in ((RSVP_RUN, participant),
+                          (f"bun skills/edgeos/scripts/edgeos.ts event {EVENT}", {"id": EVENT, "my_rsvp_status": "registered"})):
+        ctx.fire("post_tool_call", session_id="s", tool_name="terminal", args={"command": command, "workdir": str(other)},
+                 result=json.dumps({"output": json.dumps(body), "exit_code": 0}), status="ok")
+    assert [e for e in av.read_buffer(plugin._COLLECTOR) if e["event_type"].startswith("action.")] == []
+
+
+@pytest.mark.parametrize("command", [
+    f"bun skills/edgeos/scripts/edgeos.ts participants {EVENT} --skip ١٢",
+    f"bun skills/edgeos/scripts/edgeos.ts participants {EVENT} --limit １２",
+    "bun skills/edgeos/scripts/edgeos.ts venues --limit ١٢",
+    "bun skills/edgeos/scripts/edgeos.ts venues --skip １２",
+    f"bun skills/edgeos/scripts/edgeos.ts rsvp {EVENT} --occurrence 2026-10-2٠T10:00:00Z",
+    f"bun skills/edgeos/scripts/edgeos.ts event {EVENT} --occurrence ２026-10-20T10:00:00Z",
+    "bun skills/edgeos/scripts/edgeos.ts list --after 2026-10-11T00:00:00Z --before 2026-10-1٢T00:00:00Z",
+])
+def test_review2_non_ascii_digits_are_refused(edgeos, box, command):
+    assert read(edgeos, command) is None
+    ascii_form = command.translate(str.maketrans("٠١٢１２", "01212"))
+    assert read(edgeos, ascii_form) is not None, ascii_form
