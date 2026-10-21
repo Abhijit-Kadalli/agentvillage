@@ -228,8 +228,9 @@ export function configureModelFallback(): void {
 }
 
 /**
- * Hosted Telegram: pairing codes, no restart pings, no approval prompts, and every message
- * stamped with the time it was sent. Idempotent.
+ * Hosted Telegram: pairing codes, no restart pings, no approval prompts, no "Confirm /new"
+ * prompt before /new, /reset, /undo or /clear, and every message stamped with the time it was
+ * sent. Idempotent.
  *
  * `gateway.message_timestamps.enabled: true` (AGENT-DATE): Hermes 0.21.5 keeps a continuing
  * session's system prompt byte for byte (agent/conversation_loop.py `_restore_or_build_system_prompt`),
@@ -261,6 +262,13 @@ export function configureHostedGateway(): void {
 
   const approvals = { ...((doc.approvals as Record<string, unknown>) ?? {}) };
   approvals.mode = false;
+  // V2111 (Carter's leniency ruling, CLAIMS L17443 (1)): no resident taps "Confirm /new" to start
+  // a new chat. Hermes gates /new, /reset, /undo, /clear behind an Approve Once / Always Approve /
+  // Cancel prompt unless this is false (gateway/run_busy.py `_maybe_confirm_destructive_slash`,
+  // `bool(approvals.get("destructive_slash_confirm", True))`, read from config.yaml per command;
+  // default true at hermes_cli/config_defaults.py). A real YAML boolean: a string "false" is truthy
+  // there. A pin, like `mode`: a hand-set `true` becomes false on the next install.
+  approvals.destructive_slash_confirm = false;
   doc.approvals = approvals;
 
   const platforms = { ...((doc.platforms as Record<string, unknown>) ?? {}) };
@@ -270,7 +278,7 @@ export function configureHostedGateway(): void {
   doc.platforms = platforms;
 
   writeConfig(doc);
-  console.log("→ hosted gateway: pairing mode, approvals off, no telegram restart pings, message timestamps on");
+  console.log("→ hosted gateway: pairing mode, approvals off, no /new confirm prompt, no telegram restart pings, message timestamps on");
 }
 
 /** Hermes `platforms.telegram.extra` key that decides whether a cold start discards the backlog. */
