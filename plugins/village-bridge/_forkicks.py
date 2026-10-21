@@ -136,8 +136,10 @@ def card_value_fits(value):
 FULFILMENT_KEYS = frozenset({"type", "locationId", "date", "deliveryAddress"})
 # The formatter's own separators (context L17764): a merchant or agent text holding one, or starting like the delivery
 # form, could draw a phantom line ("Latte; 5 × Cake"), so such an order never gets the flat card (fail closed, no
-# escaping): approval_card_not_minimal, and the app sends the legacy shape. The name and note rows are exempt (each is
-# its own row, verbatim).
+# escaping): approval_card_not_minimal, and the app sends the legacy shape. It covers every merchant or agent text on
+# the order, pickup and name rows (approval L17766); the note row is exempt (its own row, verbatim). A control or format
+# character (Cc/Cf, incl. newlines, zero-width and bidi controls) in ANY value, the note included, is already refused by
+# approval_summary (approval_card_invalid), so no shape can carry it.
 CARD_SEPARATORS = frozenset(";×(),·")
 CARD_DELIVERY_PREFIX = "Delivery to"
 
@@ -181,6 +183,7 @@ def card_fields(preview):
             fields[CARD_NOTE_KEY] = preview["note"]
         parts = [line["name"] for line in quote["lines"]] + [o for line in quote["lines"] for o in line["options"]]
         parts += [quote["location"]["name"]] if fulfilment["type"] == "pickup" else [fulfilment["deliveryAddress"]]
+        parts.append(preview["displayName"])
         if any(_card_ambiguous(part) for part in parts):
             raise ValueError("approval_card_not_minimal")
     except (KeyError, TypeError, IndexError, AttributeError) as error:

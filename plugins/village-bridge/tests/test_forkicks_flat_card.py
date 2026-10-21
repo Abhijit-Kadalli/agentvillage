@@ -73,8 +73,10 @@ class GoldenVectorTest(unittest.TestCase):
             p = copy.deepcopy(base); p['quote']['lines'][0]['name'] = 'Iced' + sep + 'latte'
             with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
                 fk.card_fields(p)
-        p = copy.deepcopy(base); p['displayName'] = 'Carter (Goa)'
-        self.assertEqual(fk.card_fields(p)['name'], 'Carter (Goa)')  # its own row: exempt
+        self.assertEqual(vector('a separator in the name shared')['error'], 'approval_card_not_minimal')  # approval L17766
+        for name in ('a newline in an item name', 'a zero-width space', 'a bidi override in the note', 'a newline in the note',
+                     'a newline in the name', 'a left-to-right mark'):
+            self.assertEqual(vector(name)['error'], 'approval_card_invalid')
 
     def test_budget_edge_is_exactly_core_value_max(self):
         self.assertIn('card', vector('exactly 278')); self.assertEqual(len(vector('exactly 278')['card']['order']), 278)

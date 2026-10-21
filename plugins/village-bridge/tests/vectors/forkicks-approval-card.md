@@ -70,13 +70,43 @@ So the APP builds `{order, total, pickup, name}` plus `note` exactly when the dr
 the legacy shape whenever the formatter refuses (`approval_card_invalid` or `approval_card_not_minimal`, e.g. a
 note over the budget), or the order fails on the box.
 
-## No phantom lines: the formatter's separators (context L17764)
+## No phantom lines: the formatter's separators (context L17764, approval L17766)
 
-Fail closed, no escaping. If any item name, option, the pickup location's name (pickup) or the delivery address
-(delivery) contains one of `;` `×` `(` `)` `,` `·`, or starts with `Delivery to`, the flat card is NOT used:
-`approval_card_not_minimal`, and the app sends the legacy shape. The `name` and `note` rows are exempt (each is
-its own row, verbatim) but keep the budget below. Note: a delivery address with a comma (common) therefore always
-gets the technical card.
+Fail closed, no escaping. If any item name, option, the pickup location's name (pickup), the delivery address
+(delivery) or the display name contains one of `;` `×` `(` `)` `,` `·`, or starts with `Delivery to`, the flat card
+is NOT used: `approval_card_not_minimal`, and the app sends the legacy shape. The `note` row is exempt from the
+separator rule (its own row, verbatim) but keeps the budget. Note: a delivery address with a comma (common)
+therefore always gets the technical card.
+
+Control and format characters (Unicode Cc, Cf, also Cs, Zl, Zp: newlines, zero-width characters, bidi controls)
+in ANY value, the note included, are refused by today's technical-card check (`approval_summary` /
+`forkicksSummary`) with `approval_card_invalid`, before any flat-card rule. So no shape carries them: such an
+order fails in the legacy shape too, as it does today. A newline in a note can therefore never fake a row.
+
+## Every field the merchant receives (review-b L17768; app main forkicks.ts, forkicks-schema.ts)
+
+The app sends the merchant two requests. Every field is quoted on the card, derived from a quoted row, or fixed by
+the resident's identity. Nothing agent-influenced reaches the café unquoted.
+
+| Request (app) | Field | On the flat card |
+|---|---|---|
+| quote, at prepare (`POST /api/agent/orders/quote`, forkicks.ts:62; body = `ForKicksOrderInput` (strict) + 2) | `items[].itemId`, `items[].optionIds`, `items[].qty` | Order row: the merchant's quote lines (name, options, qty) for exactly these items; ids must equal the line's ids (box check) |
+| | `fulfilment.type` | Pickup row (`<place>` or `Delivery to <address>`) |
+| | `fulfilment.locationId` | derived: must equal the quote location's id (box check), whose name is on the Pickup row |
+| | `fulfilment.date` | Pickup row (the date; when absent, the location's opening day the merchant quoted) |
+| | `fulfilment.deliveryAddress` | Pickup row (delivery only; refused on a pickup) |
+| | `paymentMethod` | Total row (`pay by UPI` / `card at pickup`) |
+| | `note` | Note row, verbatim (present exactly when non-empty) |
+| | `customerRef` | derived: the app's pseudonymous id for this resident (`customerRef(tenantId, humanId)`), never agent text |
+| | `agentOrder` | constant `true` |
+| create, after approval (`POST /api/agent/orders`, forkicks.ts:171-174) | `quoteId` | derived: the merchant's quote for exactly the fields above, held in the app's saved draft (its lines, total and place are the quoted rows) |
+| | `idempotencyKey` | the draftId: bound (one approval key per draftId) |
+| | `customer.ref` | as `customerRef` |
+| | `customer.displayName` | Name row |
+
+The quote request reaches the merchant at prepare, BEFORE the approval. It places nothing: only the create after
+the grant places the order. If the app ever adds a field to either body, it must add a row here and a check in all
+three implementations, or send the legacy shape.
 
 ## Order of the checks (so the three implementations return the same code)
 
@@ -84,7 +114,8 @@ gets the technical card.
 2. What-you-see table above (unshown fulfilment key, delivery address on a pickup, location id, item ids):
    `approval_card_invalid`.
 3. Build the strings; a bad month/day is `approval_card_invalid`.
-4. The separator rule: `approval_card_not_minimal`.
+4. The separator rule (item names, options, pickup place / delivery address, display name; not the note):
+   `approval_card_not_minimal`.
 5. The budget on every value (note included): `approval_card_not_minimal`.
 
 ## The minimal-card budget (never cut a purchase)
