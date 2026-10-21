@@ -1,0 +1,10 @@
+# The approval.md release gate's own files (B-167 CLASS-DIFF, B-167N NEW-CALLS).
+# expected.json declares each new call's outcome and carries Carter's acceptance
+# on a limiting one; accepted_by is text an author can write, so the control is
+# this review plus approval.md's pin of the same file (PIN_EXPECTED in its ci.yml).
+# Effective only once the main ruleset requires code-owner review (Carter's hand).
+/scripts/approval-class-diff/expected.json   @soycarts
+/scripts/approval-class-diff/                @soycarts
+/scripts/approval-class-diff.sh              @soycarts
+/.github/workflows/test.yml                  @soycarts
+/.github/CODEOWNERS                          @soycarts

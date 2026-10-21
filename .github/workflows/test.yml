@@ -211,10 +211,18 @@ jobs:
   # One source of truth: the extractor and the check are approval.md's own
   # scripts, checked out at the pinned commit below (approval-md/approval.md is
   # public, so no token). Move the ref to the v0.4.7 tag once that release
-  # carries them; until then it names the head commit of the approval.md B-167 PR.
+  # carries them; until then it names the head commit of the approval.md B-167N PR
+  # (stacked on the B-167 PR, #665).
   #
-  # The report (first line: the GATE line) is the job summary and the
-  # `class-diff` artifact (markdown + JSON).
+  # B-167N NEW-CALLS (Carter L17349, L17375; spec approval L17350): every call
+  # NEW or CHANGED against the previous release tag (recipes, and the harness-
+  # tool envelopes approval.md's extractor derives from the mini-app manifests
+  # and the gated plugin tools) must carry its declared outcome in
+  # scripts/approval-class-diff/expected.json, and the real hook must give
+  # exactly it under the village default template and in each settings cell.
+  #
+  # The report (first line: the GATE line; the NEW-CALLS line heads its own
+  # section) is the job summary and the `class-diff` artifact (markdown + JSON).
   class-diff:
     name: approval class-diff (shipped corpus at the pinned core)
     runs-on: ubuntu-latest
@@ -246,11 +254,20 @@ jobs:
             exit 1
           fi
           echo "ref=$base" >> "$GITHUB_OUTPUT"
+          # B-167N (P3): new calls are measured against the previous release on every
+          # event, a pull request included, so the PR that adds a call is the one
+          # that must declare it. No tag found is a failure here too.
+          if ! tag_ref=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc*' HEAD^ 2>/dev/null); then
+            echo "::error::no previous release tag (v*, not -rc) below HEAD; the new-calls check has no previous release to measure against"
+            exit 1
+          fi
+          echo "new-calls: measured against the previous release $tag_ref"
+          echo "tag=$tag_ref" >> "$GITHUB_OUTPUT"
       - name: check out approval.md's extractor and check at the pinned ref
         uses: actions/checkout@v4
         with:
           repository: approval-md/approval.md
-          ref: fb998ecc3d01fc6e2aba623085f6b99703ae2120 # APPROVAL_MD_TOOL_REF, see the comment above
+          ref: 5e3b6f9c1a2f421e6121c54c227ecf21c1d82fb4 # APPROVAL_MD_TOOL_REF, see the comment above
           path: .test-deps/approval-md-tool
           persist-credentials: false
           sparse-checkout: scripts
@@ -267,6 +284,7 @@ jobs:
           AV_CLASS_DIFF_OUT: ${{ github.workspace }}/class-diff
           AV_CLASS_DIFF_BOX_CONCURRENCY: "4"
           BASE_REF: ${{ steps.base.outputs.ref }}
+          AV_NEW_CALLS_BASE_REF: ${{ steps.base.outputs.tag }}
         run: |
           set +e
           bash scripts/approval-class-diff.sh "$BASE_REF"
