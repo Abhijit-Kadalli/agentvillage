@@ -2416,7 +2416,9 @@ Hermes's own code pass through unchanged, once.
 for every resident: unset means `1` and `all` (CLAIMS L17443 (2) / L17455 (1): a resident's open chat
 picks up a skills update without `/new`). This is set in code, not by the control plane, which does
 not render either variable. The planned 24 h team soak before the fleet was skipped by that ruling.
-`team` and `memory` still give the old behaviour, box by box, through `$HERMES_HOME/.env`.
+`AV_PROMPT_REFRESH=team` plus `AV_PROMPT_REFRESH_FILES=memory` is the exact old behaviour, box by box,
+through `$HERMES_HOME/.env` (`team` alone still runs `all` on a team box); a fleet rollback is a release
+that changes the defaults back, then a roll.
 
 **Cost (measured for v2.1.12).** Real Hermes v2026.9.24 `agent.system_prompt.build_system_prompt` with
 this overlay's `workspace/SOUL.md`, `workspace/AGENTS.md` (18,645 chars), the 20 staged skills and
@@ -2431,7 +2433,10 @@ sits after AGENTS.md: in the bench, a one-skill change kept the first 35,590 cha
 call writes the cache again from that point on: the rest of the system prompt and the whole
 conversation history, instead of reading it. That is one cache write per open session per roll or
 update that changes AGENTS.md or the skills. A chat idle for longer than the cache's lifetime is cold
-anyway, so the cost lands only on chats active across the roll, as with MINIAPP-PICKUP. Rollback:
+anyway, so the cost lands only on chats active across the roll, as with MINIAPP-PICKUP. New for non-team
+boxes, which ran F1 off before: any other write to USER.md, MEMORY.md or the village-memory
+`_profile.md` (the control plane's, another open chat's) also rebuilds an open session on its next
+turn, once per change; the session's own `memory` write does not (`with_memory_write_ack`). Rollback:
 `AV_PROMPT_REFRESH=0` (or `prompt_refresh` in `AV_HOOKS_DISABLED`) in `$HERMES_HOME/.env` turns it
 off. `AV_PROMPT_REFRESH_FILES=memory` keeps memory-only refreshes. Both are read at the next turn, no
 restart.

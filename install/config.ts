@@ -270,6 +270,9 @@ export function configureHostedGateway(): void {
   // there. A pin, like `mode`: a hand-set `true` becomes false on the next install.
   approvals.destructive_slash_confirm = false;
   doc.approvals = approvals;
+  // ONE-WAY, like `mode` (review-b ov#445 S1): the merge above keeps the key and nothing in the installer
+  // deletes or resets it, so a later release that only drops the `= false` line leaves `false` on every
+  // box. A rollback is a later release that pins `approvals.destructive_slash_confirm = true`.
 
   const platforms = { ...((doc.platforms as Record<string, unknown>) ?? {}) };
   const telegram = { ...((platforms.telegram as Record<string, unknown>) ?? {}) };
