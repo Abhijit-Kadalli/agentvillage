@@ -311,13 +311,16 @@ class PrepareNoteTest(unittest.TestCase):
         quote = {'quoteId': 'quote-1', 'canOrder': True, 'totalInr': 190, 'location': {'name': 'Cafe', 'address': 'Goa', 'opens': '2026-10-19T08:00:00+05:30'},
                  'lines': [{'name': 'Coffee', 'qty': 1, 'options': ['oat'], 'unitInr': 190, 'lineInr': 190}]}
         sent = {k: v for k, v in order.items() if k != 'operation'}
+        sent['note'] = sent['note'].strip(bridge._JS_TRIM)  # the app saves the trimmed note in its preview
         payload = {'appId': 'forkicks', 'operation': 'forkicks.order.confirm', 'preview': {'appId': 'forkicks', 'draftId': draft, **sent, 'quote': quote, 'displayName': 'Priya'}}
         return {'draftId': draft, 'quote': quote, 'displayName': 'Priya', 'approvalPayload': payload,
                 'payloadHash': hashlib.sha256(fk.canonical(payload).encode()).hexdigest()}
 
     def test_same_block_joiner_note_reaches_the_app(self):
         self.enable()
-        for n, note in enumerate((KA + VIRAMA + ZWJ + SSA, ' ' + KA + VIRAMA + ZWNJ + SSA + ' ')):
+        # The check runs on the JS-trimmed note: a U+FEFF or U+2029 the app trims away is not refused (mutant M36).
+        for n, note in enumerate((KA + VIRAMA + ZWJ + SSA, ' ' + KA + VIRAMA + ZWNJ + SSA + ' ',
+                                  '\ufeff' + KA + VIRAMA + ZWJ + SSA + '\u2029')):
             with self.subTest(note=note.encode('unicode_escape').decode()):
                 self.transport.reset_mock()
                 order = self.order(note)
