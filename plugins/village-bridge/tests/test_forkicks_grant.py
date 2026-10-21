@@ -20,6 +20,7 @@ if fixture is None:
 bridge, mini = fixture.bridge, fixture.mini
 fk = sys.modules['village_bridge._forkicks']
 grant = sys.modules['village_bridge._forkicks_grant']
+ENSURE = bridge._ensure_forkicks_pass  # the real one (setUp patches it)
 
 DRAFT = '550e8400-e29b-41d4-a716-446655440000'
 TASK = 'propose:' + 'a' * 32
@@ -157,6 +158,33 @@ class ForKicksOnGrantTest(unittest.TestCase):
             response = self.ask()
         self.assertEqual(response['instruction'], mini.ORDER_APPROVE_IN_BOT)
         self.assertFalse(self.marker().exists())
+
+    def test_operator_poller_switch_off_means_no_poller_and_the_older_instruction(self):
+        ap = types.ModuleType('hermes_plugins.av_events._approval')
+        ap.POLLER_ENV = 'AV_APPROVAL_POLLER'
+        ap.configured = lambda: True
+        ap.process_env = lambda name: os.environ.get(name, '').strip()
+        ap.register_pass, ap.ensure_poller = Mock(), Mock(return_value=True)
+        with patch.dict(sys.modules, {'hermes_plugins.av_events._approval': ap}), patch.object(bridge, '_ensure_forkicks_pass', ENSURE):
+            for off in ('0', 'false', 'No', ' off '):
+                with self.subTest(off=off), patch.dict(os.environ, {'AV_APPROVAL_POLLER': off}):
+                    self.assertFalse(bridge._ensure_forkicks_pass())
+            ap.register_pass.assert_not_called(); ap.ensure_poller.assert_not_called()
+            with patch.dict(os.environ, {'AV_APPROVAL_POLLER': '0'}):
+                self.assertEqual(self.ask()['instruction'], mini.ORDER_APPROVE_IN_BOT)
+            self.assertFalse(self.marker().exists())
+            ap.ensure_poller.assert_not_called()
+            # Switch on (or unset): the pass is registered on the poller and the poller is started.
+            for path in self.home.joinpath('forkicks-drafts').glob('*'):
+                path.unlink()
+            with patch.dict(os.environ, {'AV_APPROVAL_POLLER': '1'}):
+                self.assertEqual(self.ask()['instruction'], mini.ORDER_PLACED_ON_APPROVAL)
+            ap.register_pass.assert_called_with(grant.PASS_NAME, bridge._forkicks_grant_pass)
+            ap.ensure_poller.assert_called()
+            ap.configured = lambda: False
+            ap.ensure_poller.reset_mock()
+            self.assertFalse(bridge._ensure_forkicks_pass())
+            ap.ensure_poller.assert_not_called()
 
     # ---- granted -> placed once + the line ---------------------------------------------------------
 

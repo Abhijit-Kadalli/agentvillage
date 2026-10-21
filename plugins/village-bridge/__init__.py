@@ -1198,9 +1198,11 @@ def _forkicks_grant_pass(execute=True):
 
 
 def _ensure_forkicks_pass():
-    """Register the pass on av-events' poller and make sure the poller runs. True when it does."""
+    """Register the pass on av-events' poller and make sure the poller runs. True when it does.
+    The operators' switch is honoured as av-events' own `maybe_start` honours it: AV_APPROVAL_POLLER
+    0/false/no/off = no poller from here, and the agent keeps the older approve-then-retry instruction."""
     ap = importlib.import_module("hermes_plugins.av_events._approval")
-    if not ap.configured():
+    if not ap.configured() or ap.process_env(ap.POLLER_ENV).lower() in ("0", "false", "no", "off"):
         return False
     ap.register_pass(_forkicks_grant.PASS_NAME, _forkicks_grant_pass)
     return bool(ap.ensure_poller())
