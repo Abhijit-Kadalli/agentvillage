@@ -164,6 +164,36 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.assertEqual(self.confirms(), [])
         self.daemon.start.assert_not_called()
 
+    def test_only_a_card_still_waiting_for_its_tap_is_tracked_never_one_already_answered(self):
+        # review-b N2 (_forkicks.authorize_order): only a wait exit 6 (the card still waits for its tap) hands the task
+        # to the pass. A card already declined, withdrawn, expired or void when the agent confirms keeps the older
+        # instruction and is never tracked, so the pass never follows it with a "wasn't placed" line.
+        for state in ('rejected', 'revoked', 'withdrawn', 'expired', 'void'):
+            with self.subTest(state=state):
+                for path in self.home.joinpath('forkicks-drafts').glob('*'):
+                    path.unlink()
+                self.sent.clear(); self.events.clear(); self.daemon.state = state
+                self.daemon.propose.reset_mock(); self.daemon.start.reset_mock()
+                with patch.object(grant, 'track', wraps=grant.track) as track:
+                    response = self.ask()
+                self.assertEqual(response, {'error': 'approval_required', 'instruction': mini.ORDER_APPROVE_IN_BOT})
+                track.assert_not_called()
+                self.assertFalse(self.marker().exists())
+                self.daemon.propose.assert_called_once()
+                self.run_pass(); self.run_pass()
+                self.daemon.start.assert_not_called()
+                self.assertEqual((self.confirms(), self.sent, self.events), ([], [], []))
+        # The same draft while its card still waits (wait exit 6): tracked, and the agent says it places it on approval.
+        for path in self.home.joinpath('forkicks-drafts').glob('*'):
+            path.unlink()
+        self.daemon.state = 'requested'
+        with patch.object(grant, 'track', wraps=grant.track) as track:
+            response = self.ask()
+        self.assertEqual(response, {'error': 'approval_required', 'instruction': mini.ORDER_PLACED_ON_APPROVAL})
+        track.assert_called_once()
+        self.assertEqual(track.call_args.args[1:], (DRAFT, TASK))
+        self.assertEqual(json.loads(self.marker().read_text())['phase'], 'awaiting')
+
     def test_without_the_poller_the_older_instruction_stays_and_nothing_is_tracked(self):
         with patch.object(bridge, '_ensure_forkicks_pass', return_value=False):
             response = self.ask()
@@ -365,6 +395,43 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual(self.events, [{'outcome': 'placed', 'code': 'agent_retry'}])
         self.assertFalse(self.marker().exists())
+
+    def test_restart_after_the_line_and_before_the_marker_drop_sends_no_second_line(self):
+        # review-b S1 (_forkicks_grant._deliver): the `<draftId>.line-<task>` O_EXCL claim is what keeps the line at most
+        # once when the gateway restarts after Telegram took the line and before the `.await` marker is dropped: the
+        # next pass finds `.placed` (by the pass) and finishes again; the claim answers line_already_sent.
+        real_event = grant._event
+        for shape in ('legacy', 'flat'):
+            with self.subTest(shape=shape):
+                for path in self.home.joinpath('forkicks-drafts').glob('*'):
+                    path.unlink()
+                self.sent.clear(); self.events.clear(); self.daemon.state = 'requested'; self.app.orders = 0
+                self.daemon.start.reset_mock()
+                self.ask(shape=shape)
+                self.daemon.state = 'granted'
+                crashed = []
+
+                def restart_once(outcome, code):
+                    if not crashed:
+                        crashed.append((outcome, code))
+                        raise RuntimeError('gateway restart')
+                    return real_event(outcome, code)
+
+                with patch.object(grant, '_event', side_effect=restart_once):
+                    self.run_pass()  # placed, the line sent, then the "restart" before the event and the drop
+                    self.assertEqual(crashed, [('placed', 'on_grant')])
+                    self.assertEqual(self.sent, [('42', PLACED)])
+                    self.assertTrue(self.marker().exists())
+                    self.assertEqual(json.loads(self.marker('.placed').read_text())['by'], 'pass')
+                    self.assertTrue(self.marker('.line-' + TASK.split(':', 1)[1]).exists())
+                    self.assertEqual(self.events, [])
+                    for _ in range(3):
+                        self.run_pass()  # the restarted poller: only the markers on disk
+                self.assertEqual(self.sent, [('42', PLACED)])  # never a second "Approved: ... placed" line
+                self.assertEqual(self.events, [{'outcome': 'placed', 'code': 'on_grant'}])
+                self.assertEqual((self.app.orders, len(self.confirms())), (1, 1))
+                self.daemon.start.assert_called_once()
+                self.assertFalse(self.marker().exists())
 
     def test_lost_confirm_answer_is_retried_with_the_same_draft_and_told_once(self):
         self.ask()
