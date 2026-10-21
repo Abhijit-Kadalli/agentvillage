@@ -1142,7 +1142,7 @@ tool, before any `action.*` or `intention.*` the same call implies.
   Hermes folder; no `cd`, assignment or other prefix) carries `target_system: "skill"` and
   `operation: "<name>"` when `<name>` is a skill the installer ships (`_skill_label.SHIPPED_SKILLS`,
   kept equal to `install/paths.ts` `EDGE_SKILL_NAMES` by `tests/test_skill_label.py`) or one of
-  the two installed by their own steps (`recall`, `approval`), and matches `^[a-z0-9_.-]{1,64}$`;
+  the two installed by their own steps (`recall`, `approval`), and matches `^[a-z][a-z0-9_.-]{0,63}$` (data's door pattern);
   any other name is `operation: "other"`. The label follows the script: Simocracy's recipes run
   agent-commons' script, so a Simocracy block pages as `skill.agent-commons`. Nothing else of the command
   leaves: no argument, no file name, no path beyond the skill's name. Data keys the family

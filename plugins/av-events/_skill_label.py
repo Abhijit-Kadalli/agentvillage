@@ -14,7 +14,7 @@ names the skill, and nothing else:
   says to run it from) and `<name>` is a skill the overlay ships
   (`SHIPPED_SKILLS`, the installer's `EDGE_SKILL_NAMES`, plus
   `SEPARATELY_INSTALLED_SKILLS`, the two installed by their own steps)
-  matching `^[a-z0-9_.-]{1,64}$`; any other name is `other` (target_system
+  matching `^[a-z][a-z0-9_.-]{0,63}$` (data's door pattern); any other name is `other` (target_system
   still `skill`), so a name the agent makes up never reaches ingest.
 
 Data keys the family `skill.<operation>` and pools unknowns as `skill.other`
@@ -79,7 +79,7 @@ SHIPPED_SKILLS = frozenset({
 SEPARATELY_INSTALLED_SKILLS = frozenset({"recall", "approval"})
 LABELLED_SKILLS = SHIPPED_SKILLS | SEPARATELY_INSTALLED_SKILLS
 
-_OPERATION = re.compile(r"^[a-z0-9_.-]{1,64}$")
+_OPERATION = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 #: The command's first word sequence: a runner, then the script path, then
 #: whitespace or the end of the command. Leading spaces and tabs run nothing.
 #: The skill name is any run of non-slash, non-space characters (checked after);

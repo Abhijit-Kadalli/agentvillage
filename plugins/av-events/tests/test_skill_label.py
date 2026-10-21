@@ -133,7 +133,7 @@ def test_shipped_skills_are_exactly_the_installers_edge_skill_names(labeller):
     names = names | labeller.SEPARATELY_INSTALLED_SKILLS
     assert labeller.LABELLED_SKILLS == names
     # Every labelled name is also a valid operation token, so none is pooled.
-    assert all(re.fullmatch(r"[a-z0-9_.-]{1,64}", name) for name in names)
+    assert all(re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", name) for name in names)
 
 
 def test_the_tokens_are_the_ones_data_keys_on(labeller):
