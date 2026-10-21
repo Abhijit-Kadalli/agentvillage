@@ -43,6 +43,8 @@ optional `note`). Every check of today's technical card (`approval_summary` / th
     time, no "today" (the strings are re-derived later and must not depend on the clock; the quote's `closes`
     is optional). A month outside 1-12 or a day outside 1-31 is `approval_card_invalid`. **Product-confirm.**
 - `name`: `p.displayName`, verbatim.
+- `note` (optional fifth key): `p.note`, verbatim, only when `p.note` is present and not the empty string (a
+  note of spaces is shown as spaces). Same budget as the other four.
 
 ## What you see is what the order sends (security review)
 
@@ -62,11 +64,11 @@ legacy shape for that draft, whose technical card shows everything):
 | rest of `quote` | the merchant's own answer for this quoteId, not text the agent sends |
 | `items[i]` | exactly `{itemId, optionIds, qty}`, equal to `quote.lines[i]` (else refused) |
 | `fulfilment` | exactly `type` (shown), `locationId` (must equal `quote.location.id` / `quote.locationId` when present), `date` (shown), `deliveryAddress` (shown; only on a delivery, else refused); any other key refused |
-| `note` | agent-written text sent to the café, NOT on the four rows: a non-empty `note` REFUSES the flat card |
+| `note` | agent-written text sent to the café: the optional FIFTH row, verbatim, present in the payload EXACTLY when the draft's note is non-empty (approval L17754); a four-key payload for a draft with a note is a mismatch (refused), and so is a `note` key for a draft without one |
 
-So the APP must emit the legacy shape whenever the draft has a non-empty `note` (or any case above), or every such
-order fails on the box. Simplest app rule: run this formatter at prepare; on ANY refusal (`approval_card_invalid`
-or `approval_card_not_minimal`) emit the legacy shape for that draft.
+So the APP builds `{order, total, pickup, name}` plus `note` exactly when the draft's note is non-empty, and emits
+the legacy shape whenever the formatter refuses (`approval_card_invalid` or `approval_card_not_minimal`, e.g. a
+note over the budget), or the order fails on the box.
 
 ## The minimal-card budget (never cut a purchase)
 
@@ -94,12 +96,12 @@ only costs a technical card.
 ```yaml
         marketplace.app.action:
           does: "place an order with For Kicks for you"
-          quote: { order: "Order", total: "Total", pickup: "Pickup", name: "Name shared with café" }
+          quote: { order: "Order", total: "Total", pickup: "Pickup", name: "Name shared with café", note: "Note to the café" }
           note: none
 ```
 
 Labels CONFIRMED (product + lead L17744). Core 0.4.7 refuses a label over 24 characters (`PROMPT_SAY_LABEL_MAX`,
 `prompt-say-label`): the first wording "Name shared with the café" (25) would have failed the whole policy load;
-"Name shared with café" is 21. The `does` phrase now names For Kicks for every card of the parent class; today For Kicks
+"Name shared with café" is 21; "Note to the café" (approval L17754, product owns) is 16. The `does` phrase now names For Kicks for every card of the parent class; today For Kicks
 is the only app that asks under it (a Gold Star send runs on its own member class; a legacy-shaped request of
 any app gets the technical card, `unlisted-key`), so **approval-confirm** before a second app asks under it.

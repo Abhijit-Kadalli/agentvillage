@@ -18,7 +18,8 @@ SUMMARY_HTML_MAX_BYTES = 3000
 # The APP builds the approval payload at prepare and hashes it (agentvillage-app forkicks.ts); the box never builds
 # it. Two shapes are accepted, so the box can ship before the app switches (nonav's ordering trap L17692):
 #   LEGACY_KEYS: {appId, operation, preview} (today's shape);
-#   CARD_KEYS:   exactly {order, total, pickup, name}, the four strings the minimal card quotes. The app returns the
+#   CARD_KEYS:   exactly {order, total, pickup, name} (+ `note` exactly when the order has a non-empty note), the
+#                strings the minimal card quotes. The app returns the
 #                order's `preview` BESIDE the payload in its prepare answer; the box saves it in the per-draftId record
 #                and re-derives the four strings from it (card_fields), refusing any difference.
 # Both shapes are proposed under the same class and per-draftId key as before (approval L17713: no class change in the
@@ -26,6 +27,7 @@ SUMMARY_HTML_MAX_BYTES = 3000
 APPROVAL_CLASS = "marketplace.app.action"
 LEGACY_KEYS = frozenset({"appId", "operation", "preview"})
 CARD_KEYS = frozenset({"order", "total", "pickup", "name"})
+CARD_NOTE_KEY = "note"  # the optional fifth quoted key: present exactly when the order carries a non-empty note (approval L17754)
 PREVIEW_KEYS = frozenset({"appId", "draftId", "quote", "displayName", "items", "fulfilment", "paymentMethod"})
 # approval-md 0.4.7 telegram-minimal: a quoted value is cut past MINIMAL_QUOTE_MAX (280) code points, two of which are
 # the runtime's own isolate marks, and some characters are drawn as «U+XXXX» marks (which count). A card value must be
@@ -129,14 +131,13 @@ def card_value_fits(value):
 #   items[i]              exactly {itemId, optionIds, qty}, equal to quote.lines[i] (bound);
 #   fulfilment            exactly type (shown), locationId (equal to the quote's location id when it names one), date
 #                         (shown), deliveryAddress (shown; only for delivery);
-#   note                  text the agent writes to the café, NOT on the four rows: a non-empty note is REFUSED.
+#   note                  text the agent writes to the café: shown verbatim as the fifth row (CARD_NOTE_KEY) exactly
+#                         when non-empty; a flat payload without it for a draft with a note is a mismatch (refused).
 FULFILMENT_KEYS = frozenset({"type", "locationId", "date", "deliveryAddress"})
 
 def _card_unshown(preview):
     """Why the flat card would not show everything this order sends, or None."""
     quote, fulfilment = preview["quote"], preview["fulfilment"]
-    if preview.get("note", "") != "":
-        return "note"
     if not isinstance(fulfilment, dict) or not set(fulfilment) <= FULFILMENT_KEYS or (fulfilment["type"] != "delivery" and "deliveryAddress" in fulfilment):
         return "fulfilment"
     location = quote["location"]
@@ -167,11 +168,17 @@ def card_fields(preview):
         where = quote["location"]["name"] if fulfilment["type"] == "pickup" else "Delivery to " + fulfilment["deliveryAddress"]
         fields = {"order": "; ".join(lines), "total": f'₹{quote["totalInr"]}, {PAYMENT_WORDS[preview["paymentMethod"]]}',
                   "pickup": f"{where} · {when}", "name": preview["displayName"]}
+        if preview.get("note", "") != "":
+            fields[CARD_NOTE_KEY] = preview["note"]
     except (KeyError, TypeError, IndexError, AttributeError) as error:
         raise ValueError("approval_card_invalid") from error
     if not all(card_value_fits(value) for value in fields.values()):
         raise ValueError("approval_card_not_minimal")
     return fields
+
+def is_flat(payload):
+    """The flat card's shape: the four rows, plus the note row when the order has a note."""
+    return isinstance(payload, dict) and set(payload) in (CARD_KEYS, CARD_KEYS | {CARD_NOTE_KEY})
 
 def _checked_preview(preview, draft_id):
     if not isinstance(preview, dict) or set(preview) not in (PREVIEW_KEYS, PREVIEW_KEYS | {"note"}) or preview["appId"] != "forkicks" or preview["draftId"] != draft_id:
@@ -180,7 +187,7 @@ def _checked_preview(preview, draft_id):
 
 def checked_payload(payload, draft_id, expected_hash, preview=None):
     """The app's payload, checked; `preview` is the order the app returned beside a CARD_KEYS payload."""
-    if isinstance(payload, dict) and set(payload) == CARD_KEYS:
+    if is_flat(payload):
         if card_fields(_checked_preview(preview, draft_id)) != payload:
             raise ValueError("approval_card_invalid")
     elif isinstance(payload, dict) and set(payload) == LEGACY_KEYS and payload["appId"] == "forkicks" and payload["operation"] == "forkicks.order.confirm":
@@ -195,7 +202,7 @@ def checked_payload(payload, draft_id, expected_hash, preview=None):
 def order_preview(record):
     """The saved order behind a record: inside a legacy payload, beside a flat one."""
     payload = record["payload"]
-    return record["preview"] if set(payload) == CARD_KEYS else payload["preview"]
+    return record["preview"] if is_flat(payload) else payload["preview"]
 
 def cache_path(home: Path, draft_id):
     if not isinstance(draft_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", draft_id):
@@ -210,7 +217,7 @@ def save_preview(home, result, context, config):
     if not isinstance(result, dict) or result.get("error") or not result.get("draftId"):
         return  # A refused quote has no draft and cannot be confirmed.
     payload = result.get("approvalPayload")
-    flat = isinstance(payload, dict) and set(payload) == CARD_KEYS
+    flat = is_flat(payload)
     # The order behind a flat payload is the app's own `preview` beside it in this prepare answer (never the agent's).
     held = checked_payload(payload, result["draftId"], result.get("payloadHash"), result.get("preview") if flat else None)
     path = cache_path(home, result["draftId"])

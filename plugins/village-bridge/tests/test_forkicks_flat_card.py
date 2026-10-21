@@ -217,18 +217,35 @@ class FlatCardBoxTest(unittest.TestCase):
             self.refused({'draftId': p['draftId'], 'approvalPayload': payload, 'payloadHash': hashed(payload), 'preview': p},
                          'approval_card_not_minimal')
 
-    def test_a_note_to_the_cafe_never_rides_a_flat_card_only_the_legacy_technical_one(self):
-        # WYSIWYS (security review): the note is agent-written text sent to the café and is not on the four rows.
+    def test_a_note_to_the_cafe_is_the_fifth_row_and_never_hidden(self):
+        # WYSIWYS (security review, approval L17754): the note is agent-written text sent to the café.
         v = vector('a note to the cafe')
-        self.assertEqual(v['error'], 'approval_card_invalid')
-        payload = fk.card_fields({k: x for k, x in v['preview'].items() if k != 'note'})  # what the four rows would say
-        self.refused({'draftId': v['preview']['draftId'], 'approvalPayload': payload, 'payloadHash': hashed(payload), 'preview': v['preview']},
-                     'approval_card_invalid')
-        result = self.app_answer('a note to the cafe', shape='legacy')
-        self.prepare(result); self.next_turn(); ap = self.daemon()
+        self.assertEqual(v['card']['note'], 'No sugar please'); self.assertEqual(sorted(v['card']), ['name', 'note', 'order', 'pickup', 'total'])
+        self.assertNotIn('note', vector('an empty note')['card'])
+        result = self.app_answer('a note to the cafe')
+        response = self.prepare(result); self.assertEqual(response.get('data'), result, response)
+        self.next_turn(); ap = self.daemon()
         self.assertIn('data', self.confirm(result['draftId'], ap))
-        self.assertIn('Note: "No sugar please"', ap.propose.call_args.args[2])  # the technical card shows it
-        # The same holds for a preview edited after prepare to carry a note.
+        self.assertEqual(ap.propose.call_args.args[3], fk.canonical(v['card']))
+        # A four-key payload for a draft WITH a note would hide it: refused. A note row for a draft without one: refused.
+        hidden = {k: x for k, x in v['card'].items() if k != 'note'}
+        self.refused({'draftId': 'd-hidden', 'approvalPayload': hidden, 'payloadHash': hashed(hidden),
+                      'preview': {**v['preview'], 'draftId': 'd-hidden'}}, 'approval_card_invalid')
+        bare = vector('carter-target')
+        extra = {**bare['card'], 'note': 'No sugar please'}
+        self.refused({'draftId': bare['preview']['draftId'], 'approvalPayload': extra, 'payloadHash': hashed(extra),
+                      'preview': bare['preview']}, 'approval_card_invalid')
+        changed = {**v['card'], 'note': 'Two sugars please'}
+        self.refused({'draftId': 'd-changed', 'approvalPayload': changed, 'payloadHash': hashed(changed),
+                      'preview': {**v['preview'], 'draftId': 'd-changed'}}, 'approval_card_invalid')
+        # A note over the budget: the legacy shape for that draft, accepted, the note in the technical card's text.
+        self.assertEqual(vector('a note over the card budget')['error'], 'approval_card_not_minimal')
+        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
+        legacy = self.app_answer('a note over the card budget', shape='legacy')
+        self.prepare(legacy); self.next_turn(); ap = self.daemon()
+        self.assertIn('data', self.confirm(legacy['draftId'], ap))
+        self.assertIn('Note: "Please Please', ap.propose.call_args.args[2])
+        # A note added to the saved record after prepare: refused at confirm, nothing proposed.
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
         flat = self.app_answer('an empty note'); self.prepare(flat)
         path = self.record_path(flat['draftId']); record = json.loads(path.read_text()); record['preview']['note'] = 'Also a croissant'
@@ -246,7 +263,6 @@ class FlatCardBoxTest(unittest.TestCase):
             lambda p: p['quote']['location'].__setitem__('id', 'elsewhere'),
             lambda p: p['quote'].__setitem__('locationId', 'elsewhere'),
             lambda p: p['quote']['lines'][0].__setitem__('itemId', 'other'),
-            lambda p: p.__setitem__('note', ' '),
         ]
         for mutate in mutations:
             p = copy.deepcopy(base); mutate(p)

@@ -129,7 +129,7 @@
    }
   },
   {
-   "name": "a note to the cafe is not on the four rows -> invalid (the app sends the legacy shape)",
+   "name": "a note to the cafe is the fifth row, verbatim",
    "preview": {
     "appId": "forkicks",
     "draftId": "d-note",
@@ -175,10 +175,59 @@
     },
     "note": "No sugar please"
    },
-   "error": "approval_card_invalid"
+   "card": {
+    "order": "1 \u00d7 Iced latte (Oat milk)",
+    "total": "\u20b90, pay by UPI",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Carter",
+    "note": "No sugar please"
+   }
   },
   {
-   "name": "an empty note sends nothing: fits",
+   "name": "a note over the card budget -> not minimal (the app sends the legacy shape)",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-longnote",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-longnote",
+     "totalInr": 0,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Iced latte",
+       "options": [],
+       "unitInr": 0,
+       "lineInr": 0,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    },
+    "note": "Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please Please "
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "an empty note sends nothing: four rows, no note row",
    "preview": {
     "appId": "forkicks",
     "draftId": "d-empty-note",
