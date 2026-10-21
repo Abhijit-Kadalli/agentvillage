@@ -57,26 +57,29 @@ class GoldenVectorTest(unittest.TestCase):
 
     def test_every_line_is_listed_uncut(self):
         p = vector('two lines')['preview']
-        self.assertEqual(fk.card_fields(p)['order'], '2 × Cold brew (Oat milk, Large); 1 × Butter croissant')
+        self.assertEqual(fk.card_fields(p)['order'], '2 × Cold brew (Oat milk, Large)\n1 × Butter croissant')
         p['quote']['lines'] *= 3; p['items'] *= 3
         self.assertEqual(fk.card_fields(p)['order'].count(' × '), 6)
 
-    def test_a_separator_inside_a_text_never_draws_a_phantom_line(self):
-        for name in ('a separator in an item name', 'a separator in an option', 'a comma in the delivery address',
-                     'a pickup place that starts like the delivery form'):
-            self.assertEqual(vector(name)['error'], 'approval_card_not_minimal')
-            with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
-                fk.card_fields(vector(name)['preview'])
-        self.assertEqual(vector('the note row is exempt')['card']['note'], 'Less sugar; no ice (thanks)')
+    def test_one_item_per_line_and_no_text_breaks_a_line(self):
+        # product + lead L17778: one item per line; separators inside a name are fine, a line break of its own is not.
+        self.assertEqual(vector('parentheses inside an item name')['card']['order'], '1 × Latte (oat)')
+        self.assertEqual(vector('a comma inside an item name')['card']['order'], '1 × Iced, oat (Large)\n2 × Latte; 5 × Cake')
+        self.assertEqual(vector('accents pass')['card']['order'], '1 × Crème brûlée (Extra-crispy)')
+        self.assertIn('card', vector('a delivery address with a comma'))
+        for name in ('a carriage return', 'a line separator U+2028', 'a bidi override in an item', 'a newline in an item name',
+                     'a zero-width space', 'a newline in the name', 'a left-to-right mark'):
+            self.assertEqual(vector(name)['error'], 'approval_card_invalid', name)
+        for name in ('a return symbol in an item name', 'a pickup place that starts like the delivery form',
+                     'a pickup place starting delivery TO', 'a full-width DELIVERY prefix', 'a no-break space in an option'):
+            self.assertEqual(vector(name)['error'], 'approval_card_not_minimal', name)
         base = vector('carter-target')['preview']
-        for sep in ';×(),·':
-            p = copy.deepcopy(base); p['quote']['lines'][0]['name'] = 'Iced' + sep + 'latte'
-            with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
+        for bad in '\n\r\u2028\u2029\u202e\u2066\u200b\u0085\x0b\x0c':
+            p = copy.deepcopy(base); p['quote']['lines'][0]['name'] = 'Iced' + bad + 'latte'
+            with self.assertRaises(ValueError, msg=repr(bad)):
                 fk.card_fields(p)
-        self.assertEqual(vector('a separator in the name shared')['error'], 'approval_card_not_minimal')  # approval L17766
-        for name in ('a newline in an item name', 'a zero-width space', 'a bidi override in the note', 'a newline in the note',
-                     'a newline in the name', 'a left-to-right mark'):
-            self.assertEqual(vector(name)['error'], 'approval_card_invalid')
+        self.assertIn('card', vector('two lines drawing exactly 278'))
+        self.assertEqual(vector('two lines drawing 279')['error'], 'approval_card_not_minimal')
 
     def test_budget_edge_is_exactly_core_value_max(self):
         self.assertIn('card', vector('exactly 278')); self.assertEqual(len(vector('exactly 278')['card']['order']), 278)
@@ -228,46 +231,25 @@ class FlatCardBoxTest(unittest.TestCase):
             self.assertEqual(json.loads(ap.propose.call_args.args[3]), result['approvalPayload'])
         # A flat payload carrying the over-budget order uncut is refused, and a cut one is a mismatch.
         p = long['preview']
-        lines = '; '.join(f'{l["qty"]} × {l["name"]} ({", ".join(l["options"])})' for l in p['quote']['lines'])
+        lines = '\n'.join(f'{l["qty"]} × {l["name"]} ({", ".join(l["options"])})' for l in p['quote']['lines'])
         for order in (lines, lines[:fk.CARD_VALUE_MAX - 1] + '…'):
             payload = {'order': order, 'total': '₹1800, pay by UPI', 'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Carter'}
             self.refused({'draftId': p['draftId'], 'approvalPayload': payload, 'payloadHash': hashed(payload), 'preview': p},
                          'approval_card_not_minimal')
 
-    def test_a_note_to_the_cafe_is_the_fifth_row_and_never_hidden(self):
-        # WYSIWYS (security review, approval L17754): the note is agent-written text sent to the café.
-        v = vector('a note to the cafe')
-        self.assertEqual(v['card']['note'], 'No sugar please'); self.assertEqual(sorted(v['card']), ['name', 'note', 'order', 'pickup', 'total'])
-        self.assertNotIn('note', vector('an empty note')['card'])
-        result = self.app_answer('a note to the cafe')
+    def test_a_note_travels_unshown_on_the_four_row_card_known_gap(self):
+        # KNOWN GAP accepted by Carter (lead L17772, 21 Oct): the note is not on the flat card.
+        v = vector('a note travels UNSHOWN')
+        self.assertEqual(sorted(v['card']), ['name', 'order', 'pickup', 'total'])
+        result = self.app_answer('a note travels UNSHOWN')
         response = self.prepare(result); self.assertEqual(response.get('data'), result, response)
         self.next_turn(); ap = self.daemon()
         self.assertIn('data', self.confirm(result['draftId'], ap))
         self.assertEqual(ap.propose.call_args.args[3], fk.canonical(v['card']))
-        # A four-key payload for a draft WITH a note would hide it: refused. A note row for a draft without one: refused.
-        hidden = {k: x for k, x in v['card'].items() if k != 'note'}
-        self.refused({'draftId': 'd-hidden', 'approvalPayload': hidden, 'payloadHash': hashed(hidden),
-                      'preview': {**v['preview'], 'draftId': 'd-hidden'}}, 'approval_card_invalid')
-        bare = vector('carter-target')
-        extra = {**bare['card'], 'note': 'No sugar please'}
-        self.refused({'draftId': bare['preview']['draftId'], 'approvalPayload': extra, 'payloadHash': hashed(extra),
-                      'preview': bare['preview']}, 'approval_card_invalid')
-        changed = {**v['card'], 'note': 'Two sugars please'}
-        self.refused({'draftId': 'd-changed', 'approvalPayload': changed, 'payloadHash': hashed(changed),
-                      'preview': {**v['preview'], 'draftId': 'd-changed'}}, 'approval_card_invalid')
-        # A note over the budget: the legacy shape for that draft, accepted, the note in the technical card's text.
-        self.assertEqual(vector('a note over the card budget')['error'], 'approval_card_not_minimal')
-        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
-        legacy = self.app_answer('a note over the card budget', shape='legacy')
-        self.prepare(legacy); self.next_turn(); ap = self.daemon()
-        self.assertIn('data', self.confirm(legacy['draftId'], ap))
-        self.assertIn('Note: "Please Please', ap.propose.call_args.args[2])
-        # A note added to the saved record after prepare: refused at confirm, nothing proposed.
-        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
-        flat = self.app_answer('an empty note'); self.prepare(flat)
-        path = self.record_path(flat['draftId']); record = json.loads(path.read_text()); record['preview']['note'] = 'Also a croissant'
-        path.write_text(json.dumps(record)); self.next_turn(); ap = self.daemon()
-        self.assertEqual(self.confirm(flat['draftId'], ap)['error'], 'approval_preview_unavailable'); ap.propose.assert_not_called()
+        self.assertIn('Note: "No sugar please"', ap.propose.call_args.args[2])  # in Full details (the technical card's text)
+        extra = {**v['card'], 'note': 'No sugar please'}  # no fifth row in this hotfix
+        self.refused({'draftId': 'd-five', 'approvalPayload': extra, 'payloadHash': hashed(extra),
+                      'preview': {**v['preview'], 'draftId': 'd-five'}}, 'approval_preview_unavailable')
 
     def test_every_unshown_order_field_refuses_the_flat_card(self):
         for name in ('a delivery address on a pickup', 'item ids that differ'):

@@ -18,8 +18,7 @@ SUMMARY_HTML_MAX_BYTES = 3000
 # The APP builds the approval payload at prepare and hashes it (agentvillage-app forkicks.ts); the box never builds
 # it. Two shapes are accepted, so the box can ship before the app switches (nonav's ordering trap L17692):
 #   LEGACY_KEYS: {appId, operation, preview} (today's shape);
-#   CARD_KEYS:   exactly {order, total, pickup, name} (+ `note` exactly when the order has a non-empty note), the
-#                strings the minimal card quotes. The app returns the
+#   CARD_KEYS:   exactly {order, total, pickup, name}, the strings the minimal card quotes. The app returns the
 #                order's `preview` BESIDE the payload in its prepare answer; the box saves it in the per-draftId record
 #                and re-derives the four strings from it (card_fields), refusing any difference.
 # Both shapes are proposed under the same class and per-draftId key as before (approval L17713: no class change in the
@@ -27,7 +26,6 @@ SUMMARY_HTML_MAX_BYTES = 3000
 APPROVAL_CLASS = "marketplace.app.action"
 LEGACY_KEYS = frozenset({"appId", "operation", "preview"})
 CARD_KEYS = frozenset({"order", "total", "pickup", "name"})
-CARD_NOTE_KEY = "note"  # the optional fifth quoted key: present exactly when the order carries a non-empty note (approval L17754)
 PREVIEW_KEYS = frozenset({"appId", "draftId", "quote", "displayName", "items", "fulfilment", "paymentMethod"})
 # approval-md 0.4.7 telegram-minimal: a quoted value is cut past MINIMAL_QUOTE_MAX (280) code points, two of which are
 # the runtime's own isolate marks, and some characters are drawn as «U+XXXX» marks (which count). A card value must be
@@ -98,14 +96,18 @@ def approval_summary(payload):
 def canonical(payload):
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
-def card_value_fits(value):
+def card_value_fits(value, lines=False):
     """Whether core 0.4.7's minimal card draws `value` whole and unmarked (see CARD_VALUE_MAX): only U+0020 spaces,
     letters, numbers, punctuation and symbols (minus CARD_VALUE_REFUSED), and combining marks (minus the
-    default-ignorable ones) at most CARD_MARKS_MAX in a row."""
-    if not isinstance(value, str) or not 0 < len(value) <= CARD_VALUE_MAX:
+    default-ignorable ones) at most CARD_MARKS_MAX in a row. With `lines` (the Order row) a U+000A between items is
+    allowed; core draws it as " ⏎ " (MINIMAL_NEWLINE_MARK), three code points, and counts them."""
+    if not isinstance(value, str) or not 0 < len(value) + (2 * value.count("\n") if lines else 0) <= CARD_VALUE_MAX:
         return False
     run = 0
     for c in value:
+        if lines and c == "\n":
+            run = 0
+            continue
         kind = unicodedata.category(c)[0]
         if kind == "M" and ord(c) not in CARD_MARKS_REFUSED:
             run += 1
@@ -131,20 +133,21 @@ def card_value_fits(value):
 #   items[i]              exactly {itemId, optionIds, qty}, equal to quote.lines[i] (bound);
 #   fulfilment            exactly type (shown), locationId (equal to the quote's location id when it names one), date
 #                         (shown), deliveryAddress (shown; only for delivery);
-#   note                  text the agent writes to the café: shown verbatim as the fifth row (CARD_NOTE_KEY) exactly
-#                         when non-empty; a flat payload without it for a draft with a note is a mismatch (refused).
+#   note                  text the agent writes to the café: NOT on the card. KNOWN GAP accepted by Carter (lead L17772,
+#                         21 Oct: "it's fine for now if there is a note the agent sends without the resident seeing it").
 FULFILMENT_KEYS = frozenset({"type", "locationId", "date", "deliveryAddress"})
-# The formatter's own separators (context L17764): a merchant or agent text holding one, or starting like the delivery
-# form, could draw a phantom line ("Latte; 5 × Cake"), so such an order never gets the flat card (fail closed, no
-# escaping): approval_card_not_minimal, and the app sends the legacy shape. It covers every merchant or agent text on
-# the order, pickup and name rows (approval L17766); the note row is exempt (its own row, verbatim). A control or format
-# character (Cc/Cf, incl. newlines, zero-width and bidi controls) in ANY value, the note included, is already refused by
-# approval_summary (approval_card_invalid), so no shape can carry it.
-CARD_SEPARATORS = frozenset(";×(),·")
-CARD_DELIVERY_PREFIX = "Delivery to"
+# No phantom lines (product + lead L17778): the Order row puts ONE item per line, joined with U+000A, so a separator
+# inside a name cannot fake a line, and no text may hold a line break of its own: control/format characters (Cc, Cf,
+# incl. U+000A/U+000D and bidi controls; also Cs, Zl, Zp: U+2028/U+2029) in any order text are refused by
+# approval_summary (approval_card_invalid; no shape carries them, as today) and core's marked characters by
+# card_value_fits. A pickup location's name must not start like the delivery form: NFKC, runs of U+0020 collapsed to
+# one, leading U+0020 dropped, ASCII A-Z lowercased, then no "delivery to" prefix (approval_card_not_minimal).
+CARD_DELIVERY_PREFIX = "delivery to"
 
-def _card_ambiguous(text):
-    return any(c in CARD_SEPARATORS for c in text) or text.startswith(CARD_DELIVERY_PREFIX)
+def card_place_like_delivery(text):
+    """Whether a pickup location's name starts like the delivery form (see above)."""
+    collapsed = re.sub(" +", " ", unicodedata.normalize("NFKC", text)).lstrip(" ")
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in collapsed).startswith(CARD_DELIVERY_PREFIX)
 
 def _card_unshown(preview):
     """Why the flat card would not show everything this order sends, or None."""
@@ -177,24 +180,19 @@ def card_fields(preview):
             raise ValueError("approval_card_invalid")
         when = f"{day} {MONTHS[month - 1]} {year}"
         where = quote["location"]["name"] if fulfilment["type"] == "pickup" else "Delivery to " + fulfilment["deliveryAddress"]
-        fields = {"order": "; ".join(lines), "total": f'₹{quote["totalInr"]}, {PAYMENT_WORDS[preview["paymentMethod"]]}',
+        fields = {"order": "\n".join(lines), "total": f'₹{quote["totalInr"]}, {PAYMENT_WORDS[preview["paymentMethod"]]}',
                   "pickup": f"{where} · {when}", "name": preview["displayName"]}
-        if preview.get("note", "") != "":
-            fields[CARD_NOTE_KEY] = preview["note"]
-        parts = [line["name"] for line in quote["lines"]] + [o for line in quote["lines"] for o in line["options"]]
-        parts += [quote["location"]["name"]] if fulfilment["type"] == "pickup" else [fulfilment["deliveryAddress"]]
-        parts.append(preview["displayName"])
-        if any(_card_ambiguous(part) for part in parts):
+        if fulfilment["type"] == "pickup" and card_place_like_delivery(quote["location"]["name"]):
             raise ValueError("approval_card_not_minimal")
     except (KeyError, TypeError, IndexError, AttributeError) as error:
         raise ValueError("approval_card_invalid") from error
-    if not all(card_value_fits(value) for value in fields.values()):
+    if not all(card_value_fits(value, lines=key == "order") for key, value in fields.items()):
         raise ValueError("approval_card_not_minimal")
     return fields
 
 def is_flat(payload):
-    """The flat card's shape: the four rows, plus the note row when the order has a note."""
-    return isinstance(payload, dict) and set(payload) in (CARD_KEYS, CARD_KEYS | {CARD_NOTE_KEY})
+    """The flat card's shape: exactly the four rows."""
+    return isinstance(payload, dict) and set(payload) == CARD_KEYS
 
 def _checked_preview(preview, draft_id):
     if not isinstance(preview, dict) or set(preview) not in (PREVIEW_KEYS, PREVIEW_KEYS | {"note"}) or preview["appId"] != "forkicks" or preview["draftId"] != draft_id:

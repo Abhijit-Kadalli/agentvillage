@@ -27,7 +27,7 @@ const PARENT_ENTRY_TODAY = [
 const sayEntry = (nameLabel: string) => [
   "        marketplace.app.action:       # a For Kicks order: the app's four strings, re-derived by the box from the saved order (overlay _forkicks.py card_fields); any other payload shape gets the technical card (unlisted-key)",
   '          does: "place an order with For Kicks for you"',
-  `          quote: { order: "Order", total: "Total", pickup: "Pickup", name: "${nameLabel}", note: "Note to the café" }`,
+  `          quote: { order: "Order", total: "Total", pickup: "Pickup", name: "${nameLabel}" }`,
   "          note: none",
 ].join("\n");
 const PARENT_ENTRY_FLAT = sayEntry("Name shared with café");
@@ -136,22 +136,6 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
     expect(texts[0]).toContain(c.minimal.MINIMAL_DETAILS_HEADING);
   });
 
-  test("an order with a note renders its fifth row, verbatim; without one there is no note row and nothing hidden", async () => {
-    const c = await core();
-    const policy = policyWith(PARENT_ENTRY_FLAT);
-    const v = vector("a note to the cafe");
-    const summary = JSON.parse(py("approval_summary", v.preview).stdout);
-    const { texts, logs } = await send(c, policy, requestOf(c, "marketplace.app.action", KEY + v.preview.draftId, v.card, summary));
-    expect(fallbacks(logs)).toEqual([]);
-    const shown = visible(texts[0]!);
-    expect(shown).toContain(`Note to the café: ${I("No sugar please")}</blockquote>`);
-    expect(shown).not.toContain("Not shown here");
-    const bare = vector("an empty note");
-    const plain = visible((await send(c, policy, requestOf(c, "marketplace.app.action", KEY + "d3", bare.card, null))).texts[0]!);
-    expect(plain).not.toContain("Note to the café");
-    expect(plain).not.toContain("Not shown here");
-  });
-
   test("every fitting golden vector renders minimal, whole and unmarked", async () => {
     const c = await core();
     const policy = policyWith(PARENT_ENTRY_FLAT);
@@ -162,7 +146,7 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
       expect([v.name, fallbacks(logs)]).toEqual([v.name, []]);
       const shown = visible(texts[0]!);
       for (const value of Object.values(v.card) as string[]) {
-        const escaped = value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const escaped = value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, c.minimal.MINIMAL_NEWLINE_MARK);
         expect([v.name, shown.includes(I(escaped))]).toEqual([v.name, true]);
       }
       expect([v.name, shown.includes("«U+"), shown.includes("cut; see full details")]).toEqual([v.name, false, false]);
@@ -178,6 +162,11 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
     const base = { ...fits.card };
     const drawn = async (order: string) => visible((await send(c, policy, requestOf(c, "marketplace.app.action", KEY + "d", { ...base, order }, null))).texts[0]!);
     expect(await drawn(fits.card.order)).not.toContain(c.minimal.MINIMAL_CUT_MARK);
+    // One item per line: core draws the U+000A as " ⏎ " (3 code points) and counts it; 278 drawn fits, 279 is cut.
+    const two = vector("two lines drawing exactly 278");
+    expect(await drawn(two.card.order)).not.toContain(c.minimal.MINIMAL_CUT_MARK);
+    expect(await drawn(two.card.order)).toContain(c.minimal.MINIMAL_NEWLINE_MARK);
+    expect(await drawn(two.card.order + "z")).toContain(c.minimal.MINIMAL_CUT_MARK);
     expect(await drawn(fits.card.order + "x")).toContain(c.minimal.MINIMAL_CUT_MARK);
     // approval L17750 put the edge at 280: core cuts a 280-code-point value too (MINIMAL_QUOTE_MAX counts its isolates).
     expect(await drawn(fits.card.order + "xx")).toContain(c.minimal.MINIMAL_CUT_MARK);

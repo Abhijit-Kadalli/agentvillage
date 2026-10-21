@@ -12,7 +12,7 @@ Implementation of record (the box): `plugins/village-bridge/_forkicks.py` `card_
 
 | Part | Owner | What |
 |---|---|---|
-| App (`agentvillage-app` forkicks.ts) | context, ships LAST | At prepare, builds `approvalPayload` = exactly `{order, total, pickup, name}` from the saved draft and hashes it (payload_hash, as today). Returns the order's `preview` (today's `OrderPreview`) BESIDE `approvalPayload` in the prepare answer. At confirm, re-derives the four strings from the SAVED draft and refuses any difference. If the formatter refuses with `approval_card_not_minimal`, sends today's legacy `{appId, operation, preview}` payload instead. |
+| App (`agentvillage-app` forkicks.ts) | context, ships LAST | At prepare, builds `approvalPayload` = exactly `{order, total, pickup, name}` from the saved draft and hashes it (payload_hash, as today). Returns the order's `preview` (today's `OrderPreview`) BESIDE `approvalPayload` in the prepare answer. At confirm, re-derives the four strings from the SAVED draft and refuses any difference. If the formatter refuses (either code), sends today's legacy `{appId, operation, preview}` payload instead. |
 | Box (overlay `_forkicks.py`, v2.1.10 hotfix) | release, ships FIRST | Accepts both shapes. For the four-key shape it re-derives the strings from the `preview` the app returned beside the payload (saved in the per-draft record) and refuses a mismatch (`approval_card_invalid`) or an over-budget card (`approval_card_not_minimal`). Proposes the app's payload byte for byte, both shapes under the unchanged class `marketplace.app.action` and key `marketplace.app.action:forkicks.order.confirm:<draftId>` (approval L17713: no class change). |
 | Control plane | context, after the box | The parent class's say entry quoting the four keys (below); `mini-apps-approval.js` request()/verify accept the four-key payload under the same key, bound to the draft (the draftId and order are no longer inside the payload). |
 
@@ -28,10 +28,12 @@ Input: the app's order preview `p` (keys `appId, draftId, quote, displayName, it
 optional `note`). Every check of today's technical card (`approval_summary` / the control plane's
 `forkicksSummary`) runs first; any failure there is `approval_card_invalid`.
 
-- `order`: one entry per `p.quote.lines[i]`, in order: `<qty> × <name>`, then ` (<options joined by ", ">)` when
+- `order`: one line per `p.quote.lines[i]`, in order: `<qty> × <name>`, then ` (<options joined by ", ">)` when
   the line has options. A line with NO options has no parentheses at all (`1 × Butter croissant`, never
-  `(none)`; CONFIRMED L17744). Entries joined by `"; "` (U+003B U+0020). `×` is U+00D7 with one U+0020 on each side. Names and
-  options are the merchant's text, verbatim (no quoting). Every line is listed; nothing is cut.
+  `(none)`; CONFIRMED L17744). Lines joined by U+000A (one item per line; product + lead L17778). `×` is U+00D7
+  with one U+0020 on each side. Names and options are the merchant's text, verbatim (no quoting). Every line is
+  listed; nothing is cut. Core 0.4.7 draws a U+000A inside a quoted value as ` ⏎ ` (U+0020 U+23CE U+0020,
+  `MINIMAL_NEWLINE_MARK`) on the same visual line, not as a new line.
 - `total`: `₹<p.quote.totalInr>, <payment words>`. `₹` is U+20B9; the amount is the integer in decimal, no
   separators. Payment words: `upi` -> `pay by UPI`, `card_on_pickup` -> `card at pickup`. **Product-confirm.**
 - `pickup`: `<where> · <when>`; the separator is ` · ` (U+0020 U+00B7 U+0020). CONFIRMED (L17744).
@@ -43,8 +45,7 @@ optional `note`). Every check of today's technical card (`approval_summary` / th
     time, no "today" (the strings are re-derived later and must not depend on the clock; the quote's `closes`
     is optional). A month outside 1-12 or a day outside 1-31 is `approval_card_invalid`. **Product-confirm.**
 - `name`: `p.displayName`, verbatim.
-- `note` (optional fifth key): `p.note`, verbatim, only when `p.note` is present and not the empty string (a
-  note of spaces is shown as spaces). Same budget as the other four.
+- No `note` key: the note is not on the card (known gap, Carter L17772; see the table below).
 
 ## What you see is what the order sends (security review)
 
@@ -64,29 +65,31 @@ legacy shape for that draft, whose technical card shows everything):
 | rest of `quote` | the merchant's own answer for this quoteId, not text the agent sends |
 | `items[i]` | exactly `{itemId, optionIds, qty}`, equal to `quote.lines[i]` (else refused) |
 | `fulfilment` | exactly `type` (shown), `locationId` (must equal `quote.location.id` / `quote.locationId` when present), `date` (shown), `deliveryAddress` (shown; only on a delivery, else refused); any other key refused |
-| `note` | agent-written text sent to the café: the optional FIFTH row, verbatim, present in the payload EXACTLY when the draft's note is non-empty (approval L17754); a four-key payload for a draft with a note is a mismatch (refused), and so is a `note` key for a draft without one |
+| `note` | agent-written text sent to the café: NOT on the card. KNOWN GAP accepted by Carter (lead L17772, 21 Oct: "it's fine for now if there is a note the agent sends without the resident seeing it"); the note stays in Full details (the technical card's `Note:` line) |
 
-So the APP builds `{order, total, pickup, name}` plus `note` exactly when the draft's note is non-empty, and emits
-the legacy shape whenever the formatter refuses (`approval_card_invalid` or `approval_card_not_minimal`, e.g. a
-note over the budget), or the order fails on the box.
+So the APP builds exactly `{order, total, pickup, name}` and emits the legacy shape whenever the formatter refuses
+(`approval_card_invalid` or `approval_card_not_minimal`), or the order fails on the box.
 
-## No phantom lines: the formatter's separators (context L17764, approval L17766)
+## No phantom lines (product + lead L17778; supersedes the earlier separator and allowlist rules)
 
-Fail closed, no escaping. If any item name, option, the pickup location's name (pickup), the delivery address
-(delivery) or the display name contains one of `;` `×` `(` `)` `,` `·`, or starts with `Delivery to`, the flat card
-is NOT used: `approval_card_not_minimal`, and the app sends the legacy shape. The `note` row is exempt from the
-separator rule (its own row, verbatim) but keeps the budget. Note: a delivery address with a comma (common)
-therefore always gets the technical card.
+One item per line, so a separator inside a name (`;` `,` `(` `)` `×` `·`, any lookalike) cannot fake a line, and
+no rule looks at them: `Latte (oat)` and `Iced, oat` pass. What could fake a line is a line break or a
+direction change inside a text, so:
 
-Control and format characters (Unicode Cc, Cf, also Cs, Zl, Zp: newlines, zero-width characters, bidi controls)
-in ANY value, the note included, are refused by today's technical-card check (`approval_summary` /
-`forkicksSummary`) with `approval_card_invalid`, before any flat-card rule. So no shape carries them: such an
-order fails in the legacy shape too, as it does today. A newline in a note can therefore never fake a row.
+- Control and format characters (Unicode Cc, Cf, also Cs, Zl, Zp: U+000A, U+000D, U+0085, U+2028, U+2029, bidi
+  controls, zero-width characters) in any order text (item and option names, location name, delivery address,
+  display name, note) are refused by today's technical-card check (`approval_summary` / `forkicksSummary`) with
+  `approval_card_invalid`, before any flat-card rule. No shape carries them (the legacy shape fails too, as today).
+- A character core would draw as a mark (for example `⏎` U+23CE, `«` U+00AB, a no-break space is stricter: see the
+  budget) is `approval_card_not_minimal` (budget rule below).
+- A pickup location's name must not start like the delivery form: NFKC-normalise, collapse runs of U+0020 to one,
+  drop leading U+0020, lowercase ASCII A-Z, then refuse a `delivery to` prefix (`approval_card_not_minimal`).
+  The delivery address and the display name get no extra rule (each is its own row).
 
 ## Every field the merchant receives (review-b L17768; app main forkicks.ts, forkicks-schema.ts)
 
 The app sends the merchant two requests. Every field is quoted on the card, derived from a quoted row, or fixed by
-the resident's identity. Nothing agent-influenced reaches the café unquoted.
+the resident's identity, except the note (known gap, Carter L17772).
 
 | Request (app) | Field | On the flat card |
 |---|---|---|
@@ -96,7 +99,7 @@ the resident's identity. Nothing agent-influenced reaches the café unquoted.
 | | `fulfilment.date` | Pickup row (the date; when absent, the location's opening day the merchant quoted) |
 | | `fulfilment.deliveryAddress` | Pickup row (delivery only; refused on a pickup) |
 | | `paymentMethod` | Total row (`pay by UPI` / `card at pickup`) |
-| | `note` | Note row, verbatim (present exactly when non-empty) |
+| | `note` | NOT on the card: known gap accepted by Carter (lead L17772); in Full details only |
 | | `customerRef` | derived: the app's pseudonymous id for this resident (`customerRef(tenantId, humanId)`), never agent text |
 | | `agentOrder` | constant `true` |
 | create, after approval (`POST /api/agent/orders`, forkicks.ts:171-174) | `quoteId` | derived: the merchant's quote for exactly the fields above, held in the app's saved draft (its lines, total and place are the quoted rows) |
@@ -114,9 +117,8 @@ three implementations, or send the legacy shape.
 2. What-you-see table above (unshown fulfilment key, delivery address on a pickup, location id, item ids):
    `approval_card_invalid`.
 3. Build the strings; a bad month/day is `approval_card_invalid`.
-4. The separator rule (item names, options, pickup place / delivery address, display name; not the note):
-   `approval_card_not_minimal`.
-5. The budget on every value (note included): `approval_card_not_minimal`.
+4. The pickup place's `delivery to` prefix: `approval_card_not_minimal`.
+5. The budget on each of the four values: `approval_card_not_minimal`.
 
 ## The minimal-card budget (never cut a purchase)
 
@@ -124,13 +126,13 @@ approval-md 0.4.7 `telegram-minimal`: a quoted value is cut past `MINIMAL_QUOTE_
 of which are the runtime's isolate marks, and some characters are drawn as `«U+XXXX»` marks. So each of the four
 strings must be:
 
-- 1 to 278 code points long (NOT 280: core draws a value inside two isolate marks and counts them, so a 279- or
+- 1 to 278 code points long, counting each U+000A of the Order row as 3 (core draws it as ` ⏎ `) (NOT 280: core draws a value inside two isolate marks and counts them, so a 279- or
   280-code-point value is already cut; the vectors pin 278 fits, 279/280/281 do not, and the core test proves the
   cut at 279 and 280 through approval-md 0.4.7); and
 - made only of U+0020 spaces, letters, numbers, punctuation and symbols (Unicode general categories L, N, P, S)
   other than `«` U+00AB, `⏎` U+23CE, U+115F, U+1160, U+3164, U+FFA0, U+2800; and combining marks (category M)
   other than the default-ignorable U+034F, U+17B4, U+17B5, U+180B-U+180F, U+FE00-U+FE0F, U+E0100-U+E01EF, at
-  most 2 in a row.
+  most 2 in a row; and, in the Order row only, the U+000A between lines.
 
 Otherwise the formatter refuses with `approval_card_not_minimal` and the app sends the legacy shape FOR THAT DRAFT
 (prepare's payload, payload_hash and confirm all use the legacy shape; the box accepts it as today). The say entry
@@ -144,12 +146,12 @@ only costs a technical card.
 ```yaml
         marketplace.app.action:
           does: "place an order with For Kicks for you"
-          quote: { order: "Order", total: "Total", pickup: "Pickup", name: "Name shared with café", note: "Note to the café" }
+          quote: { order: "Order", total: "Total", pickup: "Pickup", name: "Name shared with café" }
           note: none
 ```
 
 Labels CONFIRMED (product + lead L17744). Core 0.4.7 refuses a label over 24 characters (`PROMPT_SAY_LABEL_MAX`,
 `prompt-say-label`): the first wording "Name shared with the café" (25) would have failed the whole policy load;
-"Name shared with café" is 21; "Note to the café" (approval L17754, product owns) is 16. The `does` phrase now names For Kicks for every card of the parent class; today For Kicks
+"Name shared with café" is 21. The `does` phrase now names For Kicks for every card of the parent class; today For Kicks
 is the only app that asks under it (a Gold Star send runs on its own member class; a legacy-shaped request of
 any app gets the technical card, `unlisted-key`), so **approval-confirm** before a second app asks under it.
