@@ -3,8 +3,9 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { REVIEWED_MINI_APPS, zzzMarkerOnDisk } from "../install_miniapps";
-import { reconcileZzzManagedJob, ZZZ_JOB_NAME, ZZZ_JOB_SCRIPT, ZZZ_JOB_TOOLSETS } from "../zzz_managed_job";
+import { createHash } from "node:crypto";
+import { REVIEWED_MINI_APPS, zzzMarkerOnDisk, zzzMarkerScan } from "../install_miniapps";
+import { reconcileZzzManagedJob, ZZZ_JOB_NAME, ZZZ_JOB_SCRIPT, ZZZ_JOB_TOOLSETS, ZZZ_SHIPPED_SHA256, zzzShippedFile } from "../zzz_managed_job";
 
 const fake = join(import.meta.dir, "fake_hermes.ts");
 const fakeJobPython = join(import.meta.dir, "fake_hermes_job_python.ts");
@@ -48,6 +49,9 @@ function fakeBox() {
   return { home, stage, jobs };
 }
 const zzzbot = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
+/** The bytes this installer ships for its two managed files (the shim is copied verbatim into scripts/). */
+const SHIPPED_SHIM = readFileSync(join(import.meta.dir, "../../skills/zzzbot/scripts", ZZZ_JOB_SCRIPT));
+const SHIPPED_PROMPT = readFileSync(join(import.meta.dir, "../../skills/zzzbot/prompts/participate.md"));
 const bridge = REVIEWED_MINI_APPS.find(app => app.id === "zzz-bridge")!;
 const alone = { version: 1, apps: [zzzbot] };
 const projection = { version: 1, apps: [zzzbot, bridge] };
@@ -407,7 +411,7 @@ test("review-b N2: gate off still removes a managed job from a bare-list store, 
   expect(stage(alone).status).toBe(0);
   expect(jobs()).toEqual([resident]);
   expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
-  // On a box still marked as one that was on (S4-r: here the job's shim), an unloadable store that names the managed
+  // On a box still marked as one that was on (S4-r: here the installer's own shim), an unloadable store that names the managed
   // job (as written, or with Python's ensure_ascii em dash) may hold one that cannot be confirmed gone: the stage fails
   // loudly, and changes nothing in the store. Unmarked, the gate-off stage is main's and never reads the store.
   for (const text of [`{"jobs": [{"name": "${ZZZ_JOB_NAME}"`, '{"jobs": [{"name": "Edge \\u2014 zzz pairs", "x": NaN}]}']) {
@@ -415,7 +419,7 @@ test("review-b N2: gate off still removes a managed job from a bare-list store, 
     expect(zzzMarkerOnDisk(home)).toBe(false);
     expect(stage(alone).status).toBe(0);
     expect(stage(alone, ["--verify"]).status).toBe(0);
-    writeFileSync(join(home, "scripts", ZZZ_JOB_SCRIPT), "#!/bin/sh\n", { mode: 0o700 });
+    writeFileSync(join(home, "scripts", ZZZ_JOB_SCRIPT), SHIPPED_SHIM, { mode: 0o700 });
     expect(stage(alone).status).toBe(1);
     expect(stage(alone, ["--verify"]).status).toBe(1);
     expect(readFileSync(join(home, "cron", "jobs.json"), "utf8")).toBe(text);
@@ -529,6 +533,7 @@ function lsnapshot(root: string): Record<string, string> {
       const st = lstatSync(path);
       if (st.isSymbolicLink()) out[relative(root, path)] = `link:${readlinkSync(path)}`;
       else if (st.isDirectory()) { out[relative(root, path) + "/"] = String(st.mode); walk(path); }
+      else if (!st.isFile()) out[relative(root, path)] = `special:${st.mode}:${st.ino}`;
       else {
         try { out[relative(root, path)] = `${st.mode}:${readFileSync(path, "base64")}`; }
         catch { out[relative(root, path)] = `${st.mode}:unreadable:${st.size}:${st.mtimeMs}`; }
@@ -737,4 +742,198 @@ test("S4-r: a box that was on keeps the earlier N2 tolerance in its teardown (st
     expect(zzzMarkerOnDisk(home)).toBe(false);
     expect(stage(alone, ["--verify"], HERMES_GONE(home)).status).toBe(0);
   }
+});
+
+/** Every marker path (S4-r), and what the installer or the plugin ever writes there. */
+const MARKER_PATHS = [`scripts/${ZZZ_JOB_SCRIPT}`, `skills/zzzbot/scripts/${ZZZ_JOB_SCRIPT}`, "skills/zzzbot/prompts/participate.md",
+  "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock"];
+const INSTALLER_MARKERS = MARKER_PATHS.slice(0, 3);
+const ownBytes = (path: string) => path.endsWith(ZZZ_JOB_SCRIPT) ? SHIPPED_SHIM : path.endsWith("participate.md") ? SHIPPED_PROMPT : Buffer.from("{}");
+/** S5 (review-b recheck L17481 m1-m4, m7): the non-regular objects an agent could plant at a marker path. */
+const S5_SHAPES: { label: string; seed: (path: string, elsewhere: string, marker: string) => void }[] = [
+  { label: "dangling symlink", seed: (path, elsewhere) => { symlinkSync(join(elsewhere, "nowhere"), path); } },
+  // The outside file holds the installer's own bytes: following the link would make it count.
+  { label: "symlink to an outside file", seed: (path, elsewhere, marker) => {
+    writeFileSync(join(elsewhere, "outside"), ownBytes(marker));
+    symlinkSync(join(elsewhere, "outside"), path); } },
+  { label: "directory", seed: path => { mkdirSync(path); writeFileSync(join(path, "inside"), "resident"); } },
+  { label: "FIFO", seed: path => { expect(spawnSync("/usr/bin/mkfifo", [path]).status).toBe(0); } },
+];
+const GATE_OFF = [{ version: 1, apps: [] }, { version: 1, apps: [gold] }, { version: 1, apps: [gold, zzzbot] }];
+const SPY = join(import.meta.dir, "spawn_spy.ts");
+const notice = (paths: string[]) => `${JSON.stringify({ notice: "zzz_not_ours", paths })}\n`;
+/** The real CLI under the spawn spy, Hermes BOUND (so any Hermes or job API call would run and be logged), HOME/PATH isolated. */
+function spiedStage(home: string, value: unknown, args: string[] = []) {
+  const logs = mkdtempSync(join(tmpdir(), "av-zzz-spy-"));
+  roots.push(logs);
+  const log = join(logs, "spawns.log");
+  const result = spawnSync(process.execPath, ["--no-env-file", "--no-install", "--preload", SPY, "install/install_miniapps.ts", ...args],
+    { cwd: join(import.meta.dir, "../.."), input: typeof value === "string" ? value : JSON.stringify(value),
+      env: { ...process.env, ...ISOLATED(), HERMES_HOME: home, SPAWN_LOG: log }, encoding: "utf8" });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, spawns: existsSync(log) ? readFileSync(log, "utf8") : "" };
+}
+/** A never-granted box with `seed` applied under real parent directories, run stage / verify / re-stage / failed stage. */
+function expectMainStage(name: string, seed: (home: string, elsewhere: string) => void, logged: string[]) {
+  for (const value of GATE_OFF) {
+    const { home } = fakeBox();
+    const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-elsewhere-"));
+    roots.push(elsewhere);
+    seed(home, elsewhere);
+    const row = `${name} / ${value.apps.map(app => app.id).join("+") || "nothing (non-cohort)"}`;
+    expect(`${row}: ${zzzMarkerOnDisk(home)}`).toBe(`${row}: false`);
+    const fresh = lsnapshot(home);
+    const outside = lsnapshot(elsewhere);
+    let result = spiedStage(home, value);
+    expect(`${row}: ${result.status} ${result.stderr}|${result.spawns}`).toBe(`${row}: 0 ${notice(logged)}|`);
+    const staged = lsnapshot(home);
+    for (const [path, entry] of Object.entries(fresh)) expect(`${row} ${path}: ${staged[path]}`).toBe(`${row} ${path}: ${entry}`);
+    const added = Object.keys(staged).filter(path => !(path in fresh));
+    expect(added.filter(path => !MAIN_WRITES.has(path))).toEqual([]);
+    if (!value.apps.length) expect(added).toEqual([]);
+    for (const args of [["--verify"], [], ["--verify"]]) {
+      result = spiedStage(home, value, args);
+      expect(`${row} ${args}: ${result.status} ${result.stderr}|${result.spawns}`).toBe(`${row} ${args}: 0 ${notice(logged)}|`);
+      expect(lsnapshot(home)).toEqual(staged);
+    }
+    // main's failed stage (rc 1): still nothing ZZZ, nothing spawned.
+    result = spiedStage(home, "not json");
+    expect(`${row}: ${result.status} ${result.stderr}|${result.spawns}`).toBe(`${row}: 1 ${notice(logged)}${FAILED}|`);
+    expect(lsnapshot(home)).toEqual(staged);
+    expect(lsnapshot(elsewhere)).toEqual(outside);
+    expect(existsSync(join(home, "hermes-calls.jsonl"))).toBe(false);
+    expect(existsSync(join(home, "cron"))).toBe(false);
+  }
+}
+
+test("S5 (review-b L17481, lead RULING): a symlink, directory, FIFO or dangling link at any marker path is main's stage: rc 0, nothing changed, 0 spawns", () => {
+  for (const marker of MARKER_PATHS) {
+    for (const { label, seed } of S5_SHAPES) {
+      expectMainStage(`${label} at ${marker}`, (home, elsewhere) => {
+        mkdirSync(join(home, marker, ".."), { recursive: true });
+        seed(join(home, marker), elsewhere, marker);
+      }, [marker]);
+    }
+  }
+});
+
+test("N12 (nonav OWNER CALL, pick (a)): a resident's regular file at an installer marker path is not ours: kept byte-identical, no teardown", () => {
+  for (const marker of INSTALLER_MARKERS) {
+    // A resident's own file, and a near miss of the shipped bytes (one byte more, one byte less).
+    const own = ownBytes(marker);
+    for (const [label, bytes] of [["resident's file", Buffer.from("#!/bin/sh\necho mine\n")], ["shipped bytes + 1", Buffer.concat([own, Buffer.from("\n")])],
+      ["shipped bytes - 1", own.subarray(0, own.length - 1)]] as [string, Buffer][]) {
+      expectMainStage(`${label} at ${marker}`, home => {
+        mkdirSync(join(home, marker, ".."), { recursive: true });
+        writeFileSync(join(home, marker), bytes, { mode: 0o700 });
+      }, [marker]);
+    }
+  }
+  // All three at once: still one notice line naming each.
+  expectMainStage("resident files at all three", home => {
+    for (const marker of INSTALLER_MARKERS) {
+      mkdirSync(join(home, marker, ".."), { recursive: true });
+      writeFileSync(join(home, marker), "mine");
+    }
+  }, INSTALLER_MARKERS);
+});
+
+test("N12: an installer-written file (shipped sha) still marks a once-on box: each marker alone tears the job down, rc 0, verify 0", () => {
+  for (const keep of MARKER_PATHS) {
+    const { home, stage, jobs } = fakeBox();
+    expect(stage(projection).status).toBe(0);
+    expect(jobs()).toHaveLength(1);
+    seedState(home);
+    for (const marker of MARKER_PATHS) if (marker !== keep) rmSync(join(home, marker));
+    rmSync(join(home, "zzzbot", ".managed-123"));
+    if (!keep.startsWith("zzzbot/")) rmSync(join(home, "zzzbot"), { recursive: true });
+    expect(`${keep}: ${zzzMarkerOnDisk(home)}`).toBe(`${keep}: true`);
+    expect(readFileSync(join(home, keep)).equals(ownBytes(keep)) || keep.startsWith("zzzbot/")).toBe(true);
+    expect(`${keep} verify: ${spiedStage(home, alone, ["--verify"]).status}`).toBe(`${keep} verify: 1`);
+    const result = spiedStage(home, alone);
+    expect(`${keep}: ${result.status} ${result.stderr}`).toBe(`${keep}: 0 `);
+    // Positive control for the spy: the teardown reaches Hermes's job API.
+    expect(result.spawns).not.toBe("");
+    expectOff(home, jobs);
+    expect(zzzMarkerOnDisk(home)).toBe(false);
+    const after = spiedStage(home, alone, ["--verify"]);
+    expect(`${keep} verify: ${after.status} ${after.spawns}`).toBe(`${keep} verify: 0 `);
+  }
+});
+
+test("N12: a once-on box's teardown removes only its own files; a resident's file or other object at a marker path stays as it is", () => {
+  const replacements: [string, (path: string, elsewhere: string, original: Buffer) => void][] = [
+    ["resident's file", path => writeFileSync(path, "mine", { mode: 0o600 })],
+    ["directory", path => { mkdirSync(path); writeFileSync(join(path, "inside"), "resident"); }],
+    // The link's target holds what the installer (or plugin) wrote there: following it would make it ours.
+    ["symlink to the original bytes", (path, elsewhere, original) => { writeFileSync(join(elsewhere, "copy"), original); symlinkSync(join(elsewhere, "copy"), path); }],
+    ["FIFO", path => { expect(spawnSync("/usr/bin/mkfifo", [path]).status).toBe(0); }],
+  ];
+  // The other (installer-written) markers keep the teardown going; a successful revocation and a failed stage
+  // (failClosedZzz) both run it. A regular file by a plugin state name is the plugin's (its bytes vary per box): only
+  // non-regular objects there.
+  for (const replaced of MARKER_PATHS) for (const input of [alone as unknown, "not json"]) {
+    for (const [label, plant] of replacements) {
+      if (replaced.startsWith("zzzbot/") && label === "resident's file") continue;
+      const { home, stage, jobs } = fakeBox();
+      const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-elsewhere-"));
+      roots.push(elsewhere);
+      expect(stage(projection).status).toBe(0);
+      seedState(home);
+      writeFileSync(join(home, "zzzbot", "resident.txt"), "mine");
+      const path = join(home, replaced);
+      const original = readFileSync(path);
+      rmSync(path);
+      plant(path, elsewhere, original);
+      const kept = Object.fromEntries(Object.entries(lsnapshot(home)).filter(([key]) => key === replaced || key.startsWith(`${replaced}/`)));
+      const outside = lsnapshot(elsewhere);
+      const row = `${label} at ${replaced} (${typeof input === "string" ? "failed stage" : "revoked"})`;
+      const result = spiedStage(home, input);
+      expect(`${row}: ${result.status} ${result.stderr}`).toBe(typeof input === "string"
+        ? `${row}: 1 ${notice([replaced])}${FAILED}` : `${row}: 0 ${notice([replaced])}`);
+      expect(jobs()).toHaveLength(0);
+      for (const marker of MARKER_PATHS) if (marker !== replaced) expect(`${row} ${marker}: ${existsSync(join(home, marker))}`).toBe(`${row} ${marker}: false`);
+      // The replaced object is exactly as planted; the resident's file in zzzbot/ (and so the folder) stays.
+      expect(Object.fromEntries(Object.entries(lsnapshot(home)).filter(([key]) => key === replaced || key.startsWith(`${replaced}/`)))).toEqual(kept);
+      expect(readFileSync(join(home, "zzzbot", "resident.txt"), "utf8")).toBe("mine");
+      expect(lsnapshot(elsewhere)).toEqual(outside);
+      // Torn down: no marker left, so the next stage and verify are main's (the notice only), with nothing spawned.
+      for (const args of [[], ["--verify"], [], ["--verify"]]) {
+        const again = spiedStage(home, alone, args);
+        expect(`${row} ${args}: ${again.status} ${again.stderr}|${again.spawns}`).toBe(`${row} ${args}: 0 ${notice([replaced])}|`);
+      }
+    }
+  }
+});
+
+test("N12: the shipped sha table holds this checkout's managed-file bytes, and ownership is exact (regular file, shipped bytes, no link)", () => {
+  // A source change without a new entry here would leave a box the new installer turned on unmarked once revoked.
+  const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+  expect(ZZZ_SHIPPED_SHA256.shim as readonly string[]).toContain(sha(SHIPPED_SHIM));
+  expect(ZZZ_SHIPPED_SHA256.prompt as readonly string[]).toContain(sha(SHIPPED_PROMPT));
+  for (const list of Object.values(ZZZ_SHIPPED_SHA256)) for (const entry of list) expect(entry).toMatch(/^[0-9a-f]{64}$/);
+  const dir = mkdtempSync(join(tmpdir(), "av-zzz-owned-"));
+  roots.push(dir);
+  const at = (name: string) => join(dir, name);
+  writeFileSync(at("shim"), SHIPPED_SHIM);
+  writeFileSync(at("prompt"), SHIPPED_PROMPT);
+  writeFileSync(at("near"), Buffer.concat([SHIPPED_SHIM, Buffer.from(" ")]));
+  writeFileSync(at("big"), Buffer.alloc(65537));
+  symlinkSync(at("shim"), at("link"));
+  mkdirSync(at("dir"));
+  expect(spawnSync("/usr/bin/mkfifo", [at("fifo")]).status).toBe(0);
+  writeFileSync(at("locked"), SHIPPED_SHIM, { mode: 0 });
+  expect([zzzShippedFile(at("shim"), "shim"), zzzShippedFile(at("prompt"), "prompt"), zzzShippedFile(at("missing"), "shim")])
+    .toEqual(["ours", "ours", "absent"]);
+  // Each kind matches only its own bytes.
+  expect([zzzShippedFile(at("shim"), "prompt"), zzzShippedFile(at("prompt"), "shim")]).toEqual(["not_ours", "not_ours"]);
+  for (const name of ["near", "big", "link", "dir", "fifo", "locked"]) expect(`${name}: ${zzzShippedFile(at(name), "shim")}`).toBe(`${name}: not_ours`);
+  // The scan names what it leaves, and counts nothing for it.
+  const { home } = fakeBox();
+  mkdirSync(join(home, "scripts"));
+  writeFileSync(join(home, "scripts", ZZZ_JOB_SCRIPT), "mine");
+  mkdirSync(join(home, "zzzbot"));
+  mkdirSync(join(home, "zzzbot", "managed-pairs.json"));
+  expect(zzzMarkerScan(home)).toEqual({ ours: false, notOurs: [`scripts/${ZZZ_JOB_SCRIPT}`, "zzzbot/managed-pairs.json"] });
+  writeFileSync(join(home, "zzzbot", "managed-pairs.lock"), "");
+  expect(zzzMarkerScan(home)).toEqual({ ours: true, notOurs: [`scripts/${ZZZ_JOB_SCRIPT}`, "zzzbot/managed-pairs.json"] });
 });

@@ -377,7 +377,11 @@ Hermes-managed `Edge — zzz pairs` job only when the strict CP projection has
 both `zzzbot` and the separate empty-operation `zzz-bridge` entry (a cp catalog/allowlist entry granted per tenant at activation, like Mosaic; no overlay constant or environment variable turns it on, and an unreadable or malformed projection is off). A zzzbot
 install by itself stages only the ordinary interactive skill: no job, shim,
 state directory or poll. Removing either entry revokes native access at once;
-the helper removes the job, shim and cursor state. If teardown fails after
+the helper removes the job, shim and cursor state. It removes only what was
+written for it: a regular file whose bytes are a version the installer shipped
+(the shim, `participate.md`) or the plugin's own state file; anything else at
+those names (a resident's file, a symlink, a directory, a FIFO) is left in place
+and never starts a teardown. If teardown fails after
 authority disappears, `zzz_job_*` is an operator alert and the next reconcile
 retries removal. Its pre-run
 script keeps only per-pair cursors/IDs and wakes the agent for one exact new

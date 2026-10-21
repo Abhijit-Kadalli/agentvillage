@@ -1,6 +1,7 @@
 /** Installer-owned Hermes job for enabled zzzbot projections. No resident-created cron. */
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
 import { hermesAvailable } from "./install_index";
@@ -14,6 +15,39 @@ const SCRIPT = "skills/zzzbot/scripts/agentvillage_zzz_pairs.sh";
 
 type Job = { id?: unknown; name?: unknown; script?: unknown; enabled?: unknown; enabled_toolsets?: unknown; no_agent?: unknown };
 const ID = /^[0-9a-f]{12}$/;
+
+/**
+ * ov#441 S5 + N12 (nonav OWNER CALL, pick (a)): the sha256 of every version of the two installer-written managed files
+ * this installer ever shipped. The shim is copied byte for byte (skills/zzzbot/scripts -> scripts/), never generated
+ * per box. Derived from the git history of skills/zzzbot/{scripts/agentvillage_zzz_pairs.sh,prompts/participate.md}:
+ * one version each (3de7d213), in no earlier tag. Append a new version's sha when the source changes; never drop one
+ * (a box an older installer turned on must still be torn down). A test pins the current source's sha in each list.
+ */
+export const ZZZ_SHIPPED_SHA256 = {
+  shim: ["1db538dc9d5d602bfbc71bbb8da0b49b4fee0280b603f75222df94e43ef82eff"],
+  prompt: ["f5d0d69e6af8a9076e92d31114fc7ff8ec6f99b54a0b980c7a308f5e8b7f42d2"],
+} as const;
+export type ZzzShippedKind = keyof typeof ZZZ_SHIPPED_SHA256;
+const SHIPPED_MAX_BYTES = 65536;
+/**
+ * Whether the object at `path` is the installer's own file: "absent" (nothing there), "ours" (a regular file, not a
+ * symlink, whose bytes hash to a shipped version) or "not_ours" (anything else: a symlink, directory, FIFO, an
+ * unreadable or different file). Opened with O_NOFOLLOW | O_NONBLOCK and the fd checked to be the lstat'ed file, so a
+ * swap after the lstat is never followed and a FIFO never blocks. Never throws.
+ */
+export function zzzShippedFile(path: string, kind: ZzzShippedKind): "absent" | "ours" | "not_ours" {
+  let meta;
+  try { meta = lstatSync(path); } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "not_ours"; }
+  if (!meta.isFile() || meta.size > SHIPPED_MAX_BYTES) return "not_ours";
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const open = fstatSync(fd);
+    if (!open.isFile() || open.ino !== meta.ino || open.dev !== meta.dev) return "not_ours";
+    const sha = createHash("sha256").update(readFileSync(fd)).digest("hex");
+    return (ZZZ_SHIPPED_SHA256[kind] as readonly string[]).includes(sha) ? "ours" : "not_ours";
+  } catch { return "not_ours"; } finally { if (fd !== undefined) closeSync(fd); }
+}
 
 // Hermes v2026.9.24's CLI cannot set enabled_toolsets. Its cron.jobs API is
 // the same locked job store used by the cronjob tool. Create paused with the
@@ -236,14 +270,9 @@ export function verifyZzzManagedJob(home: string, installed: boolean, script: Bu
     return;
   }
   if (lingeringJobs(home).length) throw new Error("zzz_job_removal_pending");
+  // N12: only the installer's own shim is pending removal; any other object by its name is not ours and stays.
   const dir = realScriptsDir(home);
-  if (dir) {
-    try { lstatSync(join(dir, ZZZ_JOB_SCRIPT)); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    throw new Error("zzz_shim_removal_pending");
-  }
+  if (dir && zzzShippedFile(join(dir, ZZZ_JOB_SCRIPT), "shim") === "ours") throw new Error("zzz_shim_removal_pending");
 }
 
 /** Reconcile only the installer-owned job; the projection remains app authority. */
@@ -260,10 +289,11 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
       if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_job_invalid");
       jobApi(python!, home, { action: "remove", id: job.id, name: ZZZ_JOB_NAME });
     }
-    // The installer only ever writes the shim into a real scripts/ directory; never follow a symlinked one.
+    // The installer only ever writes the shim into a real scripts/ directory; never follow a symlinked one. N12: it
+    // removes only its own shim (a shipped version's bytes); a resident's file or any other object by that name stays.
     const dir = realScriptsDir(home);
     const shim = dir && join(dir, ZZZ_JOB_SCRIPT);
-    if (shim && plainFile(shim)) unlinkSync(shim);
+    if (shim && zzzShippedFile(shim, "shim") === "ours") unlinkSync(shim);
     return;
   }
   stateDirUsable(home);

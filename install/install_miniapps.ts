@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, parse } from "node:path";
 import { EDGE_SKILL_NAMES, hermesHome } from "./paths";
-import { reconcileZzzManagedJob, verifyZzzManagedJob } from "./zzz_managed_job";
+import { reconcileZzzManagedJob, verifyZzzManagedJob, zzzShippedFile, type ZzzShippedKind } from "./zzz_managed_job";
 
 /**
  * ROLODEX.PERSON (rc42, CLAIMS 7799): the gold-stars entry also carries `rolodex.person` (a read of
@@ -81,22 +81,59 @@ export function zzzParticipation(projection: { apps: readonly { id: string }[] }
  * marker, the stage is main's stage: no jobs.json parse, no scripts/ walk, no Hermes call, nothing written. The
  * plugin creates the cursor lock before any other state file, so the two fixed state names cover its state.
  */
-const ZZZ_MARKERS = [["scripts", ZZZ_SHIM], ["skills", "zzzbot", "scripts", ZZZ_SHIM], ["skills", "zzzbot", "prompts", "participate.md"],
-  ["zzzbot", "managed-pairs.json"], ["zzzbot", "managed-pairs.lock"]] as const;
-/** lstat only: no read, no parse, never through a symlinked or non-directory parent; an lstat that fails is no marker. */
+/**
+ * S5 + N12 (review-b recheck L17481, lead RULING, nonav OWNER CALL pick (a)): a marker counts only when its final lstat
+ * is a REGULAR file (never a symlink, directory, FIFO or dangling link), and an installer-written marker (the two
+ * shims, participate.md) only when its bytes are a version this installer shipped (zzzShippedFile). The plugin's two
+ * state files cannot be byte-matched (their content is per box): they count as regular files in a real zzzbot/ folder.
+ */
+const ZZZ_MARKERS: readonly { parts: readonly string[]; kind: ZzzShippedKind | null }[] = [
+  { parts: ["scripts", ZZZ_SHIM], kind: "shim" }, { parts: ["skills", "zzzbot", "scripts", ZZZ_SHIM], kind: "shim" },
+  { parts: ["skills", "zzzbot", "prompts", "participate.md"], kind: "prompt" },
+  { parts: ["zzzbot", "managed-pairs.json"], kind: null }, { parts: ["zzzbot", "managed-pairs.lock"], kind: null }];
+/**
+ * Every marker path, never through a symlinked or non-directory parent: `ours` when one counts, and `notOurs`, the
+ * relative names of the objects at a marker path that do not (left in place; they trigger nothing). No parse, and a
+ * read only of a regular file at an installer-written marker path (its sha256); an lstat that fails is no marker.
+ */
+export function zzzMarkerScan(home: string): { ours: boolean; notOurs: string[] } {
+  let ours = false;
+  const notOurs: string[] = [];
+  for (const { parts, kind } of ZZZ_MARKERS) {
+    const found = zzzMarkerAt(home, parts, kind);
+    if (found === "ours") ours = true;
+    else if (found === "not_ours") notOurs.push(parts.join("/"));
+  }
+  return { ours, notOurs };
+}
+/** One marker path: "absent" (also behind a missing, symlinked or non-directory parent), "ours" or "not_ours". */
+function zzzMarkerAt(home: string, parts: readonly string[], kind: ZzzShippedKind | null): "absent" | "ours" | "not_ours" {
+  let path = home;
+  try {
+    for (const part of parts.slice(0, -1)) {
+      path = join(path, part);
+      const meta = lstatSync(path);
+      if (!meta.isDirectory() || meta.isSymbolicLink()) return "absent";
+    }
+    path = join(path, parts[parts.length - 1]);
+    if (kind) return zzzShippedFile(path, kind);
+    return lstatSync(path).isFile() ? "ours" : "not_ours";
+  } catch { return "absent"; }
+}
+/** A managed file under skills/zzzbot (the stage's own copy of the shim, or participate.md), as a marker path. */
+const zzzManagedAt = (home: string, relative: typeof ZZZ_MANAGED_FILES[number]) =>
+  zzzMarkerAt(home, ["skills", "zzzbot", ...relative.split("/")], relative.startsWith("scripts/") ? "shim" : "prompt");
 export function zzzMarkerOnDisk(home: string): boolean {
-  return ZZZ_MARKERS.some(parts => {
-    let path = home;
-    try {
-      for (const part of parts.slice(0, -1)) {
-        path = join(path, part);
-        const meta = lstatSync(path);
-        if (!meta.isDirectory() || meta.isSymbolicLink()) return false;
-      }
-      lstatSync(join(path, parts[parts.length - 1]));
-      return true;
-    } catch { return false; }
-  });
+  const { ours, notOurs } = zzzMarkerScan(home);
+  noteNotOurs(notOurs);
+  return ours;
+}
+let zzzNoticeLogged = false;
+/** One stderr line per CLI run (names and a code only; the cp discards helper stderr): what was left as not ours. */
+function noteNotOurs(notOurs: string[]): void {
+  if (!import.meta.main || zzzNoticeLogged || !notOurs.length) return;
+  zzzNoticeLogged = true;
+  console.error(JSON.stringify({ notice: "zzz_not_ours", paths: notOurs }));
 }
 function exists(path: string): boolean {
   try { lstatSync(path); return true; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
@@ -142,29 +179,30 @@ function removeZzzManagedState(home: string): void {
   safePath(folder);
   if (!exists(folder)) return;
   if (!lstatSync(folder).isDirectory()) throw new Error("zzz_state_dir_invalid");
+  // N12: only a regular file by one of the plugin's state names is removed. Any other name in the folder (a resident's
+  // file) is never touched, and the folder then stays (rmdir's ENOTEMPTY); a non-regular object by a state name is not
+  // ours either and stays the same way.
   for (const name of readdirSync(folder)) {
-    if (name !== "managed-pairs.json" && name !== "managed-pairs.lock" && !/^\.managed-[0-9]+$/.test(name)) continue;
+    if (!zzzStateName(name)) continue;
     const path = join(folder, name);
-    regular(path);
-    unlinkSync(path);
+    if (lstatSync(path).isFile()) unlinkSync(path);
   }
   try { rmdirSync(folder); } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
   }
 }
+const zzzStateName = (name: string) => name === "managed-pairs.json" || name === "managed-pairs.lock" || /^\.managed-[0-9]+$/.test(name);
+/** N12: removes only the installer's own managed files (a shipped version's bytes); anything else by their names stays. */
 function removeZzzManagedFiles(home: string): void {
-  for (const relative of ZZZ_MANAGED_FILES) {
-    const path = join(home, "skills", "zzzbot", relative);
-    regular(path);
-    if (exists(path)) unlinkSync(path);
-  }
+  for (const relative of ZZZ_MANAGED_FILES)
+    if (zzzManagedAt(home, relative) === "ours") unlinkSync(join(home, "skills", "zzzbot", relative));
 }
 function hasZzzManagedState(home: string): boolean {
   const folder = join(home, "zzzbot");
   safePath(folder);
   if (!exists(folder)) return false;
   if (!lstatSync(folder).isDirectory()) throw new Error("zzz_state_dir_invalid");
-  return readdirSync(folder).some(name => name === "managed-pairs.json" || name === "managed-pairs.lock" || /^\.managed-[0-9]+$/.test(name));
+  return readdirSync(folder).some(name => zzzStateName(name) && lstatSync(join(folder, name)).isFile());
 }
 /**
  * ov#441 S1, fail closed: a stage whose projection is unreadable or malformed (or that fails for any other reason)
@@ -179,9 +217,8 @@ export function failClosedZzz(home: string): void {
   try { reconcileZzzManagedJob(home, false); } catch { /* next reconcile retries */ }
   for (const relative of ZZZ_MANAGED_FILES) {
     try {
-      const path = join(home, "skills", "zzzbot", relative);
-      regular(path);
-      if (exists(path)) unlinkSync(path);
+      safePath(home);
+      if (zzzManagedAt(home, relative) === "ours") unlinkSync(join(home, "skills", "zzzbot", relative));
     } catch { /* refused path: left for the operator */ }
   }
   try { removeZzzManagedState(home); } catch { /* refused path: left for the operator */ }
@@ -276,7 +313,9 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   // or zzzTeardown (a box that was on: remove the job, shim, files and state, loudly when that cannot be confirmed).
   const zzzTeardown = !zzzManaged && zzzMarkerOnDisk(home);
   const zzzManagedFiles = ZZZ_MANAGED_FILES;
-  if (zzzManaged || zzzTeardown) for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
+  // N12: only a stage that writes them preflights the managed paths; a teardown removes only its own files and leaves
+  // anything else by their names (a resident's file, a symlink, a directory) in place, so nothing there fails it.
+  if (zzzManaged) for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
   const zzzFiles = zzzManaged ? zzzManagedFiles.map(relative => {
     const sourcePath = join(source, "zzzbot", relative);
     regular(sourcePath);
@@ -291,7 +330,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const { path, content } of zzzFiles) if (!readFileSync(path).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (hasSkill(app) && owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
-    if (zzzTeardown && zzzManagedFiles.some(relative => exists(join(home, "skills", "zzzbot", relative)))) throw new Error("mini_apps_removal_pending");
+    if (zzzTeardown && zzzManagedFiles.some(relative => zzzManagedAt(home, relative) === "ours")) throw new Error("mini_apps_removal_pending");
     if (zzzTeardown && hasZzzManagedState(home)) throw new Error("mini_apps_removal_pending");
     // review-b N3: the job record too (read-only, no Hermes call): exactly the installer's job while the pair is
     // projected, none once it is not. As every job step, only from the CLI (in-process callers never own a job).
