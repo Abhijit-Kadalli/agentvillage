@@ -45,10 +45,13 @@ listed() { # <version> -> the one commit the manifest names for it, or nothing
 
 best=""
 best_sha=""
-while read -r name type tagname peeled peeledtype; do
+while read -r name type tagname peeledtype; do
   [ -n "$name" ] || continue
   if ! printf '%s' "$name" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then continue; fi
-  if [ "$type" != tag ] || [ "$tagname" != "$name" ] || [ "$peeledtype" != commit ]; then
+  # The commit the name resolves to, however it is tagged: the annotated-tag test
+  # below is then the only thing that keeps a lightweight tag out.
+  peeled=$(git rev-parse --verify -q "refs/tags/$name^{commit}") || continue
+  if [ "$type" != tag ] || [ "${tagname:-}" != "$name" ] || [ "${peeledtype:-}" != commit ]; then
     echo "previous-release: skip $name (not an annotated tag of a commit)" >&2
     continue
   fi
@@ -64,7 +67,7 @@ while read -r name type tagname peeled peeledtype; do
     best=$name
     best_sha=$peeled
   fi
-done < <(git for-each-ref --merged "$rev_sha" --format='%(refname:strip=2) %(objecttype) %(tag) %(*objectname) %(*objecttype)' 'refs/tags/v*')
+done < <(git for-each-ref --merged "$rev_sha" --format='%(refname:strip=2) %(objecttype) %(tag) %(*objecttype)' 'refs/tags/v*')
 
 if [ -z "$best" ]; then
   echo "previous-release: no release below ${rev_sha:0:12} (an annotated vX.Y.Z tag on $main that release/RC-MANIFEST.md names with its commit)" >&2
