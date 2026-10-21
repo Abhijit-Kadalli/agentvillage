@@ -143,6 +143,17 @@ FULFILMENT_KEYS = frozenset({"type", "locationId", "date", "deliveryAddress"})
 # card_value_fits. A pickup location's name must not start like the delivery form: NFKC, runs of U+0020 collapsed to
 # one, leading U+0020 dropped, ASCII A-Z lowercased, then no "delivery to" prefix (approval_card_not_minimal).
 CARD_DELIVERY_PREFIX = "delivery to"
+# Security review fold: free text must not fake the Pickup row's " · <date>" part or the Order row's " ⏎ " line mark.
+# After NFKC, a pickup place or delivery address holding U+00B7, or an item/option name holding U+23CE or a character
+# of the arrow and control-picture blocks below, gets approval_card_not_minimal (the app sends the legacy shape).
+CARD_PLACE_REFUSED = "\u00b7"
+CARD_LINE_MARK_BLOCKS = ((0x23CE, 0x23CE), (0x2190, 0x21FF), (0x2400, 0x243F), (0x27F0, 0x27FF), (0x2900, 0x297F), (0x2B00, 0x2BFF))
+
+def card_place_fakes_date(text):
+    return CARD_PLACE_REFUSED in unicodedata.normalize("NFKC", text)
+
+def card_name_fakes_line(text):
+    return any(lo <= ord(c) <= hi for c in unicodedata.normalize("NFKC", text) for lo, hi in CARD_LINE_MARK_BLOCKS)
 
 def card_place_like_delivery(text):
     """Whether a pickup location's name starts like the delivery form (see above)."""
@@ -182,7 +193,10 @@ def card_fields(preview):
         where = quote["location"]["name"] if fulfilment["type"] == "pickup" else "Delivery to " + fulfilment["deliveryAddress"]
         fields = {"order": "\n".join(lines), "total": f'₹{quote["totalInr"]}, {PAYMENT_WORDS[preview["paymentMethod"]]}',
                   "pickup": f"{where} · {when}", "name": preview["displayName"]}
-        if fulfilment["type"] == "pickup" and card_place_like_delivery(quote["location"]["name"]):
+        place = quote["location"]["name"] if fulfilment["type"] == "pickup" else fulfilment["deliveryAddress"]
+        names = [line["name"] for line in quote["lines"]] + [o for line in quote["lines"] for o in line["options"]]
+        if (fulfilment["type"] == "pickup" and card_place_like_delivery(place)) or card_place_fakes_date(place) or \
+                any(card_name_fakes_line(name) for name in names):
             raise ValueError("approval_card_not_minimal")
     except (KeyError, TypeError, IndexError, AttributeError) as error:
         raise ValueError("approval_card_invalid") from error

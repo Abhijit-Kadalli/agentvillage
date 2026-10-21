@@ -82,6 +82,13 @@ direction change inside a text, so:
   `approval_card_invalid`, before any flat-card rule. No shape carries them (the legacy shape fails too, as today).
 - A character core would draw as a mark (for example `⏎` U+23CE, `«` U+00AB, a no-break space is stricter: see the
   budget) is `approval_card_not_minimal` (budget rule below).
+- Free text must not fake the Pickup row's ` · <date>` part or the Order row's ` ⏎ ` mark (security review). After
+  NFKC normalisation:
+  - a pickup location's name or a delivery address holding U+00B7 `·` (e.g. U+0387 normalises to it) gets
+    `approval_card_not_minimal` (commas stay allowed);
+  - an item or option name holding U+23CE `⏎` or any character of U+2190-U+21FF (Arrows), U+2400-U+243F
+    (Control Pictures), U+27F0-U+27FF and U+2900-U+297F (Supplemental Arrows), U+2B00-U+2BFF (Misc Symbols and
+    Arrows) gets `approval_card_not_minimal` (e.g. `↵`, and the halfwidth `￩` that normalises into the block).
 - A pickup location's name must not start like the delivery form: NFKC-normalise, collapse runs of U+0020 to one,
   drop leading U+0020, lowercase ASCII A-Z, then refuse a `delivery to` prefix (`approval_card_not_minimal`).
   The delivery address and the display name get no extra rule (each is its own row).
@@ -117,7 +124,8 @@ three implementations, or send the legacy shape.
 2. What-you-see table above (unshown fulfilment key, delivery address on a pickup, location id, item ids):
    `approval_card_invalid`.
 3. Build the strings; a bad month/day is `approval_card_invalid`.
-4. The pickup place's `delivery to` prefix: `approval_card_not_minimal`.
+4. The pickup place's `delivery to` prefix, a `·` in the place or address, a line-mark character in an item or
+   option name: `approval_card_not_minimal`.
 5. The budget on each of the four values: `approval_card_not_minimal`.
 
 ## The minimal-card budget (never cut a purchase)

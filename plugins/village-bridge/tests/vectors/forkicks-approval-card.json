@@ -763,6 +763,223 @@
    "error": "approval_card_not_minimal"
   },
   {
+   "name": "a pickup place containing a middle dot (fakes the date part) -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-dot-loc",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-dot-loc",
+     "totalInr": 100,
+     "location": {
+      "name": "Mandrem \u00b7 22 Oct 2026",
+      "address": "Mandrem",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Latte",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a delivery address with a Greek ano teleia (NFKC middle dot) -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-dot-addr",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "delivery",
+     "locationId": "mandrem",
+     "date": "2026-10-22",
+     "deliveryAddress": "Room 12 \u0387 Residency"
+    },
+    "quote": {
+     "quoteId": "q-d-dot-addr",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Latte",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a return arrow in an item name (fakes a line) -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-arrow",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-arrow",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Latte \u21b5 2 \u00d7 Cake",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a control picture in an option -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-ctlpic",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-ctlpic",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Latte",
+       "options": [
+        "Oat \u2424 milk"
+       ],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0"
+       ]
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a halfwidth arrow (NFKC arrow) in an item name -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-hwarrow",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-hwarrow",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Latte \uffe9 Cake",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
    "name": "a pickup place that starts like the delivery form -> not minimal",
    "preview": {
     "appId": "forkicks",

@@ -78,6 +78,14 @@ class GoldenVectorTest(unittest.TestCase):
             p = copy.deepcopy(base); p['quote']['lines'][0]['name'] = 'Iced' + bad + 'latte'
             with self.assertRaises(ValueError, msg=repr(bad)):
                 fk.card_fields(p)
+        for name in ('a pickup place containing a middle dot', 'a delivery address with a Greek ano teleia',
+                     'a return arrow in an item name', 'a control picture in an option', 'a halfwidth arrow'):
+            self.assertEqual(vector(name)['error'], 'approval_card_not_minimal', name)
+        for arrow in '\u23ce\u2190\u21b5\u21ff\u2400\u243f\u27f0\u2936\u2b0e\uffe9':
+            p = copy.deepcopy(base); p['quote']['lines'][0]['options'] = ['Oat ' + arrow]
+            with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$', msg=repr(arrow)):
+                fk.card_fields(p)
+        self.assertEqual(vector('a delivery address with a comma')['card']['pickup'], 'Delivery to Room 12, Residency · 22 Oct 2026')
         self.assertIn('card', vector('two lines drawing exactly 278'))
         self.assertEqual(vector('two lines drawing 279')['error'], 'approval_card_not_minimal')
 
