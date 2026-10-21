@@ -7,11 +7,13 @@ Only the app-scoped credential is local; never a browser/fleet/shared secret.
 """
 from __future__ import annotations
 import functools
+import importlib
 import ipaddress
 import json
 import logging
 import os
 import re
+import sys
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -21,7 +23,8 @@ from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit
 from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT,
                          ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS)
-from ._forkicks import save_preview, load_preview, authorize_order, ORDER_APPROVE_IN_BOT
+from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
+from . import _forkicks_grant
 from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
 
 SETTINGS = "https://agents.edgecity.live/connections/village"
@@ -756,7 +759,7 @@ class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
 
-def transport(config, payload):
+def transport(config, payload, flat_card=True):
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if payload.get("operation", "").startswith("forkicks.") and len(data) > 65536:
         raise ValueError("request_too_large")
@@ -765,6 +768,9 @@ def transport(config, payload):
     if payload.get("operation") in (*ZZZ_WRITE_OPERATIONS, "slopfolio.prepare", "forkicks.order.confirm"):
         # The app selects a larger request budget only for these declared writes.
         headers["X-Village-Operation"] = payload["operation"]
+    if payload.get("operation") == "forkicks.order.prepare" and flat_card:
+        # This box accepts the flat order card (_forkicks.py CARD_KEYS); the app sends it only on seeing this header.
+        headers["X-Village-Forkicks-Card"] = "1"
     request = Request(config["origin"] + "/api/v1/village-bridge/tool", data=data,
                       headers=headers, method="POST")
     opener = build_opener(ProxyHandler({}), NoRedirect())
@@ -1067,7 +1073,14 @@ def handle(args, **kwargs):
                 return json.dumps({"error": "approval_preview_unavailable", "instruction": "This exact prepared preview is unavailable. Do not claim an order was placed or retry an uncertain order by preparing another."})
             if record.get("session") != context["SESSION_KEY"] or record.get("message") == context["MESSAGE_ID"]:
                 return json.dumps({"error": "forkicks_confirmation_required", "instruction": "Show the exact saved preview and wait for a new owner reply confirming it."})
-            authorization, refusal = authorize_order(record, payload["draftId"])
+            # FK-ON-GRANT: once a receipt is recorded for this draft (the on-grant pass placed it, or an
+            # earlier confirm), a retry answers that same receipt and calls nothing: never a second order.
+            done = _forkicks_grant.placed(home, payload["draftId"])
+            if done is not None:
+                return json.dumps({"data": done["receipt"], "handling": HANDLING}, ensure_ascii=False)
+            draft_id = payload["draftId"]
+            authorization, refusal = authorize_order(record, draft_id, on_requested=lambda task: _forkicks_grant.instruction_if_tracked(
+                home, draft_id, task, _ensure_forkicks_pass))
             if refusal:
                 return json.dumps(refusal)
             if not installed(home, "forkicks", op):
@@ -1097,7 +1110,22 @@ def handle(args, **kwargs):
                     ("Use this current text menu, or retry the image only on request." if menu is not None else "Offer forkicks.menu without format for the current text menu.") +
                     " Do not claim image delivery.", "handling": HANDLING}, ensure_ascii=False)
         if op == "forkicks.order.prepare":
-            save_preview(home, result, context, config)
+            try:
+                save_preview(home, result, context, config)
+            except ValueError as error:
+                # review-b app#516 S1, lead L17847: the app's Unicode tables can be newer than this box's (a name valid
+                # to the app may fail card_fields here), and only the app picks the shape. So a flat card this box
+                # refuses (a card error, a mismatch included) is prepared ONCE more without the flat-card header: the
+                # app quotes again and stores a NEW draft in the legacy shape (technical card), and only that draft is
+                # saved, shown to the agent and confirmable here; the card draft was never saved, so it can never be
+                # proposed or confirmed, and it expires with its quote. A second failure raises as before. Prepare only.
+                if not (isinstance(result, dict) and is_flat(result.get("approvalPayload")) and str(error) in CARD_FALLBACK_ERRORS):
+                    raise
+                LOG.warning("village_bridge forkicks card_fallback_legacy code=%s", error)  # the code only
+                result = transport(config, payload, flat_card=False)
+                save_preview(home, result, context, config)
+        if op == "forkicks.order.confirm" and _forkicks_grant.receipt_of(result) is not None:
+            _forkicks_grant.record_placed(home, payload["draftId"], result, "agent")
         if op == "rolodex.person":
             result = person_answer(result)
         elif op in ZZZ_OPERATIONS:
@@ -1133,10 +1161,88 @@ def handle(args, **kwargs):
         return json.dumps({"error": "village_unavailable", "settingsUrl": SETTINGS,
                            "instruction": "Do not claim success. Recheck current meeting state after uncertainty. For a star use gold-stars.status with the same draftId; never prepare another to retry. For Kicks: use order.status with a returned orderId, or retry order.confirm with the SAME draftId and saved proof; never prepare another order after an uncertain confirm."})
 
+# FK-ON-GRANT (CLAIMS L17710/L17711/L17726): the For Kicks on-grant pass (_forkicks_grant.py) on av-events'
+# approval poller, in the gateway process only (a `village` call runs only in the owner's Telegram DM there).
+LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", "acp", "subagent", "local", ""})
+
+
+def _pass_config(home):
+    """The paired app config, checked as handle() checks it, or None (the pass then does nothing)."""
+    try:
+        path = home / "village-bridge.json"
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2048:
+            return None
+        config = json.loads(path.read_text())
+        origin = urlsplit(config.get("origin", ""))
+        if origin.scheme != "https" or not origin.hostname or origin.username or origin.password or origin.path or origin.query or origin.fragment:
+            return None
+        if not re.fullmatch(r"avb_[A-Za-z0-9_-]{43}", config.get("token", "")):
+            return None
+        if not isinstance(config.get("ownerTelegramId"), str) or not re.fullmatch(r"[1-9]\d{0,19}", config["ownerTelegramId"]):
+            return None
+        if datetime.fromisoformat(config["expiresAt"].replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+            return None
+        return config
+    except Exception:
+        return None
+
+
+def _forkicks_grant_pass(execute=True):
+    if not execute:
+        return  # a one-shot pass outside the gateway never starts, confirms or sends (av-events S3)
+    home = hermes_home()
+    config = _pass_config(home)
+    if config is None:
+        return
+    _forkicks_grant.run_pass(home, config, transport, installed)
+
+
+def _ensure_forkicks_pass():
+    """Register the pass on av-events' poller and make sure the poller runs. True when it does.
+    The operators' switch is honoured as av-events' own `maybe_start` honours it: AV_APPROVAL_POLLER
+    0/false/no/off = no poller from here, and the agent keeps the older approve-then-retry instruction."""
+    ap = importlib.import_module("hermes_plugins.av_events._approval")
+    if not ap.configured() or ap.process_env(ap.POLLER_ENV).lower() in ("0", "false", "no", "off"):
+        return False
+    ap.register_pass(_forkicks_grant.PASS_NAME, _forkicks_grant_pass)
+    return bool(ap.ensure_poller())
+
+
+def _gateway_argv():
+    args = [str(a) for a in sys.argv][1:5]
+    if "gateway" not in args:
+        return False
+    rest = args[args.index("gateway") + 1:]
+    return not rest or rest[0] in ("run", "start")
+
+
+def _forkicks_on_session_start(*_args, **kwargs):
+    # A gateway restart resumes awaited drafts at its first session (cron or chat), not the resident's next message.
+    try:
+        if str(kwargs.get("platform") or "").strip().lower() not in LOCAL_PLATFORMS:
+            _ensure_forkicks_pass()
+    except Exception:
+        pass
+
+
 _REGISTERED = False
 def register(ctx):
     global _REGISTERED
     if _REGISTERED:
         return
     ctx.register_tool(name="village", toolset="village", schema=SCHEMA, handler=handle, description=SCHEMA["description"])
+    emit = getattr(ctx, "emit", None)
+    if callable(emit):
+        _forkicks_grant.set_emitter(lambda event: emit("forkicks.order_outcome", event))
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        try:
+            register_hook("on_session_start", _forkicks_on_session_start)
+        except Exception:
+            pass
+    if _gateway_argv():
+        try:
+            _ensure_forkicks_pass()
+        except Exception:
+            pass  # av-events not loaded yet: the first session start registers it
     _REGISTERED = True
