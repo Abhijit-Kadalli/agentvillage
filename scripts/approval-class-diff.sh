@@ -45,7 +45,12 @@
 #   AV_CLASS_DIFF_HARNESS_ONLY     tests only: limit the harness envelopes to these tools
 #   AV_CLASS_DIFF_EXPECTED   another expected.json (tests)
 #   AV_NEW_CALLS_BASE_REF    the previous release the new-calls check measures against (P3;
-#                            the class-diff job passes the previous v* tag; default: <base ref>)
+#                            the class-diff job passes the previous release, found by
+#                            scripts/approval-class-diff/previous-release.sh; default: <base ref>)
+#   AV_NEW_CALLS_PENDING_ACCEPTANCE  fail (default) or warn. warn (test.yml sets it on every event but
+#                            a pull request) passes a run whose ONLY findings are an undated
+#                            acceptance on calls unchanged since the previous release, with a
+#                            warning (B-167N fold 1 S2; scripts/approval-class-diff/pending-acceptance.ts)
 # Exit: 0 pass, 1 a blocking flip / held recipe / stale allowlist entry, 2 setup.
 set -euo pipefail
 
@@ -58,6 +63,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 die() { echo "approval-class-diff: $*" >&2; exit 2; }
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+pending=${AV_NEW_CALLS_PENDING_ACCEPTANCE:-fail}
+case "$pending" in fail | warn) ;; *) die "AV_NEW_CALLS_PENDING_ACCEPTANCE must be fail or warn, not $pending" ;; esac
 # The trees the extractor reads: recipes (skills, workspace, install) and, for the
 # new-calls envelopes, the mini-app manifests and the plugins (mini-apps is absent
 # before Mini-apps v1; plugins is always there).
@@ -139,7 +147,20 @@ node "$tool/scripts/overlay-recipes-check.mjs" \
   --core-label "npm approval-md@$new_pin (this tree's pin)" \
   --baseline-label "npm approval-md@$old_pin (the base's pin)" \
   --expected "$expected" --tag-corpus "$work/corpus-tag.json" --tag-label "$tag_ref (${tag_sha:0:12})" \
-  --md "$out/class-diff.md" --diff-json "$out/class-diff.json"
+  --md "$out/class-diff.md" --diff-json "$out/class-diff.json" 2>"$work/check.err"
 status=$?
+cat "$work/check.err" >&2
 set -e
+# B-167N fold 1 S2: on main's push run and a Tag release call, an undated acceptance on a
+# call unchanged since the previous release warns instead of halting every release; any
+# other finding, or a pending acceptance on a NEW or CHANGED call, still fails.
+if [ "$status" = 1 ] && [ "$pending" = warn ]; then
+  if bun "$here/approval-class-diff/pending-acceptance.ts" --json "$out/class-diff.json" --stderr "$work/check.err" >"$work/pending.txt"; then
+    cat "$work/pending.txt"
+    { echo; sed 's/^::warning:://' "$work/pending.txt"; } >>"$out/class-diff.md"
+    status=0
+  else
+    cat "$work/pending.txt" >&2
+  fi
+fi
 exit "$status"

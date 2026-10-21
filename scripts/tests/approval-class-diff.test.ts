@@ -28,6 +28,13 @@
  * expected card that runs auto (hazard B), a limiting entry accepted by anyone
  * but human:carter, a stale or duplicate entry each fail (exit 1); a core move
  * on an unchanged recipe is reported as "changed (core move)" (P3).
+ *
+ * B-167N fold 1 (review-b's refute CLAIMS L18667; release's half per lead RULING
+ * L18671): the previous release is an annotated vX.Y.Z tag on main that main's
+ * release/RC-MANIFEST.md names, on every event (S3, N6); the approval.md tool ref
+ * must be on approval.md main (M4); an undated acceptance on an unchanged call
+ * fails pull requests only and never halts Tag release (S2); live-compare keys by
+ * the closed-set rule and never passes an empty run (N4); CODEOWNERS gaps (N7).
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -67,14 +74,18 @@ describe("the class-diff job and script (static)", () => {
     expect(steps.some((s) => s.id === "scope")).toBe(false);
   });
 
-  test("S-2: a push or a Tag release call measures against the previous release tag, a pull request against its base", () => {
+  test("S-2 + B-167N fold 1 (S3, N6): every event, a pull request included, measures against the previous release, found by previous-release.sh, never by `git describe` over any v* tag", () => {
     const steps: Step[] = job.steps;
     expect(steps[0]?.with?.["fetch-depth"]).toBe(0);
     const base = steps.find((s) => s.id === "base");
-    expect(base?.run).toContain('if [ "$EVENT" = pull_request ]; then');
-    expect(base?.run).toContain("git rev-parse HEAD^1");
-    expect(base?.run).toContain("git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc*' HEAD^");
-    // No tag found is a failure, never a silent fall back to HEAD^1.
+    expect(base?.run).toContain("bash scripts/approval-class-diff/previous-release.sh HEAD^ origin/main");
+    expect(base?.run).not.toContain("git describe");
+    // N6: a pull request is measured from the release as main's push run is, never from its own base.
+    expect(base?.run).not.toContain("HEAD^1");
+    expect(base?.run).not.toContain("pull_request");
+    expect(base?.run).toContain('echo "ref=$base" >> "$GITHUB_OUTPUT"');
+    expect(base?.run).toContain('echo "tag=$tag_ref" >> "$GITHUB_OUTPUT"');
+    // No release found is a failure, never a silent fall back to HEAD^1.
     expect(base?.run).toContain("exit 1");
   });
 
@@ -102,9 +113,19 @@ describe("the class-diff job and script (static)", () => {
     }
   });
 
-  test("B-167N P1: CODEOWNERS names expected.json and the gate's files (the control, with approval.md's pin; the ruleset must require code-owner review)", () => {
+  test("B-167N P1 + fold 1 N7: CODEOWNERS names expected.json, the gate's files, the gated-tool list it reads, the release enforcement point, the manifest the release rule reads, and these tests", () => {
     const owners = readFileSync(join(REPO, ".github", "CODEOWNERS"), "utf8");
-    for (const path of ["/scripts/approval-class-diff/expected.json", "/scripts/approval-class-diff/", "/scripts/approval-class-diff.sh", "/.github/workflows/test.yml"]) {
+    for (const path of [
+      "/scripts/approval-class-diff/expected.json",
+      "/scripts/approval-class-diff/",
+      "/scripts/approval-class-diff.sh",
+      "/.github/workflows/test.yml",
+      "/install/install_approval.ts",
+      "/.github/workflows/tag-release.yml",
+      "/scripts/tag-release.ts",
+      "/scripts/tests/approval-class-diff.test.ts",
+      "/release/RC-MANIFEST.md",
+    ]) {
       expect(owners).toMatch(new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\s+@soycarts$`, "m"));
     }
   });
@@ -115,6 +136,29 @@ describe("the class-diff job and script (static)", () => {
     expect(base?.run).toContain('echo "tag=$tag_ref" >> "$GITHUB_OUTPUT"');
     const gate = steps.find((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'));
     expect(gate?.env?.AV_NEW_CALLS_BASE_REF).toBe("${{ steps.base.outputs.tag }}");
+  });
+
+  test("B-167N fold 1 M4: the approval.md tool ref must be on approval.md main, checked after the tool checkout and before the gate runs", () => {
+    const steps: Step[] = job.steps;
+    const at = (pred: (s: Step) => boolean): number => steps.findIndex(pred);
+    const checkout = at((s) => s.with?.repository === "approval-md/approval.md");
+    const onMain = at((s) => (s.run ?? "").includes("bash scripts/approval-class-diff/tool-ref-on-main.sh .test-deps/approval-md-tool"));
+    const gate = at((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'));
+    expect(checkout).toBeGreaterThan(-1);
+    expect(onMain).toBeGreaterThan(checkout);
+    expect(gate).toBeGreaterThan(onMain);
+    // No continue-on-error and no `if:` on the ancestry step: it gates the job.
+    const step = steps[onMain] as Step & { "continue-on-error"?: unknown; if?: unknown };
+    expect(step["continue-on-error"]).toBeUndefined();
+    expect(step.if).toBeUndefined();
+  });
+
+  test("B-167N fold 1 S2: a pending acceptance fails a pull request and only warns on main's push run and a Tag release call", () => {
+    const steps: Step[] = job.steps;
+    const gate = steps.find((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'));
+    expect(gate?.env?.AV_NEW_CALLS_PENDING_ACCEPTANCE).toBe("${{ github.event_name == 'pull_request' && 'fail' || 'warn' }}");
+    // The script's default is fail (fail closed when the variable is missing).
+    expect(readFileSync(SCRIPT, "utf8")).toContain('pending=${AV_NEW_CALLS_PENDING_ACCEPTANCE:-fail}');
   });
 
   test("B-167N: every expected.json entry names a recipe this tree ships or a manifest operation, and a limiting one names human:carter", () => {
@@ -184,6 +228,179 @@ describe("B-167N P7: the live decision lines compare with expected.json mechanic
   });
 });
 
+// --- B-167N fold 1 (review-b's refute, CLAIMS L18667; release's half, lead RULING L18671) -----------
+
+const GIT_ID = ["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main"];
+function gitOut(cwd: string, ...args: string[]): string {
+  const out = spawnSync("git", [...GIT_ID, ...args], { cwd, encoding: "utf8" });
+  if (out.status !== 0) throw new Error(`git ${args.join(" ")}: ${out.stderr}`);
+  return out.stdout.trim();
+}
+function commitOn(dir: string, name: string, files: Record<string, string> = {}): string {
+  put(dir, `log/${name}.txt`, `${name}\n`);
+  for (const [path, text] of Object.entries(files)) put(dir, path, text);
+  gitOut(dir, "add", "-A");
+  gitOut(dir, "commit", "-q", "-m", name);
+  return gitOut(dir, "rev-parse", "HEAD");
+}
+const manifest = (lines: string[]): string => `# Release manifest\n\n\`\`\`rc-manifest\n# approved tags\n${lines.join("\n")}\n\`\`\`\n`;
+
+describe("B-167N fold 1 S3 + N6: the previous release is an annotated vX.Y.Z tag on main that main's release/RC-MANIFEST.md names with its commit", () => {
+  const PREV = join(REPO, "scripts", "approval-class-diff", "previous-release.sh");
+  const prev = (cwd: string, ...args: string[]) => spawnSync("bash", [PREV, ...args], { cwd, encoding: "utf8" });
+
+  test("a lightweight, rc, unlisted, mislisted, twice-listed or off-main tag never re-baselines; the highest valid one wins; none found exits 1", () => {
+    const dir = mkdtempSync(join(root, "prev-"));
+    gitOut(dir, "init", "-q");
+    const c0 = commitOn(dir, "c0");
+    const c1 = commitOn(dir, "c1");
+    gitOut(dir, "tag", "-a", "v1.0.0", "-m", "release v1.0.0", c1);
+    const c2 = commitOn(dir, "c2");
+    gitOut(dir, "tag", "-a", "v1.0.1", "-m", "release v1.0.1", c2);
+    const c3 = commitOn(dir, "c3");
+    gitOut(dir, "tag", "v1.0.5", c3); // lightweight, though the manifest lists it
+    gitOut(dir, "tag", "-a", "v1.0.2", "-m", "not in the manifest", c3);
+    gitOut(dir, "tag", "-a", "v1.1.0-rc1", "-m", "an rc", c3);
+    gitOut(dir, "tag", "-a", "v9", "-m", "not vX.Y.Z", c3);
+    const c4 = commitOn(dir, "c4");
+    gitOut(dir, "tag", "-a", "v1.0.3", "-m", "the manifest names another commit", c4);
+    gitOut(dir, "tag", "-a", "v1.0.6", "-m", "the manifest names it twice", c4);
+    const lines = [`v1.0.0 = ${c1}`, `v1.0.1 = ${c2} # a comment`, `v1.0.5 = ${c3}`, `v1.1.0-rc1 = ${c3}`, `v9 = ${c3}`, `v1.0.3 = ${c2}`, `v1.0.6 = ${c4}`, `v1.0.6 = ${c3}`];
+    // A side branch (never on main) carrying a listed annotated tag, merged into a feature branch.
+    gitOut(dir, "checkout", "-q", "-b", "side", c4);
+    const s1 = commitOn(dir, "s1");
+    gitOut(dir, "tag", "-a", "v2.0.0", "-m", "off main", s1);
+    gitOut(dir, "checkout", "-q", "main");
+    const c5 = commitOn(dir, "c5", { "release/RC-MANIFEST.md": manifest([...lines, `v2.0.0 = ${s1}`]) });
+    gitOut(dir, "checkout", "-q", "-b", "feat", s1);
+    gitOut(dir, "merge", "-q", "--no-ff", "-m", "merge main", "main");
+    const f1 = gitOut(dir, "rev-parse", "HEAD");
+    const r = prev(dir, f1, "main");
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe(`v1.0.1 ${c2}`);
+    // A later listed release on main is the one picked (highest version, not the first found).
+    gitOut(dir, "checkout", "-q", "main");
+    gitOut(dir, "tag", "-a", "v1.0.10", "-m", "release v1.0.10", c5);
+    const c6 = commitOn(dir, "c6", { "release/RC-MANIFEST.md": manifest([...lines, `v2.0.0 = ${s1}`, `v1.0.10 = ${c5}`]) });
+    expect(prev(dir, c6, "main").stdout.trim()).toBe(`v1.0.10 ${c5}`);
+    // The manifest is read from main, never from the commit measured: a branch that lists v1.0.2 changes nothing.
+    gitOut(dir, "checkout", "-q", "-b", "forged", c6);
+    const g1 = commitOn(dir, "g1", { "release/RC-MANIFEST.md": manifest([...lines, `v1.0.10 = ${c5}`, `v1.0.2 = ${c3}`, `v1.0.11 = ${c6}`]) });
+    gitOut(dir, "tag", "-a", "v1.0.11", "-m", "listed only on the branch", c6);
+    expect(prev(dir, g1, "main").stdout.trim()).toBe(`v1.0.10 ${c5}`);
+    // Nothing valid below: exit 1. No main ref: exit 2.
+    expect(prev(dir, c0, "main").status).toBe(1);
+    expect(prev(dir, c6, "no-such-main").status).toBe(2);
+  });
+});
+
+describe("B-167N fold 1 M4: the approval.md tool ref must be an ancestor of approval.md main", () => {
+  const ON_MAIN = join(REPO, "scripts", "approval-class-diff", "tool-ref-on-main.sh");
+  test("a ref on main passes; an unmerged PR head, or a commit upstream never had, fails", () => {
+    const up = mkdtempSync(join(root, "aprv-up-"));
+    gitOut(up, "init", "-q");
+    const m1 = commitOn(up, "m1");
+    const m2 = commitOn(up, "m2");
+    gitOut(up, "checkout", "-q", "-b", "pr", m2);
+    const p1 = commitOn(up, "p1");
+    gitOut(up, "checkout", "-q", "main");
+    const tool = join(mkdtempSync(join(root, "aprv-tool-")), "tool");
+    gitOut(root, "clone", "-q", up, tool);
+    const at = (sha: string) => {
+      gitOut(tool, "checkout", "-q", "--detach", sha);
+      return spawnSync("bash", [ON_MAIN, tool, up], { encoding: "utf8" });
+    };
+    expect(at(m1).status).toBe(0);
+    expect(at(m2).status).toBe(0);
+    const pr = at(p1);
+    expect(pr.status).toBe(1);
+    expect(pr.stdout + pr.stderr).toContain("is not on approval.md main");
+    gitOut(tool, "checkout", "-q", "--detach", m2);
+    const local = commitOn(tool, "local-only");
+    expect(at(local).status).toBe(1);
+    expect(spawnSync("bash", [ON_MAIN], { encoding: "utf8" }).status).toBe(2);
+  });
+});
+
+describe("B-167N fold 1 S2: a pending accepted_at on an UNCHANGED call is the only finding a push or Tag release run may pass with a warning", () => {
+  const PENDING_MSG = 'LIMITING (propose decision card; propose class marketplace.app.action defaults to manual): awaiting acceptance: accepted_at "YYYY-MM-DD" is not a YYYY-MM-DD date (Carter fills it)';
+  const NEWCALLS_ERR = "1 new-calls finding(s) (B-167N): a new or changed call with no declared outcome, an outcome other than declared, a limiting entry without Carter's acceptance, or a stale entry. Declare the call in expected.json, fix the call, or have Carter accept it by name.";
+  const KEY = "village#forkicks.order.confirm";
+  const row = (over: Entry = {}): Entry => ({ key: KEY, kind: "envelope", status: "unchanged", entry: true, blocks: [PENDING_MSG], ...over });
+  const doc = (rows: Entry[], findings: Entry[], over: Entry = {}): Entry => ({ summary: { blocking: 0 }, shadowed: [], newCalls: { rows, findings }, ...over });
+  const finding = (message = PENDING_MSG, key = KEY): Entry => ({ key, message });
+
+  test("waived only when every finding is that pending date on an unchanged call and nothing else complained", async () => {
+    const { pendingOnly } = (await import("../approval-class-diff/pending-acceptance")) as { pendingOnly: (d: unknown, err: string) => { ok: boolean; waived: string[]; why: string[] } };
+    const ok = pendingOnly(doc([row()], [finding()]), `${NEWCALLS_ERR}\n`);
+    expect(ok.ok).toBe(true);
+    expect(ok.waived).toEqual([KEY]);
+    // A NEW or CHANGED call's pending acceptance fails everywhere: a new limitation never ships unaccepted.
+    expect(pendingOnly(doc([row({ status: "new" })], [finding()]), NEWCALLS_ERR).ok).toBe(false);
+    expect(pendingOnly(doc([row({ status: "changed (core move)" })], [finding()]), NEWCALLS_ERR).ok).toBe(false);
+    // accepted_by is never waived, nor is any other block on the row.
+    const by = 'LIMITING (propose decision card): awaiting acceptance: accepted_by must be "human:carter" (it is "human:test")';
+    expect(pendingOnly(doc([row({ blocks: [by] })], [finding(by)]), NEWCALLS_ERR).ok).toBe(false);
+    expect(pendingOnly(doc([row({ blocks: [PENDING_MSG, "propose: decision auto, declared card"] })], [finding(), finding("propose: decision auto, declared card")]), NEWCALLS_ERR).ok).toBe(false);
+    // Any other complaint from the check (a box deny, a stale allowlist entry), a class-diff block or a shadowed line: no waiver.
+    expect(pendingOnly(doc([row()], [finding()]), `${NEWCALLS_ERR}\nstale allowlist entry (nothing held or blocked matches it; delete it): a: b\n`).ok).toBe(false);
+    expect(pendingOnly(doc([row()], [finding()], { summary: { blocking: 1 } }), NEWCALLS_ERR).ok).toBe(false);
+    expect(pendingOnly(doc([row()], [finding()], { summary: undefined }), NEWCALLS_ERR).ok).toBe(false);
+    expect(pendingOnly(doc([row()], [finding()], { shadowed: [{ index: 1 }] }), NEWCALLS_ERR).ok).toBe(false);
+    // Nothing pending (the check failed for another reason) or no new-calls section: no waiver.
+    expect(pendingOnly(doc([], []), "no corpus at x\n").ok).toBe(false);
+    expect(pendingOnly({ summary: { blocking: 0 }, shadowed: [] }, NEWCALLS_ERR).ok).toBe(false);
+    // A finding naming a key no row carries: no waiver.
+    expect(pendingOnly(doc([row()], [finding(PENDING_MSG, "village#forkicks.menu")]), NEWCALLS_ERR).ok).toBe(false);
+  });
+});
+
+describe("B-167N fold 1 N4: live-compare keys calls by approval.md's closed-set rule and never passes an empty run", () => {
+  const LIVE = join(REPO, "scripts", "approval-class-diff", "live-compare.ts");
+  const live = (lines: string, ...args: string[]) => {
+    const dir = mkdtempSync(join(root, "live-"));
+    writeFileSync(join(dir, "lines.txt"), lines);
+    return spawnSync("bun", [LIVE, "--lines", join(dir, "lines.txt"), "--core", "0.4.7", ...args], { encoding: "utf8" });
+  };
+  const report = (rows: Entry[]): string => {
+    const dir = mkdtempSync(join(root, "live-report-"));
+    writeFileSync(join(dir, "class-diff.json"), JSON.stringify({ newCalls: { rows, findings: [] } }));
+    return join(dir, "class-diff.json");
+  };
+  const SEARCH = "village#mini-app.read:dizko.search_events";
+
+  test("a key part carrying a separator, or not a string, keys nothing, so it never stands for a real call", async () => {
+    const { envelopeKey } = (await import("../approval-class-diff/live-compare")) as { envelopeKey: (t: string, i?: Record<string, unknown>) => string | null };
+    expect(envelopeKey("village", { operation: "mini-app.read", appId: "dizko", tool: "search_events" })).toBe(SEARCH);
+    expect(envelopeKey("village", { operation: "mini-app.read:dizko", tool: "search_events" })).toBeNull();
+    expect(envelopeKey("village", { operation: "a", appId: "b.c" })).toBeNull();
+    expect(envelopeKey("village", { operation: 1 })).toBeNull();
+    expect(envelopeKey("vil#lage", {})).toBeNull();
+    const forged = [{ tool: "village", input: { operation: "mini-app.read:dizko", tool: "search_events" }, class: "marketplace.app.read", decision: "auto" }];
+    expect(compare(forged, `marketplace.app.read | auto | none | 0.4.7 | ${SEARCH}`, "0.4.7")[0]?.ok).toBe(false);
+  });
+
+  test("an empty lines file fails; naming nothing to cover is a usage error; --report requires a line for every NEW or CHANGED declared call and its propose", () => {
+    expect(live("# nothing read\n\n", "--require", SEARCH).status).toBe(1);
+    expect(live("", "--report", report([])).status).toBe(1);
+    const one = `marketplace.app.read | auto | none | 0.4.7 | ${SEARCH}\n`;
+    expect(live(one).status).toBe(2);
+    expect(live(one, "--report", report([{ key: SEARCH, kind: "envelope", status: "new", entry: true }])).status).toBe(0);
+    expect(live(one, "--report", report([{ key: SEARCH, kind: "envelope", status: "new", entry: true }, { key: "village#mini-app.read:dizko.get_event", kind: "envelope", status: "new", entry: true }])).status).toBe(1);
+    // An unchanged row needs no live line.
+    expect(live(one, "--report", report([{ key: SEARCH, kind: "envelope", status: "new", entry: true }, { key: "village#forkicks.menu", kind: "envelope", status: "unchanged", entry: true }])).status).toBe(0);
+    // A changed call with a propose needs both lines; the propose is matched by its action key's stem.
+    const order = [{ key: "village#forkicks.order.confirm", kind: "envelope", status: "changed (bytes)", entry: true }];
+    const hook = "marketplace.app.read | auto | none | 0.4.7 | village#forkicks.order.confirm\n";
+    const card = "marketplace.app.action | card | minimal | 0.4.7 | marketplace.app.action:forkicks.order.confirm:live-draft-1\n";
+    expect(live(hook, "--report", report(order)).status).toBe(1);
+    expect(live(hook + card, "--report", report(order)).status).toBe(0);
+    // A recipe row is covered by its command.
+    const rsvp = "bun skills/edgeos/scripts/edgeos.ts rsvp {event_id}";
+    expect(live(`exec.local | auto | none | 0.4.7 | ${rsvp}\n`, "--report", report([{ key: `skills/edgeos/SKILL.md\u0000${rsvp}`, kind: "recipe", status: "new", entry: true }])).status).toBe(0);
+  });
+});
+
 // --- fixture overlays through the real script -------------------------------------------------------
 
 const TEMPLATE = readFileSync(join(REPO, "skills", "approval", "templates", "APPROVAL.md"), "utf8");
@@ -223,27 +440,32 @@ const declare = (command: string, over: Entry = {}): Entry => ({
   ...over,
 });
 
-function tree(dir: string, pin: string, recipes: string[], expected: Entry[] = []): void {
+function tree(dir: string, pin: string, recipes: string[], expected: Entry[] = [], allowlist: Entry[] = []): void {
   put(dir, "scripts/tests/fetch-url-shape.test.ts", `export const APPROVAL_MD_PINNED = "${pin}";\n`);
   put(dir, "skills/approval/templates/APPROVAL.md", TEMPLATE);
   put(dir, "skills/edgeos/SKILL.md", `# EdgeOS\n\n\`\`\`bash\n${recipes.join("\n")}\n\`\`\`\n`);
   put(dir, "skills/edgeos/scripts/events.ts", "console.log(1);\n");
   put(dir, "workspace/README.md", "# workspace\n");
   put(dir, "install/install_index.ts", "export const DIGEST_CRON_SPECS: { name: string; promptBody?: string }[] = [];\n");
-  put(dir, "scripts/approval-class-diff/allowlist.json", '{ "entries": [] }\n');
+  put(dir, "scripts/approval-class-diff/allowlist.json", `${JSON.stringify({ entries: allowlist }, null, 2)}\n`);
   put(dir, "scripts/approval-class-diff/expected.json", `${JSON.stringify({ entries: expected }, null, 2)}\n`);
   put(dir, "install/install_approval.ts", 'export const APPROVAL_GATED_TOOLS = ["terminal"] as const;\n');
 }
 
 /** A throwaway overlay repo: a base commit and a head commit, each with a pin and a recipe list. */
-function fixture(name: string, base: [string, string[]], head: [string, string[], Entry[]?]): { status: number | null; md: string; err: string } {
+function fixture(
+  name: string,
+  base: [string, string[]],
+  head: [string, string[], Entry[]?],
+  opts: { allowlist?: Entry[]; env?: Record<string, string> } = {},
+): { status: number | null; md: string; err: string; out: string } {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
   git(dir, "init", "-q");
   tree(dir, base[0], base[1]);
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "base");
-  tree(dir, head[0], head[1], head[2] ?? []);
+  tree(dir, head[0], head[1], head[2] ?? [], opts.allowlist ?? []);
   git(dir, "add", "-A");
   git(dir, "commit", "-q", "-m", "head");
   const out = join(dir, "report");
@@ -264,6 +486,9 @@ function fixture(name: string, base: [string, string[]], head: [string, string[]
       // Sequential hook runs over the harness tools a recipe fixture can move.
       AV_CLASS_DIFF_BOX_CONCURRENCY: "1",
       AV_CLASS_DIFF_HARNESS_ONLY: "terminal,send_message",
+      // Each fixture states the mode it runs in (B-167N fold 1 S2); unset is the script's fail-closed default.
+      AV_NEW_CALLS_PENDING_ACCEPTANCE: "",
+      ...opts.env,
     },
   });
   let md = "";
@@ -272,7 +497,7 @@ function fixture(name: string, base: [string, string[]], head: [string, string[]
   } catch {
     md = `(no report) ${run.stderr}`;
   }
-  return { status: run.status, md, err: run.stderr };
+  return { status: run.status, md, err: run.stderr, out: run.stdout };
 }
 
 const LONG = 600_000;
@@ -384,6 +609,34 @@ describe.skipIf(TOOL === undefined)("fixture overlays through the real script an
       expect(run.status).toBe(1);
       expect(run.md).toMatch(/^NEW-CALLS FAIL \d+ BLOCKING: .*0 new, 1 changed \(0 bytes, 1 core move\)/m);
       expect(run.md).toContain("`: changed (core move) call with no declared outcome");
+    },
+    LONG,
+  );
+
+  test(
+    "B-167N fold 1 S2: a pending accepted_at on an UNCHANGED call fails a pull request and only warns on main / Tag release; on a NEW call it fails everywhere",
+    () => {
+      // The opaque pipe is refused at every workdir and in every settings cell; the box check's deny is allowlisted by Carter.
+      const allowlist = [{ file: "skills/edgeos/SKILL.md", command: OPAQUE, reason: "fixture: an opaque pipe the hook refuses, kept on purpose", scope: "any", accepted_by: "human:carter", accepted_at: "2026-10-21" }];
+      const refusedEverywhere = { ask: "refused", autonomous: "refused", "supervised-retro": "refused", "supervised-live": "refused", manual: "refused" };
+      const pending = declare(OPAQUE, { class: "network.call", decision: "deny", matrix: refusedEverywhere, reason: "fixture: an opaque pipe the hook refuses, kept on purpose", accepted_by: "human:carter", accepted_at: "YYYY-MM-DD" });
+      const pr = fixture("pending-pr", ["0.4.6", [STAY, OPAQUE]], ["0.4.6", [STAY, OPAQUE], [pending]], { allowlist, env: { AV_NEW_CALLS_PENDING_ACCEPTANCE: "fail" } });
+      expect(pr.status).toBe(1);
+      expect(pr.md).toMatch(/^NEW-CALLS FAIL 1 BLOCKING: /m);
+      expect(pr.md).toContain("Carter fills it");
+      const push = fixture("pending-push", ["0.4.6", [STAY, OPAQUE]], ["0.4.6", [STAY, OPAQUE], [pending]], { allowlist, env: { AV_NEW_CALLS_PENDING_ACCEPTANCE: "warn" } });
+      expect(push.status).toBe(0);
+      expect(push.md).toContain("NEW-CALLS ACCEPTANCE PENDING (fails pull requests only; B-167N fold 1 S2)");
+      expect(push.out).toContain("::warning::");
+      // Unset is fail, never warn.
+      const unset = fixture("pending-unset", ["0.4.6", [STAY, OPAQUE]], ["0.4.6", [STAY, OPAQUE], [pending]], { allowlist });
+      expect(unset.status).toBe(1);
+      // The same pending acceptance on a NEW call fails on main too.
+      const fresh = fixture("pending-new", ["0.4.6", [STAY]], ["0.4.6", [STAY, OPAQUE], [pending]], { allowlist, env: { AV_NEW_CALLS_PENDING_ACCEPTANCE: "warn" } });
+      expect(fresh.status).toBe(1);
+      // Control: Carter's date filled, the same tree passes in fail mode.
+      const filled = fixture("pending-filled", ["0.4.6", [STAY, OPAQUE]], ["0.4.6", [STAY, OPAQUE], [{ ...pending, accepted_at: "2026-10-21" }]], { allowlist, env: { AV_NEW_CALLS_PENDING_ACCEPTANCE: "fail" } });
+      expect(filled.status).toBe(0);
     },
     LONG,
   );

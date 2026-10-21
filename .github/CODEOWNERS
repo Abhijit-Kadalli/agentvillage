@@ -8,3 +8,11 @@
 /scripts/approval-class-diff.sh              @soycarts
 /.github/workflows/test.yml                  @soycarts
 /.github/CODEOWNERS                          @soycarts
+# B-167N fold 1 N7 (review-b's refute): the gated-tool list the extractor reads, the
+# release enforcement point (Tag release tags only on a green test.yml), the manifest
+# the release rule reads (previous-release.sh, S3), and the gate's own tests.
+/install/install_approval.ts                 @soycarts
+/.github/workflows/tag-release.yml           @soycarts
+/scripts/tag-release.ts                      @soycarts
+/scripts/tests/approval-class-diff.test.ts   @soycarts
+/release/RC-MANIFEST.md                      @soycarts
