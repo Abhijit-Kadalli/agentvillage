@@ -262,7 +262,7 @@ export function configureHostedGateway(): void {
 
   const approvals = { ...((doc.approvals as Record<string, unknown>) ?? {}) };
   approvals.mode = false;
-  // V2111 (Carter's leniency ruling, CLAIMS L17443 (1)): no resident taps "Confirm /new" to start
+  // V2112 (Carter's leniency ruling, CLAIMS L17443 (1)): no resident taps "Confirm /new" to start
   // a new chat. Hermes gates /new, /reset, /undo, /clear behind an Approve Once / Always Approve /
   // Cancel prompt unless this is false (gateway/run_busy.py `_maybe_confirm_destructive_slash`,
   // `bool(approvals.get("destructive_slash_confirm", True))`, read from config.yaml per command;

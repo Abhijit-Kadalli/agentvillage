@@ -191,7 +191,7 @@ test("configureHostedGateway is idempotent and preserves other platform keys", (
   expect((telegram.extra as Record<string, unknown>).disable_link_previews).toBe(false);
 });
 
-// V2111 (CLAIMS L17443 (1)): no resident taps Hermes's "Confirm /new" prompt to start a new chat.
+// V2112 (CLAIMS L17443 (1)): no resident taps Hermes's "Confirm /new" prompt to start a new chat.
 // Hermes reads `bool(approvals.get("destructive_slash_confirm", True))` from config.yaml per command
 // (gateway/run_busy.py `_maybe_confirm_destructive_slash`), so it must be a real YAML `false`.
 test("configureHostedGateway turns Hermes's destructive slash confirm off as a YAML boolean, and says so", () => {

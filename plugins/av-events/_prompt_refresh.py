@@ -61,16 +61,16 @@ the kept entries must keep their order. Anything else (an external USER.md write
 turn, or in a background review fork, which shares the parent's session id) is not acknowledged, so
 the next turn's exact test refreshes and carries both. The other file's digest is never touched.
 
-Switch (v2.1.11 defaults, CLAIMS L17455 (1): every resident's open chat picks up a skills update
+Switch (v2.1.12 defaults, CLAIMS L17455 (1): every resident's open chat picks up a skills update
 without /new): `AV_PROMPT_REFRESH` = `1` (default; also unset or blank, or on|true|yes): on
-everywhere | `0` (off|false|no) | `team`: the pre-v2.1.11 default, on only where `AV_TEAM_TENANT` is
+everywhere | `0` (off|false|no) | `team`: the pre-v2.1.12 default, on only where `AV_TEAM_TENANT` is
 exactly `1` (the control plane writes it per tenant into `$HERMES_HOME/.env`,
 control-plane/src/team-tenant-env.js). Any other value is off, with one WARNING per process (a
 mistyped off must not leave it on). Plus `prompt_refresh` in `AV_HOOKS_DISABLED`, which wins.
 Sub-switch `AV_PROMPT_REFRESH_FILES` = `all` (default; also unset or blank: USER.md, MEMORY.md and
 AGENTS.md trigger, and the exact test also compares the skills index, which is not hashed: a skills
 change alone is caught at a session's first turn in a process or with the next hashed change; steps
-2 and 3) | `memory` (the pre-v2.1.11 default: only USER.md and MEMORY.md trigger). Any other value
+2 and 3) | `memory` (the pre-v2.1.12 default: only USER.md and MEMORY.md trigger). Any other value
 is `memory`, the narrower set, with one WARNING per process. A skills update reaches a box through
 the installer (an update or rc roll) or a mini-app reconcile, and both restart the gateway, so
 "first turn in a process" is exactly the turn after the update; Hermes's disk snapshot of the index
@@ -134,7 +134,7 @@ SWITCH = "prompt_refresh"
 #: The rollout switch and the control plane's team marker.
 MODE_VAR = "AV_PROMPT_REFRESH"
 TEAM_VAR = "AV_TEAM_TENANT"
-#: Which files trigger: `all` (default from v2.1.11: also AGENTS.md and skills) or `memory` (USER.md, MEMORY.md).
+#: Which files trigger: `all` (default from v2.1.12: also AGENTS.md and skills) or `memory` (USER.md, MEMORY.md).
 FILES_VAR = "AV_PROMPT_REFRESH_FILES"
 ON_VALUES = frozenset({"1", "true", "yes", "on"})
 OFF_VALUES = frozenset({"0", "false", "no", "off"})
@@ -189,8 +189,8 @@ _PERSIST_FAILED = (
 
 
 def mode() -> str:
-    """`off`, `on` or `team` from `AV_PROMPT_REFRESH`. Unset or blank: `on` (v2.1.11; `team` before).
-    `team`: the pre-v2.1.11 default, on only for team tenants. Any other unknown value: `off` with one
+    """`off`, `on` or `team` from `AV_PROMPT_REFRESH`. Unset or blank: `on` (v2.1.12; `team` before).
+    `team`: the pre-v2.1.12 default, on only for team tenants. Any other unknown value: `off` with one
     WARNING per process (the other av-events switches read unknown as off too)."""
     value = env(MODE_VAR).strip().lower()
     if not value or value in ON_VALUES:
@@ -214,8 +214,8 @@ def disabled_by_hooks(collector: Any) -> bool:
 
 
 def files_mode() -> str:
-    """`all` (v2.1.11 default: also unset or blank) or `memory` (USER.md / MEMORY.md only, the
-    pre-v2.1.11 default) from `AV_PROMPT_REFRESH_FILES`. Any other value: `memory`, the narrower set,
+    """`all` (v2.1.12 default: also unset or blank) or `memory` (USER.md / MEMORY.md only, the
+    pre-v2.1.12 default) from `AV_PROMPT_REFRESH_FILES`. Any other value: `memory`, the narrower set,
     with one WARNING per process (a mistyped `memory` must not widen it)."""
     value = env(FILES_VAR).strip().lower()
     if not value or value == "all":

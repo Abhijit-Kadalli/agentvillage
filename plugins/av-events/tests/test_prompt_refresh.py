@@ -490,7 +490,7 @@ def test_a_new_skills_index_refreshes_at_the_first_turn_after_a_restart(hermes, 
 
 @pytest.mark.parametrize("files", ["memory", " Memory ", "agents", "al"])
 def test_in_memory_mode_only_the_memory_files_trigger(hermes, monkeypatch, caplog, files):
-    """AV_PROMPT_REFRESH_FILES=memory (the pre-v2.1.11 default) or a mistyped value: AGENTS.md and
+    """AV_PROMPT_REFRESH_FILES=memory (the pre-v2.1.12 default) or a mistyped value: AGENTS.md and
     skills changes wait; a memory change then rebuilds the whole prompt, so it carries them too."""
     monkeypatch.setenv("AV_PROMPT_REFRESH_FILES", files)
     agent = started(hermes)
@@ -508,19 +508,19 @@ def test_in_memory_mode_only_the_memory_files_trigger(hermes, monkeypatch, caplo
     assert [REFRESH_LINE.match(line).group(1) for line in refresh_lines(caplog)] == ["user_md"]
 
 
-# ---- V2111 defaults: on for every resident, files `all` ----------------------------------------
+# ---- V2112 defaults: on for every resident, files `all` ----------------------------------------
 
 
-def _v2111_defaults(monkeypatch):
-    """A resident box at v2.1.11: none of the switches set, not a team tenant."""
+def _v2112_defaults(monkeypatch):
+    """A resident box at v2.1.12: none of the switches set, not a team tenant."""
     for name in ("AV_PROMPT_REFRESH", "AV_PROMPT_REFRESH_FILES", "AV_TEAM_TENANT", "AV_HOOKS_DISABLED"):
         monkeypatch.delenv(name, raising=False)
 
 
 @pytest.mark.parametrize("files", [None, "", "  ", "all", " ALL "])
 def test_by_default_agents_md_and_skills_trigger_too(hermes, monkeypatch, caplog, files):
-    """V2111 (CLAIMS L17455 (1)): AV_PROMPT_REFRESH_FILES unset or blank is `all`."""
-    _v2111_defaults(monkeypatch)
+    """V2112 (CLAIMS L17455 (1)): AV_PROMPT_REFRESH_FILES unset or blank is `all`."""
+    _v2112_defaults(monkeypatch)
     if files is not None:
         monkeypatch.setenv("AV_PROMPT_REFRESH_FILES", files)
     assert pr(hermes.plugin).files_mode() == "all"
@@ -534,11 +534,11 @@ def test_by_default_agents_md_and_skills_trigger_too(hermes, monkeypatch, caplog
 
 def test_by_default_an_old_session_picks_up_a_skills_update_at_its_first_turn_in_the_new_process(
         hermes, plugin, ctx, monkeypatch, caplog):
-    """V2111: the resident case Carter ruled on (CLAIMS L17443 (2)). A non-team box with no switch
+    """V2112: the resident case Carter ruled on (CLAIMS L17443 (2)). A non-team box with no switch
     set; an update stages a new skill and restarts the gateway (new process: the plugin installs again
     with the defaults, the memo is empty, no hashed file changed). The old session's first turn in the
     new process rebuilds and persists, reason `skills`, with no /new; the next turn replays it."""
-    _v2111_defaults(monkeypatch)
+    _v2112_defaults(monkeypatch)
     started(hermes)
     stored = hermes.db.rows["tg-dm-1"]["system_prompt"]
     assert "edgeos" not in stored
@@ -564,8 +564,8 @@ def test_by_default_an_old_session_picks_up_a_skills_update_at_its_first_turn_in
 
 
 def test_in_memory_mode_a_skills_update_waits_even_across_a_restart(hermes, plugin, ctx, monkeypatch, caplog):
-    """The explicit pre-v2.1.11 files mode still works: `memory` keeps the old prompt across the restart."""
-    _v2111_defaults(monkeypatch)
+    """The explicit pre-v2.1.12 files mode still works: `memory` keeps the old prompt across the restart."""
+    _v2112_defaults(monkeypatch)
     monkeypatch.setenv("AV_PROMPT_REFRESH_FILES", "memory")
     started(hermes)
     stored = hermes.db.rows["tg-dm-1"]["system_prompt"]
@@ -1058,10 +1058,10 @@ def test_a_persist_that_did_not_land_is_checked_again(hermes, caplog):
 @pytest.mark.parametrize(("mode", "team", "hooks_disabled", "refreshes"), [
     ("0", "1", "", False),
     ("off", "1", "", False),
-    (None, None, "", True),        # V2111 default: on, not a team tenant
-    (None, "1", "", True),         # V2111 default: on, a team tenant too
+    (None, None, "", True),        # V2112 default: on, not a team tenant
+    (None, "1", "", True),         # V2112 default: on, a team tenant too
     (None, None, "prompt_refresh", False),  # AV_HOOKS_DISABLED still wins over the default
-    ("team", " 1 ", "", True),     # the pre-v2.1.11 default, explicit
+    ("team", " 1 ", "", True),     # the pre-v2.1.12 default, explicit
     ("team", None, "", False),
     ("TEAM", "0", "", False),
     ("team", "true", "", False),   # the marker is exactly 1
@@ -1095,7 +1095,7 @@ def test_an_unknown_switch_value_is_off_with_one_warning(plugin, monkeypatch, ho
         for value in ("disabled", "none", "O", "disabled"):
             monkeypatch.setenv("AV_PROMPT_REFRESH", value)
             assert pr(plugin).mode() == "off" and not pr(plugin).enabled(None)
-        for value in ("", "  ", "1", "On"):  # V2111: unset or blank is on
+        for value in ("", "  ", "1", "On"):  # V2112: unset or blank is on
             monkeypatch.setenv("AV_PROMPT_REFRESH", value)
             assert pr(plugin).mode() == "on" and pr(plugin).enabled(None)
         monkeypatch.delenv("AV_PROMPT_REFRESH")
@@ -1191,7 +1191,7 @@ def test_the_context_seams_are_only_required_in_all_mode(plugin, ctx, monkeypatc
     ("agent.system_prompt", "_skills_prompt"),
 ])
 def test_by_default_the_install_seam_check_is_the_all_mode_one(plugin, ctx, monkeypatch, home, caplog, files, module, attr):
-    """V2111: files unset or blank is `all` at install too, so the renderers and the cwd are required;
+    """V2112: files unset or blank is `all` at install too, so the renderers and the cwd are required;
     a Hermes without one leaves the loop unwrapped with one INFO line (no half-checked refresh)."""
     loop = install_hermes(monkeypatch)
     for name in ("AV_PROMPT_REFRESH", "AV_PROMPT_REFRESH_FILES", "AV_TEAM_TENANT"):
@@ -1480,10 +1480,10 @@ def reasons_logged(caplog):
 
 @pytest.fixture()
 def apps(plugin, ctx, monkeypatch, home):
-    """A pre-v2.1.11 resident's box: F1 off (`AV_PROMPT_REFRESH=team`, the old default, and not a team
+    """A pre-v2.1.12 resident's box: F1 off (`AV_PROMPT_REFRESH=team`, the old default, and not a team
     tenant), so MINIAPP-PICKUP is seen on its own, at its default; a Hermes with plugin prompt sections
-    and a skills index read from $HERMES_HOME/skills. V2111: F1 is on by default; see
-    `test_at_the_v2111_defaults_an_install_is_one_rebuild_for_both_checks`."""
+    and a skills index read from $HERMES_HOME/skills. V2112: F1 is on by default; see
+    `test_at_the_v2112_defaults_an_install_is_one_rebuild_for_both_checks`."""
     monkeypatch.setenv("AV_PROMPT_REFRESH", "team")
     monkeypatch.delenv("AV_TEAM_TENANT", raising=False)
     monkeypatch.delenv("AV_PROMPT_REFRESH_FILES", raising=False)
@@ -1512,8 +1512,8 @@ def apps(plugin, ctx, monkeypatch, home):
     pr(plugin).uninstall()
 
 
-def test_at_the_v2111_defaults_an_install_is_one_rebuild_for_both_checks(apps, monkeypatch, caplog):
-    """V2111: F1 on and files `all` by default, so after an app install and the restart both checks see
+def test_at_the_v2112_defaults_an_install_is_one_rebuild_for_both_checks(apps, monkeypatch, caplog):
+    """V2112: F1 on and files `all` by default, so after an app install and the restart both checks see
     it (the new skill in the index, the apps stamp); it is still one rebuild, one persist, one line."""
     monkeypatch.delenv("AV_PROMPT_REFRESH")
     started(apps)

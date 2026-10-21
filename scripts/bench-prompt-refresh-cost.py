@@ -1,4 +1,4 @@
-"""V2111 cost measurement: one F1 static-prefix rebuild on the real Hermes v2026.9.24 prompt builder,
+"""V2112 cost measurement: one F1 static-prefix rebuild on the real Hermes v2026.9.24 prompt builder,
 with the overlay's real SOUL.md / AGENTS.md / staged skills and near-limit synthetic memory files.
 
 Usage: python3 -I scripts/bench-prompt-refresh-cost.py <hermes_ref_dir> <overlay_checkout> [reps]
@@ -6,7 +6,7 @@ Usage: python3 -I scripts/bench-prompt-refresh-cost.py <hermes_ref_dir> <overlay
 Needs a Hermes source checkout whose `agent.system_prompt` imports under the python3 you run it
 with (the v2026.9.24 ref does under a plain Python 3.11 with PyYAML). Runs in a throwaway HERMES_HOME it deletes at the end. Synthetic memory text only;
 nothing from a real box. Not a test (not collected by pytest); numbers go into the av-events README
-"Cost (measured for v2.1.11)" paragraph.
+"Cost (measured for v2.1.12)" paragraph.
 """
 import hashlib
 import importlib
@@ -22,7 +22,7 @@ from pathlib import Path
 REF, OV = Path(sys.argv[1]).expanduser().resolve(), Path(sys.argv[2]).expanduser().resolve()
 REPS = int(sys.argv[3]) if len(sys.argv) > 3 else 30
 
-home = Path(tempfile.mkdtemp(prefix="v2111-bench-")) / ".hermes"
+home = Path(tempfile.mkdtemp(prefix="v2112-bench-")) / ".hermes"
 home.mkdir()
 os.environ["HERMES_HOME"] = str(home)
 os.environ["TERMINAL_CWD"] = str(home)
@@ -117,7 +117,7 @@ assert f1.files_mode() == "all", f1.files_mode()
 fmt("pre-filter digests, files=all default (every turn)", timed(lambda: f1.file_digests(agent), REPS * 10))
 
 # 2. Exact test (first turn of a session in a new process, or a digest change): stale_reasons.
-#    Old prompt = built before one skill was added (the v2.1.11 shape: a skills-only update).
+#    Old prompt = built before one skill was added (the v2.1.12 shape: a skills-only update).
 extra = home / "skills" / "zz-bench-new-skill"
 clear_cache()
 old_prompt = sp.build_system_prompt(make_agent())
