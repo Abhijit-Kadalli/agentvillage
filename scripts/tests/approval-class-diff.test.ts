@@ -147,6 +147,8 @@ describe("the class-diff job and script (static)", () => {
     expect(checkout).toBeGreaterThan(-1);
     expect(onMain).toBeGreaterThan(checkout);
     expect(gate).toBeGreaterThan(onMain);
+    // After the setup steps, so the `if: always()` fixtures step still has bun when this fails.
+    expect(onMain).toBeGreaterThan(at((s) => s.run === "bun install --frozen-lockfile"));
     // No continue-on-error and no `if:` on the ancestry step: it gates the job.
     const step = steps[onMain] as Step & { "continue-on-error"?: unknown; if?: unknown };
     expect(step["continue-on-error"]).toBeUndefined();

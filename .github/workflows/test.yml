@@ -269,11 +269,6 @@ jobs:
           path: .test-deps/approval-md-tool
           persist-credentials: false
           sparse-checkout: scripts
-      # B-167N fold 1 M4: the check reads the pinned expected.json from this checkout,
-      # so its commit must be one approval.md merged (an ancestor of approval.md main),
-      # never an unmerged branch or a fork PR's head with matching bytes.
-      - name: the approval.md tool ref is on approval.md main
-        run: bash scripts/approval-class-diff/tool-ref-on-main.sh .test-deps/approval-md-tool
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -281,6 +276,12 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      # B-167N fold 1 M4: the check reads the pinned expected.json from this checkout,
+      # so its commit must be one approval.md merged (an ancestor of approval.md main),
+      # never an unmerged branch or a fork PR's head with matching bytes. It runs after
+      # the setup steps, so the fixtures step below still runs when it fails.
+      - name: the approval.md tool ref is on approval.md main
+        run: bash scripts/approval-class-diff/tool-ref-on-main.sh .test-deps/approval-md-tool
       - name: class-diff, base pin -> this pin
         env:
           AV_APPROVAL_MD_TOOL_DIR: ${{ github.workspace }}/.test-deps/approval-md-tool
