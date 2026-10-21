@@ -88,7 +88,7 @@ export const NO_REASON = "no reason given";
 /** A code the app does not have: never printed raw. */
 export const REASON_NOT_SHOWN = "reason not shown";
 
-export const HEADER = "Who they passed on (their reasons and notes are theirs alone: never share them):";
+export const HEADER = "Who they passed on (their reasons and notes are theirs alone: never share or save them):";
 export const UNNAMED = "someone you passed on";
 export const NO_PASSES = "No passes found.";
 export const REASONS_UNAVAILABLE = "Reasons aren't available right now.";
