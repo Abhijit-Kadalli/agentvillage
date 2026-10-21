@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { REVIEWED_MINI_APPS } from "../install_miniapps";
+import { REVIEWED_MINI_APPS, zzzMarkerOnDisk } from "../install_miniapps";
 import { reconcileZzzManagedJob, ZZZ_JOB_NAME, ZZZ_JOB_SCRIPT, ZZZ_JOB_TOOLSETS } from "../zzz_managed_job";
 
 const fake = join(import.meta.dir, "fake_hermes.ts");
@@ -407,13 +407,19 @@ test("review-b N2: gate off still removes a managed job from a bare-list store, 
   expect(stage(alone).status).toBe(0);
   expect(jobs()).toEqual([resident]);
   expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
-  // An unloadable store that names the managed job (as written, or with Python's ensure_ascii em dash) may hold one
-  // that cannot be confirmed gone: the stage fails loudly, and changes nothing in the store.
+  // On a box still marked as one that was on (S4-r: here the job's shim), an unloadable store that names the managed
+  // job (as written, or with Python's ensure_ascii em dash) may hold one that cannot be confirmed gone: the stage fails
+  // loudly, and changes nothing in the store. Unmarked, the gate-off stage is main's and never reads the store.
   for (const text of [`{"jobs": [{"name": "${ZZZ_JOB_NAME}"`, '{"jobs": [{"name": "Edge \\u2014 zzz pairs", "x": NaN}]}']) {
     writeFileSync(join(home, "cron", "jobs.json"), text);
+    expect(zzzMarkerOnDisk(home)).toBe(false);
+    expect(stage(alone).status).toBe(0);
+    expect(stage(alone, ["--verify"]).status).toBe(0);
+    writeFileSync(join(home, "scripts", ZZZ_JOB_SCRIPT), "#!/bin/sh\n", { mode: 0o700 });
     expect(stage(alone).status).toBe(1);
     expect(stage(alone, ["--verify"]).status).toBe(1);
     expect(readFileSync(join(home, "cron", "jobs.json"), "utf8")).toBe(text);
+    rmSync(join(home, "scripts", ZZZ_JOB_SCRIPT));
   }
 });
 
@@ -479,12 +485,17 @@ test("review-b N3: --verify checks the job record: exactly the installer's job w
   expect(verify(projection)).toBe(1);
   writeFileSync(shim, shimBytes, { mode: 0o700 });
   expect(verify(projection)).toBe(0);
-  // Gate off: a lingering managed job (files and state already gone) is removal pending; so is leftover state alone.
+  // Gate off on a box the job's shim still marks (S4-r): a lingering managed job (files and state already gone) is
+  // removal pending; so is the shim alone in a real scripts/ (review-b N9, M30), and leftover state alone.
   expect(stage(alone).status).toBe(0);
   expect(verify(alone)).toBe(0);
+  writeFileSync(shim, shimBytes, { mode: 0o700 });
   writeFileSync(join(home, "cron", "jobs.json"), good);
   expect(verify(alone)).toBe(1);
   writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify({ jobs: [] }));
+  expect(zzzMarkerOnDisk(home)).toBe(true);
+  expect(verify(alone)).toBe(1);
+  rmSync(shim);
   expect(verify(alone)).toBe(0);
   seedState(home);
   expect(verify(alone)).toBe(1);
@@ -507,4 +518,223 @@ test("review-b N3: a box with no projection left heals a lingering job and state
   expectOff(home, jobs);
   expect(existsSync(join(home, "mini-apps.json"))).toBe(false);
   expect(stage(empty, ["--verify"]).status).toBe(0);
+});
+
+/** snapshot(), lstat only: a symlink is its target (never followed), an unreadable file its mode, size and mtime. */
+function lsnapshot(root: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      const st = lstatSync(path);
+      if (st.isSymbolicLink()) out[relative(root, path)] = `link:${readlinkSync(path)}`;
+      else if (st.isDirectory()) { out[relative(root, path) + "/"] = String(st.mode); walk(path); }
+      else {
+        try { out[relative(root, path)] = `${st.mode}:${readFileSync(path, "base64")}`; }
+        catch { out[relative(root, path)] = `${st.mode}:unreadable:${st.size}:${st.mtimeMs}`; }
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+/** The fake Hermes bound, but HOME and PATH isolated (no ~/.local/bin/hermes or PATH hermes can resolve). */
+function ISOLATED() {
+  const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-nohome-"));
+  roots.push(elsewhere);
+  return { HOME: elsewhere, PATH: "/usr/bin:/bin" };
+}
+const RESIDENT_JOB = { id: "aaaaaaaaaaaa", name: "Morning digest", script: "digest.sh", enabled: true };
+/** A loadable store whose job carries the managed name: on an unmarked gate-off box it is never even read. */
+const NAMING_STORE = JSON.stringify({ jobs: [RESIDENT_JOB, { id: "cccccccccccc", name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT,
+  enabled: true, enabled_toolsets: [...ZZZ_JOB_TOOLSETS] }] });
+type BoxShape = { label: string; seed: (home: string, elsewhere: string) => void };
+/** review-b S4-r (recheck a819d1cf): the six shapes that still failed a gate-off stage where main passes. */
+const S4R_SHAPES: BoxShape[] = [
+  { label: "cron/ a symlink", seed: (home, elsewhere) => {
+    mkdirSync(join(elsewhere, "cron"));
+    writeFileSync(join(elsewhere, "cron", "jobs.json"), NAMING_STORE);
+    symlinkSync(join(elsewhere, "cron"), join(home, "cron")); } },
+  { label: "cron/jobs.json a symlink", seed: (home, elsewhere) => {
+    mkdirSync(join(home, "cron"));
+    writeFileSync(join(elsewhere, "jobs.json"), NAMING_STORE);
+    symlinkSync(join(elsewhere, "jobs.json"), join(home, "cron", "jobs.json")); } },
+  { label: "cron/jobs.json a directory", seed: home => { mkdirSync(join(home, "cron", "jobs.json"), { recursive: true }); } },
+  { label: "cron/jobs.json mode 000", seed: home => {
+    mkdirSync(join(home, "cron"));
+    writeFileSync(join(home, "cron", "jobs.json"), NAMING_STORE);
+    chmodSync(join(home, "cron", "jobs.json"), 0); } },
+  { label: "~/zzzbot a regular file", seed: home => { writeFileSync(join(home, "zzzbot"), "resident"); } },
+  { label: "~/zzzbot a symlink", seed: (home, elsewhere) => {
+    mkdirSync(join(elsewhere, "zzzbot"));
+    writeFileSync(join(elsewhere, "zzzbot", "managed-pairs.json"), "{}");
+    writeFileSync(join(elsewhere, "zzzbot", "managed-pairs.lock"), "");
+    symlinkSync(join(elsewhere, "zzzbot"), join(home, "zzzbot")); } },
+];
+/** The earlier S4 shapes (regression pins), and a store holding a job by the managed name on a box with no marker. */
+const S4_PINS: BoxShape[] = [
+  { label: "unparseable jobs.json", seed: home => { mkdirSync(join(home, "cron")); writeFileSync(join(home, "cron", "jobs.json"), "{not json"); } },
+  { label: "bare-list jobs.json", seed: home => { mkdirSync(join(home, "cron")); writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify([RESIDENT_JOB])); } },
+  { label: "id-keyed jobs.json", seed: home => { mkdirSync(join(home, "cron"));
+    writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify({ jobs: { aaaaaaaaaaaa: RESIDENT_JOB } })); } },
+  { label: "symlinked scripts/ holding a file by the shim's name", seed: (home, elsewhere) => {
+    writeFileSync(join(elsewhere, ZZZ_JOB_SCRIPT), "#!/bin/sh\necho resident\n");
+    symlinkSync(elsewhere, join(home, "scripts")); } },
+  { label: "an unloadable store naming the managed job", seed: home => { mkdirSync(join(home, "cron"));
+    writeFileSync(join(home, "cron", "jobs.json"), `{"jobs": [{"name": "${ZZZ_JOB_NAME}"`); } },
+  { label: "a job by the managed name with no marker", seed: home => { mkdirSync(join(home, "cron")); writeFileSync(join(home, "cron", "jobs.json"), NAMING_STORE); } },
+  { label: "skills/zzzbot/prompts and scripts symlinks", seed: (home, elsewhere) => {
+    mkdirSync(join(home, "skills", "zzzbot"), { recursive: true });
+    for (const [dir, file] of [["prompts", "participate.md"], ["scripts", ZZZ_JOB_SCRIPT]]) {
+      mkdirSync(join(elsewhere, dir));
+      writeFileSync(join(elsewhere, dir, file), "resident");
+      symlinkSync(join(elsewhere, dir), join(home, "skills", "zzzbot", dir));
+    } } },
+];
+/** What main's stage writes for these projections on a fresh box (nothing for apps:[]). */
+const MAIN_WRITES = new Set(["mini-apps.json", "skills/", "skills/gold-stars/", "skills/gold-stars/SKILL.md", "skills/zzzbot/", "skills/zzzbot/SKILL.md"]);
+
+test("review-b S4-r (lead L17296): gate off with no zzz marker is main's stage: rc 0, nothing read or changed, on every box shape", () => {
+  const projections = [{ version: 1, apps: [] }, { version: 1, apps: [gold] }, { version: 1, apps: [gold, zzzbot] }];
+  for (const { label, seed } of [...S4R_SHAPES, ...S4_PINS]) {
+    for (const value of projections) {
+      const { home, stage } = fakeBox();
+      const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-elsewhere-"));
+      roots.push(elsewhere);
+      seed(home, elsewhere);
+      const name = `${label} / ${value.apps.map(app => app.id).join("+") || "nothing (non-cohort)"}`;
+      expect(`${name}: ${zzzMarkerOnDisk(home)}`).toBe(`${name}: false`);
+      const fresh = lsnapshot(home);
+      const outside = lsnapshot(elsewhere);
+      // First stage on the box: every existing entry is untouched; only main's own projection files are added.
+      let result = stage(value, [], HERMES_GONE(home));
+      expect(`${name}: ${result.status} ${result.stderr}`).toBe(`${name}: 0 `);
+      const staged = lsnapshot(home);
+      for (const [path, entry] of Object.entries(fresh)) expect(`${name} ${path}: ${staged[path]}`).toBe(`${name} ${path}: ${entry}`);
+      const added = Object.keys(staged).filter(path => !(path in fresh));
+      expect(added.filter(path => !MAIN_WRITES.has(path))).toEqual([]);
+      if (!value.apps.length) expect(added).toEqual([]);
+      // Then verify, re-stage and verify again: rc 0 and the tree byte-identical, the shape's targets too.
+      for (const args of [["--verify"], [], ["--verify"]]) {
+        result = stage(value, args, HERMES_GONE(home));
+        expect(`${name} ${args}: ${result.status} ${result.stderr}`).toBe(`${name} ${args}: 0 `);
+        expect(lsnapshot(home)).toEqual(staged);
+      }
+      expect(lsnapshot(elsewhere)).toEqual(outside);
+      // A failed stage on the same box (main rc 1) touches nothing ZZZ either, even with a Hermes bound.
+      result = stage("not json", [], ISOLATED());
+      expect(`${name}: ${result.status} ${result.stderr}`).toBe(`${name}: 1 ${FAILED}`);
+      expect(lsnapshot(home)).toEqual(staged);
+      expect(existsSync(join(home, "hermes-calls.jsonl"))).toBe(false);
+    }
+  }
+});
+
+test("review-b S4-r, gate on: each shape fails the stage before any shim or job, other apps keep authority, and revoking is main's stage", () => {
+  const before = { version: 1, apps: [gold, forkicks, zzzbot] };
+  const granted = { version: 1, apps: [gold, forkicks, zzzbot, bridge] };
+  const others: [string, string][] = [["gold-stars", "rolodex.search"], ["forkicks", "forkicks.menu"]];
+  const shapeOf = (snap: Record<string, string>) => Object.fromEntries(Object.entries(snap).filter(([path]) => /^(cron|zzzbot)(\/|$)/.test(path)));
+  for (const { label, seed } of S4R_SHAPES) {
+    const { home, stage } = fakeBox();
+    const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-elsewhere-"));
+    roots.push(elsewhere);
+    const env = ISOLATED();
+    expect(stage(before, [], env).status).toBe(0);
+    seed(home, elsewhere);
+    const shape = shapeOf(lsnapshot(home));
+    const outside = lsnapshot(elsewhere);
+    for (let retry = 0; retry < 2; retry++) {
+      const result = stage(granted, [], env);
+      expect(`${label}: ${result.status} ${result.stderr}`).toBe(`${label}: 1 ${FAILED}`);
+      // S3: the projection (every other app's authority) is published before the job step fails.
+      expect(JSON.parse(readFileSync(join(home, "mini-apps.json"), "utf8"))).toEqual(granted);
+      expect(pluginInstalled(home, others)).toEqual([true, true]);
+      // Nothing managed is left to run: no shim, no managed files, no job API or Hermes call, the shape untouched.
+      expect(`${label}: ${zzzMarkerOnDisk(home)}`).toBe(`${label}: false`);
+      expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
+      expect(existsSync(join(home, "hermes-calls.jsonl"))).toBe(false);
+      expect(shapeOf(lsnapshot(home))).toEqual(shape);
+      expect(lsnapshot(elsewhere)).toEqual(outside);
+      expect(`${label} verify: ${stage(granted, ["--verify"], env).status}`).toBe(`${label} verify: 1`);
+    }
+    // The grant revoked with the shape still there: no marker, so main's stage (rc 0) and verify (rc 0).
+    expect(`${label} revoked: ${stage(before, [], env).status}`).toBe(`${label} revoked: 0`);
+    expect(`${label} revoked verify: ${stage(before, ["--verify"], env).status}`).toBe(`${label} revoked verify: 0`);
+    expect(shapeOf(lsnapshot(home))).toEqual(shape);
+  }
+  // An installed pair whose state folder is later replaced by a file or a symlink no longer verifies.
+  const { home, stage } = fakeBox();
+  expect(stage(granted, [], ISOLATED()).status).toBe(0);
+  expect(stage(granted, ["--verify"], ISOLATED()).status).toBe(0);
+  writeFileSync(join(home, "zzzbot"), "resident");
+  expect(stage(granted, ["--verify"], ISOLATED()).status).toBe(1);
+  rmSync(join(home, "zzzbot"));
+  symlinkSync(home, join(home, "zzzbot"));
+  expect(stage(granted, ["--verify"], ISOLATED()).status).toBe(1);
+  rmSync(join(home, "zzzbot"));
+  expect(stage(granted, ["--verify"], ISOLATED()).status).toBe(0);
+});
+
+test("S4-r (lead L17296): every job API call finds the job's shim on disk, and a failed removal leaves the box marked", () => {
+  const { home, stage, jobs } = fakeBox();
+  // The fake job API refuses to run unless the shim (the marker that goes last) is already on disk.
+  const python = join(home, "venv", "bin", "python");
+  const guarded = readFileSync(python, "utf8").replace('if [ "$1" = "-c" ]; then\n',
+    `if [ "$1" = "-c" ]; then\n  [ -f "$HERMES_HOME/scripts/${ZZZ_JOB_SCRIPT}" ] || exit 7\n`);
+  expect(guarded).toContain("|| exit 7");
+  writeFileSync(python, guarded);
+  expect(stage(projection).status).toBe(0);
+  expect(jobs()).toHaveLength(1);
+  // The installer replaces an overbroad record (remove + create) through the same API.
+  writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify({ jobs: [{ ...jobs()[0], enabled_toolsets: ["all"] }] }));
+  expect(stage(projection).status).toBe(0);
+  expect(jobs()).toHaveLength(1);
+  seedState(home);
+  // Revoked (and a failed stage) while Hermes is gone: the job cannot be removed, so the shim stays and so does the job.
+  for (const input of [alone as unknown, "not json"]) {
+    expect(stage(input, [], HERMES_GONE(home)).status).toBe(1);
+    expect(jobs()).toHaveLength(1);
+    expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(true);
+    expect(zzzMarkerOnDisk(home)).toBe(true);
+    expect(stage(alone, ["--verify"], HERMES_GONE(home)).status).toBe(1);
+  }
+  // Hermes back: the removal runs (with the shim still there), then the shim and everything else goes.
+  expect(stage(alone).status).toBe(0);
+  expectOff(home, jobs);
+  expect(zzzMarkerOnDisk(home)).toBe(false);
+  expect(stage(alone, ["--verify"], HERMES_GONE(home)).status).toBe(0);
+});
+
+test("S4-r: a box that was on keeps the earlier N2 tolerance in its teardown (store Hermes cannot load, symlinked scripts/)", () => {
+  // Unloadable store that does not name the job: Hermes runs nothing from it; the teardown completes.
+  {
+    const { home, stage, jobs } = fakeBox();
+    expect(stage(projection).status).toBe(0);
+    seedState(home);
+    writeFileSync(join(home, "cron", "jobs.json"), "{not json");
+    expect(stage(alone, [], HERMES_GONE(home)).status).toBe(0);
+    expect(readFileSync(join(home, "cron", "jobs.json"), "utf8")).toBe("{not json");
+    expect(zzzMarkerOnDisk(home)).toBe(false);
+    rmSync(join(home, "cron", "jobs.json"));
+    expectOff(home, jobs);
+  }
+  // scripts/ swapped for a symlink after the install: the job is removed, the files and state go, and nothing is
+  // followed (a resident's file by the shim's name behind the link is kept).
+  {
+    const { home, stage, jobs } = fakeBox();
+    expect(stage(projection).status).toBe(0);
+    const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-elsewhere-"));
+    roots.push(elsewhere);
+    writeFileSync(join(elsewhere, ZZZ_JOB_SCRIPT), "#!/bin/sh\necho resident\n");
+    rmSync(join(home, "scripts"), { recursive: true });
+    symlinkSync(elsewhere, join(home, "scripts"));
+    const outside = lsnapshot(elsewhere);
+    expect(zzzMarkerOnDisk(home)).toBe(true);
+    expect(stage(alone).status).toBe(0);
+    expect(jobs()).toHaveLength(0);
+    expect(lsnapshot(elsewhere)).toEqual(outside);
+    expect(zzzMarkerOnDisk(home)).toBe(false);
+    expect(stage(alone, ["--verify"], HERMES_GONE(home)).status).toBe(0);
+  }
 });

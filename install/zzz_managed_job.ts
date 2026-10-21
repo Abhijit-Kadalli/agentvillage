@@ -124,6 +124,21 @@ function realScriptsDir(home: string): string | null {
   }
 }
 
+/**
+ * ov#441 S4-r, gate on: the plugin keeps its cursor state in $HERMES_HOME/zzzbot and refuses a symlinked or
+ * non-directory folder, so a pair it could never run is not installed. Absent or a real directory, else the stage fails
+ * before the shim or job is written (authority is already published; failClosedZzz tears the managed files down).
+ */
+function stateDirUsable(home: string): void {
+  try {
+    const meta = lstatSync(join(home, "zzzbot"));
+    if (meta.isDirectory() && !meta.isSymbolicLink()) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+  }
+  throw new Error("zzz_state_dir_invalid");
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -213,6 +228,7 @@ function confirmed(list: Job[]): boolean {
  */
 export function verifyZzzManagedJob(home: string, installed: boolean, script: Buffer | null): void {
   if (installed) {
+    stateDirUsable(home);
     if (!confirmed(jobs(home))) throw new Error("zzz_job_not_confirmed");
     const dir = realScriptsDir(home);
     const shim = dir && join(dir, ZZZ_JOB_SCRIPT);
@@ -250,6 +266,7 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
     if (shim && plainFile(shim)) unlinkSync(shim);
     return;
   }
+  stateDirUsable(home);
   const current = jobs(home);
   if (!hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
   if (current.length > 1) throw new Error("zzz_job_duplicate");

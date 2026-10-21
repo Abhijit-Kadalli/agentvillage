@@ -73,6 +73,31 @@ const ZZZ_MANAGED_FILES = [`scripts/${ZZZ_SHIM}`, "prompts/participate.md"] as c
 export function zzzParticipation(projection: { apps: readonly { id: string }[] }): boolean {
   return projection.apps.some(app => app.id === "zzzbot") && projection.apps.some(app => app.id === ZZZ_BRIDGE_ID);
 }
+/**
+ * ov#441 S4-r (lead RULING CLAIMS L17296): what marks a box this installer ever turned managed ZZZ on for. A stage
+ * writes the managed files (skills/zzzbot/scripts, prompts) before it publishes authority, and the job's shim before
+ * it creates the job; every teardown removes the shim only after the job is gone (and a revocation removes the files
+ * and state after that), so the installer never leaves a managed job without a marker. With the gate off and no
+ * marker, the stage is main's stage: no jobs.json parse, no scripts/ walk, no Hermes call, nothing written. The
+ * plugin creates the cursor lock before any other state file, so the two fixed state names cover its state.
+ */
+const ZZZ_MARKERS = [["scripts", ZZZ_SHIM], ["skills", "zzzbot", "scripts", ZZZ_SHIM], ["skills", "zzzbot", "prompts", "participate.md"],
+  ["zzzbot", "managed-pairs.json"], ["zzzbot", "managed-pairs.lock"]] as const;
+/** lstat only: no read, no parse, never through a symlinked or non-directory parent; an lstat that fails is no marker. */
+export function zzzMarkerOnDisk(home: string): boolean {
+  return ZZZ_MARKERS.some(parts => {
+    let path = home;
+    try {
+      for (const part of parts.slice(0, -1)) {
+        path = join(path, part);
+        const meta = lstatSync(path);
+        if (!meta.isDirectory() || meta.isSymbolicLink()) return false;
+      }
+      lstatSync(join(path, parts[parts.length - 1]));
+      return true;
+    } catch { return false; }
+  });
+}
 function exists(path: string): boolean {
   try { lstatSync(path); return true; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
 }
@@ -127,6 +152,13 @@ function removeZzzManagedState(home: string): void {
     if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
   }
 }
+function removeZzzManagedFiles(home: string): void {
+  for (const relative of ZZZ_MANAGED_FILES) {
+    const path = join(home, "skills", "zzzbot", relative);
+    regular(path);
+    if (exists(path)) unlinkSync(path);
+  }
+}
 function hasZzzManagedState(home: string): boolean {
   const folder = join(home, "zzzbot");
   safePath(folder);
@@ -141,6 +173,9 @@ function hasZzzManagedState(home: string): boolean {
  * when the projection carries zzz-bridge. A failed removal is the same `zzz_job_*` operator alert as on revocation.
  */
 export function failClosedZzz(home: string): void {
+  // S4-r: no marker, nothing of ours (a stage that failed before writing one created no job): main's failed stage.
+  if (!zzzMarkerOnDisk(home)) return;
+  // A failed job removal keeps the shim (zzz_managed_job removes it only after the job), so the box stays marked.
   try { reconcileZzzManagedJob(home, false); } catch { /* next reconcile retries */ }
   for (const relative of ZZZ_MANAGED_FILES) {
     try {
@@ -237,8 +272,11 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     return { app, content };
   });
   const zzzManaged = zzzParticipation(projection);
+  // S4-r: gate off and no marker on disk is the early return. Every ZZZ step below runs only for zzzManaged (install)
+  // or zzzTeardown (a box that was on: remove the job, shim, files and state, loudly when that cannot be confirmed).
+  const zzzTeardown = !zzzManaged && zzzMarkerOnDisk(home);
   const zzzManagedFiles = ZZZ_MANAGED_FILES;
-  for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
+  if (zzzManaged || zzzTeardown) for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
   const zzzFiles = zzzManaged ? zzzManagedFiles.map(relative => {
     const sourcePath = join(source, "zzzbot", relative);
     regular(sourcePath);
@@ -253,11 +291,11 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const { path, content } of zzzFiles) if (!readFileSync(path).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (hasSkill(app) && owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
-    if (!zzzManaged && zzzManagedFiles.some(relative => exists(join(home, "skills", "zzzbot", relative)))) throw new Error("mini_apps_removal_pending");
-    if (!zzzManaged && hasZzzManagedState(home)) throw new Error("mini_apps_removal_pending");
+    if (zzzTeardown && zzzManagedFiles.some(relative => exists(join(home, "skills", "zzzbot", relative)))) throw new Error("mini_apps_removal_pending");
+    if (zzzTeardown && hasZzzManagedState(home)) throw new Error("mini_apps_removal_pending");
     // review-b N3: the job record too (read-only, no Hermes call): exactly the installer's job while the pair is
     // projected, none once it is not. As every job step, only from the CLI (in-process callers never own a job).
-    if (import.meta.main) {
+    if (import.meta.main && (zzzManaged || zzzTeardown)) {
       const script = zzzFiles.find(({ path }) => path.endsWith(`/scripts/${ZZZ_SHIM}`))?.content ?? null;
       try { verifyZzzManagedJob(home, zzzManaged, script); } catch { throw new Error(zzzManaged ? "mini_apps_job_mismatch" : "mini_apps_removal_pending"); }
     }
@@ -269,10 +307,6 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
       const path = join(home, "skills", app.id, "SKILL.md");
       if (hasSkill(app) && owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(path)) unlinkSync(path);
     }
-    if (!zzzManaged) for (const relative of zzzManagedFiles) {
-      const path = join(home, "skills", "zzzbot", relative);
-      if (exists(path)) unlinkSync(path);
-    }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     for (const { path, content } of zzzFiles) atomic(path, content);
     // Publish desired authority, THEN install the job (review-b S3). A failed job install fails the stage and the CLI
@@ -282,14 +316,16 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     // grants zzzbot AND zzz-bridge (S1).
     atomic(target, bytes);
     if (import.meta.main && zzzManaged) reconcileZzzManagedJob(home, true);
-    // On removal authority disappears before a best-effort job teardown.
-    if (!zzzManaged) {
+    // On removal authority disappears before the job teardown; the managed files and state (markers) go only after it.
+    if (zzzTeardown) {
       if (import.meta.main) reconcileZzzManagedJob(home, false);
+      removeZzzManagedFiles(home);
       removeZzzManagedState(home);
     }
-  } else if (import.meta.main && !verify) {
+  } else if (import.meta.main && !verify && zzzTeardown) {
     // Heal a previous interrupted uninstall even when the projection is gone.
     reconcileZzzManagedJob(home, false);
+    removeZzzManagedFiles(home);
     removeZzzManagedState(home);
   }
   // `skills` also marks an installer that can take served bytes (an older one never writes it).
