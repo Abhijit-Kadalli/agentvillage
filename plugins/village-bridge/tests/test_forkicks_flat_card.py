@@ -50,8 +50,8 @@ class GoldenVectorTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, '^' + v['error'] + '$'):
                         fk.card_fields(v['preview'])
 
-    def test_carter_target_card_text(self):
-        self.assertEqual(fk.card_fields(vector('carter-target')['preview']), {
+    def test_target_card_text(self):
+        self.assertEqual(fk.card_fields(vector('target-card')['preview']), {
             'order': '1 × Iced latte (Oat milk, Miso caramel syrup)', 'total': '₹0, pay by UPI',
             'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Alex'})
 
@@ -73,7 +73,7 @@ class GoldenVectorTest(unittest.TestCase):
         for name in ('a return symbol in an item name', 'a pickup place that starts like the delivery form',
                      'a pickup place starting delivery TO', 'a full-width DELIVERY prefix', 'a no-break space in an option'):
             self.assertEqual(vector(name)['error'], 'approval_card_not_minimal', name)
-        base = vector('carter-target')['preview']
+        base = vector('target-card')['preview']
         for bad in '\n\r\u2028\u2029\u202e\u2066\u200b\u0085\x0b\x0c':
             p = copy.deepcopy(base); p['quote']['lines'][0]['name'] = 'Iced' + bad + 'latte'
             with self.assertRaises(ValueError, msg=repr(bad)):
@@ -87,7 +87,7 @@ class GoldenVectorTest(unittest.TestCase):
                 fk.card_fields(p)
         for name in ('a delivery order', 'a delivery address with a comma'):  # review-b ov#446 S1: pickup only today
             self.assertEqual(vector(name)['error'], 'approval_card_not_minimal', name)
-        p = copy.deepcopy(vector('carter-target')['preview'])
+        p = copy.deepcopy(vector('target-card')['preview'])
         p['fulfilment'] = {'type': 'delivery', 'locationId': p['fulfilment']['locationId'], 'date': '2026-10-22', 'deliveryAddress': 'Room 12 \ua78f 25 Dec 2026'}
         with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
             fk.card_fields(p)  # review-b's lookalike date in an agent-written address never reaches a flat card
@@ -108,7 +108,7 @@ class FlatCardBoxTest(unittest.TestCase):
         Path(self.tmp.name, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'forkicks', **mini.FORKICKS}]}))
         gate = patch.object(bridge, 'gate_verified', return_value=None); gate.start(); self.addCleanup(gate.stop)
 
-    def app_answer(self, name='carter-target', shape='flat'):
+    def app_answer(self, name='target-card', shape='flat'):
         """The app's prepare answer: a flat payload with the order preview beside it, or today's legacy payload."""
         v = vector(name)
         preview = v['preview']
@@ -269,7 +269,7 @@ class FlatCardBoxTest(unittest.TestCase):
         for name in ('a delivery address on a pickup', 'item ids that differ'):
             v = vector(name)
             self.assertEqual(v['error'], 'approval_card_invalid')
-        base = vector('carter-target')['preview']
+        base = vector('target-card')['preview']
         mutations = [
             lambda p: p['items'][0].__setitem__('extra', 1),
             lambda p: p['fulfilment'].__setitem__('instructions', 'leave at gate'),

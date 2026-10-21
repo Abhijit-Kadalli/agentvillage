@@ -121,7 +121,7 @@ describe.skipIf(!coreUsable)(`under core (APPROVAL_CORE_CLI, approval-md ${CORE_
 
   test("the flat For Kicks order renders MINIMAL with the target text: headline, one quote box of four rows, no claimed line, nothing hidden", async () => {
     const c = await core();
-    const v = vector("carter-target");
+    const v = vector("target-card");
     const card = JSON.parse(py("card_fields", v.preview).stdout);
     const summary = JSON.parse(py("approval_summary", v.preview).stdout);
     const { texts, logs } = await send(c, policyWith(PARENT_ENTRY_FLAT), requestOf(c, "marketplace.app.action", KEY + v.preview.draftId, card, summary));
@@ -192,7 +192,7 @@ describe.skipIf(!coreUsable)(`under core (APPROVAL_CORE_CLI, approval-md ${CORE_
     expect(texts.join("\n")).not.toStartWith("<b>Your agent wants to ");
     for (let i = 1; i <= 6; i += 1) expect(texts.join("\n")).toContain(`Seasonal special number ${i}`);
     // A small legacy order (a box before the app switches) is technical too: today's card, unchanged.
-    const small = vector("carter-target");
+    const small = vector("target-card");
     const today = await send(c, policyWith(PARENT_ENTRY_FLAT), requestOf(c, "marketplace.app.action", KEY + "d2",
       { appId: "forkicks", operation: "forkicks.order.confirm", preview: small.preview }, JSON.parse(py("approval_summary", small.preview).stdout)));
     expect(fallbacks(today.logs)).toEqual(["unlisted-key"]);
