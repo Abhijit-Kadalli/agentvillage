@@ -134,6 +134,15 @@ def card_value_fits(value):
 #   note                  text the agent writes to the café: shown verbatim as the fifth row (CARD_NOTE_KEY) exactly
 #                         when non-empty; a flat payload without it for a draft with a note is a mismatch (refused).
 FULFILMENT_KEYS = frozenset({"type", "locationId", "date", "deliveryAddress"})
+# The formatter's own separators (context L17764): a merchant or agent text holding one, or starting like the delivery
+# form, could draw a phantom line ("Latte; 5 × Cake"), so such an order never gets the flat card (fail closed, no
+# escaping): approval_card_not_minimal, and the app sends the legacy shape. The name and note rows are exempt (each is
+# its own row, verbatim).
+CARD_SEPARATORS = frozenset(";×(),·")
+CARD_DELIVERY_PREFIX = "Delivery to"
+
+def _card_ambiguous(text):
+    return any(c in CARD_SEPARATORS for c in text) or text.startswith(CARD_DELIVERY_PREFIX)
 
 def _card_unshown(preview):
     """Why the flat card would not show everything this order sends, or None."""
@@ -170,6 +179,10 @@ def card_fields(preview):
                   "pickup": f"{where} · {when}", "name": preview["displayName"]}
         if preview.get("note", "") != "":
             fields[CARD_NOTE_KEY] = preview["note"]
+        parts = [line["name"] for line in quote["lines"]] + [o for line in quote["lines"] for o in line["options"]]
+        parts += [quote["location"]["name"]] if fulfilment["type"] == "pickup" else [fulfilment["deliveryAddress"]]
+        if any(_card_ambiguous(part) for part in parts):
+            raise ValueError("approval_card_not_minimal")
     except (KeyError, TypeError, IndexError, AttributeError) as error:
         raise ValueError("approval_card_invalid") from error
     if not all(card_value_fits(value) for value in fields.values()):

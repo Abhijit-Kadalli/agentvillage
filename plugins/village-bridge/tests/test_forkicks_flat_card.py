@@ -61,6 +61,21 @@ class GoldenVectorTest(unittest.TestCase):
         p['quote']['lines'] *= 3; p['items'] *= 3
         self.assertEqual(fk.card_fields(p)['order'].count(' × '), 6)
 
+    def test_a_separator_inside_a_text_never_draws_a_phantom_line(self):
+        for name in ('a separator in an item name', 'a separator in an option', 'a comma in the delivery address',
+                     'a pickup place that starts like the delivery form'):
+            self.assertEqual(vector(name)['error'], 'approval_card_not_minimal')
+            with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
+                fk.card_fields(vector(name)['preview'])
+        self.assertEqual(vector('the note row is exempt')['card']['note'], 'Less sugar; no ice (thanks)')
+        base = vector('carter-target')['preview']
+        for sep in ';×(),·':
+            p = copy.deepcopy(base); p['quote']['lines'][0]['name'] = 'Iced' + sep + 'latte'
+            with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
+                fk.card_fields(p)
+        p = copy.deepcopy(base); p['displayName'] = 'Carter (Goa)'
+        self.assertEqual(fk.card_fields(p)['name'], 'Carter (Goa)')  # its own row: exempt
+
     def test_budget_edge_is_exactly_core_value_max(self):
         self.assertIn('card', vector('exactly 278')); self.assertEqual(len(vector('exactly 278')['card']['order']), 278)
         for n in ('279', '280', '281'):

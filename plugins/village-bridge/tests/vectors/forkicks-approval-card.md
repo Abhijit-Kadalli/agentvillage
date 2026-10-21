@@ -70,6 +70,23 @@ So the APP builds `{order, total, pickup, name}` plus `note` exactly when the dr
 the legacy shape whenever the formatter refuses (`approval_card_invalid` or `approval_card_not_minimal`, e.g. a
 note over the budget), or the order fails on the box.
 
+## No phantom lines: the formatter's separators (context L17764)
+
+Fail closed, no escaping. If any item name, option, the pickup location's name (pickup) or the delivery address
+(delivery) contains one of `;` `×` `(` `)` `,` `·`, or starts with `Delivery to`, the flat card is NOT used:
+`approval_card_not_minimal`, and the app sends the legacy shape. The `name` and `note` rows are exempt (each is
+its own row, verbatim) but keep the budget below. Note: a delivery address with a comma (common) therefore always
+gets the technical card.
+
+## Order of the checks (so the three implementations return the same code)
+
+1. Today's technical-card checks (`approval_summary` / `forkicksSummary`): `approval_card_invalid`.
+2. What-you-see table above (unshown fulfilment key, delivery address on a pickup, location id, item ids):
+   `approval_card_invalid`.
+3. Build the strings; a bad month/day is `approval_card_invalid`.
+4. The separator rule: `approval_card_not_minimal`.
+5. The budget on every value (note included): `approval_card_not_minimal`.
+
 ## The minimal-card budget (never cut a purchase)
 
 approval-md 0.4.7 `telegram-minimal`: a quoted value is cut past `MINIMAL_QUOTE_MAX` = 280 code points, two
