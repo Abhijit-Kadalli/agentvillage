@@ -48,7 +48,10 @@ describe("tools.md: who they passed on, and why", () => {
   test("asking: the script, run through terminal with exactly command + workdir = the absolute HERMES_HOME", () => {
     const s = section();
     expect(count(s, "When they ask who they passed on, or why, run `bun skills/index-network/scripts/passes.ts`")).toBe(1);
-    expect(count(s, "Call `terminal` with exactly `command` plus `workdir` set to your absolute `HERMES_HOME` directory, and nothing else, as for `pause-job.ts`: no `cd`, no `NAME=value` prefix, no pipe.")).toBe(1);
+    expect(count(s, "Call `terminal` with exactly `command` plus `workdir` set to your absolute `HERMES_HOME` directory, and nothing else, as for `pause-job.ts`.")).toBe(1);
+    // DATA-312's rule next to the run (scripts/tests/terminal-command-only.test.ts), plus approval's bare shape.
+    expect(count(s, "Do not add `notify`, `heartbeat` or `background`, and no `cd`, `NAME=value` prefix or pipe.")).toBe(1);
+    expect(count(s, "If the call returns an error about background commands, the command did not run; call it once more without those arguments.")).toBe(1);
     expect(count(s, "Do not mention an id.")).toBe(1);
   });
 
