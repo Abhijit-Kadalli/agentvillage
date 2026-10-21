@@ -85,7 +85,7 @@ direction change inside a text, so:
 - Free text must not fake the Pickup row's ` · <date>` part or the Order row's ` ⏎ ` mark (security review). After
   NFKC normalisation:
   - a pickup location's name or a delivery address holding U+00B7 `·` (e.g. U+0387 normalises to it) or one of
-    its lookalikes that survive NFKC, U+2022 `•`, U+2027 `‧`, U+2219 `∙`, U+22C5 `⋅`, U+30FB `・` (U+FF65 normalises
+    its lookalikes that survive NFKC, U+16EB `᛫`, U+2022 `•`, U+2024 `․`, U+2027 `‧`, U+2219 `∙`, U+22C5 `⋅`, U+2E31 `⸱`, U+30FB `・` (U+FF65 normalises
     to it), gets `approval_card_not_minimal` (commas stay allowed);
   - an item or option name holding U+23CE `⏎` or any character of U+2190-U+21FF (Arrows), U+2400-U+243F
     (Control Pictures), U+2794-U+27BF (Dingbat arrows), U+27F0-U+27FF and U+2900-U+297F (Supplemental Arrows),
