@@ -16,6 +16,8 @@
 #   DRY_RUN is computed into env and the script reads the feed itself.
 # - Only refs/heads/main sends and saves state; a run from any other ref is a
 #   dry run (the cache is scoped per branch, so a branch would fork the state).
+# - The job runs only in Edge-City/agentvillage, never in a fork.
+# - railway-status-notify.test.ts parses this file and pins these invariants.
 #
 # State (incident id -> status, updated time: public data only) lives in the
 # Actions cache: restored by prefix (the newest), saved under a key unique to
@@ -46,6 +48,8 @@ concurrency:
 
 jobs:
   watch:
+    # Forks inherit the schedule but not the secrets: never run there.
+    if: github.repository == 'Edge-City/agentvillage'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -70,8 +70,13 @@ are never replayed.
   404, 409): what was sent is kept and the rest go on the next run (exit 1).
 - Logs carry codes, incident slugs and counts only: never the token, the chat
   or thread id, the feed body or Telegram's reply. The logs of a public repo's
-  Actions are public. A dry run also prints the messages it would send
-  (Railway's own public incident text).
+  Actions are public. Feed values in a log line (incident slug or id,
+  status) are shown only when plainly safe (letters, digits, `_`, `-`), else
+  as `invalid`, so a crafted value can never start a `::` workflow command.
+  A dry run also prints the messages it would send (Railway's own public
+  incident text), every line behind `| ` for the same reason.
+- The job runs only in `Edge-City/agentvillage` (`if: github.repository`), so
+  a fork's inherited schedule never runs it.
 - Delivery is **at least once**, not exactly once: a send whose answer times
   out, or a lost cache entry (which re-seeds and re-posts what is open), can
   repeat a message.
@@ -98,7 +103,16 @@ activity; re-enable it the same way.
 
 ## Tests
 
-`bun test ./.github/railway-status/railway-status-notify.test.ts` (pure:
-injected fetch, in-memory state, the trimmed live fixture in `fixtures/`). It
-is outside the overlay CI's test directories on purpose, so run it by hand
-when changing the script.
+From the repository root:
+
+```
+bun test ./.github/railway-status/railway-status-notify.test.ts
+```
+
+Pure: injected fetch, in-memory state, the trimmed live fixture in
+`fixtures/`; it also parses the workflow file and pins its public-repo
+invariants (triggers, permissions, no expression in a `run:` line, secrets
+only in the notify step, main-only send and save, the fork guard, pinned
+SHAs). **CI does not run it**: it is outside the overlay's test directories
+(`.github/workflows/test.yml`'s `bun test` list) on purpose, so run it by hand
+before merging any change to the script or the workflow.

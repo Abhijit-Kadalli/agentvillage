@@ -53,7 +53,10 @@
  * shapes as the agentvillage-data alerts notifier. Plain text, no parse
  * mode, no link preview. Logs carry codes, incident slugs and counts only:
  * never the token, the chat or thread id, the feed body, or Telegram's
- * response body.
+ * response body. The logs are public and GitHub reads a line starting with
+ * `::` as a workflow command, so every feed-derived value in a log line is
+ * gated (`logRef`, `logStatus`: anything else is `invalid`), and a dry run
+ * prints each message line behind `| `.
  *
  * With `GITHUB_OUTPUT` set it appends `changed=true|false` (whether the state
  * file was written) and `sent=<n>`, so the workflow saves its cache only when
@@ -75,6 +78,19 @@ const TOKEN_RE = /^[0-9]{5,16}:[A-Za-z0-9_-]{30,64}$/;
 const CHAT_RE = /^-?[0-9]{1,20}$/;
 const THREAD_RE = /^[1-9][0-9]{0,15}$/;
 const SLUG_RE = /^[A-Za-z0-9]{4,32}$/;
+const LOG_REF_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const LOG_STATUS_RE = /^[A-Z_]{1,32}$/;
+
+/** An incident as a log line may name it: its slug or id when plainly safe, else `invalid`. */
+export function logRef(inc: { slug: string | null; id: string }): string {
+  const r = inc.slug ?? inc.id;
+  return LOG_REF_RE.test(r) ? r : "invalid";
+}
+
+/** A status as a log line may show it, else `invalid`. */
+export function logStatus(status: string): string {
+  return LOG_STATUS_RE.test(status) ? status : "invalid";
+}
 
 export const STATE_VERSION = 1;
 export const PRUNE_DAYS = 90;
@@ -532,8 +548,8 @@ export async function runRailwayStatus(argv: string[], env: Record<string, strin
   if (dryRun) {
     if (diff.changes.length === 0) print("(nothing to send)");
     for (const c of diff.changes) {
-      print(`--- would send (${c.kind}, ${c.incident.slug ?? c.incident.id}) ---`);
-      print(formatMessage(c));
+      print(`--- would send (${c.kind}, ${logRef(c.incident)}) ---`);
+      for (const line of formatMessage(c).split(/\r\n|\r|\n/)) print(`| ${line}`);
     }
     appendOutput("changed=false");
     appendOutput("sent=0");
@@ -553,7 +569,8 @@ export async function runRailwayStatus(argv: string[], env: Record<string, strin
     else next.incidents[id] = old;
   };
   for (const c of diff.changes) {
-    const ref = c.incident.slug ?? c.incident.id;
+    const ref = logRef(c.incident);
+    const status = logStatus(c.incident.status);
     if (failed !== null) {
       putBack(c.incident.id);
       continue;
@@ -561,12 +578,12 @@ export async function runRailwayStatus(argv: string[], env: Record<string, strin
     try {
       await sendTelegram(fetchImpl, config!, formatMessage(c));
       sent++;
-      log(`railway_status.sent kind=${c.kind} incident=${ref} status=${c.incident.status}`);
+      log(`railway_status.sent kind=${c.kind} incident=${ref} status=${status}`);
     } catch (e) {
       const err = e instanceof SendError ? e : new SendError("telegram_error", false);
       if (err.permanent) {
         refused++;
-        log(`railway_status.send_refused code=${err.code} incident=${ref} status=${c.incident.status} kind=${c.kind}`);
+        log(`railway_status.send_refused code=${err.code} incident=${ref} status=${status} kind=${c.kind}`);
         continue;
       }
       failed = err.code;

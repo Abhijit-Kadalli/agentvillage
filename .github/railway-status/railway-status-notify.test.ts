@@ -31,7 +31,11 @@
  * topic not found, 401/403/404/409/429, 5xx, unreachable) stops and retries;
  * no parse mode, link previews off; text cut on whole code points; logs and
  * thrown errors never hold the token, chat id, thread id or Telegram's
- * response body; missing variables exit 2 by name, never value).
+ * response body; feed values that could be workflow commands (`::`,
+ * newlines) never reach a log or dry-run line start; missing variables exit
+ * 2 by name, never value). And the workflow file's public-repo invariants:
+ * triggers, permissions, no `${{` in a run line, secrets only in the notify
+ * step's env, main-only send and save, the fork guard.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -41,6 +45,8 @@ import {
   FeedError,
   SendError,
   cut,
+  logRef,
+  logStatus,
   sendTelegram,
   diffState,
   formatComponents,
@@ -667,5 +673,103 @@ describe("run", () => {
     expect(await runRailwayStatus(["--dry-run"], {}, h.opts(f.fetch))).toBe(1);
     expect(await runRailwayStatus(["--state", "state.json", "--bogus"], {}, h.opts(f.fetch))).toBe(1);
     expect(f.calls).toEqual([]);
+  });
+});
+
+describe("public logs: feed values cannot become workflow commands", () => {
+  const probes = ["::warning title=x::injected", "\n::ERROR::INJECTED2", "ok\r\n::add-mask::x", "a b", "x".repeat(65)];
+
+  test("logRef and logStatus pass plain values and refuse everything else", () => {
+    expect(logRef({ slug: "QH8L8B3E", id: "9bc9a3c0-fe6b-4b95-bd09-9dc1179da308" })).toBe("QH8L8B3E");
+    expect(logRef({ slug: null, id: "9bc9a3c0-fe6b-4b95-bd09-9dc1179da308" })).toBe("9bc9a3c0-fe6b-4b95-bd09-9dc1179da308");
+    expect(logStatus("INVESTIGATING")).toBe("INVESTIGATING");
+    expect(logStatus("PARTIAL_OUTAGE")).toBe("PARTIAL_OUTAGE");
+    for (const p of probes) {
+      expect(logRef({ slug: null, id: p })).toBe("invalid");
+      expect(logStatus(p)).toBe("invalid");
+    }
+  });
+
+  /** No line of `out` starts (after leading whitespace) with `::`, and the probe text is absent. */
+  function clean(out: string[]) {
+    const lines = out.join("\n").split(/\r\n|\r|\n/);
+    for (const l of lines) expect(l.trimStart().startsWith("::")).toBe(false);
+    const all = out.join("\n");
+    expect(all).not.toContain("INJECTED2");
+    expect(all).not.toContain("injected");
+  }
+
+  for (const probe of ["::warning title=x::injected", "\n::ERROR::INJECTED2"]) {
+    const feed = () =>
+      feedOf(
+        rawIncident({ id: probe, slug: probe, status: probe, updates: [{ status: probe, message: probe, createdAt: "2026-10-21T07:00:00Z" }], title: probe }),
+      );
+
+    test(`sent, refused and failed log lines with ${JSON.stringify(probe)} in id, slug, status and title`, async () => {
+      for (const reply of [200, [400, "Bad Request: message is too long"], 502] as const) {
+        const h = harness(serializeState(stateOf({})));
+        const f = fakeFetch(feed(), () => (Array.isArray(reply) ? ([reply[0], reply[1]] as [number, string]) : (reply as number)));
+        await runRailwayStatus(["--state", "state.json"], ENV, h.opts(f.fetch));
+        expect(h.logs.some((l) => l.includes("incident=invalid"))).toBe(true);
+        clean(h.logs);
+      }
+    });
+
+    test(`a dry run with ${JSON.stringify(probe)} prints every message line behind "| "`, async () => {
+      const h = harness();
+      await runRailwayStatus(["--state", "state.json", "--dry-run"], {}, h.opts(fakeFetch(feed()).fetch));
+      expect(h.printed[0]).toBe("--- would send (new, invalid) ---");
+      for (const l of h.printed.slice(1)) expect(l.startsWith("| ")).toBe(true);
+      for (const l of h.printed.join("\n").split(/\r\n|\r|\n/)) expect(l.trimStart().startsWith("::")).toBe(false);
+      clean(h.logs);
+    });
+  }
+});
+
+describe("the workflow's public-repo invariants", () => {
+  type Step = { name?: string; id?: string; uses?: string; run?: string; if?: string; env?: Record<string, string>; with?: Record<string, unknown> };
+  type Job = { if?: string; permissions?: unknown; steps: Step[] };
+  const text = readFileSync(join(import.meta.dir, "..", "workflows", "railway-status-notify.yml"), "utf8");
+  const wf = Bun.YAML.parse(text) as { on: Record<string, unknown>; permissions: unknown; jobs: Record<string, Job> };
+  const jobs = Object.values(wf.jobs);
+  const steps = jobs.flatMap((j) => j.steps);
+  const notify = steps.filter((s) => s.id === "notify");
+
+  test("triggers are exactly schedule (every 5 minutes) and workflow_dispatch", () => {
+    expect(Object.keys(wf.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
+    expect(wf.on.schedule).toEqual([{ cron: "*/5 * * * *" }]);
+  });
+
+  test("permissions are contents: read and nothing else, at every level", () => {
+    expect(wf.permissions).toEqual({ contents: "read" });
+    for (const j of jobs) expect(j.permissions === undefined || JSON.stringify(j.permissions) === JSON.stringify({ contents: "read" })).toBe(true);
+  });
+
+  test("no run: line holds an expression", () => {
+    const runs = steps.filter((s) => typeof s.run === "string");
+    expect(runs.length).toBeGreaterThan(0);
+    for (const s of runs) expect(s.run!).not.toContain("${{");
+  });
+
+  test("secrets appear only in the notify step's env, by their own names", () => {
+    expect(notify.length).toBe(1);
+    const env = notify[0]!.env!;
+    const withSecrets = Object.entries(env).filter(([, v]) => String(v).includes("secrets."));
+    expect(withSecrets.map(([k]) => k).sort()).toEqual(["ALERTS_TELEGRAM_BOT_TOKEN", "ALERTS_TELEGRAM_CHAT_ID", "ALERTS_TELEGRAM_THREAD_ID"]);
+    for (const [k, v] of withSecrets) expect(v).toBe(`\${{ secrets.${k} }}`);
+    const { env: _env, ...rest } = notify[0]!;
+    const elsewhere = JSON.stringify({ ...wf, jobs: Object.fromEntries(Object.entries(wf.jobs).map(([n, j]) => [n, { ...j, steps: j.steps.map((s) => (s === notify[0] ? rest : s)) }])) });
+    expect(elsewhere).not.toContain("secrets.");
+    // In the raw text too (anchors, aliases): exactly the three expressions above.
+    expect(text.match(/secrets\s*\.\s*[A-Za-z_]|secrets\s*\[/g)!.length).toBe(3);
+  });
+
+  test("only main sends and saves; forks never run it; every action pinned to a full SHA", () => {
+    expect(notify[0]!.env!.DRY_RUN).toContain("github.ref != 'refs/heads/main'");
+    const save = steps.filter((s) => s.uses?.startsWith("actions/cache/save@"));
+    expect(save.length).toBe(1);
+    expect(save[0]!.if).toContain("github.ref == 'refs/heads/main'");
+    for (const j of jobs) expect(j.if).toBe("github.repository == 'Edge-City/agentvillage'");
+    for (const s of steps.filter((x) => x.uses)) expect(s.uses!).toMatch(/@[0-9a-f]{40}$/);
   });
 });
