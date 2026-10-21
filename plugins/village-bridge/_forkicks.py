@@ -146,11 +146,13 @@ CARD_DELIVERY_PREFIX = "delivery to"
 # Security review fold: free text must not fake the Pickup row's " · <date>" part or the Order row's " ⏎ " line mark.
 # After NFKC, a pickup place or delivery address holding U+00B7, or an item/option name holding U+23CE or a character
 # of the arrow and control-picture blocks below, gets approval_card_not_minimal (the app sends the legacy shape).
-CARD_PLACE_REFUSED = "\u00b7"
-CARD_LINE_MARK_BLOCKS = ((0x23CE, 0x23CE), (0x2190, 0x21FF), (0x2400, 0x243F), (0x27F0, 0x27FF), (0x2900, 0x297F), (0x2B00, 0x2BFF))
+# Second fold: the middle-dot and bullet lookalikes that survive NFKC (U+2022 U+2027 U+2219 U+22C5 U+30FB; U+FF65
+# normalises to U+30FB), and the Dingbat arrows U+2794-U+27BF and Supplemental Arrows-C U+1F800-U+1F8FF.
+CARD_PLACE_REFUSED = frozenset("\u00b7\u2022\u2027\u2219\u22c5\u30fb")
+CARD_LINE_MARK_BLOCKS = ((0x23CE, 0x23CE), (0x2190, 0x21FF), (0x2400, 0x243F), (0x2794, 0x27BF), (0x27F0, 0x27FF), (0x2900, 0x297F), (0x2B00, 0x2BFF), (0x1F800, 0x1F8FF))
 
 def card_place_fakes_date(text):
-    return CARD_PLACE_REFUSED in unicodedata.normalize("NFKC", text)
+    return any(c in CARD_PLACE_REFUSED for c in unicodedata.normalize("NFKC", text))
 
 def card_name_fakes_line(text):
     return any(lo <= ord(c) <= hi for c in unicodedata.normalize("NFKC", text) for lo, hi in CARD_LINE_MARK_BLOCKS)
