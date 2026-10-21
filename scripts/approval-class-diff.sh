@@ -36,6 +36,10 @@
 #
 # Usage: scripts/approval-class-diff.sh <base ref>
 #   AV_APPROVAL_MD_TOOL_DIR  approval.md checkout holding the two scripts (required)
+#   AV_APPROVAL_MD_TOOL_REF  the full sha that checkout must be at (required; B-167N fold 2 M-D1).
+#                            The script proves the checkout is that commit, clean and byte-identical
+#                            (scripts/approval-class-diff/tool-intact.sh) at its start and again right
+#                            before the check. `unverified` skips that, for fixture copies and local runs only.
 #   AV_CLASS_DIFF_OUT        report directory (default ./class-diff)
 #   AV_CLASS_DIFF_HEAD_REF   classify this ref's tree instead of the working tree
 #   AV_CLASS_DIFF_OLD_PIN / AV_CLASS_DIFF_NEW_PIN   override a pin (replays, tests)
@@ -51,12 +55,23 @@
 #                            a pull request) passes a run whose ONLY findings are an undated
 #                            acceptance on calls unchanged since the previous release, with a
 #                            warning (B-167N fold 1 S2; scripts/approval-class-diff/pending-acceptance.ts)
+#
+# B-167N fold 2 M-D1 (review-b's DELTA L18777; lead RULING L18781): no overlay config
+# reaches the tool. bun runs only through tbun: from the tool clone's directory (bun
+# reads bunfig.toml, .env and tsconfig.json from its cwd, so an overlay bunfig.toml
+# preload ran inside every extractor call before), with an empty config, an empty
+# tsconfig and no .env, and no BUN_OPTIONS / BUN_CONFIG_* / NODE_OPTIONS from the
+# environment. The overlay code the extractor imports on purpose
+# (install/install_index.ts and its imports) is code-owned instead (.github/CODEOWNERS).
 # Exit: 0 pass, 1 a blocking flip / held recipe / stale allowlist entry, 2 setup.
 set -euo pipefail
+unset BUN_OPTIONS NODE_OPTIONS
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^BUN_CONFIG_' || true)
 
 repo=$(git rev-parse --show-toplevel)
 base=${1:?usage: scripts/approval-class-diff.sh <base ref>}
 tool=${AV_APPROVAL_MD_TOOL_DIR:?AV_APPROVAL_MD_TOOL_DIR must name an approval.md checkout}
+tool_ref=${AV_APPROVAL_MD_TOOL_REF:?AV_APPROVAL_MD_TOOL_REF must name the full sha of that checkout (or unverified, for fixture copies)}
 out=${AV_CLASS_DIFF_OUT:-$repo/class-diff}
 pin_file=scripts/tests/fetch-url-shape.test.ts
 work=$(mktemp -d)
@@ -75,6 +90,19 @@ pin_of() { sed -n 's/^export const APPROVAL_MD_PINNED = "\([0-9][0-9A-Za-z.+-]*\
 for f in overlay-recipes-extract.mjs overlay-recipes-check.mjs overlay-recipes-box.mjs overlay-recipes-newcalls.mjs; do
   [ -f "$tool/scripts/$f" ] || die "no $tool/scripts/$f"
 done
+tool=$(cd "$tool" && pwd -P)
+verify_tool() {
+  if [ "$tool_ref" = unverified ]; then
+    echo "approval-class-diff: tool checkout NOT verified ($1): AV_APPROVAL_MD_TOOL_REF=unverified (fixtures and local runs only)" >&2
+    return 0
+  fi
+  bash "$here/approval-class-diff/tool-intact.sh" "$tool" "$tool_ref" >&2 || die "the approval.md tool checkout is not ${tool_ref:0:12} as cloned ($1); nothing it says is trusted (B-167N fold 2 M-D1)"
+}
+verify_tool "at the start"
+mkdir -p "$work/empty"
+: > "$work/empty/bunfig.toml"
+echo '{}' > "$work/empty/tsconfig.json"
+tbun() { (cd "$tool" && exec bun --config="$work/empty/bunfig.toml" --tsconfig-override="$work/empty/tsconfig.json" --no-env-file "$@"); }
 
 base_sha=$(git -C "$repo" rev-parse --verify "$base^{commit}") || die "no commit $base"
 if [ -n "${AV_CLASS_DIFF_HEAD_REF:-}" ]; then
@@ -118,12 +146,12 @@ install_core() {
 install_core "$new_pin"
 [ "$old_pin" = "$new_pin" ] || install_core "$old_pin"
 
-bun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$head_tree" --sha "$head_sha" --out "$work/corpus-head.json" --with-envelopes >&2
-bun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$work/base" --sha "$base_sha" --out "$work/corpus-base.json" --with-envelopes >&2
+tbun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$head_tree" --sha "$head_sha" --out "$work/corpus-head.json" --with-envelopes >&2
+tbun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$work/base" --sha "$base_sha" --out "$work/corpus-base.json" --with-envelopes >&2
 if [ "$tag_sha" = "$base_sha" ]; then
   cp "$work/corpus-base.json" "$work/corpus-tag.json"
 else
-  bun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$work/tag" --sha "$tag_sha" --out "$work/corpus-tag.json" --with-envelopes >&2
+  tbun "$tool/scripts/overlay-recipes-extract.mjs" --overlay "$work/tag" --sha "$tag_sha" --out "$work/corpus-tag.json" --with-envelopes >&2
 fi
 expected=${AV_CLASS_DIFF_EXPECTED:-$head_tree/scripts/approval-class-diff/expected.json}
 [ -f "$expected" ] || die "no $expected (B-167N: every new call's declared outcome)"
@@ -134,6 +162,9 @@ mkdir -p "$out"
 # and a box there would be judged more loosely than /home/hermes is.
 boxes="${RUNNER_TEMP:-$work}/class-diff-boxes"
 mkdir -p "$boxes"
+# The extractor ran overlay code (install/install_index.ts): prove the tool unchanged
+# immediately before the check reads its pinned expected.json and runs its own code.
+verify_tool "right before the check"
 set +e
 node "$tool/scripts/overlay-recipes-check.mjs" \
   --corpus "$work/corpus-head.json" \
@@ -155,7 +186,7 @@ set -e
 # call unchanged since the previous release warns instead of halting every release; any
 # other finding, or a pending acceptance on a NEW or CHANGED call, still fails.
 if [ "$status" = 1 ] && [ "$pending" = warn ]; then
-  if bun "$here/approval-class-diff/pending-acceptance.ts" --json "$out/class-diff.json" --stderr "$work/check.err" >"$work/pending.txt"; then
+  if tbun "$here/approval-class-diff/pending-acceptance.ts" --json "$out/class-diff.json" --stderr "$work/check.err" >"$work/pending.txt"; then
     cat "$work/pending.txt"
     { echo; sed 's/^::warning:://' "$work/pending.txt"; } >>"$out/class-diff.md"
     status=0

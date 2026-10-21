@@ -24,7 +24,15 @@
  */
 import { readFileSync } from "node:fs";
 
-const PENDING = /^LIMITING \(.*\): awaiting acceptance: accepted_at /u;
+/**
+ * The exact message approval.md's acceptanceErrorsN gives an undated accepted_at, under the
+ * LIMITING label limitingReasons builds (overlay-recipes-newcalls.mjs, ce36c9d9: 161-171, 463):
+ * the label holds no parenthesis, the date is a JSON string without escapes or null, and the
+ * line ends where approval.md's does. B-167N fold 2 N-D1 (review-b's DELTA L18777): the fold 1
+ * pattern, `\(.*\)` and no end anchor, also matched a WRONG accepted_by message whose JSON value
+ * carried this text, and waived it. Anything else fails closed (no waiver).
+ */
+const PENDING = /^LIMITING \([^()]*\): awaiting acceptance: accepted_at (?:"[^"\\]*"|null) is not a YYYY-MM-DD date \(Carter fills it\)$/u;
 const NEW_CALLS_LINE = /^\d+ new-calls finding\(s\) \(B-167N\)/u;
 
 type Row = { key?: unknown; status?: unknown; entry?: unknown; blocks?: unknown };

@@ -35,10 +35,17 @@
  * must be on approval.md main (M4); an undated acceptance on an unchanged call
  * fails pull requests only and never halts Tag release (S2); live-compare keys by
  * the closed-set rule and never passes an empty run (N4); CODEOWNERS gaps (N7).
+ *
+ * B-167N fold 2 (review-b's DELTA CLAIMS L18777; lead RULING L18781): the tool is a fresh
+ * clone outside the overlay checkout, the job's bun install ignores lifecycle scripts, bun
+ * runs from the clone with an empty config, the clone is proved unchanged at the ref check
+ * and right before the check, and every path that can run code in the job is code-owned
+ * (M-D1); the ref is on approval.md main's first-parent line at or above a floor (S-D1);
+ * only the exact pending accepted_at message is waivable (N-D1); a failed fetch exits 2 (N-D2).
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
@@ -67,8 +74,8 @@ describe("the class-diff job and script (static)", () => {
   test("test.yml carries the job, so Tag release runs it at the commit it tags", () => {
     expect(job).toBeDefined();
     const steps: Step[] = job.steps;
-    const tool = steps.find((s) => s.with?.repository === "approval-md/approval.md");
-    expect(String(tool?.with?.ref)).toMatch(/^[0-9a-f]{40}$/);
+    // The tool ref is the job's one literal, a full sha (B-167N fold 2: a fresh clone, not a checkout step).
+    expect(String(job.env?.AV_APPROVAL_MD_TOOL_REF)).toMatch(/^[0-9a-f]{40}$/);
     expect(steps.some((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'))).toBe(true);
     // No scope step: the gate runs on every event, docs-only pull requests included.
     expect(steps.some((s) => s.id === "scope")).toBe(false);
@@ -138,17 +145,17 @@ describe("the class-diff job and script (static)", () => {
     expect(gate?.env?.AV_NEW_CALLS_BASE_REF).toBe("${{ steps.base.outputs.tag }}");
   });
 
-  test("B-167N fold 1 M4: the approval.md tool ref must be on approval.md main, checked after the tool checkout and before the gate runs", () => {
+  test("B-167N fold 1 M4: the approval.md tool ref must be on approval.md main, checked after the tool clone and before the gate runs", () => {
     const steps: Step[] = job.steps;
     const at = (pred: (s: Step) => boolean): number => steps.findIndex(pred);
-    const checkout = at((s) => s.with?.repository === "approval-md/approval.md");
-    const onMain = at((s) => (s.run ?? "").includes("bash scripts/approval-class-diff/tool-ref-on-main.sh .test-deps/approval-md-tool"));
+    const checkout = at((s) => (s.run ?? "").startsWith("bash scripts/approval-class-diff/tool-clone.sh "));
+    const onMain = at((s) => s.run === 'bash scripts/approval-class-diff/tool-ref-on-main.sh "$AV_APPROVAL_MD_TOOL_DIR"');
     const gate = at((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'));
     expect(checkout).toBeGreaterThan(-1);
     expect(onMain).toBeGreaterThan(checkout);
     expect(gate).toBeGreaterThan(onMain);
     // After the setup steps, so the `if: always()` fixtures step still has bun when this fails.
-    expect(onMain).toBeGreaterThan(at((s) => s.run === "bun install --frozen-lockfile"));
+    expect(onMain).toBeGreaterThan(at((s) => s.run === "bun install --frozen-lockfile --ignore-scripts"));
     // No continue-on-error and no `if:` on the ancestry step: it gates the job.
     const step = steps[onMain] as Step & { "continue-on-error"?: unknown; if?: unknown };
     expect(step["continue-on-error"]).toBeUndefined();
@@ -310,17 +317,333 @@ describe("B-167N fold 1 M4: the approval.md tool ref must be an ancestor of appr
     gitOut(root, "clone", "-q", up, tool);
     const at = (sha: string) => {
       gitOut(tool, "checkout", "-q", "--detach", sha);
-      return spawnSync("bash", [ON_MAIN, tool, up], { encoding: "utf8" });
+      // fold 2: the floor is m1 here (the script's own floor is approval.md's v0.4.7 commit).
+      return spawnSync("bash", [ON_MAIN, tool, up, m1], { encoding: "utf8" });
     };
     expect(at(m1).status).toBe(0);
     expect(at(m2).status).toBe(0);
     const pr = at(p1);
     expect(pr.status).toBe(1);
-    expect(pr.stdout + pr.stderr).toContain("is not on approval.md main");
+    expect(pr.stdout + pr.stderr).toContain("is not on approval.md main's first-parent line");
     gitOut(tool, "checkout", "-q", "--detach", m2);
     const local = commitOn(tool, "local-only");
     expect(at(local).status).toBe(1);
     expect(spawnSync("bash", [ON_MAIN], { encoding: "utf8" }).status).toBe(2);
+  });
+});
+
+// --- B-167N fold 2 (review-b's DELTA, CLAIMS L18777; lead RULING L18781) ---------------------------
+// M-D1: the same PR must not be able to change the tool, or the pinned copy the check reads, after
+// the ref check. S-D1: the ref must be a commit approval.md main pointed at (its first-parent line),
+// not a merge-queue branch commit, and not older than the floor. N-D1, N-D2.
+
+/** Every overlay file the extractor's `import(install/install_index.ts)` executes, and the packages it loads. */
+function importClosure(entry: string): { files: string[]; packages: string[] } {
+  const seen = new Set<string>();
+  const packages = new Set<string>();
+  const todo = [entry];
+  while (todo.length > 0) {
+    const rel = todo.pop()!;
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    const src = readFileSync(join(REPO, rel), "utf8");
+    for (const m of src.matchAll(/\b(?:from|import)\s*\(?\s*["']([^"'\n]+)["']/g)) {
+      const spec = m[1]!;
+      if (!spec.startsWith(".")) {
+        packages.add(spec);
+        continue;
+      }
+      const base = join(dirname(rel), spec);
+      const hit = [base, `${base}.ts`, `${base}.js`, `${base}.mjs`, join(base, "index.ts")].find((p) => existsSync(join(REPO, p)) && statSync(join(REPO, p)).isFile());
+      if (hit === undefined) throw new Error(`${rel}: cannot resolve ${spec}`);
+      todo.push(hit);
+    }
+  }
+  return { files: [...seen].sort(), packages: [...packages].sort() };
+}
+
+/** A CODEOWNERS line owns `path` exactly, or a directory line owns a prefix of it. */
+function owned(owners: string, path: string): boolean {
+  return owners.split("\n").some((line) => {
+    const [pattern, owner] = line.trim().split(/\s+/);
+    if (owner !== "@soycarts" || pattern === undefined || pattern.startsWith("#")) return false;
+    return pattern === `/${path}` || (pattern.endsWith("/") && `/${path}`.startsWith(pattern));
+  });
+}
+
+describe("B-167N fold 2 M-D1: the tool runs from a fresh clone the PR cannot touch, verified right before the check", () => {
+  const wf = parse(readFileSync(join(REPO, ".github", "workflows", "test.yml"), "utf8"));
+  const job = wf.jobs?.["class-diff"];
+  type Step = { id?: string; uses?: string; with?: Record<string, string | number>; run?: string; env?: Record<string, string> };
+  const steps: Step[] = job?.steps ?? [];
+  const INTACT = join(REPO, "scripts", "approval-class-diff", "tool-intact.sh");
+  const CLONE = join(REPO, "scripts", "approval-class-diff", "tool-clone.sh");
+  const ON_MAIN = join(REPO, "scripts", "approval-class-diff", "tool-ref-on-main.sh");
+  const TOOL_DIR = "${{ runner.temp }}/approval-md-tool";
+
+  test("(a)(b) the job clones the tool with tool-clone.sh into the runner's temp dir, outside the overlay checkout, and every bun install in it ignores lifecycle scripts", () => {
+    expect(String(job?.env?.AV_APPROVAL_MD_TOOL_REF)).toMatch(/^[0-9a-f]{40}$/);
+    // No actions/checkout of the tool: that action can only write under the workspace, the PR's tree.
+    expect(steps.some((s) => s.with?.repository === "approval-md/approval.md")).toBe(false);
+    const at = (pred: (s: Step) => boolean): number => steps.findIndex(pred);
+    const clone = at((s) => s.run === 'bash scripts/approval-class-diff/tool-clone.sh "$AV_APPROVAL_MD_TOOL_REF" "$AV_APPROVAL_MD_TOOL_DIR"');
+    expect(clone).toBeGreaterThan(-1);
+    for (const s of steps) {
+      if (s.env?.AV_APPROVAL_MD_TOOL_DIR !== undefined) expect(s.env.AV_APPROVAL_MD_TOOL_DIR).toBe(TOOL_DIR);
+      // The ref is the job's one literal: no step names another.
+      expect(s.env?.AV_APPROVAL_MD_TOOL_REF).toBeUndefined();
+    }
+    expect(steps[clone]?.env?.AV_APPROVAL_MD_TOOL_DIR).toBe(TOOL_DIR);
+    const installs = steps.filter((s) => /\bbun install\b/.test(s.run ?? ""));
+    expect(installs.length).toBeGreaterThan(0);
+    for (const s of installs) expect(s.run).toBe("bun install --frozen-lockfile --ignore-scripts");
+    const install = at((s) => /\bbun install\b/.test(s.run ?? ""));
+    const onMain = at((s) => s.run === 'bash scripts/approval-class-diff/tool-ref-on-main.sh "$AV_APPROVAL_MD_TOOL_DIR"');
+    const gate = at((s) => (s.run ?? "").includes('bash scripts/approval-class-diff.sh "$BASE_REF"'));
+    expect(install).toBeGreaterThan(clone);
+    expect(onMain).toBeGreaterThan(install);
+    expect(gate).toBeGreaterThan(onMain);
+    expect(steps[onMain]?.env?.AV_APPROVAL_MD_TOOL_DIR).toBe(TOOL_DIR);
+    expect(steps[gate]?.env?.AV_APPROVAL_MD_TOOL_DIR).toBe(TOOL_DIR);
+  });
+
+  test("(a) a root package.json postinstall runs under a plain frozen install and never under the job's install line", () => {
+    const install = steps.find((s) => /\bbun install\b/.test(s.run ?? ""))?.run ?? "bun install --frozen-lockfile";
+    const plant = (name: string): string => {
+      const dir = mkdtempSync(join(root, name));
+      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "planted", private: true, scripts: { postinstall: "echo FORGED > postinstall.marker" } })}\n`);
+      return dir;
+    };
+    const control = plant("postinstall-control-");
+    expect(spawnSync("bash", ["-c", "bun install --frozen-lockfile"], { cwd: control, encoding: "utf8" }).status).toBe(0);
+    expect(existsSync(join(control, "postinstall.marker"))).toBe(true);
+    const dir = plant("postinstall-job-");
+    expect(spawnSync("bash", ["-c", install], { cwd: dir, encoding: "utf8" }).status).toBe(0);
+    expect(existsSync(join(dir, "postinstall.marker"))).toBe(false);
+  });
+
+  test("(c)(d) the script runs bun only from the tool clone with an empty config, no .env and an empty tsconfig, and re-verifies the clone right before the check", () => {
+    const text = readFileSync(SCRIPT, "utf8");
+    expect(text).toContain('tool_ref=${AV_APPROVAL_MD_TOOL_REF:?');
+    // One bun runner; no bare `bun "..."` call anywhere else.
+    const runner = text.match(/^tbun\(\) \{ (.*) \}$/m)?.[1] ?? "";
+    expect(runner).toContain('cd "$tool"');
+    expect(runner).toContain('--config="$work/empty/bunfig.toml"');
+    expect(runner).toContain("--no-env-file");
+    expect(runner).toContain('--tsconfig-override="$work/empty/tsconfig.json"');
+    expect(text.split("\n").filter((l) => /(^|[\s;(!&|])bun\s/.test(l) && !l.startsWith("tbun()") && !l.trimStart().startsWith("#"))).toEqual([]);
+    expect(text).toMatch(/\nverify_tool "right before the check"\nset \+e\nnode "\$tool\/scripts\/overlay-recipes-check\.mjs" \\\n/);
+    expect(text).toMatch(/^unset BUN_OPTIONS NODE_OPTIONS$/m);
+  });
+
+  test("CODEOWNERS also owns every un-owned path that can run code in the job: the root files bun and npm read, and each overlay file the extractor executes", () => {
+    const owners = readFileSync(join(REPO, ".github", "CODEOWNERS"), "utf8");
+    for (const path of ["package.json", "bun.lock", "bun.lockb", "bunfig.toml", ".npmrc", "tsconfig.json", "jsconfig.json", ".env"]) expect([path, owned(owners, path)]).toEqual([path, true]);
+    expect(owners).toMatch(/^\/\.env\.\*\s+@soycarts$/m);
+    // approval.md's extractor imports install/install_index.ts (DIGEST_CRON_SPECS) with bun: that module and
+    // everything it imports run inside the extractor, before the check reads the pinned copy.
+    const closure = importClosure("install/install_index.ts");
+    expect(closure.files.length).toBeGreaterThan(1);
+    for (const f of closure.files) expect([f, owned(owners, f)]).toEqual([f, true]);
+    // Its packages come from node_modules, which package.json and bun.lock (owned above) decide.
+    for (const p of closure.packages) expect(p.startsWith("node:") || p === "yaml").toBe(true);
+  });
+
+  test("(d) review-b's dirty tree on a main commit fails: a tracked edit, an untracked or ignored file, a same-size same-mtime rewrite, a moved HEAD", () => {
+    const up = mkdtempSync(join(root, "intact-up-"));
+    gitOut(up, "init", "-q");
+    const m1 = commitOn(up, "m1", { "scripts/overlay-recipes/expected.json": '{"entries":[]}\n', "scripts/overlay-recipes-check.mjs": "process.exit(0);\n", ".gitignore": "node_modules/\n" });
+    const m2 = commitOn(up, "m2");
+    const tool = join(mkdtempSync(join(root, "intact-tool-")), "tool");
+    gitOut(root, "clone", "-q", up, tool);
+    gitOut(tool, "checkout", "-q", "--detach", m2);
+    const onMain = () => spawnSync("bash", [ON_MAIN, tool, up, m1], { encoding: "utf8" });
+    const intact = (want = m2) => spawnSync("bash", [INTACT, tool, want], { encoding: "utf8" });
+    expect(onMain().status).toBe(0);
+    expect(intact().status).toBe(0);
+    const pinned = join(tool, "scripts", "overlay-recipes", "expected.json");
+    const original = readFileSync(pinned, "utf8");
+    // The postinstall attack's write: FORGED bytes in the pinned copy.
+    writeFileSync(pinned, "FORGED\n");
+    expect(onMain().status).toBe(1);
+    expect(intact().status).toBe(1);
+    writeFileSync(pinned, original);
+    expect(intact().status).toBe(0);
+    // A rewrite git status cannot see: same size, mtime put back.
+    const before = statSync(pinned);
+    writeFileSync(pinned, original.replace("entries", "ENTRIES"));
+    utimesSync(pinned, before.atime, before.mtime);
+    expect(intact().status).toBe(1);
+    writeFileSync(pinned, original);
+    expect(intact().status).toBe(0);
+    // A rewrite git status is told to skip (skip-worktree, set in the clone's own index): status shows
+    // nothing, the content hash still fails it.
+    gitOut(tool, "update-index", "--skip-worktree", "scripts/overlay-recipes/expected.json");
+    writeFileSync(pinned, "FORGED, and git status is told not to look\n");
+    expect(gitOut(tool, "status", "--porcelain", "--untracked-files=all", "--ignored")).toBe("");
+    const hidden = intact();
+    expect(hidden.status).toBe(1);
+    expect(hidden.stdout).toContain("scripts/overlay-recipes/expected.json");
+    writeFileSync(pinned, original);
+    gitOut(tool, "update-index", "--no-skip-worktree", "scripts/overlay-recipes/expected.json");
+    expect(intact().status).toBe(0);
+    for (const extra of ["scripts/planted.mjs", "node_modules/x/index.js"]) {
+      put(tool, extra, "export {};\n");
+      expect([extra, onMain().status, intact().status]).toEqual([extra, 1, 1]);
+      rmSync(join(tool, extra.split("/")[0] === "node_modules" ? "node_modules" : extra), { recursive: true, force: true });
+    }
+    expect(intact().status).toBe(0);
+    expect(intact(m1).status).toBe(1);
+    expect(intact("main").status).toBe(2);
+    expect(spawnSync("bash", [INTACT, mkdtempSync(join(root, "intact-none-")), m2], { encoding: "utf8" }).status).toBe(2);
+  });
+
+  test("(c) review-b's bunfig.toml preload (and a .env) in the overlay never runs inside approval-class-diff.sh; a tool tree changed while the extractor ran stops the script before the check", () => {
+    const stubTool = (name: string, extractBody: string): { dir: string; sha: string } => {
+      const dir = join(mkdtempSync(join(root, `stub-${name}-`)), "tool");
+      mkdirSync(dir, { recursive: true });
+      gitOut(dir, "init", "-q");
+      const extract = [
+        'import { writeFileSync } from "node:fs";',
+        'const out = process.argv[process.argv.indexOf("--out") + 1];',
+        'writeFileSync(out, "{}\\n");',
+        'writeFileSync(`${process.env.STUB_MARKERS}/extract-env.marker`, String(process.env.PLANTED_ENV));',
+        extractBody,
+      ].join("\n");
+      const sha = commitOn(dir, "stub", {
+        "scripts/overlay-recipes-extract.mjs": `${extract}\n`,
+        "scripts/overlay-recipes-check.mjs": 'import { writeFileSync } from "node:fs";\nwriteFileSync(`${process.env.STUB_MARKERS}/check-ran.marker`, "ran");\nprocess.exit(0);\n',
+        "scripts/overlay-recipes-box.mjs": "export {};\n",
+        "scripts/overlay-recipes-newcalls.mjs": "export {};\n",
+        "scripts/overlay-recipes/expected.json": '{"entries":[]}\n',
+      });
+      return { dir, sha };
+    };
+    const overlay = mkdtempSync(join(root, "preload-overlay-"));
+    gitOut(overlay, "init", "-q");
+    tree(overlay, "0.4.6", [STAY]);
+    commitOn(overlay, "base");
+    tree(overlay, "0.4.6", [STAY]);
+    put(overlay, "bunfig.toml", 'preload = ["./planted.ts"]\n');
+    put(overlay, "planted.ts", `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(join(overlay, "preload.marker"))}, "ran\\n");\n`);
+    put(overlay, ".env", "PLANTED_ENV=from-the-overlay\n");
+    commitOn(overlay, "head");
+    const fakeCores = mkdtempSync(join(root, "fake-cores-"));
+    put(fakeCores, "core-0.4.6/node_modules/approval-md/package.json", '{"name":"approval-md","version":"0.4.6"}\n');
+    const markers = mkdtempSync(join(root, "stub-markers-"));
+    const run = (tool: { dir: string; sha: string }) =>
+      spawnSync("bash", [SCRIPT, "HEAD^1"], {
+        cwd: overlay,
+        encoding: "utf8",
+        env: { ...process.env, AV_APPROVAL_MD_TOOL_DIR: tool.dir, AV_APPROVAL_MD_TOOL_REF: tool.sha, AV_CLASS_DIFF_OUT: join(overlay, "report"), AV_CLASS_DIFF_CORES: fakeCores, AV_NEW_CALLS_PENDING_ACCEPTANCE: "", STUB_MARKERS: markers },
+      });
+    const honest = stubTool("honest", "");
+    const ok = run(honest);
+    expect([ok.status, ok.stderr.slice(-400)]).toEqual([0, ok.stderr.slice(-400)]);
+    expect(existsSync(join(overlay, "preload.marker"))).toBe(false);
+    expect(readFileSync(join(markers, "extract-env.marker"), "utf8")).toBe("undefined");
+    expect(existsSync(join(markers, "check-ran.marker"))).toBe(true);
+    rmSync(join(markers, "check-ran.marker"));
+    // Code running inside the extractor (as install/install_index.ts does) rewrites the pinned copy: no check runs.
+    const tamper = stubTool("tamper", 'writeFileSync(new URL("./overlay-recipes/expected.json", import.meta.url), "FORGED\\n");');
+    const bad = run(tamper);
+    expect(bad.status).toBe(2);
+    expect(bad.stderr).toContain("right before the check");
+    expect(existsSync(join(markers, "check-ran.marker"))).toBe(false);
+    // The ref the job names must be the clone's HEAD, and the variable is required.
+    expect(run({ dir: honest.dir, sha: "0".repeat(40) }).status).toBe(2);
+    expect(run({ dir: honest.dir, sha: "" }).status).not.toBe(0);
+  });
+
+  test("tool-clone.sh: a fresh checkout of exactly the full sha named, into a new directory, clean", () => {
+    const up = mkdtempSync(join(root, "clone-up-"));
+    gitOut(up, "init", "-q");
+    const m1 = commitOn(up, "m1");
+    commitOn(up, "m2");
+    const dest = join(mkdtempSync(join(root, "clone-")), "tool");
+    const r = spawnSync("bash", [CLONE, m1, dest, up], { encoding: "utf8" });
+    expect([r.status, r.stderr]).toEqual([0, ""]);
+    expect(gitOut(dest, "rev-parse", "HEAD")).toBe(m1);
+    expect(gitOut(dest, "status", "--porcelain", "--untracked-files=all", "--ignored")).toBe("");
+    expect(spawnSync("bash", [INTACT, dest, m1], { encoding: "utf8" }).status).toBe(0);
+    // An existing directory, an abbreviated or symbolic ref, or a commit upstream lacks: exit 2.
+    expect(spawnSync("bash", [CLONE, m1, dest, up], { encoding: "utf8" }).status).toBe(2);
+    expect(spawnSync("bash", [CLONE, m1.slice(0, 12), join(dirname(dest), "t2"), up], { encoding: "utf8" }).status).toBe(2);
+    expect(spawnSync("bash", [CLONE, "main", join(dirname(dest), "t3"), up], { encoding: "utf8" }).status).toBe(2);
+    expect(spawnSync("bash", [CLONE, "1".repeat(40), join(dirname(dest), "t4"), up], { encoding: "utf8" }).status).toBe(2);
+  });
+});
+
+describe("B-167N fold 2 S-D1 + N-D2: the tool ref is a commit approval.md main pointed at, at or above the floor; a failed fetch fails closed", () => {
+  const ON_MAIN = join(REPO, "scripts", "approval-class-diff", "tool-ref-on-main.sh");
+
+  test("a merge-queue branch commit (review-b's 34741830 shape) fails though main descends from it; a merge result passes; a ref below the floor fails", () => {
+    const up = mkdtempSync(join(root, "fp-up-"));
+    gitOut(up, "init", "-q");
+    const m1 = commitOn(up, "m1");
+    gitOut(up, "checkout", "-q", "-b", "release-0.4.7", m1);
+    const p1 = commitOn(up, "p1");
+    const p2 = commitOn(up, "p2");
+    gitOut(up, "checkout", "-q", "main");
+    commitOn(up, "m2");
+    // The queue's merge commit: main's first parent, the branch as the second.
+    gitOut(up, "merge", "-q", "--no-ff", "-m", "merge release-0.4.7 (#1)", "release-0.4.7");
+    const merged = gitOut(up, "rev-parse", "HEAD");
+    const m3 = commitOn(up, "m3");
+    expect(gitOut(up, "merge-base", "--is-ancestor", p1, "main")).toBe("");
+    const tool = join(mkdtempSync(join(root, "fp-tool-")), "tool");
+    gitOut(root, "clone", "-q", up, tool);
+    const at = (sha: string, floor = m1) => {
+      gitOut(tool, "checkout", "-q", "--detach", sha);
+      return spawnSync("bash", [ON_MAIN, tool, up, floor], { encoding: "utf8" });
+    };
+    for (const sha of [p1, p2]) {
+      const r = at(sha);
+      expect(r.status).toBe(1);
+      expect(r.stdout + r.stderr).toContain("first-parent");
+    }
+    expect(at(merged).status).toBe(0);
+    expect(at(m1).status).toBe(0);
+    expect(at(m3).status).toBe(0);
+    // The floor: an older main commit fails.
+    const old = at(m1, m3);
+    expect(old.status).toBe(1);
+    expect(old.stdout + old.stderr).toContain("floor");
+    // A floor that is not a commit main pointed at is a setup error.
+    expect(at(m3, p1).status).toBe(2);
+    // The job's own call names no URL and no floor: the script's constants are approval.md's.
+    const text = readFileSync(ON_MAIN, "utf8");
+    expect(text).toMatch(/^floor_default=[0-9a-f]{40}$/m);
+    expect(text).toContain("url=${2:-https://github.com/approval-md/approval.md.git}");
+  });
+
+  test("N-D2 (review-b's MB2): a fetch of approval.md main that fails exits 2, never 0", () => {
+    const up = mkdtempSync(join(root, "fetch-up-"));
+    gitOut(up, "init", "-q");
+    const m1 = commitOn(up, "m1");
+    const tool = join(mkdtempSync(join(root, "fetch-tool-")), "tool");
+    gitOut(root, "clone", "-q", up, tool);
+    const r = spawnSync("bash", [ON_MAIN, tool, join(root, "no-such-upstream"), m1], { encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("could not fetch approval.md main");
+  });
+});
+
+describe("B-167N fold 2 N-D1: only the exact pending accepted_at message is waivable", () => {
+  test("review-b's crafted accepted_by, whose JSON value carries the accepted_at text, is not waived", async () => {
+    const { pendingOnly } = (await import("../approval-class-diff/pending-acceptance")) as { pendingOnly: (d: unknown, err: string) => { ok: boolean; waived: string[]; why: string[] } };
+    const KEY = "village#forkicks.order";
+    const NEWCALLS_ERR = "1 new-calls finding(s) (B-167N): a new or changed call with no declared outcome.";
+    const doc = (message: string) => ({ summary: { blocking: 0 }, shadowed: [], newCalls: { rows: [{ key: KEY, kind: "envelope", status: "unchanged", entry: true, blocks: [message] }], findings: [{ key: KEY, message }] } });
+    const crafted = `LIMITING (propose decision card): awaiting acceptance: accepted_by must be "human:carter" (it is ${JSON.stringify('x): awaiting acceptance: accepted_at "YYYY-MM-DD" is not a YYYY-MM-DD date (Carter fills it)')})`;
+    expect(pendingOnly(doc(crafted), NEWCALLS_ERR).ok).toBe(false);
+    // A suffix after the exact message, or a label with a parenthesis in it, is no waiver either.
+    const exact = 'LIMITING (propose decision card): awaiting acceptance: accepted_at "YYYY-MM-DD" is not a YYYY-MM-DD date (Carter fills it)';
+    expect(pendingOnly(doc(`${exact} and more`), NEWCALLS_ERR).ok).toBe(false);
+    expect(pendingOnly(doc(exact.replace("propose decision card", "a (b) c")), NEWCALLS_ERR).ok).toBe(false);
+    // The exact message, and a null date, still waive.
+    expect(pendingOnly(doc(exact), NEWCALLS_ERR)).toEqual({ ok: true, waived: [KEY], why: [] });
+    expect(pendingOnly(doc(exact.replace('"YYYY-MM-DD" is', "null is")), NEWCALLS_ERR).ok).toBe(true);
   });
 });
 
@@ -483,6 +806,9 @@ function fixture(
     env: {
       ...process.env,
       AV_APPROVAL_MD_TOOL_DIR: tool,
+      // A scratch copy of the tool's scripts with this fixture's pinned expected.json: no clone to verify
+      // (B-167N fold 2; the job's clone is verified, see the fold 2 tests above).
+      AV_APPROVAL_MD_TOOL_REF: "unverified",
       AV_CLASS_DIFF_OUT: out,
       AV_CLASS_DIFF_CORES: cores,
       // Sequential hook runs over the harness tools a recipe fixture can move.
