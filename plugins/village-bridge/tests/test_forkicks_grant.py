@@ -130,7 +130,9 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.assertIn('data', self.call({'operation': 'forkicks.order.prepare', **order}))
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
         self.transport.reset_mock()
-        return self.call({'operation': 'forkicks.order.confirm', 'draftId': DRAFT})
+        response = self.call({'operation': 'forkicks.order.confirm', 'draftId': DRAFT})
+        self.daemon.wait.reset_mock()  # the agent's own once-read; the pass's reads are counted from here
+        return response
 
     def run_pass(self):
         bridge._forkicks_grant_pass()
