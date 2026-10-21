@@ -124,7 +124,7 @@ def load_preview(home, draft_id, config):
     checked_payload(record.get("payload"), draft_id, record.get("payloadHash"))
     return record
 
-def authorize_order(record, draft_id):
+def authorize_order(record, draft_id, on_requested=None):
     payload = record["payload"]
     held = checked_payload(payload, draft_id, record["payloadHash"])
     key = "marketplace.app.action:forkicks.order.confirm:" + draft_id
@@ -143,7 +143,10 @@ def authorize_order(record, draft_id):
         return proof, None  # The CP re-reads the direct grant/start; same draft is merchant-idempotent.
     granted = ap.wait(task)
     if granted.exit_code != 0 or granted.status != "granted":
-        return None, {"error": "approval_required", "instruction": ORDER_APPROVE_IN_BOT}
+        # FK-ON-GRANT: a card still waiting for its tap (wait exit 6) is handed to the on-grant pass
+        # (_forkicks_grant.track), which places the order on the resident's grant; it returns the instruction.
+        tracked = on_requested(task) if on_requested is not None and granted.exit_code == 6 else None
+        return None, {"error": "approval_required", "instruction": tracked or ORDER_APPROVE_IN_BOT}
     started = ap.start(task, key, held)
     if not started.ok or started.doc.get("authorization") != "grant":
         return None, {"error": "approval_not_started"}
