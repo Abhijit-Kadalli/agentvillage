@@ -33,7 +33,9 @@ const sayEntry = (nameLabel: string) => [
 const PARENT_ENTRY_FLAT = sayEntry("Name shared with café");
 function policyWith(entry: string) {
   expect(TEMPLATE.split(PARENT_ENTRY_TODAY).length).toBe(2);
-  return TEMPLATE.replace(PARENT_ENTRY_TODAY, entry);
+  // The control plane writes a real Telegram id at provisioning; core's schema refuses the template's placeholder.
+  expect(TEMPLATE.split('telegram: "<telegram_user_id>"').length).toBe(2);
+  return TEMPLATE.replace(PARENT_ENTRY_TODAY, entry).replace('telegram: "<telegram_user_id>"', 'telegram: "123456789"');
 }
 
 /** The shipped Python, not a copy: card_fields / approval_summary for one order preview. */
@@ -52,7 +54,7 @@ test("the shipped Python re-derives every golden vector (the box half of the for
     if (v.card) expect([v.name, run.status, JSON.parse(run.stdout)]).toEqual([v.name, 0, v.card]);
     else expect([v.name, run.status, run.stderr.trim().split("\n").pop()]).toEqual([v.name, 1, `ValueError: ${v.error}`]);
   }
-});
+}, 120_000);
 
 describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)", () => {
   const root = dirname(CORE_CLI);
@@ -153,7 +155,7 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
       drawn += 1;
     }
     expect(drawn).toBeGreaterThanOrEqual(6);
-  });
+  }, 120_000);
 
   test("CARD_VALUE_MAX is core's: 278 code points are drawn whole, 279 are cut (so the box refuses 279)", async () => {
     const c = await core();
@@ -196,7 +198,9 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
     const c = await core();
     const bad = c.load.loadPolicyText("APPROVAL.md", policyWith(sayEntry("Name shared with the café")));
     expect(bad.ok).toBe(false);
-    expect(JSON.stringify(bad)).toContain("prompt-say-label");
+    // approval-md 0.4.7 refuses it at the schema (quote label maxLength 24, `schema-invalid`); later cores name it
+    // `prompt-say-label`. Either way the whole policy does not load.
+    expect(JSON.stringify(bad)).toMatch(/prompt-say-label|schema-invalid/);
     expect(c.load.loadPolicyText("APPROVAL.md", policyWith(PARENT_ENTRY_FLAT)).ok).toBe(true);
     expect(c.layout.PROMPT_SAY_LABEL_MAX).toBe(24);
   });

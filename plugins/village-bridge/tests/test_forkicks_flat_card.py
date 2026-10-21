@@ -66,7 +66,7 @@ class GoldenVectorTest(unittest.TestCase):
         self.assertEqual(vector('parentheses inside an item name')['card']['order'], '1 × Latte (oat)')
         self.assertEqual(vector('a comma inside an item name')['card']['order'], '1 × Iced, oat (Large)\n2 × Latte; 5 × Cake')
         self.assertEqual(vector('accents pass')['card']['order'], '1 × Crème brûlée (Extra-crispy)')
-        self.assertIn('card', vector('a delivery address with a comma'))
+        self.assertEqual(vector('a delivery address with a comma')['error'], 'approval_card_not_minimal')  # pickup only today
         for name in ('a carriage return', 'a line separator U+2028', 'a bidi override in an item', 'a newline in an item name',
                      'a zero-width space', 'a newline in the name', 'a left-to-right mark'):
             self.assertEqual(vector(name)['error'], 'approval_card_invalid', name)
@@ -85,7 +85,12 @@ class GoldenVectorTest(unittest.TestCase):
             p = copy.deepcopy(base); p['quote']['lines'][0]['options'] = ['Oat ' + arrow]
             with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$', msg=repr(arrow)):
                 fk.card_fields(p)
-        self.assertEqual(vector('a delivery address with a comma')['card']['pickup'], 'Delivery to Room 12, Residency · 22 Oct 2026')
+        for name in ('a delivery order', 'a delivery address with a comma'):  # review-b ov#446 S1: pickup only today
+            self.assertEqual(vector(name)['error'], 'approval_card_not_minimal', name)
+        p = copy.deepcopy(vector('carter-target')['preview'])
+        p['fulfilment'] = {'type': 'delivery', 'locationId': p['fulfilment']['locationId'], 'date': '2026-10-22', 'deliveryAddress': 'Room 12 \ua78f 25 Dec 2026'}
+        with self.assertRaisesRegex(ValueError, '^approval_card_not_minimal$'):
+            fk.card_fields(p)  # review-b's lookalike date in an agent-written address never reaches a flat card
         self.assertIn('card', vector('two lines drawing exactly 278'))
         self.assertEqual(vector('two lines drawing 279')['error'], 'approval_card_not_minimal')
 
@@ -115,9 +120,9 @@ class FlatCardBoxTest(unittest.TestCase):
         return result
 
     def args(self, result):
-        p = result.get('preview') or result['approvalPayload']['preview']
+        # The agent's prepare arguments; the box never derives the card from them (the app's answer is what counts).
         return {'operation': 'forkicks.order.prepare', 'items': [{'itemId': 'item-0', 'qty': 1, 'optionIds': []}],
-                'fulfilment': {'type': 'pickup', 'locationId': p['fulfilment']['locationId']}, 'paymentMethod': p['paymentMethod']}
+                'fulfilment': {'type': 'pickup', 'locationId': 'mandrem'}, 'paymentMethod': 'upi'}
 
     def prepare(self, result, extra=None):
         self.enable()
@@ -237,8 +242,9 @@ class FlatCardBoxTest(unittest.TestCase):
             self.prepare(result); self.next_turn(); ap = self.daemon()
             self.assertIn('data', self.confirm(result['draftId'], ap))
             self.assertEqual(json.loads(ap.propose.call_args.args[3]), result['approvalPayload'])
-        # A flat payload carrying the over-budget order uncut is refused, and a cut one is a mismatch.
-        p = long['preview']
+        # A flat payload carrying the over-budget order uncut is refused, and a cut one is a mismatch (a fresh draftId:
+        # the legacy one above is saved).
+        p = dict(long['preview'], draftId='d-long-flat')
         lines = '\n'.join(f'{l["qty"]} × {l["name"]} ({", ".join(l["options"])})' for l in p['quote']['lines'])
         for order in (lines, lines[:fk.CARD_VALUE_MAX - 1] + '…'):
             payload = {'order': order, 'total': '₹1800, pay by UPI', 'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Carter'}
@@ -337,6 +343,21 @@ class FlatCardBoxTest(unittest.TestCase):
         self.transport.reset_mock(); self.next_turn(); ap = self.daemon()
         self.assertEqual(self.confirm(good['draftId'], ap)['error'], 'approval_preview_unavailable')
         self.transport.assert_not_called(); ap.propose.assert_not_called()
+
+    def test_card_strings_compare_byte_for_byte_never_normalised(self):
+        # review-b ov#446 N2: an NFD payload for an NFC order (or the reverse) is a mismatch, never "the same text".
+        import unicodedata
+        nfc = vector('accents pass')
+        nfd_payload = {k: unicodedata.normalize('NFD', x) for k, x in nfc['card'].items()}
+        self.assertNotEqual(nfd_payload, nfc['card'])
+        with self.assertRaisesRegex(ValueError, '^approval_card_invalid$'):
+            fk.checked_payload(nfd_payload, nfc['preview']['draftId'], hashed(nfd_payload), nfc['preview'])
+        nfd_preview = copy.deepcopy(nfc['preview'])
+        for line in nfd_preview['quote']['lines']:
+            line['name'] = unicodedata.normalize('NFD', line['name'])
+        with self.assertRaisesRegex(ValueError, '^approval_card_invalid$'):
+            fk.checked_payload(nfc['card'], nfc['preview']['draftId'], hashed(nfc['card']), nfd_preview)
+        self.assertEqual(fk.checked_payload(nfc['card'], nfc['preview']['draftId'], hashed(nfc['card']), nfc['preview']), fk.canonical(nfc['card']))
 
     def test_flat_card_refused_unless_the_daemon_says_requested(self):
         result = self.app_answer()

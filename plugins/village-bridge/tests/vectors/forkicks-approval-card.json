@@ -326,7 +326,7 @@
    }
   },
   {
-   "name": "delivery",
+   "name": "a delivery order -> not minimal (pickup only today, review-b ov#446 S1)",
    "preview": {
     "appId": "forkicks",
     "draftId": "d-deliv",
@@ -366,15 +366,10 @@
      ]
     }
    },
-   "card": {
-    "order": "1 \u00d7 Masala chai",
-    "total": "\u20b9150, pay by UPI",
-    "pickup": "Delivery to Room 12 Residency Mandrem \u00b7 22 Oct 2026",
-    "name": "Carter"
-   }
+   "error": "approval_card_not_minimal"
   },
   {
-   "name": "a delivery address with a comma PASSES (its own row)",
+   "name": "a delivery address with a comma -> not minimal (pickup only today)",
    "preview": {
     "appId": "forkicks",
     "draftId": "d-deliv-comma",
@@ -414,12 +409,7 @@
      ]
     }
    },
-   "card": {
-    "order": "1 \u00d7 Masala chai",
-    "total": "\u20b9150, pay by UPI",
-    "pickup": "Delivery to Room 12, Residency \u00b7 22 Oct 2026",
-    "name": "Carter"
-   }
+   "error": "approval_card_not_minimal"
   },
   {
    "name": "parentheses inside an item name PASS (one item per line)",

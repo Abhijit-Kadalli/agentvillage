@@ -50,8 +50,11 @@ optional `note`). Every check of today's technical card (`approval_summary` / th
 - `total`: `₹<p.quote.totalInr>, <payment words>`. `₹` is U+20B9; the amount is the integer in decimal, no
   separators. Payment words: `upi` -> `pay by UPI`, `card_on_pickup` -> `card at pickup`. **Product-confirm.**
 - `pickup`: `<where> · <when>`; the separator is ` · ` (U+0020 U+00B7 U+0020). CONFIRMED (L17744).
-  - where: `p.quote.location.name` when `p.fulfilment.type` is `pickup`; `Delivery to <p.fulfilment.deliveryAddress>`
-    (verbatim) when it is `delivery`. CONFIRMED (product + lead L17744).
+  - where: `p.quote.location.name` (`p.fulfilment.type` is `pickup`). TODAY ONLY PICKUP ORDERS GET THE FLAT CARD
+    (review-b ov#446 S1): the delivery address is the agent's free text (app forkicks-schema.ts:14), so a
+    `delivery` order is `approval_card_not_minimal` (legacy, technical card) until an address allowlist lands
+    (v2.1.12). The formatter still defines `Delivery to <p.fulfilment.deliveryAddress>` for that later change
+    (CONFIRMED wording, product + lead L17744).
   - when: the date `p.fulfilment.date` when present, else the first 10 characters of `p.quote.location.opens`
     (the same date as the technical card's `Date (IST)`), written `<day> <Mon> <year>`: day without a leading
     zero, the month as `Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec`, e.g. `5 Nov 2026`. No weekday, no
@@ -118,7 +121,7 @@ the resident's identity, except the note (known gap, Carter L17772).
 | | `fulfilment.type` | Pickup row (`<place>` or `Delivery to <address>`) |
 | | `fulfilment.locationId` | derived: must equal the quote location's id (box check), whose name is on the Pickup row |
 | | `fulfilment.date` | Pickup row (the date; when absent, the location's opening day the merchant quoted) |
-| | `fulfilment.deliveryAddress` | Pickup row (delivery only; refused on a pickup) |
+| | `fulfilment.deliveryAddress` | agent-written free text: a delivery order gets the technical card today (review-b ov#446 S1); refused on a pickup |
 | | `paymentMethod` | Total row (`pay by UPI` / `card at pickup`) |
 | | `note` | NOT on the card: known gap accepted by Carter (lead L17772); in Full details only |
 | | `customerRef` | derived: the app's pseudonymous id for this resident (`customerRef(tenantId, humanId)`), never agent text |
@@ -138,7 +141,7 @@ three implementations, or send the legacy shape.
 2. What-you-see table above (unshown fulfilment key, delivery address on a pickup, location id, item ids):
    `approval_card_invalid`.
 3. Build the strings; a bad month/day is `approval_card_invalid`.
-4. The pickup place's `delivery to` prefix, a `·` in the place or address, a line-mark character in an item or
+4. A delivery order (pickup only today), the pickup place's `delivery to` prefix, a `·` in the place or address, a line-mark character in an item or
    option name: `approval_card_not_minimal`.
 5. The budget on each of the four values: `approval_card_not_minimal`.
 

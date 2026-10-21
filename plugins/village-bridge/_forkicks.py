@@ -199,7 +199,9 @@ def card_fields(preview):
                   "pickup": f"{where} · {when}", "name": preview["displayName"]}
         place = quote["location"]["name"] if fulfilment["type"] == "pickup" else fulfilment["deliveryAddress"]
         names = [line["name"] for line in quote["lines"]] + [o for line in quote["lines"] for o in line["options"]]
-        if (fulfilment["type"] == "pickup" and card_place_like_delivery(place)) or card_place_fakes_date(place) or \
+        # review-b ov#446 S1: a delivery address is the agent's free text (app forkicks-schema.ts:14), so today only a
+        # PICKUP order gets the flat card; a delivery order keeps the technical card (an address allowlist: v2.1.12).
+        if fulfilment["type"] != "pickup" or card_place_like_delivery(place) or card_place_fakes_date(place) or \
                 any(card_name_fakes_line(name) for name in names):
             raise ValueError("approval_card_not_minimal")
     except (KeyError, TypeError, IndexError, AttributeError) as error:
