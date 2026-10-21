@@ -81,6 +81,7 @@ import secrets
 import stat
 import threading
 import time
+import warnings
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
@@ -942,7 +943,11 @@ def _wire_telegram(application: Any, adapter: Any) -> None:
     async def pass_once(*_: Any) -> None:
         await pick_up(application.bot, adapter, make_button, make_markup, ctx=_CTX)
 
-    job_queue = getattr(application, "job_queue", None)
+    # PTB's `Application.job_queue` property warns ("No `JobQueue` set up") when the optional
+    # job-queue extra is not installed, the common case; read it quietly and fall back below.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        job_queue = getattr(application, "job_queue", None)
     if job_queue is not None and callable(getattr(job_queue, "run_repeating", None)):
         try:
             job_queue.run_repeating(pass_once, interval=PICKUP_INTERVAL_S, first=5.0, name="av-rate-pickup")
