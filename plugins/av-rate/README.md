@@ -112,14 +112,20 @@ your own Telegram account paired as the bot's owner (the home channel after `/se
 2. In `~/.hermes/.env` add:
 
    ```
+   TELEGRAM_BOT_TOKEN=123456789:AAF...            # from @BotFather, /newbot
+   TELEGRAM_HOME_CHANNEL=123456789                 # your numeric Telegram user id (@userinfobot)
+   TELEGRAM_ALLOWED_USERS=123456789                # same id: skips the DM pairing step
    AV_RATE_CARDS=1
-   TELEGRAM_HOME_CHANNEL=<your Telegram user id>
-   AV_TENANT_ID=local-test
+   AV_TENANT_ID=0190a5b2-0000-4000-8000-00000000c0de   # any UUID; av-events requires the UUID shape
+   AV_EVENTS_TOKEN=local-null-sink                 # any non-empty value, see below
    ```
 
-   Without `AV_EVENTS_TOKEN` / `AV_EVENTS_URL` the events are written to av-events' local buffer
-   and never posted; set both to a local ingest (`agentvillage-data`, `docker compose up`,
-   `bun run src/ingest/server.ts`) to see them land in `events.events`.
+   av-events idles entirely when `AV_EVENTS_TOKEN` is unset: no hooks run, no buffer, and the
+   rating hand-off files are never picked up. A token with `AV_EVENTS_URL` unset is av-events'
+   **null-sink mode**: events are written to its local buffer and never posted, which is what you
+   want for a first tap test. Set `AV_EVENTS_URL` (and a real token) to a local ingest
+   (`agentvillage-data`, `docker compose up`, `bun run src/ingest/server.ts`) to see them land in
+   `events.events` instead.
 
 3. Start the gateway and watch its log:
 
