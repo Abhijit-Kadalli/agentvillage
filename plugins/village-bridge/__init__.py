@@ -765,6 +765,9 @@ def transport(config, payload):
     if payload.get("operation") in (*ZZZ_WRITE_OPERATIONS, "slopfolio.prepare", "forkicks.order.confirm"):
         # The app selects a larger request budget only for these declared writes.
         headers["X-Village-Operation"] = payload["operation"]
+    if payload.get("operation") == "forkicks.order.prepare":
+        # This box accepts the flat order card (_forkicks.py CARD_KEYS); the app sends it only on seeing this header.
+        headers["X-Village-Forkicks-Card"] = "1"
     request = Request(config["origin"] + "/api/v1/village-bridge/tool", data=data,
                       headers=headers, method="POST")
     opener = build_opener(ProxyHandler({}), NoRedirect())

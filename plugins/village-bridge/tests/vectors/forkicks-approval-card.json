@@ -1,0 +1,840 @@
+{
+ "about": "For Kicks flat approval card: input = the app's saved order preview, output = the approval payload {order, total, pickup, name} or the refusal code. Byte-identical copies in agentvillage-app and agentvillage-controlplane tests. Spec: plugins/village-bridge/tests/vectors/forkicks-approval-card.md.",
+ "valueMax": 278,
+ "vectors": [
+  {
+   "name": "carter-target: one item, two options, free test order, UPI",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-target",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0",
+       "opt-0-1"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-target",
+     "totalInr": 0,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Iced latte",
+       "options": [
+        "Oat milk",
+        "Miso caramel syrup"
+       ],
+       "unitInr": 0,
+       "lineInr": 0,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0",
+        "opt-0-1"
+       ]
+      }
+     ]
+    }
+   },
+   "card": {
+    "order": "1 \u00d7 Iced latte (Oat milk, Miso caramel syrup)",
+    "total": "\u20b90, pay by UPI",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Carter"
+   }
+  },
+  {
+   "name": "two lines, one without options, card at pickup, note",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-two",
+    "displayName": "Carter",
+    "paymentMethod": "card_on_pickup",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 2,
+      "optionIds": [
+       "opt-0-0",
+       "opt-0-1"
+      ]
+     },
+     {
+      "itemId": "item-1",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-two",
+     "totalInr": 760,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 2,
+       "name": "Cold brew",
+       "options": [
+        "Oat milk",
+        "Large"
+       ],
+       "unitInr": 260,
+       "lineInr": 520,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0",
+        "opt-0-1"
+       ]
+      },
+      {
+       "qty": 1,
+       "name": "Butter croissant",
+       "options": [],
+       "unitInr": 240,
+       "lineInr": 240,
+       "itemId": "item-1",
+       "optionIds": []
+      }
+     ]
+    },
+    "note": "No sugar please"
+   },
+   "card": {
+    "order": "2 \u00d7 Cold brew (Oat milk, Large); 1 \u00d7 Butter croissant",
+    "total": "\u20b9760, card at pickup",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Carter"
+   }
+  },
+  {
+   "name": "date falls back to the location's opening day; single-digit day",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-open",
+    "displayName": "Priya",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "cafe"
+    },
+    "quote": {
+     "quoteId": "q-d-open",
+     "totalInr": 380,
+     "location": {
+      "name": "Caf\u00e9",
+      "address": "Mandrem, Goa",
+      "opens": "2026-11-05T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Coffee",
+       "options": [
+        "oat milk"
+       ],
+       "unitInr": 380,
+       "lineInr": 380,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0"
+       ]
+      }
+     ]
+    }
+   },
+   "card": {
+    "order": "1 \u00d7 Coffee (oat milk)",
+    "total": "\u20b9380, pay by UPI",
+    "pickup": "Caf\u00e9 \u00b7 5 Nov 2026",
+    "name": "Priya"
+   }
+  },
+  {
+   "name": "delivery",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-deliv",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "delivery",
+     "locationId": "mandrem",
+     "date": "2026-10-22",
+     "deliveryAddress": "Room 12, Residency, Mandrem"
+    },
+    "quote": {
+     "quoteId": "q-d-deliv",
+     "totalInr": 150,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Masala chai",
+       "options": [],
+       "unitInr": 120,
+       "lineInr": 120,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "card": {
+    "order": "1 \u00d7 Masala chai",
+    "total": "\u20b9150, pay by UPI",
+    "pickup": "Delivery to Room 12, Residency, Mandrem \u00b7 22 Oct 2026",
+    "name": "Carter"
+   }
+  },
+  {
+   "name": "non-ASCII names stay whole (precomposed \u00e9, Devanagari)",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-utf",
+    "displayName": "Zo\u00eb",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-utf",
+     "totalInr": 200,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Caf\u00e9 cr\u00e8me",
+       "options": [
+        "\u0926\u0942\u0927"
+       ],
+       "unitInr": 200,
+       "lineInr": 200,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0"
+       ]
+      }
+     ]
+    }
+   },
+   "card": {
+    "order": "1 \u00d7 Caf\u00e9 cr\u00e8me (\u0926\u0942\u0927)",
+    "total": "\u20b9200, pay by UPI",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Zo\u00eb"
+   }
+  },
+  {
+   "name": "over the card budget: order longer than 278 code points -> not minimal (app sends the legacy shape)",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-long",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0",
+       "opt-0-1"
+      ]
+     },
+     {
+      "itemId": "item-1",
+      "qty": 1,
+      "optionIds": [
+       "opt-1-0",
+       "opt-1-1"
+      ]
+     },
+     {
+      "itemId": "item-2",
+      "qty": 1,
+      "optionIds": [
+       "opt-2-0",
+       "opt-2-1"
+      ]
+     },
+     {
+      "itemId": "item-3",
+      "qty": 1,
+      "optionIds": [
+       "opt-3-0",
+       "opt-3-1"
+      ]
+     },
+     {
+      "itemId": "item-4",
+      "qty": 1,
+      "optionIds": [
+       "opt-4-0",
+       "opt-4-1"
+      ]
+     },
+     {
+      "itemId": "item-5",
+      "qty": 1,
+      "optionIds": [
+       "opt-5-0",
+       "opt-5-1"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-long",
+     "totalInr": 1800,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Seasonal special number 1",
+       "options": [
+        "Oat milk",
+        "Extra shot"
+       ],
+       "unitInr": 300,
+       "lineInr": 300,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0",
+        "opt-0-1"
+       ]
+      },
+      {
+       "qty": 1,
+       "name": "Seasonal special number 2",
+       "options": [
+        "Oat milk",
+        "Extra shot"
+       ],
+       "unitInr": 300,
+       "lineInr": 300,
+       "itemId": "item-1",
+       "optionIds": [
+        "opt-1-0",
+        "opt-1-1"
+       ]
+      },
+      {
+       "qty": 1,
+       "name": "Seasonal special number 3",
+       "options": [
+        "Oat milk",
+        "Extra shot"
+       ],
+       "unitInr": 300,
+       "lineInr": 300,
+       "itemId": "item-2",
+       "optionIds": [
+        "opt-2-0",
+        "opt-2-1"
+       ]
+      },
+      {
+       "qty": 1,
+       "name": "Seasonal special number 4",
+       "options": [
+        "Oat milk",
+        "Extra shot"
+       ],
+       "unitInr": 300,
+       "lineInr": 300,
+       "itemId": "item-3",
+       "optionIds": [
+        "opt-3-0",
+        "opt-3-1"
+       ]
+      },
+      {
+       "qty": 1,
+       "name": "Seasonal special number 5",
+       "options": [
+        "Oat milk",
+        "Extra shot"
+       ],
+       "unitInr": 300,
+       "lineInr": 300,
+       "itemId": "item-4",
+       "optionIds": [
+        "opt-4-0",
+        "opt-4-1"
+       ]
+      },
+      {
+       "qty": 1,
+       "name": "Seasonal special number 6",
+       "options": [
+        "Oat milk",
+        "Extra shot"
+       ],
+       "unitInr": 300,
+       "lineInr": 300,
+       "itemId": "item-5",
+       "optionIds": [
+        "opt-5-0",
+        "opt-5-1"
+       ]
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a decomposed e + U+0301 (one combining mark) is drawn as itself: fits",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-comb",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-comb",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Cafe\u0301",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "card": {
+    "order": "1 \u00d7 Cafe\u0301",
+    "total": "\u20b9100, pay by UPI",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Carter"
+   }
+  },
+  {
+   "name": "three combining marks in a row: core marks the third -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-mark",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-mark",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Cafe\u0301\u0301\u0301",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a variation selector (default-ignorable) -> not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-vs",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-vs",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Coffee \u2615\ufe0f",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a no-break space -> not minimal (only U+0020 is allowed)",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-nbsp",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-nbsp",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Iced\u00a0latte",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "an invalid month -> invalid",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-month",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "cafe",
+     "date": "2026-13-01"
+    },
+    "quote": {
+     "quoteId": "q-d-month",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Coffee",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_invalid"
+  },
+  {
+   "name": "exactly 278 code points: fits",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-278",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-278",
+     "totalInr": 10,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+       "options": [],
+       "unitInr": 10,
+       "lineInr": 10,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "card": {
+    "order": "1 \u00d7 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "total": "\u20b910, pay by UPI",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Carter"
+   }
+  },
+  {
+   "name": "279 code points: not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-279",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-279",
+     "totalInr": 10,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+       "options": [],
+       "unitInr": 10,
+       "lineInr": 10,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "280 code points: not minimal (core draws 280 minus its two isolate marks = 278 whole)",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-280",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-280",
+     "totalInr": 10,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+       "options": [],
+       "unitInr": 10,
+       "lineInr": 10,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "281 code points: not minimal",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-281",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-281",
+     "totalInr": 10,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+       "options": [],
+       "unitInr": 10,
+       "lineInr": 10,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_not_minimal"
+  }
+ ]
+}
