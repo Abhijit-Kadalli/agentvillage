@@ -6,7 +6,20 @@ import { join } from "node:path";
 const home = process.env.HERMES_HOME!;
 if (process.env.PYTHONPATH || process.env.PYTHONHOME) process.exit(2);
 const path = join(home, "cron", "jobs.json");
-const jobs: Record<string, any>[] = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")).jobs : [];
+// Hermes v2026.9.24 cron/jobs.py load_jobs(), the shapes the review-b N2 tests use: a BOM is dropped; the canonical
+// {"jobs": [...]}, an id-keyed {"jobs": {id: job}} map (flattened), or a bare list. save_jobs() writes it canonical.
+function load(): Record<string, any>[] {
+  if (!existsSync(path)) return [];
+  const text = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
+  let data: any;
+  // strict=False: a raw control character inside a string (the fixtures put them only inside strings).
+  try { data = JSON.parse(text); } catch { data = JSON.parse(text.replace(/[\u0000-\u0009\u000b-\u001f]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"))); }
+  if (Array.isArray(data)) return data;
+  const list = data.jobs ?? [];
+  if (Array.isArray(list)) return list;
+  return Object.entries(list).filter(([, job]) => job && typeof job === "object").map(([key, job]: [string, any]) => ({ ...job, id: job.id || key }));
+}
+const jobs = load();
 const request = JSON.parse(await Bun.stdin.text());
 if (request.action === "remove") {
   const index = jobs.findIndex(job => job.id === request.id && job.name === request.name);

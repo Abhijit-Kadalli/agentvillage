@@ -339,6 +339,99 @@ class ManagedPairsTest(unittest.TestCase):
                 for op in managed.CRON_OPS:
                     self.assertIsNone(managed.managed_context(self.home, op, session, task), label + " " + op)
 
+    def managed_handle(self):
+        """review-b S2: handle() itself in a stubbed Hermes cron root, the installer's job present and participation
+        on. Returns (call, sent): call(op, arguments) runs handle() as the managed agent's tool call; sent lists every
+        payload handle() handed the transport (the reservations' own zzz.pairs/zzz.changes checks included)."""
+        self.cron_job()
+        (self.home / "village-bridge.json").write_text(json.dumps({
+            "origin": "https://app.example", "token": "avb_" + "A" * 43, "ownerTelegramId": "42",
+            "expiresAt": "2099-01-01T00:00:00Z"}))
+        sent = []
+
+        def recording(config, payload, **_kwargs):
+            sent.append(dict(payload))
+            if payload["operation"] in ("zzz.reply", "zzz.create_thread"):
+                return {"kind": payload["operation"], "postId": "post_new"}
+            return self.transport(config, {"after": "0", **payload})
+
+        session = "cron_abcdef123456_20261020_120000"
+        task = "cron:abcdef123456:0123456789abcdef"
+        stack = [patch.dict(sys.modules, self.cron_modules()), patch.dict(os.environ, {"HERMES_HOME": str(self.home)}),
+                 patch.object(bridge, "transport", recording), patch.object(bridge, "gate_verified", lambda: None)]
+        for item in stack:
+            item.start()
+            self.addCleanup(item.stop)
+        self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply", session, task))
+
+        def call(op, arguments):
+            return json.loads(bridge.handle({"operation": op, "arguments": arguments}, session_id=session, task_id=task))
+        return call, sent
+
+    @staticmethod
+    def ops(sent, *names):
+        return [p for p in sent if p["operation"] in names]
+
+    def test_s2_handle_in_cron_root_keeps_managed_reads_inside_the_current_pair(self):
+        # M11 (__init__.py managed read target check): a managed run reads only its pair's room and the exact pending thread.
+        call, sent = self.managed_handle()
+        self.items = [{"cursor": "1", "kind": "room.status", "threadId": "thread_a", "postId": "post_a"}]
+        self.assertEqual(call("zzz.changes", {"room": "room_a"})["data"]["kind"], "zzz.changes")
+        self.assertEqual([p["room"] for p in self.ops(sent, "zzz.changes")], ["room_a"])
+        sent.clear()
+        for op, arguments in (("zzz.changes", {"room": "public"}), ("zzz.changes", {"room": "room_b"}),
+                              ("zzz.read_thread", {"thread": "thread_a"}), ("zzz.read_thread", {"thread": "thread_other"})):
+            result = call(op, arguments)
+            self.assertEqual(result["error"], "zzz_not_found", op + json.dumps(arguments))
+            # Only the gate's own pair check went out: no read of the refused target.
+            self.assertEqual(self.ops(sent, "zzz.changes", "zzz.read_thread"), [], op + json.dumps(arguments))
+            sent.clear()
+        # With an exact pending incoming event, that thread (and only it) becomes readable.
+        self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
+        self.next_slot()
+        self.items.append({"cursor": "2", "kind": "post.created", "threadId": "thread_a", "postId": "post_b"})
+        self.assertIsNotNone(managed.poll(self.home, self.transport, {}, mini.installed))
+        self.assertIn("data", call("zzz.read_thread", {"thread": "thread_a"}))
+        self.assertEqual([p["thread"] for p in self.ops(sent, "zzz.read_thread")], ["thread_a"])
+        sent.clear()
+        self.assertEqual(call("zzz.read_thread", {"thread": "thread_other"})["error"], "zzz_not_found")
+        self.assertEqual(self.ops(sent, "zzz.read_thread"), [])
+
+    def test_s2_handle_in_cron_root_reserves_before_any_managed_reply(self):
+        # M12 (__init__.py managed reply reservation): no pending event, no reply; one reply per pending event.
+        call, sent = self.managed_handle()
+        self.items = [{"cursor": "1", "kind": "room.status", "threadId": "thread_a", "postId": "post_a"}]
+        result = call("zzz.reply", {"thread": "thread_a", "body": "model text"})
+        self.assertEqual(result["error"], "zzz_write_not_authorized")
+        self.assertEqual(self.ops(sent, "zzz.reply", "zzz.create_thread"), [])
+        self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
+        self.next_slot()
+        self.items.append({"cursor": "2", "kind": "post.created", "threadId": "thread_a", "postId": "post_b"})
+        self.assertIsNotNone(managed.poll(self.home, self.transport, {}, mini.installed))
+        # A different thread than the pending one is refused, and the pending event survives that refusal.
+        self.assertEqual(call("zzz.reply", {"thread": "thread_other", "body": "model text"})["error"], "zzz_write_not_authorized")
+        self.assertEqual(self.ops(sent, "zzz.reply"), [])
+        self.assertIn("data", call("zzz.reply", {"thread": "thread_a", "body": "model text"}))
+        self.assertEqual([p["thread"] for p in self.ops(sent, "zzz.reply")], ["thread_a"])
+        # The reservation was consumed: a second reply to the same event never goes out.
+        self.assertEqual(call("zzz.reply", {"thread": "thread_a", "body": "again"})["error"], "zzz_write_not_authorized")
+        self.assertEqual(len(self.ops(sent, "zzz.reply")), 1)
+
+    def test_s2_handle_in_cron_root_sends_only_the_fixed_introduction(self):
+        # M13 (__init__.py fixed intro text): a managed create_thread posts the overlay's fixed text, never the model's.
+        call, sent = self.managed_handle()
+        model = {"room": "room_a", "title": "MODEL TITLE", "body": "MODEL BODY: owner's private note"}
+        self.assertEqual(call("zzz.create_thread", model)["error"], "zzz_write_not_authorized")
+        self.assertEqual(self.ops(sent, "zzz.create_thread"), [])
+        self.assertEqual(managed.poll(self.home, self.transport, {}, mini.installed), {"kind": "bootstrap", "roomId": "room_a"})
+        self.assertIn("data", call("zzz.create_thread", model))
+        posted = self.ops(sent, "zzz.create_thread")
+        self.assertEqual(len(posted), 1)
+        self.assertEqual((posted[0]["room"], posted[0]["title"], posted[0]["body"]), ("room_a", managed.INTRO_TITLE, managed.INTRO_BODY))
+        self.assertNotIn("MODEL", json.dumps(posted))
+        self.assertEqual(call("zzz.create_thread", model)["error"], "zzz_write_not_authorized")
+        self.assertEqual(len(self.ops(sent, "zzz.create_thread")), 1)
+
     def test_s1_refused_projected_id_never_turns_participation_on(self):
         # nonav L17033 (d), the regression class: an entry the strict reader refuses, beside a complete
         # zzzbot + zzz-bridge pair, must never leave participation ON.

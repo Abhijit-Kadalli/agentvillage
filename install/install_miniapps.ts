@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, parse } from "node:path";
 import { EDGE_SKILL_NAMES, hermesHome } from "./paths";
-import { reconcileZzzManagedJob } from "./zzz_managed_job";
+import { reconcileZzzManagedJob, verifyZzzManagedJob } from "./zzz_managed_job";
 
 /**
  * ROLODEX.PERSON (rc42, CLAIMS 7799): the gold-stars entry also carries `rolodex.person` (a read of
@@ -63,7 +63,8 @@ const hasSkill = (app: ReviewedApp) => app.skills.length > 0;
 type Projection = { version: 1; apps: ReviewedApp[] };
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 export const ZZZ_BRIDGE_ID = "zzz-bridge";
-const ZZZ_MANAGED_FILES = ["scripts/agentvillage_zzz_pairs.sh", "prompts/participate.md"] as const;
+const ZZZ_SHIM = "agentvillage_zzz_pairs.sh";
+const ZZZ_MANAGED_FILES = [`scripts/${ZZZ_SHIM}`, "prompts/participate.md"] as const;
 /**
  * ov#441 S1: managed ZZZ participation (the "Edge — zzz pairs" job, its shim, prompt and cursor state) is on only
  * when the validated cp projection carries BOTH zzzbot and zzz-bridge. Nothing else (no overlay constant, no
@@ -254,8 +255,14 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     for (const app of REVIEWED_MINI_APPS) if (hasSkill(app) && owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
     if (!zzzManaged && zzzManagedFiles.some(relative => exists(join(home, "skills", "zzzbot", relative)))) throw new Error("mini_apps_removal_pending");
     if (!zzzManaged && hasZzzManagedState(home)) throw new Error("mini_apps_removal_pending");
+    // review-b N3: the job record too (read-only, no Hermes call): exactly the installer's job while the pair is
+    // projected, none once it is not. As every job step, only from the CLI (in-process callers never own a job).
+    if (import.meta.main) {
+      const script = zzzFiles.find(({ path }) => path.endsWith(`/scripts/${ZZZ_SHIM}`))?.content ?? null;
+      try { verifyZzzManagedJob(home, zzzManaged, script); } catch { throw new Error(zzzManaged ? "mini_apps_job_mismatch" : "mini_apps_removal_pending"); }
+    }
   } else if (!(projection.apps.length === 0 && stateless())) {
-    // Fail closed even if copying/removal is interrupted. Publish desired authority last.
+    // Fail closed even if copying/removal is interrupted. Publish desired authority after the skills are staged.
     atomic(target, JSON.stringify({ version: 1, apps: [] }));
     if (projection.apps.length === 0 && exists(credential)) unlinkSync(credential);
     for (const app of REVIEWED_MINI_APPS) {
@@ -268,10 +275,13 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     for (const { path, content } of zzzFiles) atomic(path, content);
-    // The job is installed only when the projection grants zzzbot AND zzz-bridge (S1), before authority
-    // is published; a failed install fails the stage and the CLI then tears it down (failClosedZzz).
-    if (import.meta.main && zzzManaged) reconcileZzzManagedJob(home, true);
+    // Publish desired authority, THEN install the job (review-b S3). A failed job install fails the stage and the CLI
+    // tears down only the zzz-managed job, shim, files and state (failClosedZzz), so every other app (Gold Stars, For
+    // Kicks, ...) keeps the authority just published. A projected pair with no exact job record runs nothing: every
+    // managed path needs the installer's job (_zzz_managed.managed_context). The job exists only when the projection
+    // grants zzzbot AND zzz-bridge (S1).
     atomic(target, bytes);
+    if (import.meta.main && zzzManaged) reconcileZzzManagedJob(home, true);
     // On removal authority disappears before a best-effort job teardown.
     if (!zzzManaged) {
       if (import.meta.main) reconcileZzzManagedJob(home, false);

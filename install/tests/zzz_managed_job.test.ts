@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { REVIEWED_MINI_APPS } from "../install_miniapps";
@@ -293,4 +293,218 @@ test("S1 (nonav L17033): a malformed mini-apps.json with the job present is OFF,
   expect(stage(projection).status).toBe(0);
   expect(jobs()).toHaveLength(1);
   expect(pluginParticipation(home)).toBe("True");
+});
+
+/** The plugin's installed(home, app, op) for each pair, through its package (python3 -I, outside the plugin folder). */
+function pluginInstalled(home: string, pairs: [string, string][]): boolean[] {
+  const which = Bun.which("python3");
+  expect(which).not.toBeNull();
+  const python = spawnSync(which!, ["-I", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" }).stdout.trim();
+  const probe = mkdtempSync(join(tmpdir(), "av-zzz-probe-"));
+  roots.push(probe);
+  writeFileSync(join(probe, "probe.py"), [
+    "import importlib.util, json, sys",
+    "from pathlib import Path",
+    'spec = importlib.util.spec_from_file_location("village_bridge", Path(sys.argv[1]) / "__init__.py")',
+    "package = importlib.util.module_from_spec(spec)",
+    "sys.modules[spec.name] = package",
+    "spec.loader.exec_module(package)",
+    'mini = sys.modules["village_bridge._mini_apps"]',
+    "print(json.dumps([mini.installed(Path(sys.argv[2]), app, op) for app, op in json.loads(sys.argv[3])]))",
+    "",
+  ].join("\n"));
+  const run = spawnSync(python, ["-I", join(probe, "probe.py"), PLUGIN, home, JSON.stringify(pairs)],
+    { cwd: probe, env: { HERMES_HOME: home, PATH: "/usr/bin:/bin" }, encoding: "utf8" });
+  expect(run.status).toBe(0);
+  return JSON.parse(run.stdout);
+}
+const gold = REVIEWED_MINI_APPS.find(app => app.id === "gold-stars")!;
+const forkicks = REVIEWED_MINI_APPS.find(app => app.id === "forkicks")!;
+/**
+ * No Hermes anywhere: HERMES_BIN missing, and HOME (a separate empty folder, so bun's own cache stays out of the box)
+ * and PATH isolated so no fixed launcher (~/.local/bin/hermes on a dev machine) resolves.
+ */
+function HERMES_GONE(home: string) {
+  const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-nohome-"));
+  roots.push(elsewhere);
+  return { HERMES_BIN: join(home, "missing", "hermes"), HOME: elsewhere, PATH: "/usr/bin:/bin" };
+}
+
+test("review-b S3: a failed job install keeps Gold Stars and For Kicks authorised and tears down only the zzz-managed items", () => {
+  const { home, stage, jobs } = fakeBox();
+  const before = { version: 1, apps: [gold, forkicks, zzzbot] };
+  const granted = { version: 1, apps: [gold, forkicks, zzzbot, bridge] };
+  const others: [string, string][] = [["gold-stars", "rolodex.search"], ["forkicks", "forkicks.menu"]];
+  expect(stage(before).status).toBe(0);
+  expect(pluginInstalled(home, others)).toEqual([true, true]);
+  // The cp grants zzz-bridge on a box whose Hermes is missing: the stage fails on every retry, and every retry leaves
+  // the other apps' authority published (the projection is written before the job install, never apps:[]).
+  for (let retry = 0; retry < 3; retry++) {
+    seedState(home);
+    const result = stage(granted, [], HERMES_GONE(home));
+    expect([result.status, result.stdout, result.stderr]).toEqual([1, "", FAILED]);
+    expect(JSON.parse(readFileSync(join(home, "mini-apps.json"), "utf8"))).toEqual(granted);
+    expect(pluginInstalled(home, others)).toEqual([true, true]);
+    expect(existsSync(join(home, "skills", "forkicks", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(home, "skills", "zzzbot", "SKILL.md"))).toBe(true);
+    // The zzz-managed job, shim, prompt, script and cursor state are torn down (expectOff), so nothing managed runs.
+    expectOff(home, jobs);
+    expect(pluginParticipation(home)).toBe("True");
+  }
+  // Hermes back: the next good stage installs the job.
+  expect(stage(granted).status).toBe(0);
+  expect(jobs()).toHaveLength(1);
+  expect(pluginInstalled(home, others)).toEqual([true, true]);
+});
+
+test("review-b N2: with the gate off, a jobs.json or scripts/ shape the installer never wrote never fails the stage", () => {
+  type Shape = { label: string; seed: (home: string, elsewhere: string) => void };
+  const shapes: Shape[] = [
+    { label: "bare-list jobs.json", seed: home => { mkdirSync(join(home, "cron")); writeFileSync(join(home, "cron", "jobs.json"), "[]"); } },
+    { label: "bare-list jobs.json with a resident job", seed: home => { mkdirSync(join(home, "cron"));
+      writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify([{ id: "aaaaaaaaaaaa", name: "Morning digest", script: "digest.sh", enabled: true }])); } },
+    { label: "unparseable jobs.json", seed: home => { mkdirSync(join(home, "cron")); writeFileSync(join(home, "cron", "jobs.json"), "{not json"); } },
+    { label: "jobs.json of another shape", seed: home => { mkdirSync(join(home, "cron")); writeFileSync(join(home, "cron", "jobs.json"), "\"jobs\""); } },
+    { label: "symlinked scripts/", seed: (home, elsewhere) => {
+      writeFileSync(join(elsewhere, ZZZ_JOB_SCRIPT), "#!/bin/sh\necho resident\n");
+      writeFileSync(join(elsewhere, "resident.sh"), "#!/bin/sh\n");
+      symlinkSync(elsewhere, join(home, "scripts")); } },
+  ];
+  const projections = [{ version: 1, apps: [] }, { version: 1, apps: [gold] }, alone, { version: 1, apps: [bridge] }];
+  for (const { label, seed } of shapes) {
+    for (const value of projections) {
+      const { home, stage } = fakeBox();
+      const elsewhere = mkdtempSync(join(tmpdir(), "av-zzz-elsewhere-"));
+      roots.push(elsewhere);
+      seed(home, elsewhere);
+      const name = `${label} / ${value.apps.map(app => app.id).join("+") || "nothing"}`;
+      const cron = existsSync(join(home, "cron", "jobs.json")) ? readFileSync(join(home, "cron", "jobs.json"), "utf8") : null;
+      const outside = snapshot(elsewhere);
+      const empty = value.apps.length === 0 ? snapshot(home) : null;
+      // No Hermes is needed (nor called): there is no managed job to remove.
+      for (const args of [[], ["--verify"]]) {
+        const result = stage(value, args, HERMES_GONE(home));
+        expect(`${name} ${args}: ${result.status} ${result.stderr}`).toBe(`${name} ${args}: 0 `);
+      }
+      const cronAfter = existsSync(join(home, "cron", "jobs.json")) ? readFileSync(join(home, "cron", "jobs.json"), "utf8") : null;
+      expect(`${name}: ${cronAfter}`).toBe(`${name}: ${cron}`);
+      expect(snapshot(elsewhere)).toEqual(outside);
+      if (empty) expect(snapshot(home)).toEqual(empty);
+      expect(existsSync(join(home, "hermes-calls.jsonl"))).toBe(false);
+      expect(existsSync(join(home, "zzzbot"))).toBe(false);
+      if (value.apps.length) expect(JSON.parse(readFileSync(join(home, "mini-apps.json"), "utf8"))).toEqual(value);
+    }
+  }
+});
+
+test("review-b N2: gate off still removes a managed job from a bare-list store, and refuses a store Hermes cannot load that names it", () => {
+  const { home, stage, jobs } = fakeBox();
+  expect(stage(projection).status).toBe(0);
+  const managedJob = jobs()[0];
+  const resident = { id: "aaaaaaaaaaaa", name: "Morning digest", script: "digest.sh", enabled: true };
+  // A bare list holding the managed job: removed, the resident's job kept (Hermes then saves the store canonical).
+  writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify([resident, managedJob]));
+  expect(stage(alone).status).toBe(0);
+  expect(jobs()).toEqual([resident]);
+  expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
+  // An unloadable store that names the managed job (as written, or with Python's ensure_ascii em dash) may hold one
+  // that cannot be confirmed gone: the stage fails loudly, and changes nothing in the store.
+  for (const text of [`{"jobs": [{"name": "${ZZZ_JOB_NAME}"`, '{"jobs": [{"name": "Edge \\u2014 zzz pairs", "x": NaN}]}']) {
+    writeFileSync(join(home, "cron", "jobs.json"), text);
+    expect(stage(alone).status).toBe(1);
+    expect(stage(alone, ["--verify"]).status).toBe(1);
+    expect(readFileSync(join(home, "cron", "jobs.json"), "utf8")).toBe(text);
+  }
+});
+
+test("review-b N2: with the gate on, every jobs.json shape Hermes loads is handled (bare list, id-keyed map, BOM, control characters)", () => {
+  const resident = { id: "aaaaaaaaaaaa", name: "Morning digest", script: "digest.sh", enabled: true };
+  const stores = {
+    "empty bare list": "[]",
+    "bare list": JSON.stringify([resident]),
+    "id-keyed map": JSON.stringify({ jobs: { aaaaaaaaaaaa: { name: resident.name, script: resident.script, enabled: true } } }),
+    "object without jobs": "{}",
+    "BOM": "﻿" + JSON.stringify({ jobs: [resident] }),
+    "raw control character in a string": `{"jobs": [{"id": "aaaaaaaaaaaa", "name": "Morning\tdigest", "script": "digest.sh", "enabled": true}]}`,
+  };
+  for (const [label, text] of Object.entries(stores)) {
+    const { home, stage, jobs } = fakeBox();
+    mkdirSync(join(home, "cron"));
+    writeFileSync(join(home, "cron", "jobs.json"), text);
+    expect(`${label}: ${stage(projection).status}`).toBe(`${label}: 0`);
+    const managedJobs = jobs().filter((job: { name: string }) => job.name === ZZZ_JOB_NAME);
+    expect(managedJobs).toHaveLength(1);
+    expect(`${label}: ${stage(projection, ["--verify"]).status}`).toBe(`${label}: 0`);
+  }
+  // Hermes refuses any other top-level shape, and so does the installer with the gate on (fail closed, stage fails).
+  const { home, stage } = fakeBox();
+  mkdirSync(join(home, "cron"));
+  for (const text of ["{not json", "\"jobs\"", "{\"jobs\": 7}"]) {
+    writeFileSync(join(home, "cron", "jobs.json"), text);
+    expect(stage(projection).status).toBe(1);
+    expect(readFileSync(join(home, "cron", "jobs.json"), "utf8")).toBe(text);
+    expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
+  }
+});
+
+test("review-b N3: --verify checks the job record: exactly the installer's job while the pair is projected, none once it is not", () => {
+  const { home, stage, jobs } = fakeBox();
+  expect(stage(projection).status).toBe(0);
+  const good = readFileSync(join(home, "cron", "jobs.json"), "utf8");
+  const verify = (value: unknown) => {
+    const before = snapshot(home);
+    const result = stage(value, ["--verify"], HERMES_GONE(home));
+    expect(snapshot(home)).toEqual(before);
+    return result.status;
+  };
+  expect(verify(projection)).toBe(0);
+  const job = jobs()[0];
+  const variants: [string, unknown][] = [
+    ["job gone", { jobs: [] }], ["job disabled", { jobs: [{ ...job, enabled: false }] }],
+    ["toolsets widened", { jobs: [{ ...job, enabled_toolsets: ["all"] }] }], ["no_agent", { jobs: [{ ...job, no_agent: true }] }],
+    ["another script", { jobs: [{ ...job, script: "other.sh" }] }], ["duplicate", { jobs: [job, { ...job, id: "bbbbbbbbbbbb" }] }],
+  ];
+  for (const [label, doc] of variants) {
+    writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify(doc));
+    expect(`${label}: ${verify(projection)}`).toBe(`${label}: 1`);
+  }
+  writeFileSync(join(home, "cron", "jobs.json"), good);
+  expect(verify(projection)).toBe(0);
+  // The shim the job runs: missing or altered is a mismatch.
+  const shim = join(home, "scripts", ZZZ_JOB_SCRIPT);
+  const shimBytes = readFileSync(shim);
+  writeFileSync(shim, "#!/bin/sh\necho altered\n");
+  expect(verify(projection)).toBe(1);
+  rmSync(shim);
+  expect(verify(projection)).toBe(1);
+  writeFileSync(shim, shimBytes, { mode: 0o700 });
+  expect(verify(projection)).toBe(0);
+  // Gate off: a lingering managed job (files and state already gone) is removal pending; so is leftover state alone.
+  expect(stage(alone).status).toBe(0);
+  expect(verify(alone)).toBe(0);
+  writeFileSync(join(home, "cron", "jobs.json"), good);
+  expect(verify(alone)).toBe(1);
+  writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify({ jobs: [] }));
+  expect(verify(alone)).toBe(0);
+  seedState(home);
+  expect(verify(alone)).toBe(1);
+  expect(stage(alone).status).toBe(0);
+  expect(verify(alone)).toBe(0);
+});
+
+test("review-b N3: a box with no projection left heals a lingering job and state (the stateless branch), and verify sees it", () => {
+  const { home, stage, jobs } = fakeBox();
+  expect(stage(projection).status).toBe(0);
+  seedState(home);
+  // An interrupted uninstall: the projection and every owned skill are gone, the job, shim and cursor state linger.
+  for (const path of ["mini-apps.json", "skills/zzzbot/SKILL.md", "skills/zzzbot/prompts/participate.md", `skills/zzzbot/scripts/${ZZZ_JOB_SCRIPT}`])
+    rmSync(join(home, path));
+  const empty = { version: 1, apps: [] };
+  expect(jobs()).toHaveLength(1);
+  expect(stage(empty, ["--verify"]).status).toBe(1);
+  expect(jobs()).toHaveLength(1);
+  expect(stage(empty).status).toBe(0);
+  expectOff(home, jobs);
+  expect(existsSync(join(home, "mini-apps.json"))).toBe(false);
+  expect(stage(empty, ["--verify"]).status).toBe(0);
 });

@@ -112,35 +112,145 @@ function scriptsDir(home: string): string {
   return path;
 }
 
-function jobs(home: string): Job[] {
+/** scripts/ as a real directory, or null (absent, a symlink or not a directory: never followed, never ours). */
+function realScriptsDir(home: string): string | null {
+  const path = join(home, "scripts");
+  try {
+    const meta = lstatSync(path);
+    return meta.isDirectory() && !meta.isSymbolicLink() ? path : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
+/** Python json.loads(strict=False): raw control characters are allowed inside strings. Escape them for JSON.parse. */
+function escapeControlsInStrings(raw: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of raw) {
+    const code = char.charCodeAt(0);
+    if (inString && !escaped && code < 0x20) { out += "\\u" + code.toString(16).padStart(4, "0"); continue; }
+    out += char;
+    if (escaped) escaped = false;
+    else if (inString && char === "\\") escaped = true;
+    else if (char === '"') inString = !inString;
+  }
+  return out;
+}
+
+/**
+ * review-b N2: the job list exactly as Hermes v2026.9.24 cron/jobs.py load_jobs() reads cron/jobs.json, or null where
+ * Hermes itself refuses the store. utf-8-sig (a BOM is dropped), strict JSON then strict=False; the canonical
+ * {"jobs": [...]}, an id-keyed {"jobs": {id: job}} map (flattened: the inline id wins, non-object entries skipped), an
+ * object without "jobs" (no jobs), or a bare list (Hermes wraps it on its next save). Any other shape is corruption.
+ */
+export function parseHermesJobs(raw: string): Job[] | null {
+  const text = raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
+  let data: unknown;
+  try { data = JSON.parse(text); } catch {
+    try { data = JSON.parse(escapeControlsInStrings(text)); } catch { return null; }
+  }
+  if (Array.isArray(data)) return data;
+  if (!isObject(data)) return null;
+  if (!("jobs" in data)) return [];
+  const list = data.jobs;
+  if (Array.isArray(list)) return list;
+  if (isObject(list))
+    return Object.entries(list).filter(([, job]) => isObject(job)).map(([key, job]) => ({ ...(job as Job), id: (job as Job).id || key }));
+  return null;
+}
+
+/** The store's text names the managed job (as written, or as Python's ensure_ascii writes the em dash). */
+const NAMES_ZZZ_JOB = /Edge (?:\u2014|\\u2014) zzz pairs/i;
+type Store = { jobs: Job[]; namesZzz: boolean } | { jobs: null; namesZzz: boolean };
+
+function store(home: string): Store {
   try {
     const folder = join(home, "cron");
     if (existsSync(folder) && (!lstatSync(folder).isDirectory() || lstatSync(folder).isSymbolicLink()))
       throw new Error("jobs-folder-invalid");
     const path = join(home, "cron", "jobs.json");
-    if (!plainFile(path)) return [];
-    const doc = JSON.parse(readFileSync(path, "utf8"));
-    if (!doc || !Array.isArray(doc.jobs)) throw new Error("jobs-invalid");
-    return doc.jobs;
+    if (!plainFile(path)) return { jobs: [], namesZzz: false };
+    const raw = readFileSync(path, "utf8");
+    return { jobs: parseHermesJobs(raw), namesZzz: NAMES_ZZZ_JOB.test(raw) };
   } catch { throw new Error("zzz_jobs_unreadable"); }
+}
+
+const isZzzJob = (job: unknown): job is Job => isObject(job) && job.name === ZZZ_JOB_NAME;
+
+function jobs(home: string): Job[] {
+  const { jobs: list } = store(home);
+  if (list === null) throw new Error("zzz_jobs_unreadable");
+  return list.filter(isZzzJob);
+}
+
+/**
+ * The managed jobs to remove when participation is off. A store Hermes cannot load runs no job, so it is left alone
+ * unless its text names the managed job (then it may be ours and still cannot be confirmed gone: refuse loudly).
+ */
+function lingeringJobs(home: string): Job[] {
+  const found = store(home);
+  if (found.jobs !== null) return found.jobs.filter(isZzzJob);
+  if (found.namesZzz) throw new Error("zzz_jobs_unreadable");
+  return [];
+}
+
+/** The installer's exact job record: what it confirms after an install, and what the plugin's managed_context needs. */
+function confirmed(list: Job[]): boolean {
+  return list.length === 1 && list[0].script === ZZZ_JOB_SCRIPT && list[0].enabled === true
+    && list[0].no_agent !== true && JSON.stringify(list[0].enabled_toolsets) === JSON.stringify(ZZZ_JOB_TOOLSETS);
+}
+
+/**
+ * review-b N3, read-only (no Hermes call, nothing written): with participation on, exactly the installer's job record
+ * and the reviewed shim bytes; with it off, no managed job (in a store Hermes can load, or named in one it cannot) and
+ * no shim in a real scripts/ directory.
+ */
+export function verifyZzzManagedJob(home: string, installed: boolean, script: Buffer | null): void {
+  if (installed) {
+    if (!confirmed(jobs(home))) throw new Error("zzz_job_not_confirmed");
+    const dir = realScriptsDir(home);
+    const shim = dir && join(dir, ZZZ_JOB_SCRIPT);
+    if (!shim || !plainFile(shim) || !script || !readFileSync(shim).equals(script)) throw new Error("zzz_shim_mismatch");
+    return;
+  }
+  if (lingeringJobs(home).length) throw new Error("zzz_job_removal_pending");
+  const dir = realScriptsDir(home);
+  if (dir) {
+    try { lstatSync(join(dir, ZZZ_JOB_SCRIPT)); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    throw new Error("zzz_shim_removal_pending");
+  }
 }
 
 /** Reconcile only the installer-owned job; the projection remains app authority. */
 export function reconcileZzzManagedJob(home: string, installed: boolean): void {
-  const current = jobs(home).filter(job => job.name === ZZZ_JOB_NAME);
   const bin = hermesBin();
   const env = hermesExecEnv();
   if (!installed) {
+    // review-b N2: with participation off, a job store or scripts/ shape this installer never wrote (and Hermes still
+    // accepts) never fails the stage; only a managed job that may still run does.
+    const current = lingeringJobs(home);
     if (current.length && !hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
     const python = current.length ? jobPython(bin) : null;
     for (const job of current) {
       if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_job_invalid");
       jobApi(python!, home, { action: "remove", id: job.id, name: ZZZ_JOB_NAME });
     }
-    const shim = join(scriptsDir(home), ZZZ_JOB_SCRIPT);
-    if (plainFile(shim)) unlinkSync(shim);
+    // The installer only ever writes the shim into a real scripts/ directory; never follow a symlinked one.
+    const dir = realScriptsDir(home);
+    const shim = dir && join(dir, ZZZ_JOB_SCRIPT);
+    if (shim && plainFile(shim)) unlinkSync(shim);
     return;
   }
+  const current = jobs(home);
   if (!hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
   if (current.length > 1) throw new Error("zzz_job_duplicate");
   const python = jobPython(bin);
@@ -157,8 +267,5 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
   jobApi(python, home, { action: "install", ...(id ? { id } : {}), name: ZZZ_JOB_NAME,
     prompt, script: ZZZ_JOB_SCRIPT, schedule: ZZZ_JOB_SCHEDULE,
     toolsets: [...ZZZ_JOB_TOOLSETS], home });
-  const after = jobs(home).filter(job => job.name === ZZZ_JOB_NAME);
-  if (after.length !== 1 || after[0].script !== ZZZ_JOB_SCRIPT || after[0].enabled !== true
-      || after[0].no_agent === true || JSON.stringify(after[0].enabled_toolsets) !== JSON.stringify(ZZZ_JOB_TOOLSETS))
-    throw new Error("zzz_job_not_confirmed");
+  if (!confirmed(jobs(home))) throw new Error("zzz_job_not_confirmed");
 }
