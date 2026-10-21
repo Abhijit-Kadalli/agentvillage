@@ -217,6 +217,42 @@ class FlatCardBoxTest(unittest.TestCase):
             self.refused({'draftId': p['draftId'], 'approvalPayload': payload, 'payloadHash': hashed(payload), 'preview': p},
                          'approval_card_not_minimal')
 
+    def test_a_note_to_the_cafe_never_rides_a_flat_card_only_the_legacy_technical_one(self):
+        # WYSIWYS (security review): the note is agent-written text sent to the café and is not on the four rows.
+        v = vector('a note to the cafe')
+        self.assertEqual(v['error'], 'approval_card_invalid')
+        payload = fk.card_fields({k: x for k, x in v['preview'].items() if k != 'note'})  # what the four rows would say
+        self.refused({'draftId': v['preview']['draftId'], 'approvalPayload': payload, 'payloadHash': hashed(payload), 'preview': v['preview']},
+                     'approval_card_invalid')
+        result = self.app_answer('a note to the cafe', shape='legacy')
+        self.prepare(result); self.next_turn(); ap = self.daemon()
+        self.assertIn('data', self.confirm(result['draftId'], ap))
+        self.assertIn('Note: "No sugar please"', ap.propose.call_args.args[2])  # the technical card shows it
+        # The same holds for a preview edited after prepare to carry a note.
+        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
+        flat = self.app_answer('an empty note'); self.prepare(flat)
+        path = self.record_path(flat['draftId']); record = json.loads(path.read_text()); record['preview']['note'] = 'Also a croissant'
+        path.write_text(json.dumps(record)); self.next_turn(); ap = self.daemon()
+        self.assertEqual(self.confirm(flat['draftId'], ap)['error'], 'approval_preview_unavailable'); ap.propose.assert_not_called()
+
+    def test_every_unshown_order_field_refuses_the_flat_card(self):
+        for name in ('a delivery address on a pickup', 'item ids that differ'):
+            v = vector(name)
+            self.assertEqual(v['error'], 'approval_card_invalid')
+        base = vector('carter-target')['preview']
+        mutations = [
+            lambda p: p['items'][0].__setitem__('extra', 1),
+            lambda p: p['fulfilment'].__setitem__('instructions', 'leave at gate'),
+            lambda p: p['quote']['location'].__setitem__('id', 'elsewhere'),
+            lambda p: p['quote'].__setitem__('locationId', 'elsewhere'),
+            lambda p: p['quote']['lines'][0].__setitem__('itemId', 'other'),
+            lambda p: p.__setitem__('note', ' '),
+        ]
+        for mutate in mutations:
+            p = copy.deepcopy(base); mutate(p)
+            with self.assertRaisesRegex(ValueError, '^approval_card_invalid$'):
+                fk.card_fields(p)
+
     def test_flat_card_refused_unless_the_daemon_says_requested(self):
         result = self.app_answer()
         self.prepare(result); self.next_turn()

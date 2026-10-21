@@ -59,7 +59,7 @@
    }
   },
   {
-   "name": "two lines, one without options, card at pickup, note",
+   "name": "two lines, one without options, card at pickup",
    "preview": {
     "appId": "forkicks",
     "draftId": "d-two",
@@ -119,8 +119,7 @@
        "optionIds": []
       }
      ]
-    },
-    "note": "No sugar please"
+    }
    },
    "card": {
     "order": "2 \u00d7 Cold brew (Oat milk, Large); 1 \u00d7 Butter croissant",
@@ -128,6 +127,200 @@
     "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
     "name": "Carter"
    }
+  },
+  {
+   "name": "a note to the cafe is not on the four rows -> invalid (the app sends the legacy shape)",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-note",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-note",
+     "totalInr": 0,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Iced latte",
+       "options": [
+        "Oat milk"
+       ],
+       "unitInr": 0,
+       "lineInr": 0,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0"
+       ]
+      }
+     ]
+    },
+    "note": "No sugar please"
+   },
+   "error": "approval_card_invalid"
+  },
+  {
+   "name": "an empty note sends nothing: fits",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-empty-note",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "opt-0-0"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-empty-note",
+     "totalInr": 0,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Iced latte",
+       "options": [
+        "Oat milk"
+       ],
+       "unitInr": 0,
+       "lineInr": 0,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0"
+       ]
+      }
+     ]
+    },
+    "note": ""
+   },
+   "card": {
+    "order": "1 \u00d7 Iced latte (Oat milk)",
+    "total": "\u20b90, pay by UPI",
+    "pickup": "For Kicks Mandrem \u00b7 21 Oct 2026",
+    "name": "Carter"
+   }
+  },
+  {
+   "name": "a delivery address on a pickup order is not shown -> invalid",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-pickaddr",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": []
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21",
+     "deliveryAddress": "Room 12"
+    },
+    "quote": {
+     "quoteId": "q-d-pickaddr",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Coffee",
+       "options": [],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": []
+      }
+     ]
+    }
+   },
+   "error": "approval_card_invalid"
+  },
+  {
+   "name": "item ids that differ from the quote line -> invalid",
+   "preview": {
+    "appId": "forkicks",
+    "draftId": "d-ids",
+    "displayName": "Carter",
+    "paymentMethod": "upi",
+    "items": [
+     {
+      "itemId": "item-0",
+      "qty": 1,
+      "optionIds": [
+       "other"
+      ]
+     }
+    ],
+    "fulfilment": {
+     "type": "pickup",
+     "locationId": "mandrem",
+     "date": "2026-10-21"
+    },
+    "quote": {
+     "quoteId": "q-d-ids",
+     "totalInr": 100,
+     "location": {
+      "name": "For Kicks Mandrem",
+      "address": "Junasvaddo, Mandrem, North Goa",
+      "opens": "2026-10-21T08:00:00+05:30"
+     },
+     "lines": [
+      {
+       "qty": 1,
+       "name": "Coffee",
+       "options": [
+        "Oat milk"
+       ],
+       "unitInr": 100,
+       "lineInr": 100,
+       "itemId": "item-0",
+       "optionIds": [
+        "opt-0-0"
+       ]
+      }
+     ]
+    }
+   },
+   "error": "approval_card_invalid"
   },
   {
    "name": "date falls back to the location's opening day; single-digit day",

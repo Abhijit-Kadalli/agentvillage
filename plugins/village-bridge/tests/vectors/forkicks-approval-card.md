@@ -44,6 +44,30 @@ optional `note`). Every check of today's technical card (`approval_summary` / th
     is optional). A month outside 1-12 or a day outside 1-31 is `approval_card_invalid`. **Product-confirm.**
 - `name`: `p.displayName`, verbatim.
 
+## What you see is what the order sends (security review)
+
+The four rows must show everything the order sends that the agent can influence. Every preview field is either
+shown, bound to a shown one, or the flat card is refused with `approval_card_invalid` (the app then sends the
+legacy shape for that draft, whose technical card shows everything):
+
+| Preview field | On the flat card |
+|---|---|
+| `appId` | constant `forkicks` (checked) |
+| `draftId` | bound: the per-draftId approval key and record |
+| `displayName` | shown (Name) |
+| `paymentMethod` | shown (Total) |
+| `quote.lines[i]` name, qty, options | shown (Order); `unitInr`/`lineInr` are the merchant's prices behind the shown Total |
+| `quote.lines[i]` itemId, optionIds | bound: must equal `items[i]` (else refused) |
+| `quote.totalInr`, `quote.location.name` | shown (Total, Pickup) |
+| rest of `quote` | the merchant's own answer for this quoteId, not text the agent sends |
+| `items[i]` | exactly `{itemId, optionIds, qty}`, equal to `quote.lines[i]` (else refused) |
+| `fulfilment` | exactly `type` (shown), `locationId` (must equal `quote.location.id` / `quote.locationId` when present), `date` (shown), `deliveryAddress` (shown; only on a delivery, else refused); any other key refused |
+| `note` | agent-written text sent to the café, NOT on the four rows: a non-empty `note` REFUSES the flat card |
+
+So the APP must emit the legacy shape whenever the draft has a non-empty `note` (or any case above), or every such
+order fails on the box. Simplest app rule: run this formatter at prepare; on ANY refusal (`approval_card_invalid`
+or `approval_card_not_minimal`) emit the legacy shape for that draft.
+
 ## The minimal-card budget (never cut a purchase)
 
 approval-md 0.4.7 `telegram-minimal`: a quoted value is cut past `MINIMAL_QUOTE_MAX` = 280 code points, two

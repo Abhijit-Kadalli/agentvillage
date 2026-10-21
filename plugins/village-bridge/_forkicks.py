@@ -115,11 +115,45 @@ def card_value_fits(value):
             return False
     return True
 
+# What the flat card shows is what the order sends (security review, WYSIWYS). Every preview field is SHOWN on the four
+# rows, BOUND to a shown one, or the flat card is refused (approval_card_invalid) and the app sends the legacy shape,
+# whose technical card shows everything:
+#   appId                 constant "forkicks" (checked);
+#   draftId               the per-draftId approval key and record (bound);
+#   displayName           shown (name);
+#   paymentMethod         shown (total);
+#   quote.lines           name, qty, options shown (order); unitInr/lineInr are the merchant's prices summed in the shown
+#                         total; itemId/optionIds must equal items[i] (bound);
+#   quote.totalInr        shown (total); quote.location.name shown (pickup); the rest of the quote is the merchant's own
+#                         answer for this quoteId, not text the agent sends;
+#   items[i]              exactly {itemId, optionIds, qty}, equal to quote.lines[i] (bound);
+#   fulfilment            exactly type (shown), locationId (equal to the quote's location id when it names one), date
+#                         (shown), deliveryAddress (shown; only for delivery);
+#   note                  text the agent writes to the café, NOT on the four rows: a non-empty note is REFUSED.
+FULFILMENT_KEYS = frozenset({"type", "locationId", "date", "deliveryAddress"})
+
+def _card_unshown(preview):
+    """Why the flat card would not show everything this order sends, or None."""
+    quote, fulfilment = preview["quote"], preview["fulfilment"]
+    if preview.get("note", "") != "":
+        return "note"
+    if not isinstance(fulfilment, dict) or not set(fulfilment) <= FULFILMENT_KEYS or (fulfilment["type"] != "delivery" and "deliveryAddress" in fulfilment):
+        return "fulfilment"
+    location = quote["location"]
+    if fulfilment.get("locationId") != location.get("id", fulfilment.get("locationId")) or fulfilment.get("locationId") != quote.get("locationId", fulfilment.get("locationId")):
+        return "location"
+    for item, line in zip(preview["items"], quote["lines"]):
+        if not isinstance(item, dict) or set(item) != {"itemId", "optionIds", "qty"} or line.get("itemId") != item["itemId"] or line.get("optionIds") != item["optionIds"]:
+            return "items"
+    return None
+
 def card_fields(preview):
     """The four strings of the flat order card, from the app's saved order preview. Mirrored byte for byte by the app
     (prepare + confirm) and the CP forkicksSummary mirror; spec + golden vectors in tests/vectors/."""
     approval_summary({"preview": preview})  # every check the technical card makes, first
     try:
+        if _card_unshown(preview) is not None:
+            raise ValueError("approval_card_invalid")
         quote, fulfilment = preview["quote"], preview["fulfilment"]
         lines = []
         for line in quote["lines"]:
