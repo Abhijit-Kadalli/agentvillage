@@ -27,6 +27,7 @@ plugins/av-events/
   _negotiator_llm.py  llm.call (caller moralmod_negotiator) for each model step the Index plugin's bridge makes: wraps that bridge's own client only (MM-INFER-VIS, dark behind AV_EVENTS_NEGOTIATOR_LLM)
   _messages.py     message.in/out payloads and the punctuation flags (pure)
   _edgeos.py       the curl and script-verb parsers, EdgeOS operations, the action ledger and planner
+  _skill_label.py  tool.call label for a terminal run of a shipped skill's script: target_system skill, operation the skill name (pure; B-169b)
   _cron.py         cron.run from the executions ledger and usage audit (flusher thread only)
   _outcome_ask.py  the evening outcome ask: outcome.asked and the resident's answer (DATA-42)
   _headline_flagged.py  opportunity.headline_flagged from the proactive trigger's hand-off files: ids and codes, no text (DATA-487)
@@ -1136,6 +1137,20 @@ tool, before any `action.*` or `intention.*` the same call implies.
 - **Refs.** `tool_call_id` is Hermes's, nulled if it fails the id pattern; `run_id` as for
   `llm.call`; `occurred_at` is when the call returned and `occurred_at_earliest` that minus
   `duration_ms`.
+- **Skill scripts (B-169b, v2.1.11+).** A `terminal` call whose command's first words are exactly
+  `bun|python3|node skills/<name>/scripts/<file>` (the form every shipped recipe uses, run from the
+  Hermes folder; no `cd`, assignment or other prefix) carries `target_system: "skill"` and
+  `operation: "<name>"` when `<name>` is a skill the installer ships (`_skill_label.SHIPPED_SKILLS`,
+  kept equal to `install/paths.ts` `EDGE_SKILL_NAMES` by `tests/test_skill_label.py`) or one of
+  the two installed by their own steps (`recall`, `approval`), and matches `^[a-z][a-z0-9_.-]{0,63}$` (data's door pattern);
+  any other name is `operation: "other"`. The label follows the script: Simocracy's recipes run
+  agent-commons' script, so a Simocracy block pages as `skill.agent-commons`. Nothing else of the command
+  leaves: no argument, no file name, no path beyond the skill's name. Data keys the family
+  `skill.<operation>` (unknowns pooled as `skill.other`); its door takes `skill` from data#608 on,
+  which must be deployed before a box runs this. The EdgeOS labels come first: a run of
+  `skills/edgeos/scripts/edgeos.ts` is `edgeos` / `edgeos.<verb>` when the EdgeOS reader reads it
+  and unlabelled when it does not, never `skill`; the edgeos skill's other scripts are `skill` /
+  `edgeos`. A label routes an alert and grants nothing.
 - **Isolation.** The `tool.call`, the EdgeOS path, `code.run` and intention capture are isolated
   from one another inside the hook: an exception in one does not cost the others their events. It
   is counted against the breaker like any hook failure, except in `code.run`, which only bumps the
