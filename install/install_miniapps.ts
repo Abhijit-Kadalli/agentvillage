@@ -86,6 +86,11 @@ export function zzzParticipation(projection: { apps: readonly { id: string }[] }
  * is a REGULAR file (never a symlink, directory, FIFO or dangling link), and an installer-written marker (the two
  * shims, participate.md) only when its bytes are a version this installer shipped (zzzShippedFile). The plugin's two
  * state files cannot be byte-matched (their content is per box): they count as regular files in a real zzzbot/ folder.
+ * Revocation still removes the job while ANY genuine marker remains (one shipped file, or the plugin's state alone with
+ * every installer file edited). Documented residual (review-b S4-r (b)): a job record with NO genuine marker left (every
+ * installer file deleted or edited by someone else, no state) is neither read nor removed on a gate-off box. It is inert:
+ * the plugin's participation_on (the poll and the cron root's managed_context) reads only the cp projection, so that
+ * job gets no managed ZZZ path; the next stage carrying the pair re-takes it. Pinned in zzz_managed_job.test.ts.
  */
 const ZZZ_MARKERS: readonly { parts: readonly string[]; kind: ZzzShippedKind | null }[] = [
   { parts: ["scripts", ZZZ_SHIM], kind: "shim" }, { parts: ["skills", "zzzbot", "scripts", ZZZ_SHIM], kind: "shim" },

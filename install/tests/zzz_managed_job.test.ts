@@ -937,3 +937,50 @@ test("N12: the shipped sha table holds this checkout's managed-file bytes, and o
   writeFileSync(join(home, "zzzbot", "managed-pairs.lock"), "");
   expect(zzzMarkerScan(home)).toEqual({ ours: true, notOurs: [`scripts/${ZZZ_JOB_SCRIPT}`, "zzzbot/managed-pairs.json"] });
 });
+
+/** A box the pair turned on, then every installer-written file edited (sha mismatch: not ours), the job still there. */
+function editedOnceOnBox(withState: boolean) {
+  const box = fakeBox();
+  expect(box.stage(projection).status).toBe(0);
+  expect(box.jobs()).toHaveLength(1);
+  for (const marker of INSTALLER_MARKERS) writeFileSync(join(box.home, marker), `${readFileSync(join(box.home, marker), "utf8")}# edited by the resident\n`);
+  if (withState) seedState(box.home);
+  const edited = Object.fromEntries(INSTALLER_MARKERS.map(marker => [marker, readFileSync(join(box.home, marker), "base64")]));
+  return { ...box, edited };
+}
+
+test("revocation (security review): with every installer file edited, genuine plugin state alone still removes the job; the edited files stay", () => {
+  for (const input of [alone as unknown, "not json"]) {
+    const { home, jobs, edited } = editedOnceOnBox(true);
+    expect(zzzMarkerScan(home)).toEqual({ ours: true, notOurs: INSTALLER_MARKERS });
+    const result = spiedStage(home, input);
+    expect(`${result.status} ${result.stderr}`).toBe(typeof input === "string" ? `1 ${notice(INSTALLER_MARKERS)}${FAILED}` : `0 ${notice(INSTALLER_MARKERS)}`);
+    expect(result.spawns).not.toBe("");
+    // The job is gone and so is the plugin's state; the resident's edited files are exactly as they were.
+    expect(jobs()).toHaveLength(0);
+    expect(existsSync(join(home, "zzzbot"))).toBe(false);
+    for (const marker of INSTALLER_MARKERS) expect(`${marker}: ${readFileSync(join(home, marker), "base64")}`).toBe(`${marker}: ${edited[marker]}`);
+    expect(zzzMarkerOnDisk(home)).toBe(false);
+    for (const args of [[], ["--verify"]]) expect(spiedStage(home, alone, args).status).toBe(0);
+    expect(pluginParticipation(home)).toBe("False");
+  }
+});
+
+test("documented residual (review-b S4-r (b), N12): a job with NO genuine marker left is not read or removed, and it is inert: participation is projection-only", () => {
+  const { home, jobs, edited } = editedOnceOnBox(false);
+  const record = jobs();
+  expect(zzzMarkerOnDisk(home)).toBe(false);
+  // Gate off and no marker is main's stage: jobs.json is never read, nothing is removed or spawned.
+  for (const args of [[], ["--verify"]]) {
+    const result = spiedStage(home, alone, args);
+    expect(`${args}: ${result.status} ${result.stderr}|${result.spawns}`).toBe(`${args}: 0 ${notice(INSTALLER_MARKERS)}|`);
+  }
+  expect(jobs()).toEqual(record);
+  for (const marker of INSTALLER_MARKERS) expect(readFileSync(join(home, marker), "base64")).toBe(edited[marker]);
+  // Inert: the plugin's participation (the poll's and the cron root's managed_context gate) reads only the projection.
+  expect(pluginParticipation(home)).toBe("False");
+  // A good stage carrying the pair again re-takes the job (one record, the installer's) and rewrites its own files.
+  expect(spiedStage(home, projection).status).toBe(0);
+  expect(jobs()).toHaveLength(1);
+  expect(zzzMarkerOnDisk(home)).toBe(true);
+});
