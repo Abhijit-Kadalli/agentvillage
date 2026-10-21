@@ -176,9 +176,11 @@ const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 /**
  * Every format character (Unicode Cf), after NFKC: zero-width spaces and joiners, the BOM, the soft hyphen,
  * invisible operators and the tag block (U+E0001, U+E0020-E007F, "ASCII smuggling"), which a reader cannot
- * see but a model may read (review-a ov#453 S3; Hermes's INVISIBLE_CHARS, tools/threat_patterns.py).
+ * see but a model may read (review-a ov#453 S3; Hermes's INVISIBLE_CHARS, tools/threat_patterns.py),
+ * and every other default-ignorable code point: variation selectors, Hangul fillers, the combining
+ * grapheme joiner and the unassigned ignorables (review-a S-F1). An emoji loses its U+FE0F; it still shows.
  */
-const FORMAT = /\p{Cf}/gu;
+const FORMAT = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 const LINE_BREAKS = /[\t\n\v\f\r\u0085\u2028\u2029]/g;
 const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;

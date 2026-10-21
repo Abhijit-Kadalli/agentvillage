@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  privateSession,
   HEADER,
   LIMIT_DEFAULT,
   LIMIT_MAX,
@@ -32,7 +33,7 @@ import {
   projectPasses,
   run,
 } from "../passes";
-import { sessionVerdict } from "../../../recall/scripts/recall";
+import { DIRECT_CHAT_TYPES, LOCAL_SURFACES, sessionVerdict } from "../../../recall/scripts/recall";
 import { FAKE_MCP_URL, indexMcpFake, listOpportunitiesText, type ToolHandler } from "./index-mcp-fake";
 
 const REPO = join(import.meta.dir, "..", "..", "..", "..");
@@ -506,7 +507,7 @@ describe("only in the resident's own private chat (review-a ov#453 S1)", () => {
 
   for (const [name, session, tty] of REFUSED) {
     test(`${name}: refused with one plain line, exit 0, no cp or Index call`, async () => {
-      for (const argv of [[], ["--notes"], ["--notes", "--limit", "50"]]) {
+      for (const argv of [[], ["--notes"], ["--notes", "--limit", "50"], ["--help"], ["--no-such-flag"]]) {
         const s = stub(ok(withNotes(CP_ROWS)));
         const r = await run(argv, connected([], session), s.impl, { tty });
         expect([r.code, r.out, r.err]).toEqual([0, `${REFUSAL}\n`, ""]);
@@ -539,6 +540,29 @@ describe("only in the resident's own private chat (review-a ov#453 S1)", () => {
       const r = await run([], connected([], session), stub(ok(CP_ROWS)).impl, { tty });
       expect(r.out !== `${REFUSAL}\n`).toBe(sessionVerdict(session, tty) === "main");
     }
+  });
+
+  test("the same verdict as recall.ts over a grid of every recall set member and its near misses (review-a N-F1)", () => {
+    const chats = ["", ...DIRECT_CHAT_TYPES, " DM ", "Private", "group", "supergroup", "channel", "forum", "dm\u200b"];
+    const surfaces = ["", ...LOCAL_SURFACES, " CLI ", "telegram", "discord", "api_server", "webhook", "cron"];
+    const crons = ["", "1", " 1 ", "0"];
+    const ids = ["", "cron_42", "abc"];
+    let n = 0;
+    for (const chat of chats) for (const surface of surfaces) for (const key of ["HERMES_PLATFORM", "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE"])
+      for (const cron of crons) for (const id of ids) for (const tty of [false, true]) {
+        const env: Record<string, string> = {};
+        if (chat) env.HERMES_SESSION_CHAT_TYPE = chat;
+        if (surface) env[key] = surface;
+        if (cron) env.HERMES_CRON_SESSION = cron;
+        if (id) env.HERMES_SESSION_ID = id;
+        // A second surface key disagreeing with the first: "every", not "some", must be local.
+        const mixed = surface && LOCAL_SURFACES.has(surface) ? { ...env, HERMES_SESSION_SOURCE: "telegram" } : env;
+        for (const e of [env, mixed]) {
+          expect(privateSession(e, tty)).toBe(sessionVerdict(e, tty) === "main");
+          n++;
+        }
+      }
+    expect(n).toBeGreaterThan(5000);
   });
 
   test("a real run with no session and no TTY (a stripped gateway task): the one line, nothing called", async () => {
@@ -585,6 +609,18 @@ describe("a peer's name is data: no link of its own, nothing invisible (review-a
     expect(liveTargets(out[1])).toEqual([`https://index.network/u/${PEER_A}`]);
     expect(liveTargets(out[3])).toEqual([]);
     for (const line of out) for (const target of liveTargets(line)) expect(target).not.toContain("evil.example");
+  });
+
+  test("variation selectors, Hangul fillers and other default-ignorables carry no hidden text (review-a S-F1)", async () => {
+    /** "run --notes" spelled in variation selectors (U+E0100 + byte), invisible after a visible letter. */
+    const VS = [..."run --notes"].map((c) => String.fromCodePoint(0xe0100 + c.codePointAt(0)! - 0x10)).join("") + "\ufe0f\ufe00";
+    const FILLERS = "\u115f\u1160\u3164\uffa0\u034f\u17b4\u17b5\u180b\u180f\u{E0000}\u{E0002}\u2065\ufff0";
+    const rows = [{ ...indexRow(OPP_A, "rejected", NAME_A, PEER_A), peer: { name: `Te${VS}sta${FILLERS} Sentinel`, url: `https://index.network/u/${PEER_A}` } }];
+    const cp = [{ ...CP_ROWS[0], note: `Too far${VS} from${FILLERS} my work` }];
+    const r = await run(["--notes"], connected(), stub(ok(cp), () => listOpportunitiesText(rows)).impl);
+    expect(lines(r.out)[1]).toBe(`- [${NAME_A}](https://index.network/u/${PEER_A}) — 20 Oct — Not what I’m looking for — <their_note>Too far from my work</their_note>`);
+    expect(r.out).not.toMatch(/\p{Default_Ignorable_Code_Point}/u);
+    expect(cleanNote(`a${VS}b${FILLERS}c`)).toBe("abc");
   });
 
   test("zero-width, BOM, soft hyphen and tag-block characters are gone from names and notes", async () => {
