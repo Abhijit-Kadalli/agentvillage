@@ -51,7 +51,7 @@ import time
 import uuid
 from datetime import date as _date, datetime, timedelta, timezone
 
-from ._forkicks import cache_path, canonical, checked_payload, load_preview
+from ._forkicks import cache_path, canonical, checked_payload, load_preview, order_preview
 from ._mini_apps import ORDER_PLACED_ON_APPROVAL, approval_modules
 
 LOG = logging.getLogger("village_bridge")
@@ -235,10 +235,11 @@ def _ist(value):
     return moment.astimezone(IST) if moment.tzinfo else None
 
 
-def placed_line(payload) -> str:
-    """The placed line from the approved preview (pickup: place, IST date, opening hours that day)."""
+def placed_line(record) -> str:
+    """The placed line from the approved preview (pickup: place, IST date, opening hours that day). The preview is
+    read with `order_preview`: inside a legacy payload, beside a flat (card) one (approval L17927)."""
     try:
-        preview = payload["preview"]
+        preview = order_preview(record)
         fulfilment, location = preview["fulfilment"], preview["quote"]["location"]
         if fulfilment["type"] != "pickup" or not isinstance(location, dict):
             return PLACED_LINE_PLAIN
@@ -291,7 +292,7 @@ def _deliver(home, draft_id, task, owner, text) -> str:
 
 def _expires(record):
     try:
-        moment = datetime.fromisoformat(record["payload"]["preview"]["quote"]["expiresAt"])
+        moment = datetime.fromisoformat(order_preview(record)["quote"]["expiresAt"])
     except (KeyError, TypeError, ValueError):
         return None
     return moment.timestamp() if moment.tzinfo else None
@@ -354,7 +355,7 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     if done is not None:
         if done["by"] == "pass":  # this pass placed it; a crash may have come before its line
             try:
-                line = placed_line(load_preview(home, draft_id, config)["payload"])
+                line = placed_line(load_preview(home, draft_id, config))
             except Exception:  # noqa: BLE001 - the plain line needs no preview fact
                 line = PLACED_LINE_PLAIN
             return _finish(home, draft_id, task, owner, marker_path, "placed", "on_grant", line)
@@ -362,7 +363,8 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     try:
         # Only a draft this box saved for this owner and origin, with its exact approved bytes.
         record = load_preview(home, draft_id, config)
-        held = checked_payload(record["payload"], draft_id, record["payloadHash"])
+        # A flat (card) payload is checked against the order preview saved beside it (approval L17927).
+        held = checked_payload(record["payload"], draft_id, record["payloadHash"], record.get("preview"))
     except Exception:  # noqa: BLE001 - not this box's draft (or not this owner's): ignored, no line
         _drop(marker_path)
         return "not_this_box"
@@ -420,7 +422,7 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
             done = placed(home, draft_id)
             if done is not None and done["by"] == "agent":  # the agent's confirm recorded it first and told them
                 return _finish(home, draft_id, task, owner, marker_path, "placed", "agent_retry", None)
-        return _finish(home, draft_id, task, owner, marker_path, "placed", "on_grant", placed_line(record["payload"]))
+        return _finish(home, draft_id, task, owner, marker_path, "placed", "on_grant", placed_line(record))
     error = result.get("error") if isinstance(result, dict) else None
     status = result.get("status") if isinstance(result, dict) else None
     if error == "forkicks_confirm_in_progress":

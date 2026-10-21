@@ -115,18 +115,27 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.app = App(self)
         self.transport.side_effect = self.app
 
-    def preview(self, draft=DRAFT, expires='2099-01-01T00:00:00+05:30'):
+    def preview(self, draft=DRAFT, expires='2099-01-01T00:00:00+05:30', shape='legacy'):
+        """The app's prepare answer. `legacy`: today's {appId, operation, preview} payload. `flat`: the four-key card
+        payload {order, total, pickup, name} with the order preview BESIDE it (part A, ov#446)."""
         order = {'items': [{'itemId': 'coffee', 'qty': 2, 'optionIds': ['oat']}], 'fulfilment': {'type': 'pickup', 'locationId': 'cafe', 'date': '2026-10-19'}, 'paymentMethod': 'card_on_pickup'}
         quote = {'quoteId': 'quote-1', 'expiresAt': expires, 'canOrder': True, 'totalInr': 380,
                  'location': {'name': 'Café Mandrem', 'address': 'Mandrem, Goa', 'opens': '2026-10-19T08:00:00+05:30', 'closes': '2026-10-19T18:00:00+05:30'},
                  'lines': [{'name': 'Coffee', 'qty': 2, 'options': ['oat milk'], 'unitInr': 190, 'lineInr': 380}]}
-        payload = {'appId': 'forkicks', 'operation': 'forkicks.order.confirm', 'preview': {'appId': 'forkicks', 'draftId': draft, **order, 'quote': quote, 'displayName': 'Priya'}}
-        return {'draftId': draft, 'quote': quote, 'approvalPayload': payload, 'payloadHash': hashlib.sha256(fk.canonical(payload).encode()).hexdigest()}, order
+        if shape == 'flat':
+            # The flat card binds each quote line to its item (itemId/optionIds), as the app's quote carries them.
+            quote['lines'][0].update({'itemId': 'coffee', 'optionIds': ['oat']})
+        preview = {'appId': 'forkicks', 'draftId': draft, **order, 'quote': quote, 'displayName': 'Priya'}
+        payload = fk.card_fields(preview) if shape == 'flat' else {'appId': 'forkicks', 'operation': 'forkicks.order.confirm', 'preview': preview}
+        result = {'draftId': draft, 'quote': quote, 'approvalPayload': payload, 'payloadHash': hashlib.sha256(fk.canonical(payload).encode()).hexdigest()}
+        if shape == 'flat':
+            result['preview'] = preview
+        return result, order
 
-    def ask(self, expires='2099-01-01T00:00:00+05:30'):
+    def ask(self, expires='2099-01-01T00:00:00+05:30', shape='legacy'):
         """Prepare in one turn, confirm in the next: the card is sent and not tapped yet."""
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
-        self.prepared, order = self.preview(expires=expires)
+        self.prepared, order = self.preview(expires=expires, shape=shape)
         self.assertIn('data', self.call({'operation': 'forkicks.order.prepare', **order}))
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
         self.transport.reset_mock()
@@ -225,6 +234,64 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.daemon.state = 'granted'
         self.run_pass()
         self.assertEqual([owner for owner, _ in self.sent], [self.config['ownerTelegramId']])
+
+    # ---- the flat (card-shape) record: part A's payload, the order preview beside it ----------------
+
+    def test_flat_card_record_is_tracked_granted_started_confirmed_and_told_once(self):
+        # approval L17927 BLOCKER: under part A a card record's payload is {order, total, pickup, name} and the order
+        # preview is saved BESIDE it (record['preview']). The pass must check it with that preview and read the quote
+        # expiry and the line's facts from it, or it drops the marker as not_this_box and nothing is ever placed.
+        response = self.ask(shape='flat')
+        self.assertEqual(set(self.prepared['approvalPayload']), fk.CARD_KEYS)
+        self.assertEqual(response, {'error': 'approval_required', 'instruction': mini.ORDER_PLACED_ON_APPROVAL})
+        record = json.loads(self.marker('.json').read_text())
+        self.assertTrue(fk.is_flat(record['payload']))
+        self.assertEqual(record['preview'], self.prepared['preview'])
+        self.assertEqual((json.loads(self.marker().read_text())['task']), TASK)  # tracked
+        self.run_pass()  # not tapped yet: still tracked, nothing started
+        self.assertTrue(self.marker().exists())
+        self.daemon.start.assert_not_called()
+        self.daemon.state = 'granted'
+        self.run_pass()
+        held = fk.canonical(self.prepared['approvalPayload'])
+        self.daemon.start.assert_called_once_with(TASK, KEY, held)  # the app's card bytes, byte for byte
+        self.assertEqual(self.daemon.propose.call_count, 1)
+        self.assertEqual(self.daemon.propose.call_args.args[3], held)
+        [confirm] = self.confirms()
+        self.assertEqual(confirm.args[1], {'operation': 'forkicks.order.confirm', 'draftId': DRAFT, 'approval': {
+            'taskId': TASK, 'payloadHash': self.prepared['payloadHash'], 'payload': self.prepared['approvalPayload']}})
+        self.assertEqual(self.app.orders, 1)
+        self.assertEqual(self.sent, [('42', PLACED)])  # exactly one placed line, with the preview's facts
+        self.assertEqual(self.events, [{'outcome': 'placed', 'code': 'on_grant'}])
+        self.assertFalse(self.marker().exists())
+        self.assertEqual(json.loads(self.marker('.placed').read_text())['by'], 'pass')
+        self.run_pass(); self.run_pass()
+        self.assertEqual((len(self.confirms()), len(self.sent), len(self.events)), (1, 1, 1))
+        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('11')
+        self.transport.reset_mock()
+        self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': DRAFT})['data'], RECEIPT)
+        self.transport.assert_not_called()
+
+    def test_flat_card_record_with_an_expired_quote_is_told_expired_never_started(self):
+        self.ask(expires='2020-01-01T00:00:00+05:30', shape='flat')
+        self.daemon.state = 'granted'
+        self.run_pass()
+        self.daemon.wait.assert_not_called()
+        self.daemon.start.assert_not_called()
+        self.assertEqual(self.confirms(), [])
+        self.assertEqual(self.sent, [('42', "Your For Kicks order wasn't placed: the approval or the price quote expired.")])
+        self.assertEqual(self.events, [{'outcome': 'expired', 'code': 'quote_expired'}])
+
+    def test_flat_card_record_whose_saved_preview_was_changed_is_ignored(self):
+        self.ask(shape='flat')
+        path = self.marker('.json')
+        record = json.loads(path.read_text()); record['preview']['displayName'] = 'Mallory'
+        os.chmod(path, 0o600); path.write_text(fk.canonical(record))
+        self.daemon.state = 'granted'
+        self.run_pass()
+        self.daemon.wait.assert_not_called()
+        self.assertEqual((self.confirms(), self.sent, self.events), ([], [], []))
+        self.assertFalse(self.marker().exists())
 
     # ---- consent: only a human grant ---------------------------------------------------------------
 
@@ -416,18 +483,26 @@ class ForKicksOnGrantTest(unittest.TestCase):
             self.assertNotIn(private, text)
 
     def test_lines_are_product_constants_and_never_ask_for_approval(self):
-        self.assertEqual(grant.placed_line(self.preview()[0]['approvalPayload']), PLACED)
-        delivery = self.preview()[0]['approvalPayload']
-        delivery['preview']['fulfilment'] = {'type': 'delivery', 'locationId': 'cafe', 'deliveryAddress': 'House A'}
+        def record(shape='legacy'):
+            result = self.preview(shape=shape)[0]
+            return {'payload': result['approvalPayload'], **({'preview': result['preview']} if shape == 'flat' else {})}
+
+        self.assertEqual(grant.placed_line(record()), PLACED)
+        self.assertEqual(grant.placed_line(record('flat')), PLACED)  # the preview BESIDE a flat payload
+        delivery = record()
+        delivery['payload']['preview']['fulfilment'] = {'type': 'delivery', 'locationId': 'cafe', 'deliveryAddress': 'House A'}
         self.assertEqual(grant.placed_line(delivery), grant.PLACED_LINE_PLAIN)
-        hostile = self.preview()[0]['approvalPayload']
+        hostile = record()
         for name in ('MEDIA:/etc/passwd', 'x MEDIA: /tmp/a.png'):
-            hostile['preview']['quote']['location']['name'] = name
+            hostile['payload']['preview']['quote']['location']['name'] = name
             self.assertNotIn('MEDIA:', grant.placed_line(hostile))
-        hostile['preview']['quote']['location']['name'] = '\u202e'
+        hostile['payload']['preview']['quote']['location']['name'] = '\u202e'
         self.assertEqual(grant.placed_line(hostile), grant.PLACED_LINE_PLAIN)
-        hostile['preview']['quote']['location']['name'] = '*Café* [x](https://e.vil)‮'
+        hostile['payload']['preview']['quote']['location']['name'] = '*Café* [x](https://e.vil)‮'
         self.assertNotIn('[', grant.placed_line(hostile)); self.assertNotIn('*', grant.placed_line(hostile))
+        flat = record('flat')
+        flat['preview']['quote']['location']['name'] = 'MEDIA:/etc/passwd'
+        self.assertNotIn('MEDIA:', grant.placed_line(flat))
         for line in [grant.PLACED_LINE, grant.PLACED_LINE_PLAIN] + [grant.NOT_PLACED_LINE.format(reason=r) for r in grant.REASONS.values()]:
             self.assertNotIn('tap', line.lower())
             self.assertNotRegex(line.lower(), r'\bapprove\b')
