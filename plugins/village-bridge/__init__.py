@@ -21,7 +21,7 @@ from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit
 from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT,
                          ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS)
-from ._forkicks import save_preview, load_preview, authorize_order, ORDER_APPROVE_IN_BOT
+from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
 
 SETTINGS = "https://agents.edgecity.live/connections/village"
@@ -756,7 +756,7 @@ class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
 
-def transport(config, payload):
+def transport(config, payload, flat_card=True):
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if payload.get("operation", "").startswith("forkicks.") and len(data) > 65536:
         raise ValueError("request_too_large")
@@ -765,7 +765,7 @@ def transport(config, payload):
     if payload.get("operation") in (*ZZZ_WRITE_OPERATIONS, "slopfolio.prepare", "forkicks.order.confirm"):
         # The app selects a larger request budget only for these declared writes.
         headers["X-Village-Operation"] = payload["operation"]
-    if payload.get("operation") == "forkicks.order.prepare":
+    if payload.get("operation") == "forkicks.order.prepare" and flat_card:
         # This box accepts the flat order card (_forkicks.py CARD_KEYS); the app sends it only on seeing this header.
         headers["X-Village-Forkicks-Card"] = "1"
     request = Request(config["origin"] + "/api/v1/village-bridge/tool", data=data,
@@ -1100,7 +1100,20 @@ def handle(args, **kwargs):
                     ("Use this current text menu, or retry the image only on request." if menu is not None else "Offer forkicks.menu without format for the current text menu.") +
                     " Do not claim image delivery.", "handling": HANDLING}, ensure_ascii=False)
         if op == "forkicks.order.prepare":
-            save_preview(home, result, context, config)
+            try:
+                save_preview(home, result, context, config)
+            except ValueError as error:
+                # review-b app#516 S1, lead L17847: the app's Unicode tables can be newer than this box's (a name valid
+                # to the app may fail card_fields here), and only the app picks the shape. So a flat card this box
+                # refuses (a card error, a mismatch included) is prepared ONCE more without the flat-card header: the
+                # app quotes again and stores a NEW draft in the legacy shape (technical card), and only that draft is
+                # saved, shown to the agent and confirmable here; the card draft was never saved, so it can never be
+                # proposed or confirmed, and it expires with its quote. A second failure raises as before. Prepare only.
+                if not (isinstance(result, dict) and is_flat(result.get("approvalPayload")) and str(error) in CARD_FALLBACK_ERRORS):
+                    raise
+                LOG.warning("village_bridge forkicks card_fallback_legacy code=%s", error)  # the code only
+                result = transport(config, payload, flat_card=False)
+                save_preview(home, result, context, config)
         if op == "rolodex.person":
             result = person_answer(result)
         elif op in ZZZ_OPERATIONS:

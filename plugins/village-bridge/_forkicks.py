@@ -24,6 +24,8 @@ SUMMARY_HTML_MAX_BYTES = 3000
 # Both shapes are proposed under the same class and per-draftId key as before (approval L17713: no class change in the
 # v2.1.10 hotfix). Spec + golden vectors: tests/vectors/forkicks-approval-card.{md,json}.
 APPROVAL_CLASS = "marketplace.app.action"
+# The card refusals the prepare path answers by preparing once more in the legacy shape (__init__.py, lead L17847).
+CARD_FALLBACK_ERRORS = frozenset({"approval_card_invalid", "approval_card_not_minimal", "approval_card_too_long"})
 LEGACY_KEYS = frozenset({"appId", "operation", "preview"})
 CARD_KEYS = frozenset({"order", "total", "pickup", "name"})
 PREVIEW_KEYS = frozenset({"appId", "draftId", "quote", "displayName", "items", "fulfilment", "paymentMethod"})

@@ -22,6 +22,19 @@ L17737): a box with this change sends `X-Village-Forkicks-Card: 1` on `forkicks.
 operation); the app emits the four-key payload ONLY on a prepare that carries it, so a box without it keeps
 getting the legacy shape.
 
+FALLBACK (review-b app#516 S1, lead L17847): the box's Python Unicode tables can be OLDER than the app's Node. The dev
+box runs Python 3.11.8, `unicodedata.unidata_version` 14.0.0; Hermes requires Python >=3.11,<3.14; Node ships
+Unicode 15-17. A text valid to the app (e.g. a display name with U+1FA77, Unicode 15) can then fail `card_fields`
+on the box. So when a prepare answer carries a four-key payload that the box refuses with a card error
+(`approval_card_invalid`, `approval_card_not_minimal`, `approval_card_too_long`; a mismatch included), the box logs
+`card_fallback_legacy` (the code only) and calls `forkicks.order.prepare` ONCE more without
+`X-Village-Forkicks-Card`. The app quotes again and stores a NEW draft (app#516 prepare: `randomUUID()` + INSERT
+every call, no reuse) whose hash is the legacy payload's; only that draft is saved, returned to the agent and
+confirmable here. The card draft was never saved on the box (checked_payload refuses before any write), so it is
+never proposed or confirmed, and it expires with its quote. A second failure, or any other refusal (a bad hash, a
+wrong draft), raises as before. The confirm path never prepares again. Vectors stay Unicode-version-neutral (no
+code point newer than Unicode 14).
+
 ## The four strings
 
 Input: the app's order preview `p` (keys `appId, draftId, quote, displayName, items, fulfilment, paymentMethod`,

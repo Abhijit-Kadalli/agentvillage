@@ -276,6 +276,68 @@ class FlatCardBoxTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '^approval_card_invalid$'):
                 fk.card_fields(p)
 
+    def legacy_after_flat(self, flat):
+        """The app's answer to the re-prepare without the header: a NEW draft in the legacy shape."""
+        preview = dict(flat['preview'], draftId=flat['draftId'] + '-legacy')
+        payload = {'appId': 'forkicks', 'operation': 'forkicks.order.confirm', 'preview': preview}
+        return {'draftId': preview['draftId'], 'quote': preview['quote'], 'displayName': preview['displayName'],
+                'approvalPayload': payload, 'payloadHash': hashed(payload)}
+
+    def test_a_flat_card_the_box_cannot_derive_is_prepared_again_in_the_legacy_shape(self):
+        # review-b app#516 S1, lead L17847: the app's Unicode tables can be newer than this box's; the order still goes through.
+        cases = [('a card string that differs', 'approval_card_invalid')]
+        if fk.unicodedata.category('\U0001FA77') == 'Cn':  # unassigned in this Python (3.11: Unicode 14), assigned in Unicode 15
+            cases.insert(0, ('a Unicode 15 name', 'approval_card_not_minimal'))
+        for n, (label, code) in enumerate(cases):
+            with self.subTest(label):
+                self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
+                flat = self.app_answer()
+                flat['draftId'] = flat['preview']['draftId'] = f'd-fb-{n}'
+                if code == 'approval_card_not_minimal':
+                    flat['preview']['displayName'] = 'Priya\U0001FA77'
+                    flat['approvalPayload'] = {**flat['approvalPayload'], 'name': 'Priya\U0001FA77'}
+                else:
+                    flat['approvalPayload'] = {**flat['approvalPayload'], 'order': '1 × Free latte'}
+                flat['payloadHash'] = hashed(flat['approvalPayload'])
+                legacy = self.legacy_after_flat(flat)
+                self.enable(); self.transport.reset_mock(); self.transport.side_effect = [flat, legacy]
+                with self.assertLogs('village_bridge', 'WARNING') as logs:
+                    out = self.call(self.args(flat))
+                self.assertEqual(out.get('data'), legacy, out)  # the agent only ever sees the legacy draft
+                self.assertEqual([c.kwargs for c in self.transport.call_args_list], [{}, {'flat_card': False}])
+                self.assertEqual(self.transport.call_args_list[0].args, self.transport.call_args_list[1].args)
+                self.assertEqual(logs.output, ['WARNING:village_bridge:village_bridge forkicks card_fallback_legacy code=' + code])
+                self.assertFalse(self.record_path(flat['draftId']).exists())  # the card draft is never saved
+                self.assertEqual(json.loads(self.record_path(legacy['draftId']).read_text())['payload'], legacy['approvalPayload'])
+                self.transport.side_effect = None; self.transport.reset_mock()
+                self.transport.return_value = {'orderId': 'order-1', 'number': '#042', 'payment': {'simulated': True, 'label': 'Test payment, no money moved'}}
+                self.next_turn(); ap = self.daemon()
+                self.assertIn('data', self.confirm(legacy['draftId'], ap))
+                self.assertEqual(json.loads(ap.propose.call_args.args[3]), legacy['approvalPayload'])
+                self.assertEqual(self.transport.call_count, 1)  # the confirm itself; never a re-prepare
+                self.assertEqual(self.transport.call_args.args[1]['draftId'], legacy['draftId'])
+                # The card draft cannot be confirmed through this box.
+                ap = self.daemon()
+                self.assertEqual(self.confirm(flat['draftId'], ap)['error'], 'approval_preview_unavailable'); ap.propose.assert_not_called()
+
+    def test_the_fallback_runs_once_never_for_a_bad_hash_and_never_on_confirm(self):
+        flat = self.app_answer(); flat['approvalPayload'] = {**flat['approvalPayload'], 'order': 'x'}; flat['payloadHash'] = hashed(flat['approvalPayload'])
+        self.enable(); self.transport.side_effect = [flat, flat]  # the app answers flat again: a second failure raises
+        self.assertEqual(self.call(self.args(flat))['error'], 'village_unavailable')
+        self.assertEqual(self.transport.call_count, 2); self.assertFalse(self.record_path(flat['draftId']).exists())
+        self.transport.reset_mock(); self.transport.side_effect = None
+        forged = self.app_answer(); forged['payloadHash'] = 'f' * 64
+        self.transport.return_value = forged
+        self.assertEqual(self.call(self.args(forged))['error'], 'village_unavailable')
+        self.assertEqual(self.transport.call_count, 1)  # approval_preview_unavailable: no second prepare
+        # A record tampered after a good prepare: refused at confirm, nothing prepared again.
+        good = self.app_answer(); self.transport.reset_mock(); self.transport.return_value = good
+        self.call(self.args(good)); path = self.record_path(good['draftId'])
+        record = json.loads(path.read_text()); record['payload']['order'] = '1 × Free latte'; path.write_text(json.dumps(record))
+        self.transport.reset_mock(); self.next_turn(); ap = self.daemon()
+        self.assertEqual(self.confirm(good['draftId'], ap)['error'], 'approval_preview_unavailable')
+        self.transport.assert_not_called(); ap.propose.assert_not_called()
+
     def test_flat_card_refused_unless_the_daemon_says_requested(self):
         result = self.app_answer()
         self.prepare(result); self.next_turn()
@@ -311,6 +373,8 @@ class FlatCardHeaderTest(unittest.TestCase):
         with patch.object(bridge, 'build_opener', return_value=opener):
             fixture.real_transport(config, {'operation': 'forkicks.order.prepare', 'items': [], 'fulfilment': {}, 'paymentMethod': 'upi'})
             self.assertEqual(opener.open.call_args.args[0].get_header('X-village-forkicks-card'), '1')
+            fixture.real_transport(config, {'operation': 'forkicks.order.prepare', 'items': [], 'fulfilment': {}, 'paymentMethod': 'upi'}, flat_card=False)
+            self.assertIsNone(opener.open.call_args.args[0].get_header('X-village-forkicks-card'))  # the legacy re-prepare
             for other in [{'operation': 'forkicks.order.confirm', 'draftId': 'd'}, {'operation': 'forkicks.order.status', 'orderId': 'o'},
                           {'operation': 'forkicks.menu'}, {'operation': 'forkicks.schedule'}, {'operation': 'forkicks.order.cancel', 'orderId': 'o'},
                           {'operation': 'gold-stars.prepare'}, {'operation': 'slopfolio.prepare'}]:
