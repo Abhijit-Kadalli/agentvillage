@@ -5,7 +5,8 @@
 // as `approval channel telegram` configures it (the control plane's approval-template-cards.test.js harness).
 //
 // Run: APPROVAL_CORE_CLI=/path/to/node_modules/approval-md/cli.js bun test install/tests/forkicks-flat-card-core.test.ts
-// (approval-md 0.4.7 from npm). Without APPROVAL_CORE_CLI only the core-free checks run.
+// (approval-md from npm: 0.4.6, the core v2.1.11 ships, and 0.4.7 for v2.1.12; run once per core). Without
+// APPROVAL_CORE_CLI only the core-free checks run.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -17,6 +18,7 @@ const TEMPLATE = readFileSync(join(import.meta.dir, "../../skills/approval/templ
 const VECTORS = JSON.parse(readFileSync(join(TESTS, "vectors/forkicks-approval-card.json"), "utf8"));
 const CORE_CLI = process.env.APPROVAL_CORE_CLI || "";
 const coreUsable = CORE_CLI !== "" && existsSync(CORE_CLI);
+const CORE_VERSION: string = coreUsable ? JSON.parse(readFileSync(join(dirname(CORE_CLI), "package.json"), "utf8")).version : "";
 
 // What the control plane's template must say for the parent class (context mirrors these bytes).
 const PARENT_ENTRY_TODAY = [
@@ -56,7 +58,7 @@ test("the shipped Python re-derives every golden vector (the box half of the for
   }
 }, 120_000);
 
-describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)", () => {
+describe.skipIf(!coreUsable)(`under core (APPROVAL_CORE_CLI, approval-md ${CORE_VERSION})`, () => {
   const root = dirname(CORE_CLI);
   const mod = (p: string) => import(pathToFileURL(join(root, "dist", "src", p)).href);
   let loaded: Promise<Record<string, any>> | null = null;
@@ -114,6 +116,8 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
   const fallbacks = (logs: string[]) => logs.filter((l) => l.includes("sent the technical card")).map((l) => l.split(": ").pop());
   const visible = (text: string) => text.split("<blockquote expandable>")[0]!;
   const I = (s: string) => `⁨${s}⁩`;
+  // approval-md 0.4.6 and 0.4.7 both draw the quote labels bold.
+  const L = (label: string) => `<b>${label}:</b>`;
 
   test("the flat For Kicks order renders MINIMAL with the target text: headline, one quote box of four rows, no claimed line, nothing hidden", async () => {
     const c = await core();
@@ -126,15 +130,15 @@ describe.skipIf(!coreUsable)("under core (APPROVAL_CORE_CLI, approval-md 0.4.7)"
     const shown = visible(texts[0]!);
     expect(shown).toBe([
       "<b>Your agent wants to place an order with For Kicks for you</b>",
-      `<blockquote>Order: ${I("1 × Iced latte (Oat milk, Miso caramel syrup)")}`,
-      `Total: ${I("₹0, pay by UPI")}`,
-      `Pickup: ${I("For Kicks Mandrem · 21 Oct 2026")}`,
-      `Name shared with café: ${I("Carter")}</blockquote>`,
+      `<blockquote>${L("Order")} ${I("1 × Iced latte (Oat milk, Miso caramel syrup)")}`,
+      `${L("Total")} ${I("₹0, pay by UPI")}`,
+      `${L("Pickup")} ${I("For Kicks Mandrem · 21 Oct 2026")}`,
+      `${L("Name shared with café")} ${I("Alex")}</blockquote>`,
       shown.split("\n")[5],
       "",
     ].join("\n"));
     expect(shown.split("\n")[5]).toStartWith("Open for about ");
-    for (const absent of ["not checked", "Not shown here", "cut; see full details", "There is more than fits"]) expect(shown).not.toContain(absent);
+    for (const absent of ["not checked", "Not shown here", "AI summary", "cut; see full details", "There is more than fits"]) expect(shown).not.toContain(absent);
     expect(texts[0]).toContain(c.minimal.MINIMAL_DETAILS_HEADING);
   });
 

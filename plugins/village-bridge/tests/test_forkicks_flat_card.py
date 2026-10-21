@@ -53,7 +53,7 @@ class GoldenVectorTest(unittest.TestCase):
     def test_carter_target_card_text(self):
         self.assertEqual(fk.card_fields(vector('carter-target')['preview']), {
             'order': '1 × Iced latte (Oat milk, Miso caramel syrup)', 'total': '₹0, pay by UPI',
-            'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Carter'})
+            'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Alex'})
 
     def test_every_line_is_listed_uncut(self):
         p = vector('two lines')['preview']
@@ -247,7 +247,7 @@ class FlatCardBoxTest(unittest.TestCase):
         p = dict(long['preview'], draftId='d-long-flat')
         lines = '\n'.join(f'{l["qty"]} × {l["name"]} ({", ".join(l["options"])})' for l in p['quote']['lines'])
         for order in (lines, lines[:fk.CARD_VALUE_MAX - 1] + '…'):
-            payload = {'order': order, 'total': '₹1800, pay by UPI', 'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Carter'}
+            payload = {'order': order, 'total': '₹1800, pay by UPI', 'pickup': 'For Kicks Mandrem · 21 Oct 2026', 'name': 'Alex'}
             self.refused({'draftId': p['draftId'], 'approvalPayload': payload, 'payloadHash': hashed(payload), 'preview': p},
                          'approval_card_not_minimal')
 
@@ -300,8 +300,8 @@ class FlatCardBoxTest(unittest.TestCase):
                 flat = self.app_answer()
                 flat['draftId'] = flat['preview']['draftId'] = f'd-fb-{n}'
                 if code == 'approval_card_not_minimal':
-                    flat['preview']['displayName'] = 'Priya\U0001FA77'
-                    flat['approvalPayload'] = {**flat['approvalPayload'], 'name': 'Priya\U0001FA77'}
+                    flat['preview']['displayName'] = 'Sam\U0001FA77'
+                    flat['approvalPayload'] = {**flat['approvalPayload'], 'name': 'Sam\U0001FA77'}
                 else:
                     flat['approvalPayload'] = {**flat['approvalPayload'], 'order': '1 × Free latte'}
                 flat['payloadHash'] = hashed(flat['approvalPayload'])
