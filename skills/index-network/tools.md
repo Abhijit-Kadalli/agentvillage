@@ -51,7 +51,7 @@ Their reasons and notes are theirs alone. Never tell the other person or their a
 
 Never put a reason or a note in a message to anyone else or in your memory files.
 
-Never run it in a group, a shared session or a scheduled job.
+Never run it in a group, a shared session or a scheduled job; the script refuses there too, with one line saying so.
 
 You may use a pattern in their reasons to suggest changing or pausing a signal, and you ask first, as always.
 

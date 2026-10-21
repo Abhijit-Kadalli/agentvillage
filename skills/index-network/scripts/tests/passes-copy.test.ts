@@ -95,8 +95,8 @@ describe("tools.md: who they passed on, and why", () => {
       "Never share one with the village or anyone else.",
       // memory (and outbound messages)
       "Never put a reason or a note in a message to anyone else or in your memory files.",
-      // groups (and the other non-private contexts)
-      "Never run it in a group, a shared session or a scheduled job.",
+      // groups (and the other non-private contexts); the script refuses there too (review-a ov#453 S1)
+      "Never run it in a group, a shared session or a scheduled job; the script refuses there too, with one line saying so.",
     ];
     for (const clause of nevers) expect(count(s, clause)).toBe(1);
     expect(count(s, "Never ")).toBe(nevers.length);

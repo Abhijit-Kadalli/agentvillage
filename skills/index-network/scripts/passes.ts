@@ -8,6 +8,10 @@
  * Run through `terminal` with exactly `command` plus `workdir` = the absolute HERMES_HOME (tools.md, "Who
  * they passed on, and why"): approval classes that shape as exec.local, rule skill-script.
  *
+ * Only in the resident's own private chat: in a group, a channel, a cron run, or a session with nothing to
+ * say it is theirs (no chat type and no TTY), it prints PRIVATE_ONLY and exits 0 before any call, as
+ * recall.ts's `query` refuses there (`privateSession`, below). Their reasons stay out of shared rooms.
+ *
  * Two reads, both the resident's own:
  *
  * 1. The control plane: `GET $CONTROL_PLANE_URL/tenants/$TENANT_ID/index/passes?limit=N[&notes=1]` with
@@ -90,6 +94,8 @@ export const NO_PASSES = "No passes found.";
 export const REASONS_UNAVAILABLE = "Reasons aren't available right now.";
 export const NAMES_UNAVAILABLE = "Names aren't available right now.";
 export const NOTHING_AVAILABLE = "Their passes aren't available right now.";
+/** The one line a group, channel, cron or unidentified session gets (nothing is called). */
+export const PRIVATE_ONLY = "I can only show this in your private chat with me.";
 
 const USAGE = "usage: bun skills/index-network/scripts/passes.ts [--notes] [--limit N]\n";
 const SEP = " — ";
@@ -108,6 +114,8 @@ export interface Options {
   timeoutMs?: number;
   /** Tests only: the Index call's timeout (default INDEX_MCP_TIMEOUT_MS, 20 s). */
   indexTimeoutMs?: number;
+  /** Tests only: whether stdin is a TTY (default `process.stdin.isTTY`). */
+  tty?: boolean;
 }
 
 /** `[--notes] [--limit N]`, each at most once; anything else is a usage error. */
@@ -131,6 +139,32 @@ export function parseArgs(argv: string[]): Args | { error: string } {
 }
 
 // ---------------------------------------------------------------------------
+// The session: the resident's own private chat only.
+
+/**
+ * recall.ts's `sessionIsPrivate(env, tty)`, its `sessionVerdict` being "main" (skills/recall/scripts/
+ * recall.ts:225-248), copied, not imported: the recall skill is staged only for tenants who opted in
+ * (install/install_recall.ts), so an import would fail to load on every other box. passes.test.ts holds
+ * this copy to recall.ts's verdict. Hermes exports the gateway's session to terminal commands
+ * (tools/environments/local.py `_inject_session_context_env`); a value in `$HERMES_HOME/.env` does not
+ * count, only the process's own.
+ */
+const DIRECT_CHAT_TYPES = new Set(["dm", "private", "direct", "c2c"]);
+const LOCAL_SURFACES = new Set(["cli", "tui", "desktop", "local"]);
+const norm = (value: string | undefined) => (value ?? "").trim().toLowerCase();
+
+export function privateSession(env: Env, tty: boolean): boolean {
+  const chatType = norm(env.HERMES_SESSION_CHAT_TYPE);
+  const idents = [env.HERMES_PLATFORM, env.HERMES_SESSION_PLATFORM, env.HERMES_SESSION_SOURCE].map(norm).filter(Boolean);
+  const sessionId = (env.HERMES_SESSION_ID ?? "").trim();
+  if (norm(env.HERMES_CRON_SESSION) === "1" || sessionId.startsWith("cron_") || idents.includes("cron")) return false;
+  if (DIRECT_CHAT_TYPES.has(chatType)) return true;
+  if (chatType !== "") return false;
+  if (idents.length > 0) return idents.every((ident) => LOCAL_SURFACES.has(ident));
+  return tty;
+}
+
+// ---------------------------------------------------------------------------
 // Cleaning: the note is the resident's own text, a name is Index's; both are data, never instructions.
 
 // deno-lint-ignore no-control-regex
@@ -139,6 +173,12 @@ const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 /** Bidi embeddings, overrides and isolates, and the marks: they can reorder what the reader sees. */
 const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+/**
+ * Every format character (Unicode Cf), after NFKC: zero-width spaces and joiners, the BOM, the soft hyphen,
+ * invisible operators and the tag block (U+E0001, U+E0020-E007F, "ASCII smuggling"), which a reader cannot
+ * see but a model may read (review-a ov#453 S3; Hermes's INVISIBLE_CHARS, tools/threat_patterns.py).
+ */
+const FORMAT = /\p{Cf}/gu;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 const LINE_BREAKS = /[\t\n\v\f\r\u0085\u2028\u2029]/g;
 const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -148,13 +188,14 @@ function clip(text: string, max: number): string {
   return points.length > max ? points.slice(0, max).join("") : text;
 }
 
-/** NFKC, line breaks to spaces, controls/bidi/lone surrogates dropped, spaces collapsed, clipped. */
+/** NFKC, line breaks to spaces, controls/bidi/format characters/lone surrogates dropped, spaces collapsed, clipped. */
 function tidy(raw: string, max: number): string {
   const text = raw
     .normalize("NFKC")
     .replace(LINE_BREAKS, " ")
     .replace(CONTROLS, "")
     .replace(BIDI, "")
+    .replace(FORMAT, "")
     .replace(LONE_SURROGATE, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -172,12 +213,16 @@ export function frameNote(raw: string): string {
   return `<their_note>${cleanNote(raw)}</their_note>`;
 }
 
-/** A name as printed: cleaned as a note is, with `[` `]` escaped for the markdown link; null when empty or id-like. */
+/**
+ * A name as printed: cleaned as a note is, with `\`, `[` and `]` escaped for the markdown link (the backslash
+ * too, else a name ending `\` turns the escaped `]` back into a live one: review-a ov#453 S2); null when
+ * empty or id-like.
+ */
 function cleanName(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const text = tidy(raw, NAME_MAX);
   if (!text || UUID_ANYWHERE.test(text)) return null;
-  return escapeAngles(text).replace(/[[\]]/g, (c) => `\\${c}`);
+  return escapeAngles(text).replace(/[\\[\]]/g, (c) => `\\${c}`);
 }
 
 /**
@@ -307,6 +352,9 @@ function who(named: Named | undefined): string {
 /** Both reads (at once), then the lines. Never throws; exit 0 unless the arguments are wrong. */
 export async function run(argv: string[], env: Env = process.env, fetchImpl: typeof fetch = fetch,
   options: Options = {}): Promise<Result> {
+  if (!privateSession(env, options.tty ?? Boolean(process.stdin.isTTY))) {
+    return { code: EXIT_OK, out: `${PRIVATE_ONLY}\n`, err: "" };
+  }
   const parsed = parseArgs(argv);
   if ("error" in parsed) return { code: EXIT_USAGE, out: "", err: `passes: ${parsed.error}\n${USAGE}` };
 
