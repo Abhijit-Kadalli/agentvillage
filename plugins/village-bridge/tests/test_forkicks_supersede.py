@@ -548,6 +548,78 @@ class SupersedeTest(unittest.TestCase):
         self.assertEqual((self.sent, self.app.orders), ([], {}))
         self.assertFalse((self.home / 'forkicks-drafts' / (D1 + '.await')).exists())
 
+    def lose_the_agents_confirm_answer(self, draft):
+        """The agent's confirm starts the draft and the app creates the order, but the answer never comes back."""
+        app = self.app
+
+        def lossy(config, payload, **kw):
+            out = app(config, payload, **kw)
+            if payload['operation'] == 'forkicks.order.confirm':
+                raise TimeoutError('answer lost')
+            return out
+
+        self.transport.side_effect = lossy
+        self.assertIn('error', self.confirm(draft))
+        self.transport.side_effect = app
+        self.assertEqual(self.daemon.tasks[self.task(draft)]['state'], 'started')
+
+    def test_n1_an_order_the_agent_started_is_never_told_not_placed_when_its_quote_lapses(self):
+        # Review-a ov#465 N1 (probe X1): the pass's marker still says awaiting; the wait shows the agent's start.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        self.lose_the_agents_confirm_answer(D1)
+        expires = fk.quote_expires(fk.load_preview(self.home, D1, self.config))
+        marker = self.home / 'forkicks-drafts' / (D1 + '.await')
+        doc = json.loads(marker.read_text()); doc['since'] = int(expires - 60); marker.write_text(json.dumps(doc))
+        with patch('time.time', lambda: expires + 1):
+            self.run_pass()
+            self.assertEqual(self.sent, [])  # never "wasn't placed" for an order that may exist
+            self.assertIsNone(self.tombstone_of(D1))
+            self.assertEqual(self.timeouts(), [])
+            self.assertFalse(marker.exists())
+            self.assertIn('data', self.confirm(D1))  # the agent's retry adopts the spent grant: the receipt
+        self.assertEqual(self.app.orders, {D1: 2})  # the same draftId twice: one order at the app (idempotent key)
+        self.assertEqual(self.sent, [])
+
+    def test_n1_the_ttl_branch_reads_the_wait_first_too_and_an_unreadable_wait_claims_nothing(self):
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        self.lose_the_agents_confirm_answer(D1)
+        self.age(D1)
+        self.run_pass()
+        self.assertEqual((self.sent, self.tombstone_of(D1), self.timeouts()), ([], None, []))
+        # An unreadable wait: before the TTL the marker waits for the next pass; past it, today's line, no close.
+        self.prepare(D2, qty=3, expires=PAST)
+        marker = self.home / 'forkicks-drafts' / (D2 + '.await')
+        with patch.object(grant, 'approval_modules', side_effect=ValueError('approval_unavailable')):
+            self.run_pass()
+            self.assertEqual(self.sent, [])
+            self.assertEqual(json.loads(marker.read_text())['phase'], 'awaiting')
+            self.age(D2)
+            self.run_pass()
+        self.assertEqual(self.sent, [('42', self.EXPIRED_LINE)])
+        self.assertIsNone(self.tombstone_of(D2))
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.timeouts(), [])
+
+    def test_n2_the_agents_close_between_the_pass_start_and_its_confirm_drops_the_confirm(self):
+        # Review-a ov#465 N2: the agent's wait read `granted` just before the pass's start, then found the quote gone,
+        # closed the draft and told the owner nothing was ordered; the pass must not send its confirm.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_guarded = grant.guarded_start
+
+        def guarded(home, draft_id, start):
+            out = real_guarded(home, draft_id, start)
+            grant.close_expired(self.home, D1, self.task(D1))  # the agent's close (its withdraw: already decided)
+            return out
+
+        with patch.object(grant, 'guarded_start', side_effect=guarded):
+            self.run_pass()
+        self.daemon.start.assert_called_once()
+        self.assertEqual((self.app.orders, self.sent), ({}, []))
+        self.assertFalse((self.home / 'forkicks-drafts' / (D1 + '.await')).exists())
+
     def test_an_expired_tombstone_keeps_an_order_in_flight_recoverable(self):
         # The grant was spent before the pass closed the draft (a start before the quote lapsed): the confirm is still
         # sent with the same draftId, and the app answers its idempotency key.

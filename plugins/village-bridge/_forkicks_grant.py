@@ -605,6 +605,31 @@ def close_expired(home, draft_id, task) -> None:
         LOG.info("village_bridge forkicks expired_withdraw code=unsent")
 
 
+def _spent(waited, key) -> bool:
+    """The wait shows this draft's grant spent by a start of this task (its own action `granted`): an order in flight."""
+    mine = [a for a in (waited.doc.get("actions") or []) if isinstance(a, dict) and a.get("action_key") == key]
+    return (waited.exit_code == 0 and waited.status in ("nothing-to-wait-for", "executed") and len(mine) == 1
+            and mine[0].get("state") == "granted")
+
+
+def _expired_awaiting(home, draft_id, task, key, owner, marker_path, code, ttl):
+    """An awaiting marker past its quote (or the TTL). Review-a ov#465 N1 (probe X1): `awaiting` is only the pass's own
+    progress, and the agent's confirm may have started the draft and lost its answer, so the wait is read FIRST. A
+    spent grant is an order that may exist: no line, no tombstone, no withdraw (as `uncertain_ttl` does for an attempted
+    marker); the agent's confirm of the same draft adopts it and gets the app's answer. An unreadable wait leaves the
+    marker for the next pass; past the TTL, today's line without the close (nothing about the card is known)."""
+    try:
+        waited = approval_modules().wait(task)
+    except Exception:  # noqa: BLE001 - approval_unavailable (or no answer)
+        if not ttl:
+            return "approval_unavailable"
+        return _not_placed(home, draft_id, task, owner, marker_path, "expired", code, "expired")
+    if _spent(waited, key):
+        return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_" + code, None)
+    close_expired(home, draft_id, task)
+    return _not_placed(home, draft_id, task, owner, marker_path, "expired", code, "expired")
+
+
 def advance(home, config, transport, installed, draft_id, now=None) -> str:
     now = float(now if now is not None else time.time())
     marker_path = _path(home, draft_id, ".await")
@@ -646,16 +671,15 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     if now - since > TTL_S:
         if phase == "attempted":  # the order may exist: no line; the agent's confirm of this draft recovers it
             return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_ttl", None)
-        if phase == "awaiting":  # never started: the card is withdrawn (a started grant is already spent)
-            close_expired(home, draft_id, task)
+        if phase == "awaiting":  # the card is withdrawn unless the wait shows a start (a started marker: spent)
+            return _expired_awaiting(home, draft_id, task, key, owner, marker_path, "ttl", True)
         return _not_placed(home, draft_id, task, owner, marker_path, "expired", "ttl", "expired")
     expires = _expires(record)
     quote_live = expires is not None and now < expires
     started_now = False
     if phase == "awaiting":
         if not quote_live:
-            close_expired(home, draft_id, task)
-            return _not_placed(home, draft_id, task, owner, marker_path, "expired", "quote_expired", "expired")
+            return _expired_awaiting(home, draft_id, task, key, owner, marker_path, "quote_expired", False)
         ap = approval_modules()  # approval_unavailable: the marker waits for the next pass
         waited = ap.wait(task)
         status = waited.status
@@ -697,6 +721,11 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
             return _not_placed(home, draft_id, task, owner, marker_path, "failed", "not_installed", "failed")
         return "not_installed"
     if started_now:
+        # Review-a ov#465 N2: the agent's confirm read `granted` before this start, then found the quote gone and
+        # closed the draft (`expired`) and told the owner nothing was ordered: the spent grant is dropped, no confirm.
+        if tombstone_code(home, draft_id) == EXPIRED:
+            _drop(marker_path)
+            return "refused_earlier"
         # Security review (2): a prepare that landed between this pass's start and its confirm still wins (the
         # spent grant places nothing). A start from an earlier pass is an order in flight and keeps its confirm.
         reason = newest_reason(home, draft_id)
