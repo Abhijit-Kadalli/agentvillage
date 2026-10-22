@@ -42,6 +42,8 @@ Python 3.11, standard library only.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
@@ -236,14 +238,56 @@ LATEST = ".latest"  # a dot name: never a draft id (cache_path's [A-Za-z0-9_-])
 SUPERSEDED_LINE = "Nothing was ordered from your earlier For Kicks preview: your newer one replaced it."
 
 
-def set_latest(home, draft_id) -> None:
-    cache_path(home, draft_id)  # validates the id
+# Fail closed (security review of the S1 fold): an unreadable or corrupt `.latest` refuses every start.
+LATEST_UNREADABLE_LINE = "Nothing was ordered: I couldn't check this is your newest For Kicks preview. Ask me for a new one."
+LOCK_NAME = ".lock"
+
+
+@contextlib.contextmanager
+def drafts_lock(home):
+    """One flock on forkicks-drafts/.lock: a prepare's set_latest and a start's newest-draft check + start are
+    one step each, never interleaved (security review (3))."""
     folder = home / "forkicks-drafts"
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = folder / LATEST
-    if path.is_symlink():
+    if folder.is_symlink():
         raise ValueError("marker_invalid")
-    _replace(path, {"draftId": draft_id})
+    fd = os.open(folder / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def set_latest(home, draft_id) -> None:
+    cache_path(home, draft_id)  # validates the id
+    with drafts_lock(home):
+        path = home / "forkicks-drafts" / LATEST
+        if path.is_symlink():
+            raise ValueError("marker_invalid")
+        _replace(path, {"draftId": draft_id})
+
+
+def newest_reason(home, draft_id):
+    """None when `draft_id` may start; else why not: "superseded" (an older draft) or "latest_unreadable"
+    (fail closed). No record at all (no prepare since this version) refuses nothing."""
+    try:
+        newest = latest(home)
+    except Exception:  # noqa: BLE001 - fail closed
+        return "latest_unreadable"
+    return "superseded" if newest is not None and newest != draft_id else None
+
+
+def guarded_start(home, draft_id, start):
+    """(reason, None) when this draft may not start, else (None, start()). Check and start under drafts_lock."""
+    with drafts_lock(home):
+        reason = newest_reason(home, draft_id)
+        if reason is not None:
+            return reason, None
+        return None, start()
 
 
 def latest(home):
@@ -474,6 +518,18 @@ def _not_placed(home, draft_id, task, owner, marker_path, outcome, code, reason)
     return _finish(home, draft_id, task, owner, marker_path, outcome, code, NOT_PLACED_LINE.format(reason=REASONS[reason]))
 
 
+def _refuse_older(home, draft_id, task, owner, marker_path, reason):
+    """S1: never start an older draft (or any draft while `.latest` is unreadable). One line per draft, a code."""
+    if reason == "superseded":
+        try:
+            approval_modules().withdraw(task, "superseded")
+        except Exception:  # noqa: BLE001 - this draft is never started from here on anyway
+            pass
+        return _finish(home, draft_id, task, owner, marker_path, "denied", "superseded", SUPERSEDED_LINE)
+    LOG.warning("village_bridge forkicks newest_check code=%s", reason)
+    return _finish(home, draft_id, task, owner, marker_path, "denied", reason, LATEST_UNREADABLE_LINE)
+
+
 def advance(home, config, transport, installed, draft_id, now=None) -> str:
     now = float(now if now is not None else time.time())
     marker_path = _path(home, draft_id, ".await")
@@ -506,23 +562,16 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         _drop(marker_path)
         return "not_this_box"
     if phase == "awaiting":
-        try:
-            newest = latest(home)
-        except Exception:  # noqa: BLE001 - an unreadable record refuses nothing
-            newest = None
-        if newest is not None and newest != draft_id:
-            # S1: a newer draft replaced this one. Never started (phase awaiting): withdraw its card, one line.
-            try:
-                approval_modules().withdraw(task, "superseded")
-            except Exception:  # noqa: BLE001 - the card cannot be started for this draft from here on anyway
-                pass
-            return _finish(home, draft_id, task, owner, marker_path, "denied", "superseded", SUPERSEDED_LINE)
+        reason = newest_reason(home, draft_id)
+        if reason is not None:
+            return _refuse_older(home, draft_id, task, owner, marker_path, reason)
     if now - since > TTL_S:
         if phase == "attempted":  # the order may exist: no line; the agent's confirm of this draft recovers it
             return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_ttl", None)
         return _not_placed(home, draft_id, task, owner, marker_path, "expired", "ttl", "expired")
     expires = _expires(record)
     quote_live = expires is not None and now < expires
+    started_now = False
     if phase == "awaiting":
         if not quote_live:
             return _not_placed(home, draft_id, task, owner, marker_path, "expired", "quote_expired", "expired")
@@ -532,7 +581,11 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         mine = [a for a in (waited.doc.get("actions") or []) if isinstance(a, dict) and a.get("action_key") == key]
         human = len(mine) == 1 and mine[0].get("state") == "granted"
         if waited.exit_code == 0 and status == "granted" and human:
-            started = ap.start(task, key, held)
+            # Security review (2)+(3): the newest-draft check again, under the lock, as the last step before the start.
+            reason, started = guarded_start(home, draft_id, lambda: ap.start(task, key, held))
+            if reason is not None:
+                return _refuse_older(home, draft_id, task, owner, marker_path, reason)
+            started_now = True
             if not started.ok or started.doc.get("authorization") != "grant":
                 return "start_refused"  # the next wait says why (spent, expired, void)
         elif waited.exit_code == 0 and status in ("nothing-to-wait-for", "executed") and human:
@@ -558,6 +611,12 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         if phase == "started":
             return _not_placed(home, draft_id, task, owner, marker_path, "failed", "not_installed", "failed")
         return "not_installed"
+    if started_now:
+        # Security review (2): a prepare that landed between this pass's start and its confirm still wins (the
+        # spent grant places nothing). A start from an earlier pass is an order in flight and keeps its confirm.
+        reason = newest_reason(home, draft_id)
+        if reason is not None:
+            return _refuse_older(home, draft_id, task, owner, marker_path, reason)
     # Recorded BEFORE the confirm is sent: from here on a lost answer may be a placed order.
     _replace(marker_path, {**marker, "phase": "attempted"})
     proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": record["payload"]}

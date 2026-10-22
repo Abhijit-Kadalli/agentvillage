@@ -1244,7 +1244,8 @@ def _forkicks_authorize(home, record, draft_id):
         authorization, refusal = authorize_order(
             record, draft_id, known_task=known,
             on_requested=lambda task: _forkicks_on_requested(home, draft_id, task),
-            on_proposed=lambda task: _forkicks_remember_card(home, draft_id, task))
+            on_proposed=lambda task: _forkicks_remember_card(home, draft_id, task),
+            guard_start=lambda start: _forkicks_grant.guarded_start(home, draft_id, start))
     except Exception:
         LOG.warning("village_bridge forkicks approval code=approval_unavailable")  # the code only
         return None, {"error": "approval_unavailable", "instruction": ORDER_APPROVAL_UNAVAILABLE}

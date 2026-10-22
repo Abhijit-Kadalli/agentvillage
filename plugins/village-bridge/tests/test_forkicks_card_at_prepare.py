@@ -303,7 +303,7 @@ class CardAtPrepareTest(unittest.TestCase):
         self.assertEqual((cls, key, held), ('marketplace.app.action', 'marketplace.app.action:forkicks.order.confirm:' + legacy_draft,
                                             fk.canonical(legacy['approvalPayload'])))
         folder = self.home / 'forkicks-drafts'
-        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(['.latest'] + [legacy_draft + s for s in ('.json', '.card', '.await')]))
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(['.latest', '.lock'] + [legacy_draft + s for s in ('.json', '.card', '.await')]))
 
     # ---- one card per draft, the owner's own DM -----------------------------------------------------
 

@@ -103,6 +103,12 @@ ORDER_APPROVAL_UNAVAILABLE = ("The approval check could not run just now, so not
 # No new card is raised for a draft (one card per draft), so the agent never points at a card that is gone.
 ORDER_CARD_CLOSED = ("This draft's approval card was declined, withdrawn or expired, so nothing was ordered. Tell the "
                      "owner: \"Nothing was ordered. Ask me for a new preview.\" Do not retry this draft.")
+# S1 (security review): the agent's confirm of a draft older than the newest saved one, or while that record is
+# unreadable (fail closed). Nothing is started or sent.
+ORDER_SUPERSEDED = ("This is an earlier preview that a newer one replaced, so nothing was ordered from it. Tell the owner: "
+                    "\"Nothing was ordered from your earlier preview.\" Do not retry this draft.")
+ORDER_NEWEST_UNREADABLE = ("I couldn't check that this is the newest preview, so nothing was ordered. Tell the owner: "
+                           "\"Nothing was ordered. Ask me for a new preview.\" Do not retry this draft.")
 # The receipt the on-grant pass recorded: the owner already got the placed line in this chat (one line per order).
 ORDER_ALREADY_TOLD = ("This order is placed and the owner was already told so in this chat. Do not announce it again; "
                       "only give receipt details they ask for or still need, such as a payment link.")

@@ -7,7 +7,7 @@ import re
 import stat
 import unicodedata
 from pathlib import Path
-from ._mini_apps import approval_modules, ORDER_APPROVE_IN_BOT, ORDER_CARD_CLOSED
+from ._mini_apps import approval_modules, ORDER_APPROVE_IN_BOT, ORDER_CARD_CLOSED, ORDER_SUPERSEDED, ORDER_NEWEST_UNREADABLE
 
 MAX_PAYLOAD_BYTES = 60000
 SUMMARY_MAX_BYTES = 4096
@@ -286,7 +286,7 @@ def load_preview(home, draft_id, config):
     checked_payload(record.get("payload"), draft_id, record.get("payloadHash"), record.get("preview"))
     return record
 
-def authorize_order(record, draft_id, on_requested=None, known_task=None, on_proposed=None):
+def authorize_order(record, draft_id, on_requested=None, known_task=None, on_proposed=None, guard_start=None):
     """The human grant for this exact saved order, or a refusal. Never places anything itself.
 
     FK-CARD-AT-PREPARE (approval L19920 (2), one live card per draft): `known_task` is the task this box already
@@ -336,7 +336,15 @@ def authorize_order(record, draft_id, on_requested=None, known_task=None, on_pro
         # (_forkicks_grant.track), which places the order on the resident's grant; it returns the instruction.
         tracked = on_requested(task) if on_requested is not None and granted.exit_code == 6 else None
         return None, {"error": "approval_required", "instruction": tracked or ORDER_APPROVE_IN_BOT}
-    started = ap.start(task, key, held)
+    if guard_start is not None:
+        # S1 + security review: the newest-draft check (fail closed, under the drafts lock) right before the start.
+        # An already-started draft (the adoption paths above) is an order in flight and keeps its confirm.
+        reason, started = guard_start(lambda: ap.start(task, key, held))
+        if reason is not None:
+            return None, {"error": "approval_card_closed", "instruction": ORDER_SUPERSEDED if reason == "superseded"
+                          else ORDER_NEWEST_UNREADABLE}
+    else:
+        started = ap.start(task, key, held)
     if not started.ok or started.doc.get("authorization") != "grant":
         return None, {"error": "approval_not_started"}
     return proof, None

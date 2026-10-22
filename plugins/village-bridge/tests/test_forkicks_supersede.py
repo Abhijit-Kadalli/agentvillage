@@ -194,6 +194,87 @@ class SupersedeTest(unittest.TestCase):
         self.run_pass()
         self.assertEqual(self.app.orders, {D1: 1})
 
+    # ---- security review of S1: fail closed, last check before money moves, one lock -------------------
+
+    def test_a_corrupt_latest_record_places_nothing(self):
+        self.prepare(D1)
+        for garbage in ('not json', '{"draftId": "../x"}', '[]'):
+            with self.subTest(garbage=garbage):
+                (self.home / 'forkicks-drafts' / '.latest').write_text(garbage)
+                self.daemon.tap(D1)
+                self.run_pass(); self.run_pass()
+                self.daemon.start.assert_not_called()
+                self.assertEqual(self.app.orders, {})
+        self.assertEqual(self.sent, [('42', grant.LATEST_UNREADABLE_LINE)])  # one honest line for the draft
+        self.assertTrue(grant.LATEST_UNREADABLE_LINE.startswith('Nothing was ordered'))
+
+    def test_a_prepare_landing_between_the_check_and_the_start_wins(self):
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_wait = self.daemon.wait.side_effect
+
+        def wait(task):  # D2's prepare lands after the pass's first newest check, before its start
+            grant.set_latest(self.home, D2)
+            return real_wait(task)
+
+        self.daemon.wait.side_effect = wait
+        self.run_pass()
+        self.daemon.start.assert_not_called()
+        self.assertEqual(self.app.orders, {})
+        self.assertEqual(self.sent, [('42', grant.SUPERSEDED_LINE)])
+
+    def test_a_prepare_landing_between_the_start_and_the_confirm_wins(self):
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_guarded = grant.guarded_start
+
+        def guarded(home, draft_id, start):
+            out = real_guarded(home, draft_id, start)  # the start ran under the lock
+            grant.set_latest(self.home, D2)  # D2's prepare takes the lock right after it, before the confirm
+            return out
+
+        with patch.object(grant, 'guarded_start', side_effect=guarded):
+            self.run_pass()
+        self.daemon.start.assert_called_once()
+        self.assertEqual(self.app.orders, {})  # the spent grant places nothing
+        self.assertEqual(self.sent, [('42', grant.SUPERSEDED_LINE)])
+
+    def test_the_agents_confirm_of_an_older_draft_places_nothing(self):
+        self.prepare(D1)
+        self.daemon.withdraw.side_effect = RuntimeError('timeout')  # D1's card was never withdrawn
+        self.prepare(D2, qty=3)
+        self.daemon.tap(D1)  # the owner taps the old card
+        response = self.confirm(D1)
+        self.assertEqual(response, {'error': 'approval_card_closed', 'instruction': mini.ORDER_SUPERSEDED})
+        self.assertIn('"Nothing was ordered from your earlier preview."', response['instruction'])
+        self.daemon.start.assert_not_called()
+        self.assertEqual(self.app.orders, {})
+        # Fail closed for the agent too: a corrupt record refuses the start of any draft.
+        (self.home / 'forkicks-drafts' / '.latest').write_text('{')
+        self.daemon.tap(D2)
+        self.assertEqual(self.confirm(D2), {'error': 'approval_card_closed', 'instruction': mini.ORDER_NEWEST_UNREADABLE})
+        self.daemon.start.assert_not_called()
+        self.assertEqual(self.app.orders, {})
+        # The newest draft with a readable record places once.
+        grant.set_latest(self.home, D2)
+        self.assertIn('data', self.confirm(D2))
+        self.assertEqual(self.app.orders, {D2: 1})
+
+    def test_set_latest_and_the_guarded_start_share_one_lock(self):
+        import threading
+        self.prepare(D1)
+        order = []
+        with grant.drafts_lock(self.home):
+            worker = threading.Thread(target=lambda: (grant.set_latest(self.home, D2), order.append('set')))
+            worker.start()
+            worker.join(0.3)
+            self.assertTrue(worker.is_alive())  # blocked on the lock
+            order.append('held')
+        worker.join(5)
+        self.assertEqual(order, ['held', 'set'])
+        self.assertEqual(grant.guarded_start(self.home, D1, lambda: 'started'), ('superseded', None))
+        self.assertEqual(grant.guarded_start(self.home, D2, lambda: 'started'), (None, 'started'))
+
     # ---- S2: a closed card ----------------------------------------------------------------------------
 
     def test_a_closed_card_read_at_confirm_says_nothing_was_ordered(self):
