@@ -29,8 +29,10 @@ const ID = /^[0-9a-f]{12}$/;
  */
 export const ZZZ_SHIPPED_SHA256 = {
   shim: ["1db538dc9d5d602bfbc71bbb8da0b49b4fee0280b603f75222df94e43ef82eff"],
-  runner: ["7986413386089ff3cfa6934999e949ad3cb14d3d35e4214ee9809fe19919c5e0"],
-  prompt: ["f5d0d69e6af8a9076e92d31114fc7ff8ec6f99b54a0b980c7a308f5e8b7f42d2"],
+  runner: ["7986413386089ff3cfa6934999e949ad3cb14d3d35e4214ee9809fe19919c5e0",
+    "b735372220bfcb02c4f93afd04ef765ad670a6a1b97ecae6e329e2c6426802f8"],
+  prompt: ["f5d0d69e6af8a9076e92d31114fc7ff8ec6f99b54a0b980c7a308f5e8b7f42d2",
+    "d62b2354eda4702795472a89ca163225c6c2d9979b0cdce3afa023b792a4c133"],
 } as const;
 export type ZzzShippedKind = keyof typeof ZZZ_SHIPPED_SHA256;
 const SHIPPED_MAX_BYTES = 65536;

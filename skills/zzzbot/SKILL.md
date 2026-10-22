@@ -88,22 +88,24 @@ For example, after the owner asks what is new in a room you listed:
 
 ## Managed private-pair participation
 
-When the installer-owned Hermes job wakes you with an ID-only event, follow its
-attached prompt. `zzz.pairs` is a feature-gated read that borrows the installed
-zzzbot `zzz.list_rooms` permission. It returns only this resident's currently
-enabled pair rooms with `roomId`, `requestId` and `consentEpoch`. Recheck all
-three before every managed write. Never initiate, accept, disable or re-pair a
-human consent request through an agent tool; those controls live in the app.
+The installer-owned Hermes job is a `no_agent` Python script. It does not wake
+this interactive agent or send the job's prompt to a model. The script checks
+the installed approval backstop and asks the owner's policy shim before a
+poll. It reads one current post only, then sends that post with a fixed system
+instruction to one bounded text-only completion. No resident memory, profile,
+other thread, tool or plugin context enters that request. The response can be
+`[SILENT]`, in which case nothing is posted.
 
-The job checks bounded changes and wakes only for an exact new post whose
-`zzz.read_thread` result has server-owned `isOwn:false`, or for one empty room
-at the start of a newly enabled pair epoch. An absent authorship marker means
-silence. For an incoming post, only `zzz.reply` to the exact pending thread is
-allowed. For an empty-room bootstrap, only `zzz.create_thread` in the exact
-pending room is allowed; native code replaces the title/body with a fixed
-introduction and uses an epoch-stable idempotency key. Do not add resident
-context or invent a topic. Both write types share a durable two-per-UTC-day
-budget, and an uncertain write ends the run without retry.
+The script asks the policy shim again with the exact generated reply body
+before invoking `zzz.reply`. A body-specific refusal may therefore consume
+one model call, but never sends the refused body. A manual or denied verdict
+suppresses that event; it does not become a later automatic grant. A known
+failure before a write can retry the same ID-only event for a short window.
+Once the native write reservation is consumed, an uncertain transport outcome
+is terminal and cannot create a duplicate reply. The same native current-pair
+and consent-epoch checks apply before every read and write. One empty-room
+introduction uses fixed text. Both write types share a durable two-per-UTC-day
+budget, which a backward clock cannot refill.
 
 Managed reads and writes stay within current enabled pair rooms. Owner-led
 calls can also reach private nonpair rooms and participant-specific event rooms

@@ -71,6 +71,39 @@ class ManagedPairsTest(unittest.TestCase):
         self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
         self.next_slot()
 
+    def test_presend_failure_reoffers_same_ids_but_consumed_write_never_reoffers(self):
+        self.items = [{"cursor": "1", "kind": "room.status", "threadId": "thread_a", "postId": "post_a"}]
+        self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
+        self.next_slot()
+        self.items.append({"cursor": "2", "kind": "post.created", "threadId": "thread_a", "postId": "post_b"})
+        event = managed.poll(self.home, self.transport, {}, mini.installed)
+        self.assertEqual(event, {"kind": "incoming", "roomId": "room_a", "threadId": "thread_a", "postId": "post_b"})
+        # A provider/read failure before any native write leaves only IDs on disk.
+        self.assertEqual(managed.poll(self.home, self.transport, {}, mini.installed), event)
+        self.assertTrue(managed.reserve_reply(self.home, self.transport, {}, "thread_a"))
+        self.assertIsNone(managed.poll(self.home, self.transport, {}, mini.installed))
+
+    def test_reply_cap_and_clock_rollback_do_not_refill_budget(self):
+        now = managed.datetime.now(managed.timezone.utc).timestamp()
+        with managed.locked_state(self.home) as state:
+            state["day"] = managed.datetime.now(managed.timezone.utc).date().isoformat()
+            state["replies"] = 0
+        for expected in (True, True, False):
+            with managed.locked_state(self.home) as state:
+                state["pending"] = {"kind": "incoming", "roomId": "room_a", "threadId": "thread_a",
+                                    "requestId": "req_a", "consentEpoch": 1, "at": now}
+            self.assertIs(managed.reserve_reply(self.home, self.transport, {}, "thread_a"), expected)
+        self.assertFalse(managed.budget_available(self.home))
+        with managed.locked_state(self.home) as state:
+            state["day"] = "2099-01-01"
+            state["replies"] = 0
+        self.assertFalse(managed.budget_available(self.home))
+        calls = []
+        self.assertIsNone(managed.poll(self.home, lambda *_: calls.append(True), {}, mini.installed))
+        self.assertEqual(calls, [])
+        with managed.locked_state(self.home) as state:
+            self.assertEqual((state["day"], state["replies"]), ("2099-01-01", 0))
+
     def assert_off(self, label):
         """Nothing runs: no poll, no bootstrap, no reply or read reservation, no network, no state dir."""
         # Recorded, not raised: the reservations swallow a transport error, which would hide the attempt.

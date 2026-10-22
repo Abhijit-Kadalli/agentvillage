@@ -174,6 +174,46 @@ def current_pairs(transport, config):
     return pairs
 
 
+def _budget_open(state: dict) -> bool:
+    """A backwards UTC clock never refills the durable two-write budget."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    day = state.get("day", "")
+    if not isinstance(day, str) or (day and (len(day) != 10 or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day))):
+        return False
+    if day:
+        try:
+            if datetime.fromisoformat(day).date().isoformat() != day:
+                return False
+        except ValueError:
+            return False
+    if day > today:
+        return False
+    if day < today:
+        state["day"], state["replies"] = today, 0
+    replies = state.get("replies")
+    return type(replies) is int and 0 <= replies < 2
+
+
+def budget_available(home: Path) -> bool:
+    """Check the local cap before polling or exposing a pair post to a model."""
+    if not participation_on(home):
+        return False
+    try:
+        with locked_state(home) as state:
+            return _budget_open(state)
+    except Exception:
+        return False
+
+
+def finish_pending(home: Path, event: dict) -> None:
+    """Forget only the event this run saw (silence or terminal pre-send denial)."""
+    with locked_state(home) as state:
+        pending = state.get("pending")
+        keys = ("kind", "roomId", "threadId", "postId")
+        if isinstance(pending, dict) and all(pending.get(key) == event.get(key) for key in keys):
+            state["pending"] = None
+
+
 def reserve_reply(home: Path, transport, config, thread: str) -> bool:
     """One pending exact thread, current pair, two replies per UTC day max."""
     if not isinstance(thread, str) or not ID.fullmatch(thread) or not participation_on(home):
@@ -182,11 +222,10 @@ def reserve_reply(home: Path, transport, config, thread: str) -> bool:
         pairs = current_pairs(transport, config)
         with locked_state(home) as state:
             pending = state.get("pending")
-            today = datetime.now(timezone.utc).date().isoformat()
-            if state.get("day") != today:
-                state["day"], state["replies"] = today, 0
+            if not _budget_open(state):
+                return False
             if (not isinstance(pending, dict) or pending.get("kind") != "incoming"
-                    or pending.get("threadId") != thread or state.get("replies", 0) >= 2):
+                    or pending.get("threadId") != thread):
                 return False
             room = pending.get("roomId")
             if pairs.get(room) != {"requestId": pending.get("requestId"), "consentEpoch": pending.get("consentEpoch")}:
@@ -214,11 +253,10 @@ def reserve_bootstrap(home: Path, transport, config, room: str):
         pairs = current_pairs(transport, config)
         with locked_state(home) as state:
             pending = state.get("pending")
-            today = datetime.now(timezone.utc).date().isoformat()
-            if state.get("day") != today:
-                state["day"], state["replies"] = today, 0
+            if not _budget_open(state):
+                return None
             if (not isinstance(pending, dict) or pending.get("kind") != "bootstrap"
-                    or pending.get("roomId") != room or state.get("replies", 0) >= 2):
+                    or pending.get("roomId") != room):
                 return None
             identity = {"requestId": pending.get("requestId"), "consentEpoch": pending.get("consentEpoch")}
             if pairs.get(room) != identity or datetime.now(timezone.utc).timestamp() - pending.get("at", 0) > 1800:
@@ -265,6 +303,8 @@ def poll(home: Path, transport, config, installed):
         return None
     with locked_state(home) as state:
         now = datetime.now(timezone.utc).timestamp()
+        if not _budget_open(state):
+            return None
         if state.get("retryAt", 0) > now:
             return None
         try:
@@ -282,9 +322,11 @@ def poll(home: Path, transport, config, installed):
                 pairs[pending["roomId"]] != {"requestId": pending.get("requestId"), "consentEpoch": pending.get("consentEpoch")}):
                 state["pending"] = None
             elif isinstance(pending, dict):
-                if now - pending.get("at", 0) <= 1800:
+                age = now - pending.get("at", 0)
+                if 0 <= age <= 1800 and pending.get("kind") in ("incoming", "bootstrap"):
                     state["rooms"] = rooms
-                    return None
+                    keys = ("kind", "roomId") if pending["kind"] == "bootstrap" else ("kind", "roomId", "threadId", "postId")
+                    return {key: pending[key] for key in keys}
                 state["pending"] = None
             event = None
             saw_item = False

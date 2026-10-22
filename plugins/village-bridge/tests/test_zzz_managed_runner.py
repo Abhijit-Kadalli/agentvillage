@@ -1,13 +1,21 @@
 """The no_agent responder sends only its fixed instruction and current post."""
 import importlib.util
+import contextvars
+import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
+import socketserver
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
+from datetime import datetime, timezone, timedelta
+from http.server import BaseHTTPRequestHandler
 
 
 RUNNER = Path(__file__).parents[3] / "skills/zzzbot/scripts/zzz_managed_runner.py"
@@ -73,6 +81,9 @@ class ManagedRunnerTest(unittest.TestCase):
                 def participation_on(_home): return True
 
                 @staticmethod
+                def budget_available(_home): return True
+
+                @staticmethod
                 def poll(*_args): return event
 
                 @staticmethod
@@ -84,6 +95,8 @@ class ManagedRunnerTest(unittest.TestCase):
                   patch.object(runner, "_bridge", return_value=(bridge, Managed)),
                   patch.object(runner, "_job", return_value="abcdef123456"),
                   patch.object(runner, "_config", return_value={}),
+                  patch.object(runner, "_approval_gate", return_value=object()),
+                  patch.object(runner, "_shim_allowed", return_value=True),
                   patch.object(runner, "_pending_post", return_value="Can we meet at three?"),
                   patch.object(runner, "_native", side_effect=lambda *args: native.append(args[-1]) or {})):
                 runner.run(home)
@@ -159,6 +172,9 @@ class ManagedRunnerTest(unittest.TestCase):
             def participation_on(_home): return True
 
             @staticmethod
+            def budget_available(_home): return True
+
+            @staticmethod
             def poll(*_args): return {"kind": "bootstrap", "roomId": "room_a"}
 
             @staticmethod
@@ -168,6 +184,8 @@ class ManagedRunnerTest(unittest.TestCase):
         with (patch.object(runner, "_bridge", return_value=(fake_bridge, Managed)),
               patch.object(runner, "_job", return_value="abcdef123456"),
               patch.object(runner, "_config", return_value={}),
+              patch.object(runner, "_approval_gate", return_value=object()),
+              patch.object(runner, "_shim_allowed", return_value=True),
               patch.object(runner, "_native", side_effect=lambda *args: calls.append(args[-1]) or {})):
             runner.run(SAFE_TEMP_PARENT)
         self.assertEqual(len(calls), 1)
@@ -197,6 +215,246 @@ class ManagedRunnerTest(unittest.TestCase):
             finally:
                 runner.signal.alarm(0)
         stop.assert_called_once_with(1)
+
+    def test_installed_gate_and_native_bridge_allow_only_policy_admitted_reply(self):
+        """Exercise the actual backstop and native gate; fake only policy/model/ZZZ transport."""
+        import yaml
+        repo = RUNNER.parents[3]
+        with tempfile.TemporaryDirectory(dir=SAFE_TEMP_PARENT) as tmp:
+            home = Path(tmp)
+            plugin = home / "plugins" / "av-approval"
+            plugin.mkdir(parents=True)
+            shutil.copyfile(repo / "plugins/av-approval/__init__.py", plugin / "__init__.py")
+            shim = home / "agent-hooks" / "hermes-hook-shim.sh"
+            shim.parent.mkdir()
+            shim.write_bytes((repo / "skills/approval/scripts/hermes-hook-shim.sh").read_bytes())
+            shim.chmod(0o700)
+            (shim.parent / "approval-surface.json").write_text(json.dumps({
+                "shim_sha256": hashlib.sha256(shim.read_bytes()).hexdigest()}))
+            source_spec = importlib.util.spec_from_file_location("av_approval_matchers", plugin / "__init__.py")
+            source = importlib.util.module_from_spec(source_spec)
+            source_spec.loader.exec_module(source)
+            config = {"model": {"provider": "openrouter", "default": "configured-model"},
+                      "hooks_auto_accept": True, "hooks": {"pre_tool_call": [
+                          {"matcher": matcher, "command": str(shim), "timeout": 300, "fail_closed": True}
+                          for matcher in source.GATED_MATCHERS]}}
+            (home / "config.yaml").write_text(yaml.safe_dump(config))
+            (home / ".env").write_text("AV_APPROVAL_ENABLED=1\nHERMES_ACCEPT_HOOKS=1\n"
+                                       "AV_APPROVAL_URL=unix:/tmp/synthetic-approval.sock\n"
+                                       "AV_APPROVAL_TOKEN=synthetic-token\nOPENROUTER_API_KEY=synthetic-model-key\n")
+            bridge_spec = importlib.util.spec_from_file_location("village_bridge", repo / "plugins/village-bridge/__init__.py")
+            bridge = importlib.util.module_from_spec(bridge_spec)
+            sys.modules["village_bridge"] = bridge
+            bridge_spec.loader.exec_module(bridge)
+            managed = sys.modules["village_bridge._zzz_managed"]
+            mini = sys.modules["village_bridge._mini_apps"]
+            (home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [
+                {"id": "zzzbot", **mini.ZZZBOT}, {"id": mini.ZZZ_BRIDGE_ID, **mini.ZZZ_BRIDGE}]}))
+            (home / "village-bridge.json").write_text(json.dumps({
+                "origin": "https://agent.example", "token": "avb_" + "a" * 43,
+                "ownerTelegramId": "1234", "expiresAt": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}))
+            (home / "cron").mkdir()
+            prompt = (repo / "skills/zzzbot/prompts/participate.md").read_text().rstrip()
+            (home / "cron/jobs.json").write_text(json.dumps({"jobs": [{
+                "id": "abcdef123456", "name": runner.JOB_NAME, "script": runner.JOB_SCRIPT,
+                "no_agent": True, "enabled": True, "enabled_toolsets": runner.JOB_TOOLSETS,
+                "deliver": "local", "failure_deliver": "local", "prompt": prompt}]}))
+            self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(), runner.JOB_PROMPT_SHA256)
+            with managed.locked_state(home) as state:
+                state["rooms"] = {"room_a": {"requestId": "req_a", "consentEpoch": 1,
+                                             "cursor": "1", "baseline": False}}
+            pair = {"roomId": "room_a", "requestId": "req_a", "consentEpoch": 1,
+                    "status": "agent_messaging_enabled"}
+            writes = []
+            write_mode = ["ok"]
+            def zzz_transport(_cfg, payload, **_kwargs):
+                op = payload["operation"]
+                if op == "zzz.pairs":
+                    return {"kind": "zzz.pairs", "pairs": [pair]}
+                if op == "zzz.changes":
+                    items = [{"cursor": "2", "kind": "post.created", "threadId": "thread_a", "postId": "post_b"}]
+                    return {"kind": "zzz.changes", "items": [item for item in items
+                        if int(item["cursor"]) > int(payload["after"])], "nextCursor": None}
+                if op == "zzz.read_thread":
+                    return {"kind": "zzz.thread", "posts": [{"id": "post_b", "body": "Can we meet?",
+                        "isOwn": False, "redacted": False}]}
+                if op == "zzz.reply":
+                    writes.append(payload)
+                    if write_mode[0] == "timeout":
+                        raise TimeoutError("uncertain ZZZ transport")
+                    return {"kind": "zzz.post", "id": "post_c"}
+                raise AssertionError(op)
+            requests = []
+            policy_mode = ["allow"]
+            def policy_call(_argv, **kwargs):
+                envelope = json.loads(kwargs["input"])
+                requests.append(envelope)
+                operation = envelope["tool_input"]["operation"]
+                if policy_mode[0] == "deny-all" or (policy_mode[0] == "deny-reply" and operation == "zzz.reply"):
+                    return types.SimpleNamespace(returncode=2, stdout='{"action":"block"}', stderr="")
+                return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
+            client = _Client("Yes, three works.")
+            # The bridge and approval code are real. Only the Hermes runtime
+            # ContextVars are supplied here because Hermes is an external install.
+            unset = object()
+            session = types.ModuleType("gateway.session_context")
+            session._UNSET = unset
+            session._VAR_MAP = {name: contextvars.ContextVar(name, default=unset) for name in (
+                "HERMES_CRON_SESSION", "HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_TYPE",
+                "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_USER_ID", "HERMES_SESSION_KEY",
+                "HERMES_SESSION_MESSAGE_ID")}
+            gateway = types.ModuleType("gateway")
+            gateway.session_context = session
+            delegation = types.ModuleType("agent.delegation_context")
+            delegation.is_delegated_child_context = lambda: False
+            agent = types.ModuleType("agent")
+            agent.delegation_context = delegation
+            def execute():
+                with (patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                      patch.dict(sys.modules, {"gateway": gateway, "gateway.session_context": session,
+                                               "agent": agent, "agent.delegation_context": delegation}),
+                      patch.object(runner, "_bridge", return_value=(bridge, managed)),
+                      patch.object(bridge, "transport", side_effect=zzz_transport),
+                      patch.object(runner.subprocess, "run", side_effect=policy_call), self.provider(client)):
+                    runner.run(home)
+            def ready_again(replies=0):
+                with managed.locked_state(home) as state:
+                    state["rooms"]["room_a"].update(cursor="1", baseline=False)
+                    state["replies"] = replies
+                    state["retryAt"] = 0
+                    state["pending"] = None
+            execute()
+            self.assertEqual(len(client.calls), 1)
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(writes[0]["body"], "Yes, three works.")
+            self.assertEqual([x["tool_input"]["operation"] for x in requests],
+                             ["zzz.pairs", "zzz.pairs", "zzz.reply"])
+            self.assertEqual(requests[-1]["tool_input"]["arguments"],
+                             {"thread": "thread_a", "body": "Yes, three works."})
+            with managed.locked_state(home) as state:
+                self.assertEqual(state["replies"], 1)
+                self.assertIsNone(state["pending"])
+            # A third reply is stopped before cursor polling or another model call.
+            ready_again(replies=2)
+            before = (len(client.calls), len(requests), len(writes))
+            execute()
+            self.assertEqual((len(client.calls), len(requests), len(writes)), before)
+            # A denied class-level owner policy check also spends no inference.
+            ready_again()
+            policy_mode[0] = "deny-all"
+            execute()
+            self.assertEqual(len(client.calls), before[0])
+            self.assertEqual(len(writes), before[2])
+            self.assertEqual(requests[-1]["tool_input"]["operation"], "zzz.pairs")
+            # An exact-body denial can cost one model call, then suppresses the
+            # event without a write or a reusable approval identity.
+            ready_again()
+            policy_mode[0] = "deny-reply"
+            execute()
+            self.assertEqual(len(client.calls), before[0] + 1)
+            self.assertEqual(len(writes), before[2])
+            with managed.locked_state(home) as state:
+                self.assertIsNone(state["pending"])
+                self.assertEqual(state["replies"], 0)
+            # A valid silence response likewise consumes no write.
+            ready_again()
+            policy_mode[0] = "allow"
+            client.content = "[SILENT]"
+            execute()
+            self.assertEqual(len(writes), before[2])
+            with managed.locked_state(home) as state:
+                self.assertIsNone(state["pending"])
+            # An off or unverified installed backstop refuses before polling,
+            # owner policy, or model inference.
+            ready_again()
+            before = (len(client.calls), len(requests), len(writes))
+            env_path = home / ".env"
+            good_env = env_path.read_text()
+            env_path.write_text(good_env.replace("AV_APPROVAL_ENABLED=1", "AV_APPROVAL_ENABLED=0"))
+            with self.assertRaises(ValueError):
+                execute()
+            self.assertEqual((len(client.calls), len(requests), len(writes)), before)
+            env_path.write_text(good_env)
+            config_path = home / "config.yaml"
+            good_config = config_path.read_text()
+            broken = yaml.safe_load(good_config)
+            broken["hooks"]["pre_tool_call"] = []
+            config_path.write_text(yaml.safe_dump(broken))
+            with self.assertRaises(ValueError):
+                execute()
+            self.assertEqual((len(client.calls), len(requests), len(writes)), before)
+            config_path.write_text(good_config)
+            # A failure before the native reservation keeps only the event IDs
+            # so a later run can answer. An uncertain transport after the
+            # reservation is terminal and cannot be reoffered.
+            client.content = "Yes, three works."
+            with patch.object(runner, "_reply", side_effect=RuntimeError("provider failed")), self.assertRaises(RuntimeError):
+                execute()
+            with managed.locked_state(home) as state:
+                self.assertEqual(state["pending"]["postId"], "post_b")
+                self.assertEqual(state["replies"], 0)
+            execute()
+            self.assertEqual(len(writes), before[2] + 1)
+            ready_again()
+            write_mode[0] = "timeout"
+            with self.assertRaises(ValueError):
+                execute()
+            with managed.locked_state(home) as state:
+                self.assertIsNone(state["pending"])
+                self.assertEqual(state["replies"], 1)
+            model_calls = len(client.calls)
+            write_calls = len(writes)
+            execute()
+            self.assertEqual((len(client.calls), len(writes)), (model_calls, write_calls))
+
+    @unittest.skipUnless(sys.platform == "linux", "vendored owner shim requires Linux /proc and GNU stat")
+    def test_real_owner_shim_accepts_only_facade_allow(self):
+        """The installed shim, not a Python approval substitute, handles the native envelope."""
+        repo = RUNNER.parents[3]
+        with tempfile.TemporaryDirectory(prefix="za", dir=SAFE_TEMP_PARENT) as tmp:
+            home = Path(tmp)
+            sock = home / "approval.sock"
+            outcomes = [b'{"exit_code":0,"stdout":"{}","stderr":""}',
+                        b'{"exit_code":2,"stdout":"{\\"action\\":\\"block\\"}","stderr":""}']
+            seen = []
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    seen.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                    body = outcomes.pop(0)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *_args): pass
+
+            class Server(socketserver.UnixStreamServer):
+                allow_reuse_address = True
+
+            with Server(str(sock), Handler) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    shim = home / "agent-hooks" / "hermes-hook-shim.sh"
+                    shim.parent.mkdir()
+                    shutil.copyfile(repo / "skills/approval/scripts/hermes-hook-shim.sh", shim)
+                    shim.chmod(0o700)
+                    (home / ".env").write_text(f"AV_APPROVAL_URL=unix:{sock}\n"
+                                               f"AV_APPROVAL_DAEMON_UID={os.geteuid()}\n"
+                                               "AV_APPROVAL_TOKEN=synthetic-token\n")
+                    gate = types.SimpleNamespace(switch=lambda: "on", current_codes=lambda: ())
+                    session = "cron_abcdef123456_20261023_120000"
+                    self.assertTrue(runner._shim_allowed(home, gate, session, "cron:abcdef123456:allow",
+                                                         "zzz.pairs", {}))
+                    self.assertFalse(runner._shim_allowed(home, gate, session, "cron:abcdef123456:deny",
+                                                          "zzz.reply", {"thread": "thread_a", "body": "No"}))
+                    self.assertEqual([row["tool_input"]["operation"] for row in seen],
+                                     ["zzz.pairs", "zzz.reply"])
+                    self.assertEqual(seen[1]["tool_input"]["arguments"]["body"], "No")
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=5)
 
 
 if __name__ == "__main__":
