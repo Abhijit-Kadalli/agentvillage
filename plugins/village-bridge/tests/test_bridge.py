@@ -144,6 +144,7 @@ class BridgeTest(unittest.TestCase):
   self.delegation=delegation
   self.patches=[patch.dict(os.environ,{'HERMES_HOME':self.tmp.name}),patch.dict(sys.modules,{'gateway':gateway,'gateway.session_context':self.sc,'agent.delegation_context':delegation}),patch.object(bridge,'transport',return_value={'ok':True})]
   for p in self.patches:p.start();self.addCleanup(p.stop)
+  os.environ.pop('AV_APPROVALS_BOT_USERNAME',None)  # the box's approvals-bot link is off unless a test sets it (restored by patch.dict)
   self.transport=bridge.transport
  def call(self,args=None):return json.loads(bridge.handle(args or {'operation':'gold-stars.quota'}))
  def install_slopfolio(self):

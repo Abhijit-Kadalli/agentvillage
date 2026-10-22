@@ -23,7 +23,7 @@ from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit
 from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT,
                          ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS, ORDER_CARD_NOT_RAISED, ORDER_APPROVAL_REFUSED,
-                         ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD)
+                         ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD, ORDER_LINK_SENT_NOTE)
 from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from . import _forkicks_grant
 from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
@@ -1171,35 +1171,48 @@ def handle(args, **kwargs):
 
 # FK-CARD-AT-PREPARE (CLAIMS L19913/L19916/L19920): the For Kicks card is raised by the bridge right after a saved
 # prepare, through the same authorize_order path confirm uses, and each draft gets at most one propose.
-def _forkicks_remember_card(home, draft_id, task):
+def _forkicks_remember_card(home, draft_id, task, owner=None):
     """authorize_order's `on_proposed`: the first `requested` propose for this draft. Records its task (one card per
-    draft) and, once per draft, the codes-only card_requested line + event that card latency is measured from."""
+    draft) and, once per draft, the codes-only card_requested line + event that card latency is measured from, and
+    the approvals-bot link line to the owner's own DM (lead L20038; only with a valid AV_APPROVALS_BOT_USERNAME).
+    True when the link line was dispatched."""
     try:
         first = _forkicks_grant.record_card(home, draft_id, task)
     except Exception:  # noqa: BLE001 - the card is out; a lost marker only means core's idempotent propose on a retry
         LOG.warning("village_bridge forkicks card_marker code=unwritable")
         first = True
-    if first:
-        try:
-            _forkicks_grant.card_requested(task)
-        except Exception:  # noqa: BLE001 - a measurement never costs the card
-            pass
+    if not first:
+        return False
+    try:
+        _forkicks_grant.card_requested(task)
+    except Exception:  # noqa: BLE001 - a measurement never costs the card
+        pass
+    try:
+        return _forkicks_grant.send_card_link(home, draft_id, owner) == "link_dispatched"
+    except Exception:  # noqa: BLE001 - the link is a convenience; the card is out either way
+        LOG.warning("village_bridge forkicks card_link code=error")
+        return False
 
 
 def _forkicks_authorize(home, record, draft_id):
     """authorize_order with this draft's card task reused (no second propose) and the FK-ON-GRANT hand-off.
     Every failure before an order is sent comes back as a refusal with an honest instruction."""
+    linked = []
+    # The owner load_preview checked against the paired config (bound_context: the owner's own DM).
+    owner = record.get("owner")
     try:
         known = _forkicks_grant.card_task(home, draft_id)
         authorization, refusal = authorize_order(
             record, draft_id, known_task=known,
             on_requested=lambda task: _forkicks_grant.instruction_if_tracked(home, draft_id, task, _ensure_forkicks_pass),
-            on_proposed=lambda task: _forkicks_remember_card(home, draft_id, task))
+            on_proposed=lambda task: linked.append(_forkicks_remember_card(home, draft_id, task, owner)))
     except Exception:
         LOG.warning("village_bridge forkicks approval code=approval_unavailable")  # the code only
         return None, {"error": "approval_unavailable", "instruction": ORDER_APPROVAL_UNAVAILABLE}
     if refusal is not None and "instruction" not in refusal:
         refusal = {**refusal, "instruction": ORDER_APPROVAL_REFUSED}
+    if refusal is not None and refusal.get("error") == "approval_required" and any(linked):
+        refusal = {**refusal, "instruction": refusal["instruction"] + ORDER_LINK_SENT_NOTE}
     return authorization, refusal
 
 

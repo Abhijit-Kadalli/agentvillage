@@ -48,6 +48,7 @@ import logging
 import os
 import re
 import stat
+import threading
 import time
 import uuid
 from datetime import date as _date, datetime, timedelta, timezone
@@ -226,6 +227,54 @@ def record_card(home, draft_id, task) -> bool:
     path = _path(home, draft_id, ".card")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     return _create(path, {"task": task})
+
+
+# ---- the approvals-bot link (lead L20038, Carter: option A tonight) ----------------------------------
+
+#: The approvals bot's public username (no "@"), from the Hermes gateway's own env (~/.hermes/.env, rendered by the
+#: cp's AV_* env_write path, release L20048), read from the process environment the gateway started with, as
+#: av-events `_approval._process_env` reads AV_APPROVAL_URL: never the model's text or the app's answer. Absent or
+#: not this shape: no line at all (an older box keeps the no-link wording).
+BOT_USERNAME_ENV = "AV_APPROVALS_BOT_USERNAME"
+BOT_USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
+# Product's words (lead L20038). A plain link: Hermes's native sender has no buttons.
+CARD_LINK_LINE = "Your approval card is in your approvals bot: https://t.me/{username}"
+
+
+def approvals_bot_username():
+    value = os.environ.get(BOT_USERNAME_ENV, "").strip()
+    return value if BOT_USERNAME.fullmatch(value) else None
+
+
+def _spawn(work) -> None:
+    """The send runs beside the tool call (a Telegram round trip never delays the prepare answer, and never runs
+    inside the caller's event loop). Tests replace this to run it inline."""
+    threading.Thread(target=work, name="forkicks-card-link", daemon=True).start()
+
+
+def send_card_link(home, draft_id, owner) -> str:
+    """At most one link line per draft (`<draftId>.link` O_EXCL claim before the send), only to `owner`'s own DM.
+    A code: link_unconfigured (no line), line_owner_invalid, link_already_sent, link_dispatched."""
+    username = approvals_bot_username()
+    if username is None:
+        return "link_unconfigured"
+    if not isinstance(owner, str) or not OWNER.fullmatch(owner):
+        return "line_owner_invalid"
+    path = _path(home, draft_id, ".link")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not _create(path, {"sent": True}):
+        return "link_already_sent"
+    text = CARD_LINK_LINE.format(username=username)
+
+    def work():
+        try:
+            code = "link_sent" if _telegram_dm(owner, text) else "link_failed"
+        except Exception:  # noqa: BLE001 - at most once: a failed send is not retried
+            code = "link_failed"
+        LOG.info("village_bridge forkicks card_link code=%s", code)
+
+    _spawn(work)
+    return "link_dispatched"
 
 
 def receipt_of(result):
