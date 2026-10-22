@@ -483,7 +483,13 @@ test("RA34 S1: the offered SKILL.md must answer to exactly its id (frontmatter n
     "---\n{name: civic-board}\n---\n", "---\n? name\n: civic-board\n---\n", "---\nname: civic-board\nmeta:\n  name: approval\n---\n", "---\nname: civic-board # c\n---\n"]) {
     refusedAlone(generic(), bundle(entry("civic-board", text)), "bundle_invalid");
   }
-  for (const text of [TEXT, "---\nname: \"civic-board\"\n---\n", "﻿---\nname: 'civic-board'\ndescription: x\n---\nbody\n"]) {
+  // RA38: Unicode differentials vs Hermes's yaml load / strip() fallback, a BOM, and a fence that is not exactly ---.
+  for (const text of ["---\nname: civic-board\n---\ufeff\nname: approval\n---\n", "---\nname: civic-board\ndescription: x\u0085name: approval\n---\n",
+    "---\nname: civic-board\n \u00a0name: approval\n---\n", "---\nname: civic-board\n\u000bname: approval\n---\n", "---\nname: civic-board\n\u001fname: approval\n---\n",
+    "---\nname: civic-board\n\u2003name: approval\n---\n", "---\nname: civic-board\r---\n", "\ufeff---\nname: civic-board\n---\n", "---\nname: civic-board\n--- \n"]) {
+    refusedAlone(generic(), bundle(entry("civic-board", text)), "bundle_invalid");
+  }
+  for (const text of [TEXT, "---\nname: \"civic-board\"\n---\n", "---\nname: 'civic-board'\ndescription: Oct 11 \u2013 Nov 1\n---\nbody\n"]) {
     const root = home();
     expect(staged({ version: 1, apps: [gold(), generic()] }, root, bundle(entry("civic-board", text))).refused).toBeUndefined();
   }

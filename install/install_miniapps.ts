@@ -179,13 +179,17 @@ function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) 
     } catch { return null; }
   };
 }
+/** Python's str.isspace() set, which is what `\s` matches in Hermes's (Python) regexes. */
+const PY_SPACE = "[\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]";
+/** Control characters, Unicode whitespace and line breaks other than space, tab and \n (each a YAML/strip() differential). */
+const EXOTIC = /[\x00-\x08\x0b-\x1f\x7f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
 /** A SKILL.md's frontmatter block as Hermes finds it (agent/skill_utils.py parse_frontmatter: BOM stripped, a leading
  * `---`, closed by the next `\n---` line), or null when there is none. */
 function frontmatter(text: string): string | null {
   const content = text.replace(/^﻿/, "");
   if (!content.startsWith("---")) return null;
-  // Python's str \s (Hermes's `\n---\s*\n`) also covers \x1c-\x1f and \x85, which JS \s does not.
-  const end = /\n---[\s\x1c-\x1f\x85]*?\n/.exec(content.slice(3));
+  // Exactly Python's str \s (Hermes's `\n---\s*\n`): JS \s also has U+FEFF and lacks \x1c-\x1f and U+0085 (RA38 (a)).
+  const end = new RegExp(`\\n---${PY_SPACE}*?\\n`).exec(content.slice(3));
   return end ? content.slice(3, end.index + 3) : null;
 }
 const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, "$2");
@@ -208,8 +212,10 @@ function frontmatterNames(text: string): string[] | null {
  * Anything else fails closed.
  */
 export function namesItself(text: string, id: string): boolean {
+  // RA38: no BOM, opening and closing fences exactly `---`, and nothing exotic anywhere up to the closing fence.
+  if (!text.startsWith("---\n")) return false;
   const block = frontmatter(text);
-  if (block === null) return false;
+  if (block === null || !text.startsWith(`---${block}\n---\n`) || EXOTIC.test(`---${block}\n---\n`)) return false;
   const lines = block.split("\n").map(l => l.replace(/\r$/, ""));
   if (!lines.every(l => /^[ \t]*$/.test(l) || /^[ \t]/.test(l) || /^- /.test(l) || /^[A-Za-z0-9_-]+:([ \t]|$)/.test(l))) return false;
   const names = lines.filter(l => /^name:/.test(l));
