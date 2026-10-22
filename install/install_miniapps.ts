@@ -136,7 +136,7 @@ function offered(served: ReturnType<typeof parseSkillDelivery>, id: string): Buf
 const STATIC_SHADOWS: ReadonlySet<string> = new Set<string>([...EDGE_SKILL_NAMES, ...RETIRED_SKILL_DIRS]);
 export const GENERIC_STATE = "mini-apps-generic.json";
 /** Per generic id, the sha256s of the SKILL.md this installer wrote (GENERIC_STATE); absent = none. Malformed is fatal. */
-function ownedGeneric(home: string): Map<string, string[]> {
+function ownedGeneric(home: string, source: string): Map<string, string[]> {
   const path = join(home, GENERIC_STATE);
   regular(path);
   if (!exists(path)) return new Map();
@@ -147,7 +147,7 @@ function ownedGeneric(home: string): Map<string, string[]> {
     const entries = Object.entries(doc.skills as Record<string, unknown>);
     if (entries.length > 256) throw new Error("size");
     for (const [id, shas] of entries) {
-      if (!GENERIC_ID.test(id) || REVIEWED_IDS.has(id) || STATIC_SHADOWS.has(id) || !Array.isArray(shas) || shas.length < 1 || shas.length > 2 ||
+      if (!GENERIC_ID.test(id) || REVIEWED_IDS.has(id) || STATIC_SHADOWS.has(id) || exists(join(source, id)) || !Array.isArray(shas) || shas.length < 1 || shas.length > 2 ||
           shas.some(x => typeof x !== "string" || !HEX64.test(x)) || new Set(shas).size !== shas.length) throw new Error("entry");
     }
     return new Map(entries as [string, string[]][]);
@@ -277,7 +277,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   regular(target);
   // Per app: a refused generic app fails only itself (REFUSAL_CODES); everything else here is as before.
   const state = join(home, GENERIC_STATE);
-  const recorded = ownedGeneric(home);
+  const recorded = ownedGeneric(home, source);
   const ours = ownedFile(home, recorded);
   const { projection, staged, refused, intentEmpty } = resolveApps(value, served, shadowsOnBox(home, source, ours));
   const accepted = staged.filter(x => x.generic).map(x => x.app.id);

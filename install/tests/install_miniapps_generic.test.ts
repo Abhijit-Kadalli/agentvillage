@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { BUNDLE_MAX_CHARS, GENERIC_OPERATIONS_ACCEPTED, GENERIC_STATE, PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REFUSAL_CODES, REVIEWED_MINI_APPS, SKILL_MAX_BYTES, validateProjection } from "../install_miniapps";
+import { BUNDLE_MAX_CHARS, GENERIC_ID, GENERIC_OPERATIONS_ACCEPTED, GENERIC_STATE, PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REFUSAL_CODES, REVIEWED_MINI_APPS, SKILL_MAX_BYTES, validateProjection } from "../install_miniapps";
 import { EDGE_SKILL_NAMES, RETIRED_SKILL_DIRS } from "../paths";
 
 const REPO = join(import.meta.dir, "..", "..");
@@ -141,7 +141,7 @@ test("sha_mismatch: bytes that do not hash to the offered sha256 refuse that app
 test("offer_missing: no offer, no entry for the app, or no well-formed offer digest; never a checkout copy", () => {
   const cases: Delivery[] = [
     {},
-    bundle(entry("dizko", TEXT)),
+    bundle(entry("other-app", TEXT)),
     { skills: bundle(entry("civic-board", TEXT)).skills },
     { offer: OFFER.toUpperCase(), skills: bundle(entry("civic-board", TEXT)).skills },
     { offer: "not-a-digest", skills: bundle(entry("civic-board", TEXT)).skills },
@@ -298,9 +298,10 @@ test("verify recomputes the same subset: a generic app verified without its offe
   expect(() => reconcileMiniApps(projection, root, undefined, true)).toThrow("mini_apps_projection_mismatch");
   // Other offered bytes for the same app are drift on the staged file.
   expect(() => reconcileMiniApps(projection, root, undefined, true, bundle(entry("civic-board", TEXT + "x")))).toThrow("mini_apps_skill_mismatch");
-  // A box-side edit of the staged SKILL.md is drift.
+  // A box-side edit of the staged SKILL.md: the file is no longer ours, so the app is refused again and the
+  // authority file no longer matches the recomputed subset.
   writeFileSync(skillPath(root, "civic-board"), "edited on the box");
-  expect(() => reconcileMiniApps(projection, root, undefined, true, bundle(entry("civic-board", TEXT)))).toThrow("mini_apps_skill_mismatch");
+  expect(() => reconcileMiniApps(projection, root, undefined, true, bundle(entry("civic-board", TEXT)))).toThrow("mini_apps_projection_mismatch");
 });
 
 test("a box that refuses every desired app keeps its bridge credential; only an empty desired set revokes it", () => {
@@ -348,7 +349,8 @@ test("security fold (1): a generic id never shadows a skill something else owns"
   const delivery = (id: string) => bundle(entry(id, TEXT));
   // Every skill another installer step stages (each skill directory in this checkout: approval, recall, ...), every
   // retired skill, and every shipped one.
-  const checkoutDirs = readdirSync(join(REPO, "skills"), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
+  // (A dot directory such as .claude-plugin fails GENERIC_ID, which is fatal, tested above.)
+  const checkoutDirs = readdirSync(join(REPO, "skills"), { withFileTypes: true }).filter(d => d.isDirectory() && GENERIC_ID.test(d.name)).map(d => d.name);
   expect(checkoutDirs).toContain("approval");
   expect(checkoutDirs).toContain("recall");
   for (const id of [...checkoutDirs, ...RETIRED_SKILL_DIRS, ...EDGE_SKILL_NAMES].filter(id => !REVIEWED_IDS.has(id))) {
