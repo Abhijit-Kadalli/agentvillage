@@ -7,17 +7,18 @@ import { hermesBin, hermesExecEnv } from "./hermes_cli";
 import { hermesAvailable } from "./install_index";
 
 export const ZZZ_JOB_NAME = "Edge — zzz pairs";
-export const ZZZ_JOB_SCRIPT = "agentvillage_zzz_pairs.sh";
+export const ZZZ_JOB_SCRIPT = "zzz_managed_runner.py";
+const LEGACY_JOB_SCRIPT = "agentvillage_zzz_pairs.sh";
 export const ZZZ_JOB_SCHEDULE = "*/10 * * * *";
 export const ZZZ_JOB_TOOLSETS = ["village", "no_mcp"] as const;
 const PROMPT = "skills/zzzbot/prompts/participate.md";
-const SCRIPT = "skills/zzzbot/scripts/agentvillage_zzz_pairs.sh";
+const SCRIPT = "skills/zzzbot/scripts/zzz_managed_runner.py";
 
-type Job = { id?: unknown; name?: unknown; script?: unknown; enabled?: unknown; enabled_toolsets?: unknown; no_agent?: unknown };
+type Job = { id?: unknown; name?: unknown; script?: unknown; enabled?: unknown; enabled_toolsets?: unknown; no_agent?: unknown; workdir?: unknown };
 const ID = /^[0-9a-f]{12}$/;
 
 /**
- * ov#441 S5 + N12 (nonav OWNER CALL, pick (a)): the sha256 of every version of the two installer-written managed files
+ * ov#441 S5 + N12 (nonav OWNER CALL, pick (a)): the sha256 of every version of the installer-written managed files
  * this installer ever shipped. The shim is copied byte for byte (skills/zzzbot/scripts -> scripts/), never generated
  * per box. Derived from the git history of skills/zzzbot/{scripts/agentvillage_zzz_pairs.sh,prompts/participate.md}:
  * one version each (3de7d213), in no earlier tag. Append a new version's sha when the source changes; never drop one
@@ -25,6 +26,7 @@ const ID = /^[0-9a-f]{12}$/;
  */
 export const ZZZ_SHIPPED_SHA256 = {
   shim: ["1db538dc9d5d602bfbc71bbb8da0b49b4fee0280b603f75222df94e43ef82eff"],
+  runner: ["abcfb73fd0b5dda0b7c33d604933dc96f08076233750a4a6cddf10b424c58b5e"],
   prompt: ["f5d0d69e6af8a9076e92d31114fc7ff8ec6f99b54a0b980c7a308f5e8b7f42d2"],
 } as const;
 export type ZzzShippedKind = keyof typeof ZZZ_SHIPPED_SHA256;
@@ -69,23 +71,23 @@ else:
         if not old or old.get('name') != r['name']:
             raise RuntimeError('zzz_job_mismatch')
         pause_job(r['id'])
-        safe = (old.get('script') == r['script'] and old.get('no_agent') is not True
-            and old.get('enabled_toolsets') == r['toolsets'])
+        safe = (old.get('script') == r['script'] and old.get('no_agent') is True
+            and old.get('enabled_toolsets') == r['toolsets'] and not old.get('workdir'))
         if safe:
             job = update_job(r['id'], {'prompt': r['prompt'], 'script': r['script'],
-                'enabled_toolsets': r['toolsets'], 'no_agent': False,
-                'failure_deliver': 'local', 'workdir': r['home']})
+                'enabled_toolsets': r['toolsets'], 'no_agent': True,
+                'failure_deliver': 'local', 'workdir': None})
         else:
             # A running agent retains its tool snapshot. Removal invalidates
             # that old cron ID at the native gate before the new job resumes.
             if not remove_job(r['id']):
                 raise RuntimeError('zzz_unsafe_job_remove_failed')
             job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
-                script=r['script'], enabled_toolsets=r['toolsets'], workdir=r['home'],
+                script=r['script'], enabled_toolsets=r['toolsets'], no_agent=True,
                 failure_deliver='local', paused=True, paused_reason='Configuring ZZZ tool scope')
     else:
         job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
-            script=r['script'], enabled_toolsets=r['toolsets'], workdir=r['home'],
+            script=r['script'], enabled_toolsets=r['toolsets'], no_agent=True,
             failure_deliver='local', paused=True, paused_reason='Configuring ZZZ tool scope')
     if not job or job.get('enabled_toolsets') != r['toolsets'] or job.get('enabled'):
         raise RuntimeError('zzz_job_scope_failed')
@@ -252,7 +254,8 @@ function lingeringJobs(home: string): Job[] {
 /** The installer's exact job record: what it confirms after an install, and what the plugin's managed_context needs. */
 function confirmed(list: Job[]): boolean {
   return list.length === 1 && list[0].script === ZZZ_JOB_SCRIPT && list[0].enabled === true
-    && list[0].no_agent !== true && JSON.stringify(list[0].enabled_toolsets) === JSON.stringify(ZZZ_JOB_TOOLSETS);
+    && list[0].no_agent === true && !list[0].workdir
+    && JSON.stringify(list[0].enabled_toolsets) === JSON.stringify(ZZZ_JOB_TOOLSETS);
 }
 
 /**
@@ -272,7 +275,8 @@ export function verifyZzzManagedJob(home: string, installed: boolean, script: Bu
   if (lingeringJobs(home).length) throw new Error("zzz_job_removal_pending");
   // N12: only the installer's own shim is pending removal; any other object by its name is not ours and stays.
   const dir = realScriptsDir(home);
-  if (dir && zzzShippedFile(join(dir, ZZZ_JOB_SCRIPT), "shim") === "ours") throw new Error("zzz_shim_removal_pending");
+  if (dir && (zzzShippedFile(join(dir, ZZZ_JOB_SCRIPT), "runner") === "ours"
+      || zzzShippedFile(join(dir, LEGACY_JOB_SCRIPT), "shim") === "ours")) throw new Error("zzz_shim_removal_pending");
 }
 
 /** Reconcile only the installer-owned job; the projection remains app authority. */
@@ -283,7 +287,7 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
     // review-b N2: with participation off, a job store or scripts/ shape this installer never wrote (and Hermes still
     // accepts) never fails the stage; only a managed job that may still run does.
     const current = lingeringJobs(home);
-    if (current.length && !hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
+    if (current.length && !hermesAvailable(bin, 15_000, env)) throw new Error("zzz_hermes_missing");
     const python = current.length ? jobPython(bin) : null;
     for (const job of current) {
       if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_job_invalid");
@@ -292,13 +296,17 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
     // The installer only ever writes the shim into a real scripts/ directory; never follow a symlinked one. N12: it
     // removes only its own shim (a shipped version's bytes); a resident's file or any other object by that name stays.
     const dir = realScriptsDir(home);
-    const shim = dir && join(dir, ZZZ_JOB_SCRIPT);
-    if (shim && zzzShippedFile(shim, "shim") === "ours") unlinkSync(shim);
+    if (dir) {
+      for (const [name, kind] of [[ZZZ_JOB_SCRIPT, "runner"], [LEGACY_JOB_SCRIPT, "shim"]] as const) {
+        const shim = join(dir, name);
+        if (zzzShippedFile(shim, kind) === "ours") unlinkSync(shim);
+      }
+    }
     return;
   }
   stateDirUsable(home);
   const current = jobs(home);
-  if (!hermesAvailable(bin, 5_000, env)) throw new Error("zzz_hermes_missing");
+  if (!hermesAvailable(bin, 15_000, env)) throw new Error("zzz_hermes_missing");
   if (current.length > 1) throw new Error("zzz_job_duplicate");
   const python = jobPython(bin);
   const prompt = readFileSync(join(home, PROMPT), "utf8").trimEnd();
@@ -315,4 +323,6 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
     prompt, script: ZZZ_JOB_SCRIPT, schedule: ZZZ_JOB_SCHEDULE,
     toolsets: [...ZZZ_JOB_TOOLSETS], home });
   if (!confirmed(jobs(home))) throw new Error("zzz_job_not_confirmed");
+  const legacy = join(scriptsDir(home), LEGACY_JOB_SCRIPT);
+  if (zzzShippedFile(legacy, "shim") === "ours") unlinkSync(legacy);
 }

@@ -117,7 +117,6 @@ class ManagedPairsTest(unittest.TestCase):
             "version 2": json.dumps({"version": 2, "apps": [ZZZBOT, BRIDGE]}),
             "extra key": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE], "zzz": True}),
             "underscore id": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "id": "zzz_bridge"}]}),
-            "underscore beside": json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE, {**BRIDGE, "id": "zzz_bridge"}]}),
             "bridge with op": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "operations": ["zzz.pairs"]}]}),
             "bridge with skill": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "skills": ["zzz-bridge"]}]}),
             "bridge version": json.dumps({"version": 1, "apps": [ZZZBOT, {**BRIDGE, "version": "1.0.1"}]}),
@@ -153,7 +152,7 @@ class ManagedPairsTest(unittest.TestCase):
                 if hasattr(const, "co_names"):
                     found |= names(const)
             return found
-        for fn in (managed.participation_on, mini.zzz_participation, mini.projected_apps):
+        for fn in (managed.participation_on, mini.zzz_participation, mini.projection):
             used = names(fn.__code__)
             self.assertTrue(used, fn.__name__)
             self.assertFalse(used & {"environ", "getenv", "environb", "getenvb"}, fn.__name__)
@@ -245,7 +244,7 @@ class ManagedPairsTest(unittest.TestCase):
         """The installer's job record and a credential, as a box with participation on holds them."""
         (self.home / "cron").mkdir()
         job = {"id": "abcdef123456", "name": managed.JOB_NAME, "script": managed.JOB_SCRIPT,
-               "enabled": True, "no_agent": False, "enabled_toolsets": managed.JOB_TOOLSETS}
+               "enabled": True, "no_agent": True, "enabled_toolsets": managed.JOB_TOOLSETS}
         path = self.home / "cron" / "jobs.json"
         path.write_text(json.dumps({"jobs": [job]}))
         (self.home / "village-bridge.json").write_text(json.dumps({"ownerTelegramId": "42"}))
@@ -276,7 +275,8 @@ class ManagedPairsTest(unittest.TestCase):
         job, path = self.cron_job()
         session = "cron_abcdef123456_20261020_120000"
         task = "cron:abcdef123456:0123456789abcdef"
-        with patch.dict(sys.modules, self.cron_modules()):
+        self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
+        with patch.dict(sys.modules, self.cron_modules()), managed.managed_runner_scope("abcdef123456", session):
             self.assertEqual(managed.managed_context(self.home, "zzz.reply", session, task)["USER_ID"], "42")
             self.assertEqual(managed.managed_context(self.home, "zzz.create_thread", session, task)["USER_ID"], "42")
             self.assertIsNone(managed.managed_context(self.home, "rolodex.search", session, task))
@@ -298,6 +298,10 @@ class ManagedPairsTest(unittest.TestCase):
             job["enabled"] = True
             path.write_text(json.dumps({"jobs": [job]}))
             self.assertIsNone(managed.managed_context(self.home, "zzz.reply", session, task))
+            self.assertIsNone(managed.managed_context(self.home, "zzz.reply",
+                "cron_bbbbbbbbbbbb_20261020_120000", "cron:bbbbbbbbbbbb:0123456789abcdef"))
+        with patch.dict(sys.modules, self.cron_modules()), managed.managed_runner_scope(
+                "bbbbbbbbbbbb", "cron_bbbbbbbbbbbb_20261020_120000"):
             self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply",
                 "cron_bbbbbbbbbbbb_20261020_120000", "cron:bbbbbbbbbbbb:0123456789abcdef"))
 
@@ -308,7 +312,7 @@ class ManagedPairsTest(unittest.TestCase):
         job, _path = self.cron_job()
         session = "cron_abcdef123456_20261020_120000"
         task = "cron:abcdef123456:0123456789abcdef"
-        with patch.dict(sys.modules, self.cron_modules()):
+        with patch.dict(sys.modules, self.cron_modules()), managed.managed_runner_scope("abcdef123456", session):
             self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply", session, task))
             good = json.dumps({"version": 1, "apps": [ZZZBOT, BRIDGE]})
             for label, text in {"truncated": good[:-2], "empty": "", "not an object": "[]", "extra key": good[:-1] + ', "x": 1}',
@@ -329,7 +333,7 @@ class ManagedPairsTest(unittest.TestCase):
         (self.home / "village-bridge.json").write_text(json.dumps({"ownerTelegramId": "42"}))
         jobs = self.home / "cron" / "jobs.json"
         other = {"id": "aaaaaaaaaaaa", "name": "Morning digest", "script": "digest.sh", "enabled": True}
-        with patch.dict(sys.modules, self.cron_modules()):
+        with patch.dict(sys.modules, self.cron_modules()), managed.managed_runner_scope("abcdef123456", session):
             for label, doc in {"no jobs.json": None, "no jobs": {"jobs": []}, "other jobs only": {"jobs": [other]}}.items():
                 if doc is None:
                     jobs.unlink(missing_ok=True)
@@ -362,6 +366,9 @@ class ManagedPairsTest(unittest.TestCase):
         for item in stack:
             item.start()
             self.addCleanup(item.stop)
+        scope = managed.managed_runner_scope("abcdef123456", session)
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         self.assertIsNotNone(managed.managed_context(self.home, "zzz.reply", session, task))
 
         def call(op, arguments):
@@ -458,10 +465,14 @@ class ManagedPairsTest(unittest.TestCase):
         for label, entry in refused.items():
             for apps in ([gold, ZZZBOT, BRIDGE, entry], [entry, ZZZBOT, BRIDGE, gold]):
                 path.write_text(json.dumps({"version": 1, "apps": apps}))
-                self.assertIsNone(mini.projected_apps(self.home), label)
-                self.assert_off(label)
-                self.assertFalse(mini.installed(self.home, "gold-stars", "rolodex.search"), label + ": pinned whole refusal")
-                self.assertFalse(mini.installed(self.home, "zzzbot", "zzz.list_rooms"), label + ": pinned whole refusal")
+                projected = mini.projection(self.home)
+                if label in ("second zzzbot", "non-string id", "not an object"):
+                    self.assertIsNone(projected, label)
+                    self.assert_off(label)
+                else:
+                    self.assertIsNotNone(projected, label)
+                    self.assertTrue(managed.participation_on(self.home), label)
+                    self.assertEqual({app["id"] for app in projected}, {"gold-stars", "zzzbot", "zzz-bridge"})
 
 
 if __name__ == "__main__":

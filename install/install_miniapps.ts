@@ -62,8 +62,10 @@ const owned = (id: string) => !SHIPPED_SKILLS.has(id);
 const hasSkill = (app: StagedApp) => app.skills.length > 0;
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 export const ZZZ_BRIDGE_ID = "zzz-bridge";
-const ZZZ_SHIM = "agentvillage_zzz_pairs.sh";
-const ZZZ_MANAGED_FILES = [`scripts/${ZZZ_SHIM}`, "prompts/participate.md"] as const;
+const ZZZ_SHIM = "zzz_managed_runner.py";
+const ZZZ_LEGACY_SHIM = "agentvillage_zzz_pairs.sh";
+const ZZZ_MANAGED_FILES = [`scripts/${ZZZ_LEGACY_SHIM}`, `scripts/${ZZZ_SHIM}`, "prompts/participate.md"] as const;
+const ZZZ_STAGE_FILES = ZZZ_MANAGED_FILES.filter(relative => relative !== `scripts/${ZZZ_LEGACY_SHIM}`);
 /**
  * ov#441 S1: managed ZZZ participation (the "Edge — zzz pairs" job, its shim, prompt and cursor state) is on only
  * when the validated cp projection carries BOTH zzzbot and zzz-bridge. Nothing else (no overlay constant, no
@@ -92,7 +94,10 @@ export function zzzParticipation(projection: { apps: readonly { id: string }[] }
  * job gets no managed ZZZ path; the next stage carrying the pair re-takes it. Pinned in zzz_managed_job.test.ts.
  */
 const ZZZ_MARKERS: readonly { parts: readonly string[]; kind: ZzzShippedKind | null }[] = [
-  { parts: ["scripts", ZZZ_SHIM], kind: "shim" }, { parts: ["skills", "zzzbot", "scripts", ZZZ_SHIM], kind: "shim" },
+  { parts: ["scripts", ZZZ_LEGACY_SHIM], kind: "shim" },
+  { parts: ["skills", "zzzbot", "scripts", ZZZ_LEGACY_SHIM], kind: "shim" },
+  { parts: ["scripts", ZZZ_SHIM], kind: "runner" },
+  { parts: ["skills", "zzzbot", "scripts", ZZZ_SHIM], kind: "runner" },
   { parts: ["skills", "zzzbot", "prompts", "participate.md"], kind: "prompt" },
   { parts: ["zzzbot", "managed-pairs.json"], kind: null }, { parts: ["zzzbot", "managed-pairs.lock"], kind: null }];
 /**
@@ -126,7 +131,8 @@ function zzzMarkerAt(home: string, parts: readonly string[], kind: ZzzShippedKin
 }
 /** A managed file under skills/zzzbot (the stage's own copy of the shim, or participate.md), as a marker path. */
 const zzzManagedAt = (home: string, relative: typeof ZZZ_MANAGED_FILES[number]) =>
-  zzzMarkerAt(home, ["skills", "zzzbot", ...relative.split("/")], relative.startsWith("scripts/") ? "shim" : "prompt");
+  zzzMarkerAt(home, ["skills", "zzzbot", ...relative.split("/")],
+    relative.endsWith(ZZZ_SHIM) ? "runner" : relative.startsWith("scripts/") ? "shim" : "prompt");
 export function zzzMarkerOnDisk(home: string): boolean {
   const { ours, notOurs } = zzzMarkerScan(home);
   noteNotOurs(notOurs);
@@ -588,8 +594,8 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   const zzzManagedFiles = ZZZ_MANAGED_FILES;
   // N12: only a stage that writes them preflights the managed paths; a teardown removes only its own files and leaves
   // anything else by their names (a resident's file, a symlink, a directory) in place, so nothing there fails it.
-  if (zzzManaged) for (const relative of zzzManagedFiles) regular(join(home, "skills", "zzzbot", relative));
-  const zzzFiles = zzzManaged ? zzzManagedFiles.map(relative => {
+  if (zzzManaged) for (const relative of ZZZ_STAGE_FILES) regular(join(home, "skills", "zzzbot", relative));
+  const zzzFiles = zzzManaged ? ZZZ_STAGE_FILES.map(relative => {
     const sourcePath = join(source, "zzzbot", relative);
     regular(sourcePath);
     const content = readFileSync(sourcePath);
@@ -642,7 +648,11 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     // managed path needs the installer's job (_zzz_managed.managed_context). The job exists only when the projection
     // grants zzzbot AND zzz-bridge (S1).
     atomic(target, bytes);
-    if (import.meta.main && zzzManaged) reconcileZzzManagedJob(home, true);
+    if (import.meta.main && zzzManaged) {
+      reconcileZzzManagedJob(home, true);
+      const legacy = `scripts/${ZZZ_LEGACY_SHIM}` as const;
+      if (zzzManagedAt(home, legacy) === "ours") unlinkSync(join(home, "skills", "zzzbot", legacy));
+    }
     // On removal authority disappears before the job teardown; the managed files and state (markers) go only after it.
     if (zzzTeardown) {
       if (import.meta.main) reconcileZzzManagedJob(home, false);

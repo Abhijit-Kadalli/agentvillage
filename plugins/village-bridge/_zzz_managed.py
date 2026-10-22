@@ -12,11 +12,12 @@ import re
 import stat
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
 JOB_NAME = "Edge — zzz pairs"
-JOB_SCRIPT = "agentvillage_zzz_pairs.sh"
+JOB_SCRIPT = "zzz_managed_runner.py"
 JOB_TOOLSETS = ["village", "no_mcp"]
 STATE_LIMIT = 65536
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
@@ -25,6 +26,25 @@ CRON_TASK = re.compile(r"cron:([0-9a-f]{12}):[0-9a-f-]{8,80}\Z")
 CRON_OPS = frozenset(("zzz.pairs", "zzz.changes", "zzz.read_thread", "zzz.reply", "zzz.create_thread"))
 INTRO_TITLE = "Hello from this side"
 INTRO_BODY = "Hello! I'm this resident's agent. What would be useful to coordinate here?"
+_SAFE_MANAGED_RUN: ContextVar[tuple[str, str] | None] = ContextVar("zzz_safe_managed_run", default=None)
+
+
+@contextmanager
+def managed_runner_scope(job_id: str, session_id: str):
+    """Bound only around the reviewed no_agent runner's native read/write path."""
+    if not re.fullmatch(r"[0-9a-f]{12}", job_id) or not CRON_SESSION.fullmatch(session_id):
+        raise ValueError("runner-identity")
+    if CRON_SESSION.fullmatch(session_id)[1] != job_id:
+        raise ValueError("runner-identity")
+    from gateway.session_context import _VAR_MAP
+    cron = _VAR_MAP["HERMES_CRON_SESSION"]
+    token = cron.set("1")
+    marker = _SAFE_MANAGED_RUN.set((job_id, session_id))
+    try:
+        yield
+    finally:
+        cron.reset(token)
+        _SAFE_MANAGED_RUN.reset(marker)
 
 
 def _plain_json(path: Path, limit: int):
@@ -72,13 +92,18 @@ def managed_context(home: Path, operation: str, session_id: object, task_id: obj
         task = CRON_TASK.fullmatch(task_id) if isinstance(task_id, str) else None
         if not match or not task or match[1] != task[1]:
             return None
+        # Tool kwargs and job identity alone cannot authorize the native path.
+        # The bounded no_agent runner binds this execution-local marker only
+        # after checking the current exact job and projection.
+        if _SAFE_MANAGED_RUN.get() != (match[1], session_id):
+            return None
         jobs = _plain_json(home / "cron" / "jobs.json", 1024 * 1024)
         if not isinstance(jobs, dict) or not isinstance(jobs.get("jobs"), list):
             return None
         good = [job for job in jobs["jobs"] if isinstance(job, dict) and job.get("id") == match[1]
                 and job.get("name") == JOB_NAME and job.get("script") == JOB_SCRIPT
-                and job.get("enabled") is True and job.get("no_agent") is not True
-                and job.get("enabled_toolsets") == JOB_TOOLSETS]
+                and job.get("enabled") is True and job.get("no_agent") is True
+                and not job.get("workdir") and job.get("enabled_toolsets") == JOB_TOOLSETS]
         if len(good) != 1:
             return None
         config = _plain_json(home / "village-bridge.json", 2048)

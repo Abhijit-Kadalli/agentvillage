@@ -28,12 +28,12 @@ if (request.action === "remove") {
 } else {
   const old = jobs.find(job => job.id === request.id);
   if (request.id && (!old || old.name !== request.name)) process.exit(1);
-  const safe = old && old.script === request.script && old.no_agent !== true
+  const safe = old && old.script === request.script && old.no_agent === true && !old.workdir
     && JSON.stringify(old.enabled_toolsets) === JSON.stringify(request.toolsets);
   if (old && !safe) jobs.splice(jobs.indexOf(old), 1);
   const job = safe ? old : { id: randomBytes(6).toString("hex"), name: request.name };
   Object.assign(job, { prompt: request.prompt, script: request.script,
-    enabled_toolsets: request.toolsets, enabled: true, no_agent: false, workdir: request.home });
+    enabled_toolsets: request.toolsets, enabled: true, no_agent: true, workdir: null });
   if (!safe) jobs.push(job);
 }
 mkdirSync(join(home, "cron"), { recursive: true });

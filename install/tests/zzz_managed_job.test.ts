@@ -49,9 +49,11 @@ function fakeBox() {
   return { home, stage, jobs };
 }
 const zzzbot = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
-/** The bytes this installer ships for its two managed files (the shim is copied verbatim into scripts/). */
+/** The bytes this installer ships for its managed files (the runner is copied verbatim into scripts/). */
 const SHIPPED_SHIM = readFileSync(join(import.meta.dir, "../../skills/zzzbot/scripts", ZZZ_JOB_SCRIPT));
 const SHIPPED_PROMPT = readFileSync(join(import.meta.dir, "../../skills/zzzbot/prompts/participate.md"));
+const SHIPPED_RUNNER = readFileSync(join(import.meta.dir, "../../skills/zzzbot/scripts/zzz_managed_runner.py"));
+const SHIPPED_LEGACY_SHIM = readFileSync(join(import.meta.dir, "../../skills/zzzbot/scripts/agentvillage_zzz_pairs.sh"));
 const bridge = REVIEWED_MINI_APPS.find(app => app.id === "zzz-bridge")!;
 const alone = { version: 1, apps: [zzzbot] };
 const projection = { version: 1, apps: [zzzbot, bridge] };
@@ -61,10 +63,11 @@ function expectOff(home: string, jobs: () => unknown[]) {
   expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
   expect(existsSync(join(home, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
   expect(existsSync(join(home, "skills", "zzzbot", "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
+  expect(existsSync(join(home, "skills", "zzzbot", "scripts", "zzz_managed_runner.py"))).toBe(false);
   expect(existsSync(join(home, "zzzbot"))).toBe(false);
 }
 
-test("installed ZZZ projection owns one Hermes agent job; revocation removes it", () => {
+test("installed ZZZ projection owns one script-only Hermes job; revocation removes it", () => {
   const { home, stage, jobs } = fakeBox();
   expect(stage(alone).status).toBe(0);
   expect(existsSync(join(home, "cron", "jobs.json"))).toBe(false);
@@ -76,7 +79,8 @@ test("installed ZZZ projection owns one Hermes agent job; revocation removes it"
   expect(jobs()).toHaveLength(1);
   expect(jobs()[0]).toMatchObject({ name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT, enabled: true,
     enabled_toolsets: [...ZZZ_JOB_TOOLSETS] });
-  expect(jobs()[0].no_agent).not.toBe(true);
+  expect(jobs()[0].no_agent).toBe(true);
+  expect(jobs()[0].workdir).toBeNull();
   const id = jobs()[0].id;
   reconcileZzzManagedJob(home, true);
   expect(jobs()).toHaveLength(1);
@@ -88,6 +92,17 @@ test("installed ZZZ projection owns one Hermes agent job; revocation removes it"
   reconcileZzzManagedJob(home, true);
   expect(jobs()[0].enabled_toolsets).toEqual([...ZZZ_JOB_TOOLSETS]);
   expect(jobs()[0].id).not.toBe(id);
+  // An old agent job has already entered an unsafe runtime. Rotate its ID,
+  // leave no old shell entrypoint, and keep the new record script-only.
+  const previous = jobs()[0].id;
+  const legacy = jobs();
+  legacy[0] = { ...legacy[0], script: "agentvillage_zzz_pairs.sh", no_agent: false, workdir: home };
+  writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify({ jobs: legacy }));
+  writeFileSync(join(home, "scripts", "agentvillage_zzz_pairs.sh"), SHIPPED_LEGACY_SHIM);
+  reconcileZzzManagedJob(home, true);
+  expect(jobs()[0].id).not.toBe(previous);
+  expect(jobs()[0]).toMatchObject({ script: ZZZ_JOB_SCRIPT, no_agent: true });
+  expect(existsSync(join(home, "scripts", "agentvillage_zzz_pairs.sh"))).toBe(false);
   mkdirSync(join(home, "zzzbot"));
   writeFileSync(join(home, "zzzbot", "managed-pairs.json"), "{}");
   writeFileSync(join(home, "zzzbot", "managed-pairs.lock"), "");
@@ -154,7 +169,7 @@ function snapshot(root: string): Record<string, string> {
   return out;
 }
 const FAILED = `${JSON.stringify({ error: "mini_apps_reconcile_failed" })}\n`;
-/** Exactly the paths a fail-closed teardown may remove: the job's shim, the two managed files, the cursor state. */
+/** Exactly the paths a fail-closed teardown may remove: the job's shim, managed files, and cursor state. */
 const ZZZ_OWNED = [`scripts/${ZZZ_JOB_SCRIPT}`, `skills/zzzbot/scripts/${ZZZ_JOB_SCRIPT}`, "skills/zzzbot/prompts/participate.md",
   "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock", "zzzbot/.managed-123"];
 /** Managed cursor state as the poll leaves it, beside a resident's own file in the same folder. */
@@ -471,7 +486,8 @@ test("review-b N3: --verify checks the job record: exactly the installer's job w
   const job = jobs()[0];
   const variants: [string, unknown][] = [
     ["job gone", { jobs: [] }], ["job disabled", { jobs: [{ ...job, enabled: false }] }],
-    ["toolsets widened", { jobs: [{ ...job, enabled_toolsets: ["all"] }] }], ["no_agent", { jobs: [{ ...job, no_agent: true }] }],
+    ["toolsets widened", { jobs: [{ ...job, enabled_toolsets: ["all"] }] }], ["no_agent", { jobs: [{ ...job, no_agent: false }] }],
+    ["workdir", { jobs: [{ ...job, workdir: home }] }],
     ["another script", { jobs: [{ ...job, script: "other.sh" }] }], ["duplicate", { jobs: [job, { ...job, id: "bbbbbbbbbbbb" }] }],
   ];
   for (const [label, doc] of variants) {
@@ -748,7 +764,7 @@ test("S4-r: a box that was on keeps the earlier N2 tolerance in its teardown (st
 const MARKER_PATHS = [`scripts/${ZZZ_JOB_SCRIPT}`, `skills/zzzbot/scripts/${ZZZ_JOB_SCRIPT}`, "skills/zzzbot/prompts/participate.md",
   "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock"];
 const INSTALLER_MARKERS = MARKER_PATHS.slice(0, 3);
-const ownBytes = (path: string) => path.endsWith(ZZZ_JOB_SCRIPT) ? SHIPPED_SHIM : path.endsWith("participate.md") ? SHIPPED_PROMPT : Buffer.from("{}");
+const ownBytes = (path: string) => path.endsWith(ZZZ_JOB_SCRIPT) ? SHIPPED_RUNNER : path.endsWith("participate.md") ? SHIPPED_PROMPT : Buffer.from("{}");
 /** S5 (review-b recheck L17481 m1-m4, m7): the non-regular objects an agent could plant at a marker path. */
 const S5_SHAPES: { label: string; seed: (path: string, elsewhere: string, marker: string) => void }[] = [
   { label: "dangling symlink", seed: (path, elsewhere) => { symlinkSync(join(elsewhere, "nowhere"), path); } },
@@ -933,22 +949,25 @@ test("N15: a marker replaced after lstat is never accepted or followed", () => {
 test("N12: the shipped sha table holds this checkout's managed-file bytes, and ownership is exact (regular file, shipped bytes, no link)", () => {
   // A source change without a new entry here would leave a box the new installer turned on unmarked once revoked.
   const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-  expect(ZZZ_SHIPPED_SHA256.shim as readonly string[]).toContain(sha(SHIPPED_SHIM));
+  expect(ZZZ_SHIPPED_SHA256.shim as readonly string[]).toContain(sha(SHIPPED_LEGACY_SHIM));
   expect(ZZZ_SHIPPED_SHA256.prompt as readonly string[]).toContain(sha(SHIPPED_PROMPT));
+  expect(ZZZ_SHIPPED_SHA256.runner as readonly string[]).toContain(sha(SHIPPED_RUNNER));
   for (const list of Object.values(ZZZ_SHIPPED_SHA256)) for (const entry of list) expect(entry).toMatch(/^[0-9a-f]{64}$/);
   const dir = mkdtempSync(join(tmpdir(), "av-zzz-owned-"));
   roots.push(dir);
   const at = (name: string) => join(dir, name);
-  writeFileSync(at("shim"), SHIPPED_SHIM);
+  writeFileSync(at("shim"), SHIPPED_LEGACY_SHIM);
+  writeFileSync(at("runner"), SHIPPED_RUNNER);
   writeFileSync(at("prompt"), SHIPPED_PROMPT);
-  writeFileSync(at("near"), Buffer.concat([SHIPPED_SHIM, Buffer.from(" ")]));
+  writeFileSync(at("near"), Buffer.concat([SHIPPED_LEGACY_SHIM, Buffer.from(" ")]));
   writeFileSync(at("big"), Buffer.alloc(65537));
   symlinkSync(at("shim"), at("link"));
   mkdirSync(at("dir"));
   expect(spawnSync("/usr/bin/mkfifo", [at("fifo")]).status).toBe(0);
-  writeFileSync(at("locked"), SHIPPED_SHIM, { mode: 0 });
+  writeFileSync(at("locked"), SHIPPED_LEGACY_SHIM, { mode: 0 });
   expect([zzzShippedFile(at("shim"), "shim"), zzzShippedFile(at("prompt"), "prompt"), zzzShippedFile(at("missing"), "shim")])
     .toEqual(["ours", "ours", "absent"]);
+  expect(zzzShippedFile(at("runner"), "runner")).toBe("ours");
   // Each kind matches only its own bytes.
   expect([zzzShippedFile(at("shim"), "prompt"), zzzShippedFile(at("prompt"), "shim")]).toEqual(["not_ours", "not_ours"]);
   for (const name of ["near", "big", "link", "dir", "fifo", "locked"]) expect(`${name}: ${zzzShippedFile(at(name), "shim")}`).toBe(`${name}: not_ours`);
