@@ -242,7 +242,7 @@ function skillNames(home: string): { top: string; names: string[] }[] | null {
         // Only the head is read (the frontmatter is at the top); a frontmatter not closed inside it is unknown.
         const head = readFileSync(path).subarray(0, 65536).toString("utf8");
         const found = frontmatterNames(head);
-        if (found === null || (head.startsWith("---") && frontmatter(head) === null && lstatSync(path).size > 65536)) throw new Error("unknown");
+        if (found === null || (head.replace(/^﻿/, "").startsWith("---") && frontmatter(head) === null && lstatSync(path).size > 65536)) throw new Error("unknown");
         names.push(...found);
         out.push({ top: t, names });
       } else if (!hasSkill && e.isFile() && e.name.endsWith(".md")) out.push({ top: t, names: [e.name.slice(0, -3)] });

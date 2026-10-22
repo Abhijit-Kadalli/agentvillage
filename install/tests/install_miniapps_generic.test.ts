@@ -501,7 +501,7 @@ test("RA34 S1: an id any other skill under skills/** answers to (category dir na
       mkdirSync(join(root, "skills", "a", "d"), { recursive: true }); writeFileSync(join(root, "skills", "a", "d", "SKILL.md"), `---\n${fm}\n---\n`);
     }),
     // Over the read cap with its frontmatter never closed inside the head: unknown.
-    root => { mkdirSync(join(root, "skills", "a", "e"), { recursive: true }); writeFileSync(join(root, "skills", "a", "e", "SKILL.md"), "---\ndescription: " + "x".repeat(70000) + "\nname: civic-board\n---\n"); },
+    ...["", "﻿"].map(bom => (root: string) => { mkdirSync(join(root, "skills", "a", "e"), { recursive: true }); writeFileSync(join(root, "skills", "a", "e", "SKILL.md"), bom + "---\ndescription: " + "x".repeat(70000) + "\nname: civic-board\n---\n"); }),
     root => { mkdirSync(join(root, "skills", "legacy"), { recursive: true }); writeFileSync(join(root, "skills", "legacy", "civic-board.md"), "# flat\n"); },
     root => { const outside = home(); mkdirSync(join(root, "skills", "cat"), { recursive: true }); symlinkSync(outside, join(root, "skills", "cat", "civic-board")); },
   ];
