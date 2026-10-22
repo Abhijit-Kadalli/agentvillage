@@ -126,6 +126,17 @@ class ProjectionEntryTest(unittest.TestCase):
                 card = next(app for app in apps if app['id'] == ids['card-only'])
                 self.assertEqual(mc.projected_operation(self.home, card['approval']['card'])[2]['class'], 'needs-card')
 
+    # ---- RA42 ov N4: a card entry's version is checked (mutant K6) ---------------------------------------------------
+
+    def test_a_card_entry_with_a_bad_version_is_refused_alone(self):
+        for version in ('1.0.0-beta.1', '1.0', 'v1.0.0', '', 1):
+            with self.subTest(repr(version)):
+                bad = {**copy.deepcopy(CARD_ONLY), 'version': version}
+                self.write(GOLD, FORKICKS, bad)
+                self.assert_refused_alone(bad)
+        self.write(GOLD, FORKICKS, copy.deepcopy(CARD_ONLY))
+        self.assert_accepted(CARD_ONLY)
+
     # ---- per app vs whole file (RA42 ov S1) --------------------------------------------------------------------------
 
     def test_one_bad_generic_installs_the_other_three(self):
