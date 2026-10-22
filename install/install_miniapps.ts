@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /** Disk-only curated reconciliation. CP owns intent, leasing, restart and applied evidence. */
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, parse } from "node:path";
 import { EDGE_SKILL_NAMES, hermesHome, RETIRED_SKILL_DIRS } from "./paths";
 
@@ -165,6 +165,22 @@ function ownedGeneric(home: string, source: string): { recorded: Map<string, str
   const kept = entries.filter(([id]) => !REVIEWED_IDS.has(id) && !STATIC_SHADOWS.has(id) && !exists(join(source, id)));
   return { recorded: new Map(kept), dropped: kept.length !== entries.length };
 }
+/**
+ * At most `max` bytes of a REGULAR file, with its size, from ONE open handle: never follows a link, never blocks on a
+ * FIFO or device (O_NONBLOCK), and the type and size come from that handle's fstat (no lstat-then-read race). Null when
+ * the path is not a regular file. A file over `max` returns its first `max` bytes and its real size.
+ */
+export function readHead(path: string, max: number): { bytes: Buffer; size: number } | null {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    const bytes = Buffer.alloc(Math.min(max, st.size));
+    let read = 0;
+    while (read < bytes.length) { const n = readSync(fd, bytes, read, bytes.length - read, read); if (n === 0) break; read += n; }
+    return { bytes: bytes.subarray(0, read), size: st.size };
+  } finally { closeSync(fd); }
+}
 /** The sha256 of skills/<id>/SKILL.md when it is a plain regular file this installer wrote (a recorded sha), else null. */
 function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) => string | null {
   return id => {
@@ -173,8 +189,9 @@ function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) 
     if (!shas) return null;
     try {
       safePath(path);
-      if (!exists(path) || !lstatSync(path).isFile() || lstatSync(path).size > SKILL_MAX_BYTES) return null;
-      const digest = hash(readFileSync(path));
+      const file = exists(path) ? readHead(path, SKILL_MAX_BYTES) : null;
+      if (!file || file.size > SKILL_MAX_BYTES) return null;
+      const digest = hash(file.bytes);
       return shas.includes(digest) ? digest : null;
     } catch { return null; }
   };
@@ -246,9 +263,12 @@ function skillNames(home: string): { top: string; names: string[] }[] | null {
       else if (e.name === "SKILL.md" && e.isFile()) {
         const names = [parse(dir).base];
         // Only the head is read (the frontmatter is at the top); a frontmatter not closed inside it is unknown.
-        const head = readFileSync(path).subarray(0, 65536).toString("utf8");
+        // One handle, at most 64 KiB, never a FIFO or device (a swap after readdir reads as unknown, never a hang).
+        const file = readHead(path, 65536);
+        if (!file) throw new Error("unknown");
+        const head = file.bytes.toString("utf8");
         const found = frontmatterNames(head);
-        if (found === null || (head.replace(/^﻿/, "").startsWith("---") && frontmatter(head) === null && lstatSync(path).size > 65536)) throw new Error("unknown");
+        if (found === null || (head.replace(/^﻿/, "").startsWith("---") && frontmatter(head) === null && file.size > 65536)) throw new Error("unknown");
         names.push(...found);
         out.push({ top: t, names });
       } else if (!hasSkill && e.isFile() && e.name.endsWith(".md")) out.push({ top: t, names: [e.name.slice(0, -3)] });
