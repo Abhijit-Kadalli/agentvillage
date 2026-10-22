@@ -30,7 +30,9 @@ const MAX_ERRORS = 32;
 const APP_ID = '^[a-z0-9][a-z0-9-]{0,39}$';
 // Two to four dot-separated segments; `_` is allowed because today's names use it (zzz.list_rooms).
 const OPERATION_NAME = '^[a-z0-9][a-z0-9_-]*(\\.[a-z0-9][a-z0-9_-]*){1,3}$';
-const SEMVER = '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-[0-9A-Za-z][0-9A-Za-z.-]{0,31})?$';
+// Digits only, no pre-release (RA36 M2, lead L19834 (4)): the box's generic-entry rule is MAJOR.MINOR.PATCH, so a
+// pre-release version the cp let through was refused on the box; the cp now fails it where the author sees it.
+const SEMVER = '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$';
 // The same UUID forms as the cp's CREDIT_UUID and the app's z.uuid(): RFC version/variant, nil and max.
 const UUID = '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$';
 const HTTPS_URL = '^https://[^\\s]{1,2040}$';
@@ -76,6 +78,8 @@ const DEFAULTS = Object.freeze({ maxRequestBytes: 4096, maxResponseBytes: 262144
 // the app, the needs-card op and the draft, bound by the approval key itself) are neither shown nor bound.
 const CARD_FIELDS = Object.freeze(['item', 'total', 'when', 'shared']);
 const CARD_PATH = '^[A-Za-z_][A-Za-z0-9_]{0,63}(\\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,7}$';
+// One segment of a card path (CARD_PATH's segment rule): a card prepare op's input property name must be one.
+const CARD_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const CARD_PLATFORM_KEYS = Object.freeze(['appId', 'draftId', 'operation']);
 
 const text = (max, extra = {}) => ({ type: 'string', minLength: 1, maxLength: max, ...extra });
@@ -603,10 +607,43 @@ function semantics(m, compileInput) {
  *                          the four rows are four different values;
  *   'card_path_reserved'   a shown or bound preview path in a platform key (appId, draftId, operation: bound by the
  *                          approval key, never by the app);
- *   'card_bind_reused'     a preview path bound twice.
+ *   'card_bind_reused'     a preview path bound twice;
+ * and RA42 S3 (option 1, the validator): the card guarantees preview <-> card, so every argument the app acts on must
+ * be bound into the preview. The prepare op declares its arguments, and each one is the root of a bound request path:
+ *   'card_prepare_input_missing'        the prepare op declares no `input` object schema with at least one property;
+ *   'card_prepare_input_open'           that `input` does not say `additionalProperties: false`;
+ *   'card_prepare_input_unbound:<name> (bind the whole property)'
+ *                                       a top-level input property that is no `bind` request path EXACTLY (security
+ *                                       review fold 2: binding only a sub-path, `<name>.<...>`, leaves the property's
+ *                                       other keys, a sibling amount, unbound; the whole property must be bound);
+ *   'card_prepare_input_name:<name>'    (security review fold 3) a top-level input property name that is no single
+ *                                       path segment (CARD_SEGMENT: no `.`, no `[`), so it cannot be compared with a
+ *                                       bind request path unambiguously;
+ *   'card_prepare_input_keyword:<kw>'   (security review fold) a top-level keyword of that `input` outside the closed
+ *                                       allowlist CARD_INPUT_KEYWORDS (type, properties, required, additionalProperties,
+ *                                       description; no `title`): patternProperties, propertyNames,
+ *                                       unevaluatedProperties, dependentSchemas, allOf/anyOf/oneOf/not/if/then/else,
+ *                                       $ref, ... could admit top-level keys the bind check never sees.
+ * (Not expressible in the JSON Schema, which cannot relate one op's input to another op's card: a static check here.)
  */
+const CARD_INPUT_KEYWORDS = Object.freeze(['type', 'properties', 'required', 'additionalProperties', 'description']);
 function cardRefusals(card, prepare, at, fail) {
   if (prepare && prepare.class === 'prepare' && !prepare.returns) fail(at, 'card_prepare_returns');
+  if (prepare && prepare.class === 'prepare') {
+    const input = prepare.input;
+    const properties = input && typeof input === 'object' && !Array.isArray(input) && input.type === 'object' &&
+      input.properties && typeof input.properties === 'object' && !Array.isArray(input.properties) ? Object.keys(input.properties) : [];
+    if (!properties.length) fail(at, 'card_prepare_input_missing');
+    else {
+      for (const keyword of Object.keys(input)) if (!CARD_INPUT_KEYWORDS.includes(keyword)) fail(at, `card_prepare_input_keyword:${keyword}`);
+      if (input.additionalProperties !== false) fail(at, 'card_prepare_input_open');
+      const whole = new Set(card.bind.map(([request]) => request));
+      for (const name of properties) {
+        if (!CARD_SEGMENT.test(name)) fail(at, `card_prepare_input_name:${name}`);
+        else if (!whole.has(name)) fail(`${at}/bind`, `card_prepare_input_unbound:${name} (bind the whole property)`);
+      }
+    }
+  }
   const inside = (a, b) => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
   const reserved = path => CARD_PLATFORM_KEYS.includes(path.split('.')[0]);
   CARD_FIELDS.forEach((field, i) => {
