@@ -247,8 +247,8 @@ export function storedSchedule(job: StoredCronJob): string {
   return (job.schedule?.expr ?? job.schedule_display ?? "").trim();
 }
 
-export function readCronJobs(): StoredCronJob[] {
-  const jobsPath = join(hermesHome(), "cron", "jobs.json");
+export function readCronJobs(home: string = hermesHome()): StoredCronJob[] {
+  const jobsPath = join(home, "cron", "jobs.json");
   if (!existsSync(jobsPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(jobsPath, "utf8")) as { jobs?: StoredCronJob[] };
@@ -937,7 +937,7 @@ export function writeInstalledJobIds(home: string, ids: string[]): void {
   try {
     const previous = readJobRegistry(home);
     const zzzJobId = previous.zzzJobId;
-    const matches = readCronJobs().filter((job) => job.name === "Edge — zzz pairs");
+    const matches = readCronJobs(home).filter((job) => job.name === "Edge — zzz pairs");
     const verified = zzzJobId && matches.length === 1
       && isExactZzzManagedJob(matches[0]) && matches[0].id === zzzJobId;
     const indexIds = ids.filter((id) => id !== zzzJobId);
