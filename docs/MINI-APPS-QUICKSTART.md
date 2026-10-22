@@ -1,6 +1,6 @@
 # Add your mini-app: quickstart
 
-For a partner developer adding a **generic** mini-app. A generic app is a change to the control plane (cp) only: one cp pull request, no change to this repo. The worked example is [docs/examples/mini-apps/hello-village](examples/mini-apps/hello-village/) (invented; copy it). Field-by-field rules: [MINI-APPS-DEVELOPER.md](MINI-APPS-DEVELOPER.md) section 2.
+For a partner developer adding a **generic** mini-app. A generic app is a change to the control plane (cp) only: one cp pull request, no change to this repo. The worked example is [docs/examples/mini-apps/hello-village](examples/mini-apps/hello-village/) (invented; copy it). Field-by-field rules: [MINI-APPS-DEVELOPER.md](MINI-APPS-DEVELOPER.md) section 2. The rules: [mini-apps/README.md](../mini-apps/README.md).
 
 ## 1. What a generic app may do
 
@@ -155,7 +155,7 @@ The cp records `offer_missing`, `operations_not_generic` and `budget` itself, be
 1. **Review.** Edge City reviews the cp pull request: the manifest, the permissions, every line of the skill.
 2. **Press and deploy.** After review it is merged and the cp is deployed. The cp serves manifests and offers skills only with `MINI_APPS_MANIFESTS=1` and `MINI_APPS_SKILL_DELIVERY=1`.
 3. **First box.** Edge City adds your app id to `MINI_APPS_TENANT_ALLOWLIST` with your tenant (staff only; never put a tenant id in a pull request). Only that box is offered the app.
-4. **Fleet precondition (hard rule).** An older installer refuses the whole projection, not just your app, so a generic app may enter the cp catalog only after the WHOLE fleet runs an overlay release with the generic installer. Until that roll is done your pull request stays open, reviewed but unmerged. It is opened to the cohort (a later `visibility` change) after the first box has run it.
+4. **Fleet precondition (hard rule).** An older installer refuses the whole projection, not just your app, so a generic app may enter the cp catalog only after the WHOLE fleet runs an overlay release with the generic installer. Until that roll is done your pull request stays open, reviewed but unmerged. It is opened to the cohort (a later `visibility` change) after the first box has run it. A generic app is an optional app (install tier 3): each resident installs it ([developer guide section 9](MINI-APPS-DEVELOPER.md#9-install-tiers)).
 5. **CI precondition.** cp CI treats an app outside `skills/overlay.json` as cp-sourced, held to its own pin, from the generic-delivery change onward. Before that change is on the cp's `main`, a generic-app pull request is red; that is expected.
 
 ## 6. What not to do
