@@ -11,6 +11,9 @@ from unittest.mock import patch
 
 
 RUNNER = Path(__file__).parents[3] / "skills/zzzbot/scripts/zzz_managed_runner.py"
+# Resolve the platform temp root so the runner's symlink-safe file reads are
+# exercised under a real path on macOS and Linux alike.
+SAFE_TEMP_PARENT = Path(tempfile.gettempdir()).resolve(strict=True)
 spec = importlib.util.spec_from_file_location("zzz_managed_runner_test", RUNNER)
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
@@ -52,7 +55,7 @@ class ManagedRunnerTest(unittest.TestCase):
         (home / "config.yaml").write_text(f"model:\n  provider: {provider}\n  default: configured-model\n")
 
     def test_actual_completion_request_excludes_every_private_context_source(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SAFE_TEMP_PARENT) as tmp:
             home = Path(tmp)
             markers = ["MEMORY_PRIVATE", "USER_PRIVATE", "SOUL_PRIVATE", "AGENTS_PRIVATE",
                        "PROFILE_PRIVATE", "PREFILL_PRIVATE", "PLATFORM_PRIVATE", "PLUGIN_PRIVATE"]
@@ -100,7 +103,7 @@ class ManagedRunnerTest(unittest.TestCase):
             self.assertTrue(all(marker not in json.dumps(request) for marker in markers))
 
     def test_tool_call_and_unbounded_completion_cannot_become_native_reply(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SAFE_TEMP_PARENT) as tmp:
             home = Path(tmp)
             self.config(home)
             for client in (_Client("reply", tool_calls=[{"name": "village"}]), _Client("x" * 8001), _Client("")):
@@ -109,7 +112,7 @@ class ManagedRunnerTest(unittest.TestCase):
                 self.assertEqual(len(client.calls), 1)
 
     def test_external_agent_provider_is_rejected_before_client_construction(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SAFE_TEMP_PARENT) as tmp:
             home = Path(tmp)
             self.config(home, "copilot-acp")
             client = _Client()
@@ -118,7 +121,7 @@ class ManagedRunnerTest(unittest.TestCase):
             self.assertIsNone(client.options)
 
     def test_provider_key_is_bound_to_this_home(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SAFE_TEMP_PARENT) as tmp:
             home = Path(tmp)
             self.config(home)
             (home / ".env").write_text("OPENROUTER_API_KEY=profile-key\n")
@@ -128,7 +131,7 @@ class ManagedRunnerTest(unittest.TestCase):
                 ("https://openrouter.ai/api/v1", "profile-key", "configured-model"))
 
     def test_control_plane_model_without_provider_uses_only_bound_openrouter_route(self):
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as tmp:
+        with tempfile.TemporaryDirectory(dir=SAFE_TEMP_PARENT) as tmp:
             home = Path(tmp)
             (home / ".env").write_text("OPENROUTER_API_KEY=profile-key\n")
             for provider_line in ("", "  provider: auto\n"):
@@ -146,12 +149,11 @@ class ManagedRunnerTest(unittest.TestCase):
         bridge = importlib.util.module_from_spec(bridge_spec)
         with patch.dict(sys.modules, {"village_bridge": bridge}):
             bridge_spec.loader.exec_module(bridge)
-        managed = sys.modules["village_bridge._zzz_managed"]
         calls = []
         fake_bridge = types.SimpleNamespace(installed=lambda *_args: True, transport=lambda *_args, **_kw: {})
 
         class Managed:
-            INTRO_TITLE, INTRO_BODY = managed.INTRO_TITLE, managed.INTRO_BODY
+            INTRO_TITLE, INTRO_BODY = bridge.INTRO_TITLE, bridge.INTRO_BODY
 
             @staticmethod
             def participation_on(_home): return True
@@ -167,14 +169,14 @@ class ManagedRunnerTest(unittest.TestCase):
               patch.object(runner, "_job", return_value="abcdef123456"),
               patch.object(runner, "_config", return_value={}),
               patch.object(runner, "_native", side_effect=lambda *args: calls.append(args[-1]) or {})):
-            runner.run(Path("/private/tmp"))
+            runner.run(SAFE_TEMP_PARENT)
         self.assertEqual(len(calls), 1)
         args = {"operation": calls[0]["operation"], "arguments": {
             key: value for key, value in calls[0].items() if key != "operation"}}
         payload = bridge.zzz_payload("zzz.create_thread", args, {"SESSION_KEY": "s", "MESSAGE_ID": "m"})
         self.assertEqual(payload["room"], "room_a")
-        self.assertEqual(payload["title"], managed.INTRO_TITLE)
-        self.assertEqual(payload["body"], managed.INTRO_BODY)
+        self.assertEqual(payload["title"], bridge.INTRO_TITLE)
+        self.assertEqual(payload["body"], bridge.INTRO_BODY)
 
     def test_native_call_uses_reviewed_bridge_argument_envelope(self):
         calls = []
