@@ -132,11 +132,15 @@ class ForKicksOnGrantTest(unittest.TestCase):
             result['preview'] = preview
         return result, order
 
-    def ask(self, expires='2099-01-01T00:00:00+05:30', shape='legacy'):
-        """Prepare in one turn, confirm in the next: the card is sent and not tapped yet."""
+    def ask(self, expires='2099-01-01T00:00:00+05:30', shape='legacy', confirm=True):
+        """Prepare in one turn, confirm in the next: the card is sent and not tapped yet. Without `confirm`, only the
+        prepare (which raises and tracks the card): the pass reaches the draft before any confirm of the agent."""
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
         self.prepared, order = self.preview(expires=expires, shape=shape)
         self.assertIn('data', self.call({'operation': 'forkicks.order.prepare', **order}))
+        if not confirm:
+            self.daemon.wait.reset_mock()
+            return None
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
         self.transport.reset_mock()
         response = self.call({'operation': 'forkicks.order.confirm', 'draftId': DRAFT})
@@ -273,7 +277,7 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.transport.assert_not_called()
 
     def test_flat_card_record_with_an_expired_quote_is_told_expired_never_started(self):
-        self.ask(expires='2020-01-01T00:00:00+05:30', shape='flat')
+        self.ask(expires='2020-01-01T00:00:00+05:30', shape='flat', confirm=False)
         self.daemon.state = 'granted'
         self.run_pass()
         self.daemon.wait.assert_not_called()
@@ -409,7 +413,7 @@ class ForKicksOnGrantTest(unittest.TestCase):
     # ---- only this box's drafts; never past the quote ---------------------------------------------
 
     def test_expired_quote_is_the_failure_line_never_a_start_or_requote(self):
-        self.ask(expires='2020-01-01T00:00:00+05:30')
+        self.ask(expires='2020-01-01T00:00:00+05:30', confirm=False)
         self.daemon.state = 'granted'
         self.run_pass()
         self.daemon.wait.assert_not_called()

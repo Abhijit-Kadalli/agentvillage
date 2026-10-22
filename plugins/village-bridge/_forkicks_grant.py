@@ -54,7 +54,7 @@ import time
 import uuid
 from datetime import date as _date, datetime, timedelta, timezone
 
-from ._forkicks import cache_path, canonical, checked_payload, load_preview, order_preview
+from ._forkicks import cache_path, canonical, checked_payload, load_preview, order_preview, quote_expires as _expires
 from ._mini_apps import ORDER_PLACED_ON_APPROVAL, approval_modules
 
 LOG = logging.getLogger("village_bridge")
@@ -288,23 +288,30 @@ def tombstone(home, draft_id, code) -> None:
     _create(path, {"code": code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,40}", code) else "refused"})
 
 
-def tombstoned(home, draft_id) -> bool:
-    """True when the draft has a tombstone; an unreadable or corrupt one counts (fail closed)."""
+def tombstone_code(home, draft_id):
+    """The draft's tombstone code, None when it has none; an unreadable or corrupt one is "corrupt" (fail closed)."""
     try:
         doc = _read(_path(home, draft_id, ".refused"))
     except FileNotFoundError:
-        return False
+        return None
     except Exception:  # noqa: BLE001 - fail closed
-        return True
-    return True
+        return "corrupt"
+    code = doc.get("code")
+    return code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,40}", code) else "corrupt"
+
+
+def tombstoned(home, draft_id) -> bool:
+    """True when the draft has a tombstone; an unreadable or corrupt one counts (fail closed)."""
+    return tombstone_code(home, draft_id) is not None
 
 
 def guarded_start(home, draft_id, start):
     """(reason, None) when this draft may not start, else (None, start()). Check and start under drafts_lock.
     A refusal leaves a tombstone, so no later adoption of a grant can place this draft."""
     with drafts_lock(home):
-        if tombstoned(home, draft_id):
-            return "refused", None
+        code = tombstone_code(home, draft_id)
+        if code is not None:
+            return ("expired" if code == EXPIRED else "refused"), None  # expired: the closed-card words
         reason = newest_reason(home, draft_id)
         if reason is not None:
             if reason == "superseded":  # an older draft never places (an unreadable record may be repaired)
@@ -315,9 +322,12 @@ def guarded_start(home, draft_id, start):
 
 def guard_adopt(home, draft_id):
     """For adopting an already-started grant: refused only by a tombstone (read fail-closed under the lock).
-    A started draft without one is an order in flight and keeps its confirm."""
+    A started draft without one is an order in flight and keeps its confirm. So is one tombstoned `expired`: that
+    tombstone is written only where nothing was started, so a spent grant means a start before it (an order that
+    may exist); the app answers its idempotency key with that order and refuses a new create past the quote."""
     with drafts_lock(home):
-        return "refused" if tombstoned(home, draft_id) else None
+        code = tombstone_code(home, draft_id)
+        return None if code in (None, EXPIRED) else "refused"
 
 
 def latest(home):
@@ -333,7 +343,8 @@ def latest(home):
 
 
 def waiting_tasks(home, keep, now=None):
-    """Other drafts' cards that may still be waiting: their `.await` task, else a recent `.card` with no `.placed`."""
+    """Other drafts' cards that may still be waiting, as (draftId, task): their `.await` task, else a recent `.card`
+    with no `.placed`."""
     now = float(now if now is not None else time.time())
     folder = home / "forkicks-drafts"
     if folder.is_symlink() or not folder.is_dir():
@@ -357,7 +368,7 @@ def waiting_tasks(home, keep, now=None):
                     continue
                 if isinstance(task, str) and TASK.fullmatch(task):
                     found[draft] = task
-    return list(found.values())
+    return list(found.items())
 
 
 def supersede(home, keep) -> int:
@@ -368,9 +379,9 @@ def supersede(home, keep) -> int:
         return 0
     ap = approval_modules()
     done = 0
-    for task in tasks:
+    for draft, task in tasks:
         try:
-            ap.withdraw(task, "superseded")
+            ap.withdraw(task, "superseded", KEY_PREFIX + draft)  # core withdraws by action key
             done += 1
         except Exception:  # noqa: BLE001 - the pass still refuses the older draft
             pass
@@ -501,14 +512,6 @@ def _deliver(home, draft_id, task, owner, text) -> str:
 # ---- the pass ----------------------------------------------------------------------------------------
 
 
-def _expires(record):
-    try:
-        moment = datetime.fromisoformat(order_preview(record)["quote"]["expiresAt"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return moment.timestamp() if moment.tzinfo else None
-
-
 def _awaiting(home, limit=MAX_PER_PASS):
     folder = home / "forkicks-drafts"
     if folder.is_symlink() or not folder.is_dir():
@@ -568,12 +571,38 @@ def _refuse_older(home, draft_id, task, owner, marker_path, reason):
         return "tombstone_unwritable"
     if reason != "latest_unreadable":
         try:
-            approval_modules().withdraw(task, "superseded")
+            approval_modules().withdraw(task, "superseded", KEY_PREFIX + draft_id)
         except Exception:  # noqa: BLE001 - this draft is never started from here on anyway
             pass
         return _finish(home, draft_id, task, owner, marker_path, "denied", reason, SUPERSEDED_LINE)
     LOG.warning("village_bridge forkicks newest_check code=%s", reason)
     return _finish(home, draft_id, task, owner, marker_path, "denied", reason, LATEST_UNREADABLE_LINE)
+
+
+# Quote expiry (lead L20310, approval L20313): core knows only the policy's approval TTL (hours), so a card whose quote
+# (~5 min) was gone stayed live: a daemon restart re-sent it, a tap placed nothing. Each not-placed outcome for time
+# where nothing was started (awaiting: quote expired, TTL, a wait answering expired/void) withdraws the card and
+# tombstones the draft `expired`, so a later confirm gets ORDER_CARD_CLOSED. Core's withdraw reasons are closed
+# (0.4.7: timeout | cancelled | superseded); `timeout` is its "a decision on this request can no longer be consumed".
+# Core refuses a withdraw of a granted, spent or lapsed request (already-decided / expired): never an order in flight.
+EXPIRED = "expired"
+WITHDRAW_EXPIRED = "timeout"
+
+
+def close_expired(home, draft_id, task) -> None:
+    """Best effort, codes-only: tombstone the draft `expired` (under drafts_lock), then withdraw its card (task)."""
+    try:
+        with drafts_lock(home):
+            tombstone(home, draft_id, EXPIRED)
+    except Exception:  # noqa: BLE001 - no start or first confirm happens past the quote anyway
+        LOG.warning("village_bridge forkicks tombstone code=unwritable")
+    if task is None:
+        return
+    try:
+        done = approval_modules().withdraw(task, WITHDRAW_EXPIRED, KEY_PREFIX + draft_id)
+        LOG.info("village_bridge forkicks expired_withdraw code=%s", "withdrawn" if done.ok else "refused")
+    except Exception:  # noqa: BLE001 - the tombstone still closes the draft on this box
+        LOG.info("village_bridge forkicks expired_withdraw code=unsent")
 
 
 def advance(home, config, transport, installed, draft_id, now=None) -> str:
@@ -617,12 +646,15 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     if now - since > TTL_S:
         if phase == "attempted":  # the order may exist: no line; the agent's confirm of this draft recovers it
             return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_ttl", None)
+        if phase == "awaiting":  # never started: the card is withdrawn (a started grant is already spent)
+            close_expired(home, draft_id, task)
         return _not_placed(home, draft_id, task, owner, marker_path, "expired", "ttl", "expired")
     expires = _expires(record)
     quote_live = expires is not None and now < expires
     started_now = False
     if phase == "awaiting":
         if not quote_live:
+            close_expired(home, draft_id, task)
             return _not_placed(home, draft_id, task, owner, marker_path, "expired", "quote_expired", "expired")
         ap = approval_modules()  # approval_unavailable: the marker waits for the next pass
         waited = ap.wait(task)
@@ -632,6 +664,9 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         if waited.exit_code == 0 and status == "granted" and human:
             # Security review (2)+(3): the newest-draft check again, under the lock, as the last step before the start.
             reason, started = guarded_start(home, draft_id, lambda: ap.start(task, key, held))
+            if reason == EXPIRED:  # the agent's confirm closed it past the quote and told the owner: no second word
+                _drop(marker_path)
+                return "refused_earlier"
             if reason is not None:
                 return _refuse_older(home, draft_id, task, owner, marker_path, reason)
             started_now = True
@@ -646,6 +681,7 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         elif status == "withdrawn":
             return _not_placed(home, draft_id, task, owner, marker_path, "denied", "withdrawn", "withdrawn")
         elif waited.exit_code in (3, 7) or status in ("expired", "void"):
+            close_expired(home, draft_id, task)
             return _not_placed(home, draft_id, task, owner, marker_path, "expired", status or "expired", "expired")
         elif waited.exit_code == 1:
             return _not_placed(home, draft_id, task, owner, marker_path, "failed", "not_registered", "failed")
