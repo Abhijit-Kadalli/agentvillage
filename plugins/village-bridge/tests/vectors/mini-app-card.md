@@ -8,8 +8,10 @@ output for every vector.
 
 Implementations: the box `plugins/village-bridge/_mini_app_card.py` `card_fields` (For Kicks' `card_value_fits`
 imported from `_forkicks.py`), the control plane `mini-apps-approval.js` `cardFields` / `cardSummary` (cp#352), the
-app `drafts.ts` `cardFields`. The vectors were run through the box's Python AND the cp's own JS at cp#352 head 3dee0312:
-same outputs for all of them. The cp lane's 23 cases (`mini-app-card.cp-cases.json`) are included as the `cp: ` vectors.
+app `drafts.ts` `cardFields`. The cp lane's 23 cases (`mini-app-card.cp-cases.json`) are included as the `cp: ` vectors.
+This file is the one source (CARD-COMMON amendment 14:00Z): the cp and app twins reconcile to it. At cp#352 head
+eeb0e6c3 the cp's own `cardFields` agrees with every vector except the six per-value ones restored by the amendment
+(spaces only x2, U+21B5 x2, U+FFE9, U+2424), which it still accepts.
 For Kicks' own card (`forkicks-approval-card.{md,json}`) is unchanged this train; its preview is re-expressed here through
 a declaration (two vectors), so one engine renders both (a multi-line For Kicks order does not fit the generic card).
 
@@ -60,22 +62,27 @@ walk skips them. Their values are the caller's check (the box and the cp: equal 
 5. **Bind**, only with a `request` (the app and the box; vectors marked `requestOnly`): each pair's two sides resolve and
    are equal as canonical JSON (`2` differs from `"2"`, `true` from `1`). Otherwise `approval_card_invalid`. Without a
    request (the cp) nothing is checked here: the app enforced it at prepare.
-6. **Minimal-card fit** (For Kicks' `card_value_fits`, approval-md 0.4.7 `telegram-minimal`), with NO line break: each
-   value is 1 to 278 code points of U+0020 spaces, letters, numbers, punctuation and symbols other than `«` U+00AB, `⏎`
-   U+23CE, U+115F, U+1160, U+3164, U+FFA0, U+2800, and combining marks other than the default-ignorable ones, at most 2 in
-   a row. So U+000A, any control or format character, a no-break space: `approval_card_not_minimal`. A string that does
-   not fit is never cut, and a generic app has NO technical-card fallback (no legacy shape): nothing runs.
+6. **Every For Kicks per-value rule, on EACH of the four strings** (CARD-COMMON amendment 14:00Z; For Kicks'
+   `card_value_fits` and `card_name_fakes_line`, approval-md 0.4.7 `telegram-minimal`):
+   - 1 to 278 code points of U+0020 spaces, letters, numbers, punctuation and symbols other than `«` U+00AB, `⏎` U+23CE,
+     U+115F, U+1160, U+3164, U+FFA0, U+2800, and combining marks other than the default-ignorable ones, at most 2 in a
+     row, with NO line break (so U+000A, any control or format character, a no-break space are refused);
+   - not blank (not only U+0020 spaces);
+   - no character that draws like core's line mark after NFKC: U+23CE and the blocks U+2190-U+21FF, U+2400-U+243F,
+     U+2794-U+27BF, U+27F0-U+27FF, U+2900-U+297F, U+2B00-U+2BFF, U+1F800-U+1F8FF (e.g. `↵` U+21B5, halfwidth `￩` U+FFE9).
+   Otherwise `approval_card_not_minimal`. A string that does not fit is never cut, and a generic app has NO
+   technical-card fallback (no legacy shape): nothing runs.
 7. **Summary budget** (separate: `card_summary` / `cardSummary`): `approval_card_too_long`.
 
-Not in this rule set (For Kicks' row-specific folds, deliberately not generic; the cp agrees): a blank value of spaces
-only fits; an arrow that looks like core's ` ⏎ ` mark fits (no row carries a line, so it cannot fake one).
+Not in this rule set: For Kicks' Pickup-row folds (a `·` lookalike in a place, a `delivery to` prefix), which belong to
+its own row format.
 
 ## What the codes mean downstream
 
 - The app (prepare): a refusal means no draft is stored and the resident sees no card; the agent gets the code.
-- The box: refuses before any propose; it never proposes strings that fail the fit rule, the summary budget, the
-  preview's platform keys or the hash (it re-derives the strings whenever it holds the declaration; the projection
-  carries none today, so the cp is the one that re-derives them).
+- The box: re-derives the four strings from the preview with the declaration its projection entry carries
+  (`approval: {prepare, card, fields, bind}`) and refuses any difference (`approval_card_invalid`), as For Kicks does;
+  no declaration = `approval_card_undeclared`, never proposed. It refuses before any propose.
 - The control plane (`request()`): any refusal is a refused approval request.
 
 ## Card class and key (CARD-COMMON item 3)

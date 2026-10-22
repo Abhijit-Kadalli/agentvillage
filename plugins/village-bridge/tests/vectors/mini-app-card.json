@@ -2205,6 +2205,282 @@
    "error": "approval_card_not_minimal"
   },
   {
+   "name": "a shared of spaces only: not minimal",
+   "declaration": {
+    "item": "rental.summary",
+    "total": "price.text",
+    "when": "slot.text",
+    "shared": "sharedWith",
+    "bind": [
+     [
+      "kayakId",
+      "request.kayakId"
+     ],
+     [
+      "hours",
+      "request.hours"
+     ],
+     [
+      "slotId",
+      "request.slotId"
+     ]
+    ]
+   },
+   "preview": {
+    "rental": {
+     "summary": "1 \u00d7 Sit-on-top kayak, 2 hours"
+    },
+    "price": {
+     "text": "\u20b91200, pay at the jetty"
+    },
+    "slot": {
+     "text": "Sat 24 Oct 2026, 07:00 \u00b7 North jetty"
+    },
+    "sharedWith": "   ",
+    "request": {
+     "kayakId": "k-2",
+     "hours": 2,
+     "slotId": "s-0700"
+    }
+   },
+   "request": {
+    "kayakId": "k-2",
+    "hours": 2,
+    "slotId": "s-0700"
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a total of spaces only: not minimal",
+   "declaration": {
+    "item": "rental.summary",
+    "total": "price.text",
+    "when": "slot.text",
+    "shared": "sharedWith",
+    "bind": [
+     [
+      "kayakId",
+      "request.kayakId"
+     ],
+     [
+      "hours",
+      "request.hours"
+     ],
+     [
+      "slotId",
+      "request.slotId"
+     ]
+    ]
+   },
+   "preview": {
+    "rental": {
+     "summary": "1 \u00d7 Sit-on-top kayak, 2 hours"
+    },
+    "price": {
+     "text": " "
+    },
+    "slot": {
+     "text": "Sat 24 Oct 2026, 07:00 \u00b7 North jetty"
+    },
+    "sharedWith": "Your display name: Sunbird",
+    "request": {
+     "kayakId": "k-2",
+     "hours": 2,
+     "slotId": "s-0700"
+    }
+   },
+   "request": {
+    "kayakId": "k-2",
+    "hours": 2,
+    "slotId": "s-0700"
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a return arrow U+21B5 in item (fakes core's line mark): not minimal",
+   "declaration": {
+    "item": "rental.summary",
+    "total": "price.text",
+    "when": "slot.text",
+    "shared": "sharedWith",
+    "bind": [
+     [
+      "kayakId",
+      "request.kayakId"
+     ],
+     [
+      "hours",
+      "request.hours"
+     ],
+     [
+      "slotId",
+      "request.slotId"
+     ]
+    ]
+   },
+   "preview": {
+    "rental": {
+     "summary": "1 \u00d7 Kayak \u21b5 2 \u00d7 Paddle"
+    },
+    "price": {
+     "text": "\u20b91200, pay at the jetty"
+    },
+    "slot": {
+     "text": "Sat 24 Oct 2026, 07:00 \u00b7 North jetty"
+    },
+    "sharedWith": "Your display name: Sunbird",
+    "request": {
+     "kayakId": "k-2",
+     "hours": 2,
+     "slotId": "s-0700"
+    }
+   },
+   "request": {
+    "kayakId": "k-2",
+    "hours": 2,
+    "slotId": "s-0700"
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a halfwidth arrow U+FFE9 (NFKC arrow) in item: not minimal",
+   "declaration": {
+    "item": "rental.summary",
+    "total": "price.text",
+    "when": "slot.text",
+    "shared": "sharedWith",
+    "bind": [
+     [
+      "kayakId",
+      "request.kayakId"
+     ],
+     [
+      "hours",
+      "request.hours"
+     ],
+     [
+      "slotId",
+      "request.slotId"
+     ]
+    ]
+   },
+   "preview": {
+    "rental": {
+     "summary": "1 \u00d7 Kayak \uffe9 2 \u00d7 Paddle"
+    },
+    "price": {
+     "text": "\u20b91200, pay at the jetty"
+    },
+    "slot": {
+     "text": "Sat 24 Oct 2026, 07:00 \u00b7 North jetty"
+    },
+    "sharedWith": "Your display name: Sunbird",
+    "request": {
+     "kayakId": "k-2",
+     "hours": 2,
+     "slotId": "s-0700"
+    }
+   },
+   "request": {
+    "kayakId": "k-2",
+    "hours": 2,
+    "slotId": "s-0700"
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a return arrow U+21B5 in shared (every string): not minimal",
+   "declaration": {
+    "item": "rental.summary",
+    "total": "price.text",
+    "when": "slot.text",
+    "shared": "sharedWith",
+    "bind": [
+     [
+      "kayakId",
+      "request.kayakId"
+     ],
+     [
+      "hours",
+      "request.hours"
+     ],
+     [
+      "slotId",
+      "request.slotId"
+     ]
+    ]
+   },
+   "preview": {
+    "rental": {
+     "summary": "1 \u00d7 Sit-on-top kayak, 2 hours"
+    },
+    "price": {
+     "text": "\u20b91200, pay at the jetty"
+    },
+    "slot": {
+     "text": "Sat 24 Oct 2026, 07:00 \u00b7 North jetty"
+    },
+    "sharedWith": "Your display name: Sunbird \u21b5",
+    "request": {
+     "kayakId": "k-2",
+     "hours": 2,
+     "slotId": "s-0700"
+    }
+   },
+   "request": {
+    "kayakId": "k-2",
+    "hours": 2,
+    "slotId": "s-0700"
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
+   "name": "a control picture U+2424 in when: not minimal",
+   "declaration": {
+    "item": "rental.summary",
+    "total": "price.text",
+    "when": "slot.text",
+    "shared": "sharedWith",
+    "bind": [
+     [
+      "kayakId",
+      "request.kayakId"
+     ],
+     [
+      "hours",
+      "request.hours"
+     ],
+     [
+      "slotId",
+      "request.slotId"
+     ]
+    ]
+   },
+   "preview": {
+    "rental": {
+     "summary": "1 \u00d7 Sit-on-top kayak, 2 hours"
+    },
+    "price": {
+     "text": "\u20b91200, pay at the jetty"
+    },
+    "slot": {
+     "text": "Sat 24 Oct \u2424 07:00"
+    },
+    "sharedWith": "Your display name: Sunbird",
+    "request": {
+     "kayakId": "k-2",
+     "hours": 2,
+     "slotId": "s-0700"
+    }
+   },
+   "request": {
+    "kayakId": "k-2",
+    "hours": 2,
+    "slotId": "s-0700"
+   },
+   "error": "approval_card_not_minimal"
+  },
+  {
    "name": "an empty line inside item: not minimal",
    "declaration": {
     "item": "rental.summary",
