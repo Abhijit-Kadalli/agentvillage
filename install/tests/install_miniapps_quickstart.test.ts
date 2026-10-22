@@ -175,3 +175,16 @@ test("(d) the receipt has the contract's shape whether the example is staged or 
   expect(receipt.projectionSha256).toBe(sha(JSON.stringify(projection)));
   expect(CODES.length).toBe(6);
 });
+
+test("the quickstart doc inlines the example byte for byte and names the box's lists and every refusal code", () => {
+  const doc = readFileSync(join(REPO, "docs", "MINI-APPS-QUICKSTART.md"), "utf8");
+  expect(doc.includes("````markdown\n" + SKILL.toString("utf8") + "````\n")).toBe(true);
+  expect(doc.includes("```json\n" + MANIFEST_TEXT + "```\n")).toBe(true);
+  for (const ops of GENERIC) expect(doc).toContain("`" + JSON.stringify(ops) + "`");
+  for (const code of CODES) expect(doc).toContain("| `" + code + "` |");
+  for (const id of REVIEWED_MINI_APPS.map(a => a.id as string)) expect(doc).toContain("`" + id + "`");
+  for (const id of validator.RESERVED_IDS) expect(doc).toContain("`" + id + "`");
+  expect(doc.split("\n").length).toBeLessThan(170);
+  // The developer guide links it.
+  expect(readFileSync(join(REPO, "docs", "MINI-APPS-DEVELOPER.md"), "utf8")).toContain("](MINI-APPS-QUICKSTART.md)");
+});
