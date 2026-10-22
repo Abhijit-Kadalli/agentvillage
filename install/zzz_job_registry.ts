@@ -8,6 +8,8 @@ export const ZZZ_JOB_SCRIPT = "zzz_managed_runner.py";
 const TOOLSETS = ["village", "no_mcp"];
 
 type Registry = { ids: string[]; zzzJobId?: string };
+const emptyJobField = (value: unknown): boolean => value == null || value === ""
+  || (Array.isArray(value) && value.length === 0);
 
 /** Only the job shape confirmed by the ZZZ installer can acquire a name. */
 export function isExactZzzManagedJob(value: unknown): value is { id: string } {
@@ -16,7 +18,15 @@ export function isExactZzzManagedJob(value: unknown): value is { id: string } {
   return typeof job.id === "string" && HERMES_JOB_ID_RE.test(job.id)
     && job.name === ZZZ_JOB_NAME && job.script === ZZZ_JOB_SCRIPT
     && job.enabled === true && job.no_agent === true && !job.workdir
-    && JSON.stringify(job.enabled_toolsets) === JSON.stringify(TOOLSETS);
+    && JSON.stringify(job.enabled_toolsets) === JSON.stringify(TOOLSETS)
+    && job.deliver === "local" && job.failure_deliver === "local"
+    && typeof job.schedule === "object" && job.schedule !== null
+    && (job.schedule as { kind?: unknown; expr?: unknown }).kind === "cron"
+    && (job.schedule as { expr?: unknown }).expr === "*/10 * * * *"
+    && typeof job.repeat === "object" && job.repeat !== null
+    && (job.repeat as { times?: unknown }).times === null
+    && emptyJobField(job.skills) && emptyJobField(job.skill) && emptyJobField(job.context_from)
+    && !job.monitor_script && !job.monitor_url;
 }
 
 export function readJobRegistry(home: string): Registry {

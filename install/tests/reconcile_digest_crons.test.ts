@@ -122,6 +122,13 @@ function currentJob(spec: typeof DIGEST_CRON_SPECS[number], id: string): Record<
   return { ...job, ...rc29PauseState(spec) };
 }
 
+function currentZzzJob(id: string): Record<string, unknown> & { id: string } {
+  return { id, name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT, enabled: true, no_agent: true,
+    enabled_toolsets: ["village", "no_mcp"], workdir: null, deliver: "local", failure_deliver: "local",
+    schedule: { kind: "cron", expr: "*/10 * * * *" }, repeat: { times: null, completed: 0 },
+    skills: [], skill: null, context_from: null, monitor_script: null, monitor_url: null };
+}
+
 /** rc29 installs the pending alert paused (pending_alert_off.test.ts); a fixture of an installed tenant holds it so. */
 function rc29PauseState(spec: typeof DIGEST_CRON_SPECS[number]): Record<string, unknown> {
   return spec === PENDING ? { enabled: false, state: "paused", paused_at: "2026-10-09T09:20:00Z" } : {};
@@ -398,8 +405,7 @@ test("retired Edge-prefixed crons are removed; foreign crons are untouched", () 
 });
 
 test("Index preserves only the exact installer-owned ZZZ job shape", () => {
-  const exact = { id: "aaaaaaaaaaaa", name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT,
-    enabled: true, no_agent: true, enabled_toolsets: ["village", "no_mcp"], workdir: null };
+  const exact = currentZzzJob("aaaaaaaaaaaa");
   writeJobs([
     exact,
     { ...exact, id: "bbbbbbbbbbbb", script: "other.sh" },
@@ -420,8 +426,7 @@ test("Index preserves only the exact installer-owned ZZZ job shape", () => {
 
 test("only a confirmed ZZZ job gains registry provenance and survives Index reconciliation", () => {
   const ours = DIGEST_CRON_SPECS.map((spec, n) => currentJob(spec, `00000000000${n}`));
-  const zzz = { id: "aaaaaaaaaaaa", name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT,
-    enabled: true, no_agent: true, enabled_toolsets: ["village", "no_mcp"], workdir: null };
+  const zzz = currentZzzJob("aaaaaaaaaaaa");
   writeJobs([...ours, zzz]);
   expect(() => syncZzzInstalledJobId(home, "bbbbbbbbbbbb")).toThrow("zzz_job_not_confirmed");
   expect(() => syncZzzInstalledJobId(home, zzz.id)).not.toThrow();
@@ -447,8 +452,7 @@ test("only a confirmed ZZZ job gains registry provenance and survives Index reco
 
 test("a ZZZ name or stale registry marker cannot label a lookalike", () => {
   const ours = DIGEST_CRON_SPECS.map((spec, n) => currentJob(spec, `00000000000${n}`));
-  const lookalike = { id: "aaaaaaaaaaaa", name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT,
-    enabled: true, no_agent: false, enabled_toolsets: ["village", "no_mcp"] };
+  const lookalike = { ...currentZzzJob("aaaaaaaaaaaa"), no_agent: false };
   writeJobs([...ours, lookalike]);
   expect(() => syncZzzInstalledJobId(home, lookalike.id)).toThrow("zzz_job_not_confirmed");
   mkdirSync(join(home, "av-events"), { recursive: true });
@@ -459,8 +463,7 @@ test("a ZZZ name or stale registry marker cannot label a lookalike", () => {
 
 test("Index does not adopt an exact-shaped ZZZ job without installer provenance", () => {
   const ours = DIGEST_CRON_SPECS.map((spec, n) => currentJob(spec, `00000000000${n}`));
-  const zzz = { id: "aaaaaaaaaaaa", name: ZZZ_JOB_NAME, script: ZZZ_JOB_SCRIPT,
-    enabled: true, no_agent: true, enabled_toolsets: ["village", "no_mcp"] };
+  const zzz = currentZzzJob("aaaaaaaaaaaa");
   writeJobs([...ours, zzz]);
   reconcileDigestCronJobs({ ...process.env });
   expect(cronCalls().filter((argv) => argv[1] === "remove")).toEqual([]);

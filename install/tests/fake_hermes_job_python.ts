@@ -29,11 +29,18 @@ if (request.action === "remove") {
   const old = jobs.find(job => job.id === request.id);
   if (request.id && (!old || old.name !== request.name)) process.exit(1);
   const safe = old && old.script === request.script && old.no_agent === true && !old.workdir
-    && JSON.stringify(old.enabled_toolsets) === JSON.stringify(request.toolsets);
+    && JSON.stringify(old.enabled_toolsets) === JSON.stringify(request.toolsets)
+    && old.deliver === "local" && old.failure_deliver === "local"
+    && old.schedule?.kind === "cron" && old.schedule?.expr === request.schedule
+    && old.repeat?.times === null && !old.skills?.length && !old.skill && !old.context_from?.length
+    && !old.monitor_script && !old.monitor_url;
   if (old && !safe) jobs.splice(jobs.indexOf(old), 1);
   const job = safe ? old : { id: randomBytes(6).toString("hex"), name: request.name };
   Object.assign(job, { prompt: request.prompt, script: request.script,
-    enabled_toolsets: request.toolsets, enabled: true, no_agent: true, workdir: null });
+    enabled_toolsets: request.toolsets, enabled: true, no_agent: true, workdir: null,
+    deliver: "local", failure_deliver: "local", schedule: { kind: "cron", expr: request.schedule, display: request.schedule },
+    repeat: { times: null, completed: 0 }, skills: [], skill: null, context_from: null,
+    monitor_script: null, monitor_url: null });
   if (!safe) jobs.push(job);
 }
 mkdirSync(join(home, "cron"), { recursive: true });

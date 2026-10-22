@@ -15,7 +15,10 @@ export const ZZZ_JOB_TOOLSETS = ["village", "no_mcp"] as const;
 const PROMPT = "skills/zzzbot/prompts/participate.md";
 const SCRIPT = "skills/zzzbot/scripts/zzz_managed_runner.py";
 
-type Job = { id?: unknown; name?: unknown; script?: unknown; enabled?: unknown; enabled_toolsets?: unknown; no_agent?: unknown; workdir?: unknown };
+type Job = { id?: unknown; name?: unknown; prompt?: unknown; script?: unknown; enabled?: unknown;
+  enabled_toolsets?: unknown; no_agent?: unknown; workdir?: unknown; deliver?: unknown;
+  failure_deliver?: unknown; schedule?: unknown; repeat?: unknown; skills?: unknown;
+  skill?: unknown; context_from?: unknown; monitor_script?: unknown; monitor_url?: unknown };
 const ID = /^[0-9a-f]{12}$/;
 
 /**
@@ -54,7 +57,7 @@ export function zzzShippedFile(path: string, kind: ZzzShippedKind): "absent" | "
 // Hermes v2026.9.24's CLI cannot set enabled_toolsets. Its cron.jobs API is
 // the same locked job store used by the cronjob tool. Create paused with the
 // exact allowlist, then resume; a failure leaves the job disabled.
-const JOB_API = String.raw`
+export const JOB_API = String.raw`
 import json, sys
 from cron.jobs import create_job, get_job, pause_job, resume_job, remove_job, update_job
 r = json.load(sys.stdin)
@@ -71,8 +74,16 @@ else:
         if not old or old.get('name') != r['name']:
             raise RuntimeError('zzz_job_mismatch')
         pause_job(r['id'])
+        schedule = old.get('schedule')
+        repeat = old.get('repeat')
         safe = (old.get('script') == r['script'] and old.get('no_agent') is True
-            and old.get('enabled_toolsets') == r['toolsets'] and not old.get('workdir'))
+            and old.get('enabled_toolsets') == r['toolsets'] and not old.get('workdir')
+            and old.get('deliver') == 'local' and old.get('failure_deliver') == 'local'
+            and isinstance(schedule, dict) and schedule.get('kind') == 'cron'
+            and schedule.get('expr') == r['schedule']
+            and isinstance(repeat, dict) and repeat.get('times') is None
+            and not old.get('skills') and not old.get('skill') and not old.get('context_from')
+            and not old.get('monitor_script') and not old.get('monitor_url'))
         if safe:
             job = update_job(r['id'], {'prompt': r['prompt'], 'script': r['script'],
                 'enabled_toolsets': r['toolsets'], 'no_agent': True,
@@ -82,11 +93,11 @@ else:
             # that old cron ID at the native gate before the new job resumes.
             if not remove_job(r['id']):
                 raise RuntimeError('zzz_unsafe_job_remove_failed')
-            job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
+            job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'], deliver='local',
                 script=r['script'], enabled_toolsets=r['toolsets'], no_agent=True,
                 failure_deliver='local', paused=True, paused_reason='Configuring ZZZ tool scope')
     else:
-        job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'],
+        job = create_job(prompt=r['prompt'], schedule=r['schedule'], name=r['name'], deliver='local',
             script=r['script'], enabled_toolsets=r['toolsets'], no_agent=True,
             failure_deliver='local', paused=True, paused_reason='Configuring ZZZ tool scope')
     if not job or job.get('enabled_toolsets') != r['toolsets'] or job.get('enabled'):
@@ -252,10 +263,21 @@ function lingeringJobs(home: string): Job[] {
 }
 
 /** The installer's exact job record: what it confirms after an install, and what the plugin's managed_context needs. */
-function confirmed(list: Job[]): boolean {
+const emptyJobField = (value: unknown): boolean => value == null || value === ""
+  || (Array.isArray(value) && value.length === 0);
+
+function confirmed(list: Job[], prompt: string): boolean {
   return list.length === 1 && list[0].script === ZZZ_JOB_SCRIPT && list[0].enabled === true
     && list[0].no_agent === true && !list[0].workdir
-    && JSON.stringify(list[0].enabled_toolsets) === JSON.stringify(ZZZ_JOB_TOOLSETS);
+    && JSON.stringify(list[0].enabled_toolsets) === JSON.stringify(ZZZ_JOB_TOOLSETS)
+    && list[0].deliver === "local" && list[0].failure_deliver === "local"
+    && typeof list[0].schedule === "object" && list[0].schedule !== null
+    && (list[0].schedule as { kind?: unknown; expr?: unknown }).kind === "cron"
+    && (list[0].schedule as { expr?: unknown }).expr === ZZZ_JOB_SCHEDULE
+    && typeof list[0].repeat === "object" && list[0].repeat !== null
+    && (list[0].repeat as { times?: unknown }).times === null
+    && emptyJobField(list[0].skills) && emptyJobField(list[0].skill) && emptyJobField(list[0].context_from)
+    && !list[0].monitor_script && !list[0].monitor_url && list[0].prompt === prompt;
 }
 
 /**
@@ -266,7 +288,7 @@ function confirmed(list: Job[]): boolean {
 export function verifyZzzManagedJob(home: string, installed: boolean, script: Buffer | null): void {
   if (installed) {
     stateDirUsable(home);
-    if (!confirmed(jobs(home))) throw new Error("zzz_job_not_confirmed");
+    if (!confirmed(jobs(home), readFileSync(join(home, PROMPT), "utf8").trimEnd())) throw new Error("zzz_job_not_confirmed");
     const dir = realScriptsDir(home);
     const shim = dir && join(dir, ZZZ_JOB_SCRIPT);
     if (!shim || !plainFile(shim) || !script || !readFileSync(shim).equals(script)) throw new Error("zzz_shim_mismatch");
@@ -325,7 +347,7 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
     prompt, script: ZZZ_JOB_SCRIPT, schedule: ZZZ_JOB_SCHEDULE,
     toolsets: [...ZZZ_JOB_TOOLSETS], home });
   const installedJob = jobs(home);
-  if (!confirmed(installedJob)) throw new Error("zzz_job_not_confirmed");
+  if (!confirmed(installedJob, prompt)) throw new Error("zzz_job_not_confirmed");
   const confirmedId = installedJob[0].id;
   if (typeof confirmedId !== "string" || !ID.test(confirmedId)) throw new Error("zzz_job_invalid");
   syncZzzInstalledJobId(home, confirmedId);
