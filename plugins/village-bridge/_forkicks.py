@@ -284,7 +284,14 @@ def load_preview(home, draft_id, config):
     checked_payload(record.get("payload"), draft_id, record.get("payloadHash"), record.get("preview"))
     return record
 
-def authorize_order(record, draft_id, on_requested=None):
+def authorize_order(record, draft_id, on_requested=None, known_task=None, on_proposed=None):
+    """The human grant for this exact saved order, or a refusal. Never places anything itself.
+
+    FK-CARD-AT-PREPARE (approval L19920 (2), one live card per draft): `known_task` is the task this box already
+    proposed for this draft (`_forkicks_grant.card_task`). With it, the daemon is NOT asked again: the task is only
+    read (`wait --timeout 0`), so a looping confirm can never re-file a card (core re-asks a withdrawn or expired
+    request on a repeated propose). Without it, the one propose runs and `on_proposed(task)` records it, only after
+    the daemon answered `requested` for these exact bytes."""
     payload = record["payload"]
     held = checked_payload(payload, draft_id, record["payloadHash"], record.get("preview"))
     key = APPROVAL_CLASS + ":forkicks.order.confirm:" + draft_id
@@ -293,16 +300,31 @@ def authorize_order(record, draft_id, on_requested=None):
     except ValueError as error:
         return None, {"error": str(error)}
     ap = approval_modules()
-    # The app's payload, byte for byte (its confirm compares it with the stored one): the box only checks it.
-    answer = ap.propose(APPROVAL_CLASS, key, summary, held)
-    task = answer.doc.get("task")
-    # Purchases ALWAYS require a human grant, even when Gold Stars uses autonomous policy.
-    if not answer.ok or not isinstance(task, str) or not re.fullmatch(r"propose:[a-f0-9]{32}", task) or answer.doc.get("payload_hash") != record["payloadHash"] or answer.doc.get("decision") != "requested":
-        return None, {"error": "approval_refused"}
-    proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": payload}
-    if answer.doc.get("state") == "executed":
-        return proof, None  # The CP re-reads the direct grant/start; same draft is merchant-idempotent.
+    proof = {"taskId": None, "payloadHash": record["payloadHash"], "payload": payload}
+    if known_task is None:
+        # The app's payload, byte for byte (its confirm compares it with the stored one): the box only checks it.
+        answer = ap.propose(APPROVAL_CLASS, key, summary, held)
+        task = answer.doc.get("task")
+        # Purchases ALWAYS require a human grant, even when Gold Stars uses autonomous policy.
+        if not answer.ok or not isinstance(task, str) or not re.fullmatch(r"propose:[a-f0-9]{32}", task) or answer.doc.get("payload_hash") != record["payloadHash"] or answer.doc.get("decision") != "requested":
+            return None, {"error": "approval_refused"}
+        if on_proposed is not None:
+            on_proposed(task)
+        proof["taskId"] = task
+        if answer.doc.get("state") == "executed":
+            return proof, None  # The CP re-reads the direct grant/start; same draft is merchant-idempotent.
+    else:
+        task = known_task
+        if not isinstance(task, str) or not re.fullmatch(r"propose:[a-f0-9]{32}", task):
+            return None, {"error": "approval_refused"}
+        proof["taskId"] = task
     granted = ap.wait(task)
+    if known_task is not None and granted.exit_code == 0 and granted.status in ("nothing-to-wait-for", "executed"):
+        # Already started (an earlier confirm, or the on-grant pass): adopt it, as the propose answer's `executed`
+        # path does, only when this draft's own action reads granted (a human's decision; the pass's same check).
+        mine = [a for a in (granted.doc.get("actions") or []) if isinstance(a, dict) and a.get("action_key") == key]
+        if len(mine) == 1 and mine[0].get("state") == "granted":
+            return proof, None
     if granted.exit_code != 0 or granted.status != "granted":
         # FK-ON-GRANT: a card still waiting for its tap (wait exit 6) is handed to the on-grant pass
         # (_forkicks_grant.track), which places the order on the resident's grant; it returns the instruction.

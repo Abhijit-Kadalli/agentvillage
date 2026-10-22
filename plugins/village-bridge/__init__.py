@@ -22,7 +22,8 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHand
 from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit
 from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT,
-                         ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS)
+                         ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS, ORDER_CARD_NOT_RAISED, ORDER_APPROVAL_REFUSED,
+                         ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD)
 from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from . import _forkicks_grant
 from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
@@ -1048,7 +1049,7 @@ def handle(args, **kwargs):
                 return json.dumps({"error": "approval_unavailable", "instruction": "Saving a Slopfolio draft needs this agent's verified approval gate, which is unavailable now. Do not claim a draft was saved."})
         if op == "forkicks.order.prepare":
             # A WRITE (WRITE_OPERATIONS) that sends the whole order to the provider: the same gated-write path as
-            # the sibling writes (no card, no manual grant; confirm keeps its own manual grant).
+            # the sibling writes. Placing it still needs the manual grant: its card is raised after the prepare.
             try:
                 gate_verified()
             except Exception:
@@ -1071,16 +1072,17 @@ def handle(args, **kwargs):
                 record = load_preview(home, payload["draftId"], config)
             except Exception:
                 return json.dumps({"error": "approval_preview_unavailable", "instruction": "This exact prepared preview is unavailable. Do not claim an order was placed or retry an uncertain order by preparing another."})
-            if record.get("session") != context["SESSION_KEY"] or record.get("message") == context["MESSAGE_ID"]:
-                return json.dumps({"error": "forkicks_confirmation_required", "instruction": "Show the exact saved preview and wait for a new owner reply confirming it."})
+            # FK-CARD-AT-PREPARE (lead L19916 (1)): no same-turn or same-session refusal. The card was raised at
+            # prepare and its tap is the human gate: authorize_order places nothing without a `requested` propose,
+            # a granted wait and a start whose authorization is `grant`. bound_context (the owner's own DM) and
+            # load_preview (this owner, this origin, the saved bytes) still bind every confirm.
             # FK-ON-GRANT: once a receipt is recorded for this draft (the on-grant pass placed it, or an
             # earlier confirm), a retry answers that same receipt and calls nothing: never a second order.
             done = _forkicks_grant.placed(home, payload["draftId"])
             if done is not None:
-                return json.dumps({"data": done["receipt"], "handling": HANDLING}, ensure_ascii=False)
-            draft_id = payload["draftId"]
-            authorization, refusal = authorize_order(record, draft_id, on_requested=lambda task: _forkicks_grant.instruction_if_tracked(
-                home, draft_id, task, _ensure_forkicks_pass))
+                told = {"instruction": ORDER_ALREADY_TOLD} if done["by"] == "pass" else {}
+                return json.dumps({"data": done["receipt"], "handling": HANDLING, **told}, ensure_ascii=False)
+            authorization, refusal = _forkicks_authorize(home, record, payload["draftId"])
             if refusal:
                 return json.dumps(refusal)
             if not installed(home, "forkicks", op):
@@ -1124,6 +1126,12 @@ def handle(args, **kwargs):
                 LOG.warning("village_bridge forkicks card_fallback_legacy code=%s", error)  # the code only
                 result = transport(config, payload, flat_card=False)
                 save_preview(home, result, context, config)
+            if isinstance(result, dict) and not result.get("error") and result.get("draftId"):
+                # FK-CARD-AT-PREPARE (CLAIMS L19913, lead L19916 (2)): the card goes out now, for the FINAL saved
+                # draft only (after the legacy fallback above, never the unsaved card draft), with no model turn in
+                # between. Its tap is handled by the FK-ON-GRANT pass, which places the order and tells the owner.
+                return json.dumps({"data": result, "handling": HANDLING, **_forkicks_card_at_prepare(home, config, result["draftId"])},
+                                  ensure_ascii=False)
         if op == "forkicks.order.confirm" and _forkicks_grant.receipt_of(result) is not None:
             _forkicks_grant.record_placed(home, payload["draftId"], result, "agent")
         if op == "rolodex.person":
@@ -1160,6 +1168,64 @@ def handle(args, **kwargs):
             return json.dumps({"error": "village_unavailable", "settingsUrl": SETTINGS, "instruction": ZZZ_UNCLEAR})
         return json.dumps({"error": "village_unavailable", "settingsUrl": SETTINGS,
                            "instruction": "Do not claim success. Recheck current meeting state after uncertainty. For a star use gold-stars.status with the same draftId; never prepare another to retry. For Kicks: use order.status with a returned orderId, or retry order.confirm with the SAME draftId and saved proof; never prepare another order after an uncertain confirm."})
+
+# FK-CARD-AT-PREPARE (CLAIMS L19913/L19916/L19920): the For Kicks card is raised by the bridge right after a saved
+# prepare, through the same authorize_order path confirm uses, and each draft gets at most one propose.
+def _forkicks_remember_card(home, draft_id, task):
+    try:
+        _forkicks_grant.record_card(home, draft_id, task)
+    except Exception:  # noqa: BLE001 - the card is out; a lost marker only means core's idempotent propose on a retry
+        LOG.warning("village_bridge forkicks card_marker code=unwritable")
+
+
+def _forkicks_authorize(home, record, draft_id):
+    """authorize_order with this draft's card task reused (no second propose) and the FK-ON-GRANT hand-off.
+    Every failure before an order is sent comes back as a refusal with an honest instruction."""
+    try:
+        known = _forkicks_grant.card_task(home, draft_id)
+        authorization, refusal = authorize_order(
+            record, draft_id, known_task=known,
+            on_requested=lambda task: _forkicks_grant.instruction_if_tracked(home, draft_id, task, _ensure_forkicks_pass),
+            on_proposed=lambda task: _forkicks_remember_card(home, draft_id, task))
+    except Exception:
+        LOG.warning("village_bridge forkicks approval code=approval_unavailable")  # the code only
+        return None, {"error": "approval_unavailable", "instruction": ORDER_APPROVAL_UNAVAILABLE}
+    if refusal is not None and "instruction" not in refusal:
+        refusal = {**refusal, "instruction": ORDER_APPROVAL_REFUSED}
+    return authorization, refusal
+
+
+def _forkicks_card_at_prepare(home, config, draft_id):
+    """The prepare answer's approval fields: `approval: requested` and the instruction, or why no card went out
+    (with an error and ORDER_CARD_NOT_RAISED). Only a propose and one `wait --timeout 0`: no sleep, no poll."""
+    try:
+        done = _forkicks_grant.placed(home, draft_id)
+        if done is not None:  # a replayed prepare of a placed draft: the confirm answers its receipt
+            return {"approval": "placed", "instruction": ORDER_ALREADY_TOLD if done["by"] == "pass" else
+                    "This exact order is already placed. Call forkicks.order.confirm with this SAME draftId for its receipt."}
+        record = load_preview(home, draft_id, config)
+    except Exception:
+        return {"approval": "unavailable", "error": "approval_unavailable", "instruction": ORDER_CARD_NOT_RAISED}
+    authorization, refusal = _forkicks_authorize(home, record, draft_id)
+    if authorization is not None:
+        # The owner had already approved this draft (a replayed prepare): nothing is placed here; confirm places it.
+        return {"approval": "granted", "instruction": "The owner already approved this exact order. Call "
+                "forkicks.order.confirm with this SAME draftId to place it; never prepare another order."}
+    if refusal.get("error") == "approval_required":
+        return {"approval": "requested", "instruction": refusal["instruction"]}
+    if refusal.get("error") == "approval_unavailable":
+        # The propose was accepted (its task is recorded) but the read after it failed: the card IS out, so the
+        # words say so and the pass is handed the task; never "could not be raised" for a card that went out.
+        try:
+            task = _forkicks_grant.card_task(home, draft_id)
+        except Exception:
+            task = None
+        if task is not None:
+            tracked = _forkicks_grant.instruction_if_tracked(home, draft_id, task, _ensure_forkicks_pass)
+            return {"approval": "requested", "instruction": tracked or ORDER_APPROVE_IN_BOT}
+    return {"approval": "unavailable" if refusal.get("error") == "approval_unavailable" else "refused",
+            "error": refusal.get("error") or "approval_refused", "instruction": ORDER_CARD_NOT_RAISED}
+
 
 # FK-ON-GRANT (CLAIMS L17710/L17711/L17726): the For Kicks on-grant pass (_forkicks_grant.py) on av-events'
 # approval poller, in the gateway process only (a `village` call runs only in the owner's Telegram DM there).

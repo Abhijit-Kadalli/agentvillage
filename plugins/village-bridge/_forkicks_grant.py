@@ -180,6 +180,27 @@ def track(home, draft_id, task, now=None) -> bool:
     return True
 
 
+def card_task(home, draft_id):
+    """FK-CARD-AT-PREPARE (approval L19920 (2)): the task this box already proposed for this draft, or None.
+    `authorize_order` then only reads it, so one draft has at most one card however often confirm runs."""
+    try:
+        task = _read(_path(home, draft_id, ".card")).get("task")
+    except FileNotFoundError:
+        return None
+    if not isinstance(task, str) or not TASK.fullmatch(task):
+        raise ValueError("marker_invalid")
+    return task
+
+
+def record_card(home, draft_id, task) -> bool:
+    """Record the first proposed task for this draft (O_EXCL), after the daemon answered `requested`."""
+    if not isinstance(task, str) or not TASK.fullmatch(task):
+        return False
+    path = _path(home, draft_id, ".card")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return _create(path, {"task": task})
+
+
 def receipt_of(result):
     """A successful confirm answer (the app's receipt), or None."""
     if (not isinstance(result, dict) or "error" in result or not isinstance(result.get("orderId"), str)

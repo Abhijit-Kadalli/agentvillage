@@ -157,7 +157,7 @@ class ForKicksOnGrantTest(unittest.TestCase):
     def test_untapped_card_is_tracked_and_the_agent_says_it_places_it_on_approval(self):
         response = self.ask()
         self.assertEqual(response, {'error': 'approval_required', 'instruction': mini.ORDER_PLACED_ON_APPROVAL})
-        self.assertIn("I'll place it as soon as you approve.", response['instruction'])
+        self.assertIn("I've sent your approval card to your approvals bot; tap Approve there and I'll place it.", response['instruction'])
         marker = json.loads(self.marker().read_text())
         self.assertEqual((marker['task'], marker['phase']), (TASK, 'awaiting'))
         self.assertEqual(self.marker().stat().st_mode & 0o777, 0o600)
