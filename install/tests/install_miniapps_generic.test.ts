@@ -475,7 +475,10 @@ test("security fold: the ownership file is the installer's own; a malformed or l
 
 test("RA34 S1: the offered SKILL.md must answer to exactly its id (frontmatter name:), else bundle_invalid", () => {
   for (const text of ["# Civic Board\nno frontmatter\n", "---\nname: approval\n---\n# x\n", "---\nname: civic-board-x\n---\n", "---\nversion: 1.0.0\n---\n# x\n",
-    "---\nversion: 1.0.0\n---\nname: civic-board\n", "---\nname: civic-board\n# never closed\n", "---\nname: Civic-Board\n---\n"]) {
+    "---\nversion: 1.0.0\n---\nname: civic-board\n", "---\nname: civic-board\n# never closed\n", "---\nname: Civic-Board\n---\n",
+    // YAML forms a first-match reader and Hermes's yaml load could read differently: all fail closed.
+    "---\nname: civic-board\nname: approval\n---\n", "---\nname: civic-board\n\"name\": approval\n---\n", "---\nname: civic-board\n<<: {name: approval}\n---\n",
+    "---\n{name: civic-board}\n---\n", "---\n? name\n: civic-board\n---\n", "---\nname: civic-board\nmeta:\n  name: approval\n---\n", "---\nname: civic-board # c\n---\n"]) {
     refusedAlone(generic(), bundle(entry("civic-board", text)), "bundle_invalid");
   }
   for (const text of [TEXT, "---\nname: \"civic-board\"\n---\n", "﻿---\nname: 'civic-board'\ndescription: x\n---\nbody\n"]) {
@@ -490,6 +493,7 @@ test("RA34 S1: an id any other skill under skills/** answers to (category dir na
     root => { mkdirSync(join(root, "skills", "productivity", "civic-board"), { recursive: true }); writeFileSync(join(root, "skills", "productivity", "civic-board", "SKILL.md"), "---\nname: civic-board\n---\n"); },
     root => { mkdirSync(join(root, "skills", "productivity", "helper"), { recursive: true }); writeFileSync(join(root, "skills", "productivity", "helper", "SKILL.md"), "---\nname: civic-board\n---\n"); },
     root => { mkdirSync(join(root, "skills", "my-notes"), { recursive: true }); writeFileSync(join(root, "skills", "my-notes", "SKILL.md"), "---\nname: \"civic-board\"\n---\n"); },
+    root => { mkdirSync(join(root, "skills", "a", "b"), { recursive: true }); writeFileSync(join(root, "skills", "a", "b", "SKILL.md"), "---\nname: b\n\"name\": civic-board # last wins\n---\n"); },
     root => { mkdirSync(join(root, "skills", "legacy"), { recursive: true }); writeFileSync(join(root, "skills", "legacy", "civic-board.md"), "# flat\n"); },
     root => { const outside = home(); mkdirSync(join(root, "skills", "cat"), { recursive: true }); symlinkSync(outside, join(root, "skills", "cat", "civic-board")); },
   ];

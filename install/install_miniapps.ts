@@ -179,17 +179,37 @@ function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) 
     } catch { return null; }
   };
 }
-/**
- * A SKILL.md's frontmatter `name:` as Hermes reads it (agent/skill_utils.py parse_frontmatter: a leading `---`, closed
- * by the next `\n---` line), unquoted; null when there is none.
- */
-export function frontmatterName(text: string): string | null {
+/** A SKILL.md's frontmatter block as Hermes finds it (agent/skill_utils.py parse_frontmatter: BOM stripped, a leading
+ * `---`, closed by the next `\n---` line), or null when there is none. */
+function frontmatter(text: string): string | null {
   const content = text.replace(/^﻿/, "");
   if (!content.startsWith("---")) return null;
   const end = /\n---[ \t\r]*\n/.exec(content.slice(3));
-  if (!end) return null;
-  const line = /^name[ \t]*:[ \t]*(.*?)[ \t\r]*$/m.exec(content.slice(3, end.index + 3));
-  return line ? line[1].replace(/^(["'])(.*)\1$/, "$2") : null;
+  return end ? content.slice(3, end.index + 3) : null;
+}
+const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, "$2");
+/**
+ * Every value a frontmatter line could give `name` (any line whose key reads as name, quoted or not, any indent):
+ * an over-approximation, so a skill already on the box is never missed by a YAML form this reader does not model.
+ */
+function frontmatterNames(text: string): string[] {
+  const block = frontmatter(text);
+  if (block === null) return [];
+  return [...block.matchAll(/^[ \t]*["']?name["']?[ \t]*:[ \t]*(.*?)[ \t\r]*$/gm)].flatMap(m => [unquote(m[1]), unquote(m[1].replace(/[ \t]+#.*$/, ""))]);
+}
+/**
+ * RA34 S1 for the OFFERED bytes, canonical so no YAML reading can differ: every frontmatter line is blank, a
+ * continuation (indented, or a `- ` list item), or a plain top-level `key: value` (no quoted, merge `<<`, complex
+ * `?` or flow keys), and exactly one of them is `name:`, whose value (plain, or quoted once) is exactly the id.
+ * Anything else fails closed.
+ */
+export function namesItself(text: string, id: string): boolean {
+  const block = frontmatter(text);
+  if (block === null) return false;
+  const lines = block.split("\n").map(l => l.replace(/\r$/, ""));
+  if (!lines.every(l => /^[ \t]*$/.test(l) || /^[ \t]/.test(l) || /^- /.test(l) || /^[A-Za-z0-9_-]+:([ \t]|$)/.test(l))) return false;
+  const names = lines.filter(l => /^name:/.test(l));
+  return names.length === 1 && [id, `"${id}"`, `'${id}'`].includes(names[0].slice(5).trim()) && frontmatterNames(text).every(n => n === id);
 }
 const WALK_MAX_ENTRIES = 20000;
 const WALK_MAX_DEPTH = 8;
@@ -215,7 +235,7 @@ function skillNames(home: string): { top: string; names: string[] }[] | null {
       else if (e.isDirectory()) { if (!e.name.startsWith(".")) walk(path, t, depth + 1); }
       else if (e.name === "SKILL.md" && e.isFile()) {
         const names = [parse(dir).base];
-        if (lstatSync(path).size <= 65536) { const name = frontmatterName(readFileSync(path, "utf8")); if (name) names.push(name); }
+        if (lstatSync(path).size <= 65536) names.push(...frontmatterNames(readFileSync(path, "utf8")));
         out.push({ top: t, names });
       } else if (!hasSkill && e.isFile() && e.name.endsWith(".md")) out.push({ top: t, names: [e.name.slice(0, -3)] });
     }
@@ -253,7 +273,7 @@ function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnT
   const bytes = offered(served, app.id);
   if (typeof bytes === "string") return { code: bytes };
   // RA34 S1: Hermes also finds a skill by its frontmatter name, so the offered SKILL.md must answer to exactly its id.
-  if (frontmatterName(bytes.toString("utf8")) !== app.id) return { code: "bundle_invalid" };
+  if (!namesItself(bytes.toString("utf8"), app.id)) return { code: "bundle_invalid" };
   return { app: { id: app.id, version: app.version, operations: [...operations], skills: [app.id] }, generic: bytes };
 }
 function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): { projection: Projection; staged: Staged[]; refused: { id: string; code: RefusalCode }[]; intentEmpty: boolean } {
