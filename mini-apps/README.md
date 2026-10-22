@@ -557,9 +557,12 @@ In short:
 
 - **App actions run on their own by default.** Reads, writes and context lines
   already do (the `village` tool reaches the policy as `marketplace.app.read`,
-  autonomous), and so does a Gold Star send (its member row, above). Only the
-  label of the resident's "Act through an installed app" setting lags that
-  behaviour for now. A developer never adds a class, a row or a gate.
+  autonomous), and so does a Gold Star send (its member row, above). The parent
+  row `marketplace.app.action` still asks today; the only partner action that
+  reaches it is the For Kicks checkout, which is meant to ask. It turns
+  autonomous, and the setting's label ("Act through an installed app") with it,
+  once For Kicks moves to its own member row (v2.1.13). A developer never adds
+  a class, a row or a gate.
 - **Only a payment shows a card, and that card is first-class.** Today exactly
   one partner action is gated: a payment, the For Kicks checkout
   (`forkicks.order.confirm`). Its card arrives fast and is a simplified friendly
