@@ -78,11 +78,40 @@ ORDER_APPROVE_IN_BOT = ("Ask the owner to approve this exact For Kicks order on 
                         "forkicks.order.confirm with this SAME draftId. Never prepare another order to retry an uncertain confirm.")
 # FK-ON-GRANT (CLAIMS L17710/L17711/L17726): the daemon's "not granted yet" when this box will place the order
 # itself on the resident's tap (_forkicks_grant.py) and tell them in this chat. Product owns the quoted words.
-ORDER_PLACED_ON_APPROVAL = ("The approval card for this exact For Kicks order is in the owner's approvals bot. Tell the owner: "
-                            "\"I'll place it as soon as you approve.\" When they approve, it is placed automatically and they "
-                            "get a message in this chat; never ask them to approve or confirm here, and never claim it was "
-                            "placed before a receipt. If they ask later, retry forkicks.order.confirm with this SAME draftId; "
-                            "never prepare another order.")
+# FK-CARD-AT-PREPARE (CLAIMS L19913/L19916): the prepare answer carries it, since the bridge raises the card right
+# after prepare. The daemon's propose answer has no delivery field (core gate.ts commandPropose: ok, task, action_key,
+# class, payload_hash, decision, state, seq, idempotent), so the words never claim the card arrived (lead L19923).
+ORDER_PLACED_ON_APPROVAL = ("The approval card for this exact For Kicks order was handed to the owner's approvals bot (its "
+                            "delivery is not confirmed). Show the preview, then tell the owner: \"I've sent your approval card "
+                            "to your approvals bot; tap Approve there and I'll place it. If no card arrives within a minute, "
+                            "tell me and I'll check.\" When they approve, it is placed automatically and they get one message "
+                            "in this chat; do not announce it again. Never ask for a yes in chat, and never say it was placed "
+                            "before a receipt. To check, call forkicks.order.confirm with this SAME draftId (it never sends a "
+                            "second card); never prepare another order.")
+# FK-CARD-AT-PREPARE: the card could not be raised at prepare (refused, unavailable, or an error): the preview is
+# still returned, and the agent says plainly that nothing was ordered.
+ORDER_CARD_NOT_RAISED = ("The approval card for this order could not be raised, so nothing was ordered. Show the preview, "
+                         "then tell the owner plainly: \"I couldn't send the approval card, so I haven't ordered anything.\" "
+                         "Never say a card was sent or an order was placed.")
+# The same honesty for a confirm whose approval check refused or could not run (nothing is sent to the café then).
+ORDER_APPROVAL_REFUSED = ("The approval check refused this order, so nothing was ordered. Tell the owner plainly that it "
+                          "was not placed; never say it was.")
+ORDER_APPROVAL_UNAVAILABLE = ("The approval check could not run just now, so nothing was ordered by this request. Tell the "
+                              "owner plainly that it is not placed; never say it was. Retry forkicks.order.confirm with this "
+                              "SAME draftId later; never prepare another order.")
+# S2 (review-a RA41, lead L20080): a confirm that reads this draft's card as declined, withdrawn, expired or void.
+# No new card is raised for a draft (one card per draft), so the agent never points at a card that is gone.
+ORDER_CARD_CLOSED = ("This draft's approval card was declined, withdrawn or expired, so nothing was ordered. Tell the "
+                     "owner: \"Nothing was ordered. Ask me for a new preview.\" Do not retry this draft.")
+# S1 (security review): the agent's confirm of a draft older than the newest saved one, or while that record is
+# unreadable (fail closed). Nothing is started or sent.
+ORDER_SUPERSEDED = ("This is an earlier preview that a newer one replaced, so nothing was ordered from it. Tell the owner: "
+                    "\"Nothing was ordered from your earlier preview.\" Do not retry this draft.")
+ORDER_NEWEST_UNREADABLE = ("I couldn't check that this is the newest preview, so nothing was ordered. Tell the owner: "
+                           "\"Nothing was ordered. Ask me for a new preview.\" Do not retry this draft.")
+# The receipt the on-grant pass recorded: the owner already got the placed line in this chat (one line per order).
+ORDER_ALREADY_TOLD = ("This order is placed and the owner was already told so in this chat. Do not announce it again; "
+                      "only give receipt details they ask for or still need, such as a payment link.")
 
 
 def installed(home: Path, app_id: str, operation: str) -> bool:
