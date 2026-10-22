@@ -1,9 +1,11 @@
 {
+  "manifest": 2,
   "id": "mosaic",
   "name": "Mosaic",
-  "description": "A guided way to add to your Context. Mosaic writes your agent a short summary.",
   "version": "1.0.0",
+  "description": "A guided way to add to your Context. Mosaic writes your agent a short summary.",
   "homepage": "https://agents.edgecity.live",
+  "visibility": "sandbox",
   "permissions": [
     {
       "kind": "read",
@@ -11,10 +13,22 @@
       "description": "Save the short summary Mosaic writes for your agent in your Context, Private until you move it."
     }
   ],
+  "service": {
+    "kind": "none"
+  },
+  "operations": [],
+  "data": {
+    "context": {
+      "maxEntries": 12,
+      "ceiling": "private"
+    }
+  },
   "skills": [
-    "mosaic"
-  ],
-  "operations": [
-    "mini-app.read"
+    {
+      "name": "mosaic",
+      "version": "1.0.0",
+      "sha256": "a96d893de4944dc2e1ade45c641ac3f61afb35c985b5ce9a7fc94958f76ebc5c",
+      "path": "skills/mosaic/SKILL.md"
+    }
   ]
 }

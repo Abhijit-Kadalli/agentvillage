@@ -8,8 +8,14 @@ import * as installMiniApps from "../install_miniapps";
 import { PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REVIEWED_MINI_APPS, SHIPPED_SKILLS, validateProjection, ZZZ_BRIDGE_ID, zzzParticipation } from "../install_miniapps";
 import * as zzzManagedJob from "../zzz_managed_job";
 import { EDGE_SKILL_NAMES } from "../paths";
+import { createRequire } from "node:module";
 
 const REPO = join(import.meta.dir, "..", "..");
+// P0-1: mini-apps/<id>/manifest.json is a v2 manifest; what the cp serves from it (and what these tests
+// hold the installer's reviewed tables to) is its v1 entry (scripts/mini-apps-manifests.cjs).
+const manifests = createRequire(import.meta.url)("../../scripts/mini-apps-manifests.cjs");
+const reviewedManifest = (id: string, opts: { person?: boolean; context?: boolean } = {}) =>
+  manifests.v1Entry(JSON.parse(readFileSync(join(REPO, "mini-apps", id, "manifest.json"), "utf8")), opts);
 /** Every file under `root` with its bytes and mode, for "nothing changed" proofs. */
 function snapshot(root: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -158,7 +164,8 @@ test("ROLODEX.PERSON: gold-stars carries rolodex.person last; the 8-op and 6-op 
   expect(list("GOLD_STARS_RESTORED")).toEqual([...restored.operations]);
   expect(list("GOLD_STARS_PREVIOUS")).toEqual([...previous.operations]);
   expect(/^GOLD_STARS_ACCEPTED = \(GOLD_STARS, GOLD_STARS_RESTORED, GOLD_STARS_PREVIOUS\)$/m.test(plugin)).toBe(true);
-  expect(JSON.parse(readFileSync(join(REPO, "mini-apps", "gold-stars", "manifest.json"), "utf8")).operations).toEqual([...gold.operations]);
+  expect(reviewedManifest("gold-stars", { person: true }).operations).toEqual([...gold.operations]);
+  expect(reviewedManifest("gold-stars").operations).toEqual([...restored.operations]);
   // The exact entry the CP projects for release ({id, version, operations, skills}, catalog.projection()).
   expect(JSON.stringify({ id: gold.id, version: gold.version, operations: gold.operations, skills: gold.skills })).toBe(
     '{"id":"gold-stars","version":"1.1.0","operations":["rolodex.search","gold-stars.quota","gold-stars.prepare","gold-stars.send","gold-stars.status","gold-stars.cancel","rolodex.meeting","skylight.status","rolodex.person"],"skills":["gold-stars"]}');
@@ -236,10 +243,10 @@ test("verify is read-only and refuses an absent or removed projection", () => {
 test("zzz.bot manifest and native allowlist pin exactly its five named operations and stage the author skill", () => {
   const app = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
   const ops = ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"];
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps", "zzzbot", "manifest.json"), "utf8"));
+  const manifest = reviewedManifest("zzzbot");
   expect(app).toEqual({ id: "zzzbot", version: "1.0.0", operations: ops, skills: ["zzzbot"] });
   expect(manifest).toMatchObject({ ...app, homepage: "https://zzz.bot" });
-  expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "skills", "version"]);
+  expect(Object.keys(manifest).sort()).toEqual(["auth", "description", "homepage", "id", "name", "operations", "permissions", "provenance", "restricted", "skills", "version"]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read", "action"]);
   expect(manifest).not.toHaveProperty("mcp");
   expect(EDGE_SKILL_NAMES).not.toContain("zzzbot");
@@ -334,7 +341,7 @@ test("ov#441 S1: managed ZZZ participation is the cp projection's zzzbot + zzz-b
 
 test("Slopfolio manifest and native allowlist pin only private draft operations and stage the author skill", () => {
   const app = REVIEWED_MINI_APPS.find(app => app.id === "slopfolio")!;
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps", "slopfolio", "manifest.json"), "utf8"));
+  const manifest = reviewedManifest("slopfolio");
   expect(app).toEqual({ id: "slopfolio", version: "1.0.0", operations: ["slopfolio.prepare", "slopfolio.status"], skills: ["slopfolio"] });
   expect(manifest).toMatchObject({ ...app, homepage: "https://slopfolio.com" });
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read", "action"]);
@@ -363,7 +370,7 @@ test("Slopfolio manifest and native allowlist pin only private draft operations 
 
 test("For Kicks stages its exact reviewed skill and revokes only its permission and managed file", () => {
   const app = REVIEWED_MINI_APPS[2];
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps/forkicks/manifest.json"), "utf8"));
+  const manifest = reviewedManifest("forkicks");
   expect([app.id, app.version, [...app.skills], [...app.operations]]).toEqual([
     "forkicks", "1.0.0", ["forkicks"],
     ["forkicks.menu", "forkicks.schedule", "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.status", "forkicks.order.cancel"],
@@ -400,10 +407,14 @@ test("MOSAIC (app#486): Dizko's shape, its context read/write after mini-app.rea
   const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
   expect(plugin).toContain('app["skills"] != [name] or not any(app["operations"] == list(ops) for ops in APP_OPERATIONS_ACCEPTED)');
   expect(plugin).not.toContain('"mosaic"');
-  // The reviewed manifest is the CP's base entry (no restricted marker, no data block, no MCP, no credit).
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps", "mosaic", "manifest.json"), "utf8"));
+  // The reviewed manifest (v2, service kind "none": a context-only app, the validator's grant to mosaic alone)
+  // serves the CP's two entries: its base entry is the previous list, its context entry the current one,
+  // restricted with the 12-line namespace declaration, and never an MCP block or a credit.
+  const manifest = reviewedManifest("mosaic");
   expect(manifest).toMatchObject({ id: "mosaic", version: "1.0.0", skills: ["mosaic"], operations: [read], homepage: "https://agents.edgecity.live" });
-  expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "skills", "version"]);
+  expect(Object.keys(manifest).sort()).toEqual(["data", "description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
+  expect([manifest.restricted, manifest.data]).toEqual([true, { context: { maxEntries: 12 } }]);
+  expect([[...manifest.operations], [...reviewedManifest("mosaic", { person: true, context: true }).operations]]).toEqual([[...previous.operations], [...mosaic.operations]]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read"]);
   // Only ever staged on install: not shipped to every box, never a references path.
   expect(EDGE_SKILL_NAMES).not.toContain("mosaic");
