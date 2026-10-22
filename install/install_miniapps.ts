@@ -53,7 +53,6 @@ type ReviewedApp = typeof REVIEWED_MINI_APPS[number] | typeof PREVIOUS_REVIEWED_
  */
 export const SHIPPED_SKILLS: ReadonlySet<string> = new Set<string>(EDGE_SKILL_NAMES);
 const owned = (id: string) => !SHIPPED_SKILLS.has(id);
-type Projection = { version: 1; apps: ReviewedApp[] };
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 function exists(path: string): boolean {
   try { lstatSync(path); return true; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
@@ -72,17 +71,89 @@ function regular(path: string): void {
   safePath(path);
   if (exists(path) && !lstatSync(path).isFile()) throw new Error("mini_apps_non_file");
 }
-export function validateProjection(value: unknown): Projection {
+/**
+ * MINI-APPS v2 GENERIC (CLAIMS L19473; box contract review-b L19490, receipt contract context L19498 / lead
+ * L19499): an app in neither reviewed table is accepted when it is a GENERIC app, so adding one is a cp-only
+ * change. Per app, in projection order:
+ *   1. the id must match GENERIC_ID (^[a-z][a-z0-9-]{0,39}$: the served bundle's id rule AND the bridge's,
+ *      plugins/village-bridge/_mini_apps.py, so the box never stages an id its bridge would refuse);
+ *   2. a REVIEWED id takes today's path only (exact id + operations + version + skills, else the WHOLE stage
+ *      fails as today): a reviewed id is never refused alone and never staged as a generic app;
+ *   3. an id the installer ships as a skill (SHIPPED_SKILLS) is refused: `shadows_reviewed`;
+ *   4. operations must be EXACTLY one of GENERIC_OPERATIONS_ACCEPTED (the bridge's APP_OPERATIONS_ACCEPTED, the
+ *      same lists in the same order; the cp has no other operations gate before this one):
+ *      `operations_not_generic`;
+ *   5. keys exactly id, operations, skills, version; skills exactly [id]; a semver version (the bridge's rule);
+ *   6. its SKILL.md comes ONLY from the cp's offer (MINI_APPS_SKILLS + a well-formed MINI_APPS_SKILLS_OFFER),
+ *      never from a checkout copy: no offer or no entry for it `offer_missing`; a bundle over the box's caps
+ *      `budget`; any other bad bundle or entry (keys, strict base64, at most SKILL_MAX_BYTES, UTF-8)
+ *      `bundle_invalid`; bytes that do not hash to the entry's sha256 `sha_mismatch`. The pin is the offer's
+ *      sha256 (the cp offers bytes only when they equal its validated manifest pin); the box reads no sha or
+ *      path from the projection or anywhere else.
+ * A refused app fails ONLY itself: the receipt carries `refused: [{ id, code }]` (omitted when nothing is
+ * refused, so today's receipts are byte-identical), `apps` / `files` / mini-apps.json / projectionSha256 cover
+ * exactly the projection minus the refused ids, in projection order, and --verify recomputes that same subset
+ * (a generic app verified without its offer is refused again, so verify fails closed on the authority file).
+ * FATAL (the whole stage fails, nothing written, as before): a projection that is not exactly
+ * {version: 1, apps: [...]}, an entry that is not an object, an id that is not a string or fails GENERIC_ID,
+ * a duplicate id, a reviewed id that matches no reviewed entry, a generic entry that fails rule 5, and every
+ * filesystem check (symlinks, non-files, a reviewed app's missing checkout copy).
+ */
+export const GENERIC_OPERATIONS_ACCEPTED = [["mini-app.read", "mini-app.context.read", "mini-app.context.write"], ["mini-app.read"]] as const;
+export const GENERIC_ID = /^[a-z][a-z0-9-]{0,39}$/;
+const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+export const REFUSAL_CODES = ["offer_missing", "bundle_invalid", "sha_mismatch", "operations_not_generic", "shadows_reviewed", "budget"] as const;
+export type RefusalCode = typeof REFUSAL_CODES[number];
+export type GenericApp = { id: string; version: string; operations: string[]; skills: string[] };
+type StagedApp = ReviewedApp | GenericApp;
+type Projection = { version: 1; apps: StagedApp[] };
+type Staged = { app: StagedApp; generic?: Buffer };
+const ALL_REVIEWED = [...REVIEWED_MINI_APPS, ...PREVIOUS_REVIEWED_MINI_APPS] as readonly ReviewedApp[];
+const REVIEWED_IDS: ReadonlySet<string> = new Set(ALL_REVIEWED.map(x => x.id));
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+/** A generic app's SKILL.md from the cp's offer, or the refusal code. Never a checkout copy. */
+function offered(served: ReturnType<typeof parseSkillDelivery>, id: string): Buffer | RefusalCode {
+  if (served.code) return served.budget ? "budget" : "bundle_invalid";
+  const entry = served.entries.get(id);
+  if (!served.offer || !entry) return "offer_missing";
+  if (entry.code) return entry.code === "mini_apps_skill_hash_mismatch" ? "sha_mismatch" : "bundle_invalid";
+  return entry.bytes;
+}
+function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnType<typeof parseSkillDelivery>): Staged | { code: RefusalCode } {
+  if (!GENERIC_ID.test(app.id)) throw new Error("mini_apps_invalid_entry");
+  if (REVIEWED_IDS.has(app.id)) {
+    const reviewed = ALL_REVIEWED.find(x => x.id === app.id && same(app.operations, x.operations));
+    if (!reviewed || Object.keys(app).sort().join(",") !== "id,operations,skills,version" || app.version !== reviewed.version || !same(app.skills, reviewed.skills)) throw new Error("mini_apps_unreviewed_bundle");
+    return { app: reviewed };
+  }
+  if (SHIPPED_SKILLS.has(app.id)) return { code: "shadows_reviewed" };
+  const operations = GENERIC_OPERATIONS_ACCEPTED.find(ops => same(app.operations, ops));
+  if (!operations) return { code: "operations_not_generic" };
+  if (Object.keys(app).sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) throw new Error("mini_apps_invalid_entry");
+  const bytes = offered(served, app.id);
+  if (typeof bytes === "string") return { code: bytes };
+  return { app: { id: app.id, version: app.version, operations: [...operations], skills: [app.id] }, generic: bytes };
+}
+function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDelivery>): { projection: Projection; staged: Staged[]; refused: { id: string; code: RefusalCode }[]; intentEmpty: boolean } {
   if (!value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "apps,version" || !("version" in value) || value.version !== 1 || !("apps" in value) || !Array.isArray(value.apps)) throw new Error("mini_apps_invalid_projection");
   const seen = new Set<string>();
-  const apps = value.apps.map((app: unknown) => {
-    if (!app || typeof app !== "object" || !("id" in app) || typeof app.id !== "string" || !("version" in app) || !("operations" in app) || !("skills" in app)) throw new Error("mini_apps_invalid_entry");
-    const reviewed = ([...REVIEWED_MINI_APPS, ...PREVIOUS_REVIEWED_MINI_APPS] as readonly ReviewedApp[]).find(x => x.id === app.id && JSON.stringify(app.operations) === JSON.stringify(x.operations));
-    if (!reviewed || seen.has(app.id) || Object.keys(app).sort().join(",") !== "id,operations,skills,version" || app.version !== reviewed.version || JSON.stringify(app.operations) !== JSON.stringify(reviewed.operations) || JSON.stringify(app.skills) !== JSON.stringify(reviewed.skills)) throw new Error("mini_apps_unreviewed_bundle");
+  const staged: Staged[] = [];
+  const refused: { id: string; code: RefusalCode }[] = [];
+  for (const app of value.apps as unknown[]) {
+    if (!app || typeof app !== "object" || Array.isArray(app) || !("id" in app) || typeof app.id !== "string") throw new Error("mini_apps_invalid_entry");
+    if (seen.has(app.id)) throw new Error("mini_apps_unreviewed_bundle");
     seen.add(app.id);
-    return reviewed;
-  });
-  return { version: 1, apps };
+    const result = checkApp(app as Record<string, unknown> & { id: string }, served);
+    if ("code" in result) refused.push({ id: app.id, code: result.code });
+    else staged.push(result);
+  }
+  return { projection: { version: 1, apps: staged.map(x => x.app) }, staged, refused, intentEmpty: value.apps.length === 0 };
+}
+/** All or nothing: the projection with every app accepted (a generic app needs its offer), or the first refusal's code. */
+export function validateProjection(value: unknown, delivery: SkillDelivery = {}): Projection {
+  const { projection, refused } = resolveApps(value, parseSkillDelivery(delivery));
+  if (refused.length) throw new Error(refused[0].code);
+  return projection;
 }
 function atomic(path: string, bytes: string | Buffer): void {
   regular(path);
@@ -126,41 +197,55 @@ function servedEntry(entry: { sha256: unknown; bytes: unknown }): ServedEntry {
   try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return { code: "mini_apps_skill_not_utf8" }; }
   return { bytes };
 }
-export function parseSkillDelivery(delivery: SkillDelivery = {}): { offer: string | null; entries: Map<string, ServedEntry>; code?: FallbackCode } {
+export function parseSkillDelivery(delivery: SkillDelivery = {}): { offer: string | null; entries: Map<string, ServedEntry>; code?: FallbackCode; budget?: boolean } {
   const offer = typeof delivery.offer === "string" && HEX64.test(delivery.offer) ? delivery.offer : null;
   const entries = new Map<string, ServedEntry>();
   const raw = delivery.skills;
   if (raw === undefined || raw === "") return { offer, entries };
   try {
-    if (typeof raw !== "string" || raw.length > BUNDLE_MAX_CHARS) throw new Error("bundle");
+    if (typeof raw !== "string") throw new Error("bundle");
+    if (raw.length > BUNDLE_MAX_CHARS) throw new Error("budget");
     const doc = JSON.parse(raw);
-    if (!closed(doc, "skills,version") || doc.version !== 1 || !Array.isArray(doc.skills) || doc.skills.length > 32) throw new Error("bundle");
+    if (!closed(doc, "skills,version") || doc.version !== 1 || !Array.isArray(doc.skills)) throw new Error("bundle");
+    if (doc.skills.length > 32) throw new Error("budget");
     for (const entry of doc.skills) {
       if (!closed(entry, "bytes,id,sha256") || typeof entry.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(entry.id) || entries.has(entry.id)) throw new Error("bundle");
       entries.set(entry.id, servedEntry(entry));
     }
-  } catch { return { offer, entries: new Map(), code: "mini_apps_skill_bundle_invalid" }; }
+  } catch (error) {
+    // A box-side cap (BUNDLE_MAX_CHARS, 32 entries) is `budget` for a generic app; the same fallback for a reviewed one.
+    return { offer, entries: new Map(), code: "mini_apps_skill_bundle_invalid", ...(error instanceof Error && error.message === "budget" ? { budget: true } : {}) };
+  }
   return { offer, entries };
 }
 export function reconcileMiniApps(value: unknown, home = hermesHome(), source = resolve(import.meta.dir, "../skills"), verify = false, delivery: SkillDelivery = {}) {
-  const projection = validateProjection(value);
   const served = parseSkillDelivery(delivery);
+  const target = join(home, "mini-apps.json");
+  const credential = join(home, "village-bridge.json");
+  regular(target);
+  // Per app: a refused generic app fails only itself (REFUSAL_CODES); everything else here is as before.
+  const { projection, staged, refused, intentEmpty } = resolveApps(value, served);
   const servedIds: string[] = [];
   const fallback: { id: string; code: FallbackCode }[] = [];
   const bytes = JSON.stringify(projection);
-  const target = join(home, "mini-apps.json");
-  const credential = join(home, "village-bridge.json");
-  if (projection.apps.length === 0) regular(credential);
-  regular(target);
+  // The bridge credential goes only when the cp desires no app at all, never because this box refused one.
+  if (intentEmpty) regular(credential);
   const files: { path: string; sha256: string }[] = [];
   // Preflight every exact owned path, never recursively remove a resident's files.
   for (const app of REVIEWED_MINI_APPS) regular(join(home, "skills", app.id, "SKILL.md"));
+  for (const { app, generic } of staged) if (generic) regular(join(home, "skills", app.id, "SKILL.md"));
   // No desired apps and no mini-app state on the box (every non-cohort box): write nothing at all.
   const stateless = () => !exists(target) && !exists(credential) &&
     REVIEWED_MINI_APPS.every(app => !owned(app.id) || !exists(join(home, "skills", app.id, "SKILL.md")));
-  const desired = projection.apps.map(app => {
+  const desired = staged.map(({ app, generic }) => {
     const entry = served.entries.get(app.id);
     let content: Buffer;
+    // A generic app: the offered bytes resolveApps checked against the offer's sha256 (no checkout copy, no fallback code).
+    if (generic) {
+      servedIds.push(app.id);
+      files.push({ path: `skills/${app.id}/SKILL.md`, sha256: hash(generic) });
+      return { app, content: generic };
+    }
     // review-b S1: a baseline skill this installer ships to every box (SHIPPED_SKILLS: gold-stars) is never
     // replaced by served bytes, valid or not; any entry for one is refused with its own code.
     if (entry?.bytes && owned(app.id)) {
@@ -179,13 +264,13 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   });
   if (verify) {
     if (!(projection.apps.length === 0 && stateless()) && (!exists(target) || readFileSync(target, "utf8") !== bytes)) throw new Error("mini_apps_projection_mismatch");
-    if (projection.apps.length === 0 && exists(credential)) throw new Error("mini_apps_credential_removal_pending");
+    if (intentEmpty && exists(credential)) throw new Error("mini_apps_credential_removal_pending");
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
   } else if (!(projection.apps.length === 0 && stateless())) {
     // Fail closed even if copying/removal is interrupted. Publish desired authority last.
     atomic(target, JSON.stringify({ version: 1, apps: [] }));
-    if (projection.apps.length === 0 && exists(credential)) unlinkSync(credential);
+    if (intentEmpty && exists(credential)) unlinkSync(credential);
     for (const app of REVIEWED_MINI_APPS) {
       const path = join(home, "skills", app.id, "SKILL.md");
       if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(path)) unlinkSync(path);
@@ -195,7 +280,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   }
   // `skills` also marks an installer that can take served bytes (an older one never writes it).
   return { version: 1, projectionSha256: hash(bytes), files, apps: projection.apps.map(({ id, version }) => ({ id, version })), staged: true,
-    skills: { offer: served.offer, served: servedIds, fallback } };
+    skills: { offer: served.offer, served: servedIds, fallback }, ...(refused.length ? { refused } : {}) };
 }
 if (import.meta.main) {
   try {
