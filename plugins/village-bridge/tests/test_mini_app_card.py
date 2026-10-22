@@ -41,10 +41,14 @@ TASK = 'propose:' + 'c' * 32
 PREPARE, CONFIRM = 'acme.rental.prepare', 'acme.rental.confirm'
 CLASS = 'marketplace.app.action.acme.rental.confirm'
 KEY = CLASS + ':' + DRAFT
-# The cp's projection entry for a generic app with a card (cp#352): the two op names under `approval`.
+# The cp's projection entry for a generic app with a card (cp#352 commit 4; CARD-COMMON amendment 14:00Z): the two op
+# names and the card declaration under `approval`.
+FIELDS = {key: DECL[key] for key in ('item', 'total', 'when', 'shared')}
 APP = {'id': 'acme', 'version': '1.0.0', 'skills': ['acme'], 'operations': ['mini-app.read', PREPARE, CONFIRM],
-       'approval': {'prepare': PREPARE, 'card': CONFIRM}}
-CONFIRM_RECORD = {'name': CONFIRM, 'class': 'needs-card', 'prepare': PREPARE}
+       'approval': {'prepare': PREPARE, 'card': CONFIRM, 'fields': FIELDS, 'bind': DECL['bind']}}
+# The same entry WITHOUT the declaration (cp#352 before commit 4): accepted, but its card op is undeclared.
+APP_UNDECLARED = {**APP, 'approval': {'prepare': PREPARE, 'card': CONFIRM}}
+CONFIRM_RECORD = {'name': CONFIRM, 'class': 'needs-card', 'prepare': PREPARE, 'card': DECL}
 NAME = mc.APP_NAME_FALLBACK  # the projection carries no display name
 RECEIPT = {'id': 'rental-77', 'summary': 'Kayak k-2 booked, 2 hours'}
 PLATFORM = {'appId': 'acme', 'operation': CONFIRM, 'draftId': DRAFT}
@@ -146,13 +150,24 @@ class ProjectionTest(unittest.TestCase):
         self.assertTrue(mini.installed(self.home, 'acme', CONFIRM))
         self.assertTrue(mini.installed(self.home, 'gold-stars', 'gold-stars.send'))
 
+    def test_without_the_declaration_the_card_op_carries_no_card(self):
+        write_projection(self.home, APP_UNDECLARED)
+        self.assertEqual(mc.projected_operation(self.home, CONFIRM)[2], {'name': CONFIRM, 'class': 'needs-card', 'prepare': PREPARE})
+        self.assertNotIn('card', mc.card_operation_for(APP_UNDECLARED, PREPARE))
+        with self.assertRaisesRegex(ValueError, '^approval_card_undeclared$'):
+            mc.checked_payload(CARD, hashed(CARD), {**PLATFORM, **BASE['preview']}, 'acme', CONFIRM, DRAFT, None, REQUEST)
+
     def test_installed_accepts_the_approval_key_only_in_its_exact_shape(self):
-        good = [APP, {**APP, 'operations': [PREPARE, CONFIRM]},
+        good = [APP, APP_UNDECLARED, {**APP, 'operations': [PREPARE, CONFIRM]},
                 {**APP, 'operations': ['mini-app.read', 'mini-app.context.read', 'mini-app.context.write', PREPARE, CONFIRM]}]
         bad = [{**APP, 'operations': ['mini-app.read', CONFIRM, PREPARE]},  # order
                {**APP, 'operations': ['mini-app.read', PREPARE]},  # the card op missing
                {**APP, 'operations': ['mini-app.read', PREPARE, CONFIRM, 'acme.rental.status']},
                {**APP, 'approval': {'prepare': PREPARE, 'card': CONFIRM, 'extra': 'x'}},
+               {**APP, 'approval': {**APP['approval'], 'fields': {**FIELDS, 'note': 'x'}}},
+               {**APP, 'approval': {**APP['approval'], 'fields': {**FIELDS, 'item': 3}}},
+               {**APP, 'approval': {**APP['approval'], 'bind': [['a']]}},
+               {**APP, 'approval': {k: v for k, v in APP['approval'].items() if k != 'bind'}},
                {**APP, 'approval': {'prepare': PREPARE}},
                {**APP, 'approval': {'prepare': CONFIRM, 'card': CONFIRM}, 'operations': ['mini-app.read', CONFIRM, CONFIRM]},
                {**APP, 'approval': {'prepare': 'other.rental.prepare', 'card': CONFIRM}, 'operations': ['mini-app.read', 'other.rental.prepare', CONFIRM]},
@@ -329,6 +344,36 @@ class DispatchTest(Base):
         self.assertEqual(self.call({'operation': PREPARE, 'arguments': dict(REQUEST)})['error'], 'approval_preview_unavailable')
         self.assertFalse((self.draft_dir() / (DRAFT + '.json')).exists())
 
+    def test_prepare_refuses_strings_the_box_does_not_re_derive(self):
+        # SECURITY REVIEW finding 1 (fail-open at df03364b): the box re-derives the four strings from the preview with the
+        # entry's declaration and refuses any difference, as For Kicks does; the cp's check is the second, not the only.
+        for card, preview in (({**CARD, 'total': '₹1, pay at the jetty'}, None),  # the app's strings differ from its preview
+                              (None, {**BASE['preview'], 'request': {**REQUEST, 'kayakId': 'k-9'}}),  # bound to another request
+                              (None, {**BASE['preview'], 'note': 'unshown'})):  # a key neither shown nor bound
+            with self.subTest(card=card, preview=preview):
+                response = self.prepare(card=card, preview=preview)
+                self.assertEqual(response['error'], 'approval_card_invalid')
+                self.assertFalse((self.draft_dir() / (DRAFT + '.json')).exists())
+
+    def test_prepare_refuses_every_for_kicks_per_value_rule_on_each_string(self):
+        # SECURITY REVIEW finding 2: blank, fake line marks and the fit rule, on each of the four strings.
+        for key in ('item', 'total', 'when', 'shared'):
+            for value in ('   ', '', 'x \u21b5 y', 'x \uffe9 y', 'x \u2424 y', 'x \u23ce y', 'x\ny', 'x' * 279):
+                with self.subTest(key=key, value=value):
+                    response = self.prepare(card={**CARD, key: value})
+                    self.assertEqual(response['error'], 'approval_card_not_minimal')
+                    self.assertFalse((self.draft_dir() / (DRAFT + '.json')).exists())
+
+    def test_without_a_declaration_nothing_is_prepared_or_proposed(self):
+        self.prepare()
+        self.install(APP_UNDECLARED)
+        self.assertEqual(self.confirm(), {'error': 'approval_card_undeclared', 'instruction': mc.ACTION_UNDECLARED})
+        self.daemon.propose.assert_not_called()
+        self.transport.reset_mock()
+        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
+        self.assertEqual(self.call({'operation': PREPARE, 'arguments': dict(REQUEST)})['error'], 'approval_card_undeclared')
+        self.transport.assert_not_called()
+
     def test_with_a_declaration_the_box_re_derives_the_strings(self):
         preview = {**PLATFORM, **BASE['preview']}
         held = mc.checked_payload(CARD, hashed(CARD), preview, 'acme', CONFIRM, DRAFT, DECL, REQUEST)
@@ -469,6 +514,8 @@ class CacheTest(Base):
                              ('preview', {**record['preview'], 'operation': 'acme.other.confirm'}),
                              ('preview', {k: v for k, v in record['preview'].items() if k != 'draftId'}),
                              ('payload', {**CARD, 'item': '1 × Kayak\n2 × Paddle'}),
+                             ('preview', {**record['preview'], 'sharedWith': 'Your display name: Other'}),
+                             ('request', {**REQUEST, 'kayakId': 'k-9'}),
                              ('operation', 'acme.other.confirm'), ('prepare', 'acme.other.prepare'), ('appId', 'other')):
             with self.subTest(field=field):
                 path.write_text(json.dumps({**record, field: value}))
@@ -645,6 +692,14 @@ class OnGrantTest(Base):
         self.daemon.state = 'granted'
         self.transport.side_effect = lambda config, payload, **kw: {'error': 'mini_app_draft_rejected', 'status': 409}
         self.assertEqual(self.run_pass(), {'failed:refused_409:line_sent': 1})
+
+    def test_a_declaration_withdrawn_after_the_card_runs_nothing(self):
+        self.ask()
+        self.daemon.state = 'granted'
+        self.install(APP_UNDECLARED)
+        self.assertEqual(self.run_pass(), {'not_installed': 1})
+        self.daemon.wait.assert_not_called(); self.daemon.start.assert_not_called()
+        self.assertEqual(self.confirms(), [])
 
     def test_not_projected_waits_then_closes(self):
         self.ask()

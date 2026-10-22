@@ -15,12 +15,14 @@ tests/vectors/mini-app-card.{md,json} (byte-identical copies in the app and the 
 - The draft cache: `$HERMES_HOME/mini-apps/drafts/<appId>/<draftId>.json`, 0600, O_EXCL, owner + origin + hash, no links;
   the app's preview (carrying the platform keys appId, operation, draftId) is kept and sent BESIDE the payload on
   confirm, as For Kicks' flat card does.
-- How the box learns the card op: the cp's projection entry for a GENERIC app carries `approval: {prepare, card}` (the
-  two op names; `_mini_apps.projection` checks it). Absent = no card: a confirm-shaped call is refused
-  `approval_card_undeclared` and nothing is proposed. The entry carries no declaration (the four paths + bind), so the
-  box cannot re-derive the strings from the preview: it checks the payload's fit, the summary budget, the preview's
-  platform keys and the hash; the cp re-derives the strings from the preview (cardFields) before anything runs.
-  `checked_payload` re-derives too whenever a declaration is handed to it.
+- How the box learns the card op and its card: the cp's projection entry for a GENERIC app carries `approval: {prepare,
+  card, fields: {item, total, when, shared}, bind}` (cp#352; `_mini_apps.projection` checks its shape). The box
+  re-derives the four strings from the app's preview with that declaration and refuses any difference
+  (`approval_card_invalid`), exactly as For Kicks does; the cp's re-derivation at request() is the second check, never
+  the only one. No declaration (or no `approval`): `approval_card_undeclared`, never proposed (fail closed).
+- Every For Kicks per-value rule applies to EACH of the four strings (imported): not empty or spaces only, no fake line
+  mark (`card_name_fakes_line`), `card_value_fits` (<= 278 code points, refused characters, <= 2 combining marks), no
+  newline (CARD-COMMON amendment 14:00Z).
 
 For Kicks' module (`_forkicks.py`, `_forkicks_grant.py`) is not changed by this train.
 """
@@ -34,7 +36,8 @@ import stat
 import unicodedata
 from pathlib import Path
 
-from ._forkicks import CARD_VALUE_MAX, SUMMARY_HTML_MAX_BYTES, SUMMARY_MAX_BYTES, canonical, card_value_fits
+from ._forkicks import (CARD_VALUE_MAX, SUMMARY_HTML_MAX_BYTES, SUMMARY_MAX_BYTES, canonical, card_name_fakes_line,
+                        card_value_fits)
 from ._mini_apps import approval_modules, projection
 
 PARENT_CLASS = "marketplace.app.action"
@@ -193,9 +196,16 @@ def card_fields(declaration, preview, request=None):
             sent = _resolve(request, request_path) if isinstance(request, dict) else _MISSING
             if bound_value is _MISSING or sent is _MISSING or canonical(sent) != canonical(bound_value):
                 raise ValueError("approval_card_invalid")
-    if not all(card_value_fits(fields[key]) for key in SHOWN):
-        raise ValueError("approval_card_not_minimal")  # no line break in any of the four: no row carries lines
+    if not all(value_fits(fields[key]) for key in SHOWN):
+        raise ValueError("approval_card_not_minimal")
     return fields
+
+
+def value_fits(value):
+    """For Kicks' per-value rules, for each of the four strings: drawn whole and unmarked by core's minimal card
+    (`card_value_fits`, with no line break: no row carries lines), not blank, and no character that draws like core's
+    line mark after NFKC (`card_name_fakes_line`)."""
+    return isinstance(value, str) and card_value_fits(value) and bool(value.strip(" ")) and not card_name_fakes_line(value)
 
 
 def card_summary(fields):
@@ -225,20 +235,22 @@ def fits(payload):
     """The four-string payload, each drawn whole and unmarked on the minimal card, within the summary budget."""
     if not isinstance(payload, dict) or set(payload) != CARD_KEYS or not all(isinstance(payload[key], str) for key in SHOWN):
         raise ValueError("approval_preview_unavailable")
-    if not all(card_value_fits(payload[key]) for key in SHOWN):
+    if not all(value_fits(payload[key]) for key in SHOWN):
         raise ValueError("approval_card_not_minimal")
     return card_summary(payload)
 
 
-def checked_payload(payload, expected_hash, preview, app_id, operation, draft_id, declaration=None, request=None):
+def checked_payload(payload, expected_hash, preview, app_id, operation, draft_id, declaration, request=None):
     """The app's four-string payload, checked; the canonical bytes the daemon holds. The preview is the app's own, with
-    the platform keys naming this app, needs-card op and draft. With a declaration the strings are re-derived from the
-    preview and refused on any difference (the projection carries none today: the cp re-derives them)."""
+    the platform keys naming this app, needs-card op and draft; the strings are re-derived from it with the projection's
+    declaration and refused on any difference. No declaration: `approval_card_undeclared` (fail closed)."""
+    if declaration is None:
+        raise ValueError("approval_card_undeclared")
     fits(payload)
     if (not isinstance(preview, dict) or preview.get("appId") != app_id or preview.get("operation") != operation
             or preview.get("draftId") != draft_id or len(canonical(preview).encode("utf-8")) > PREVIEW_MAX_BYTES):
         raise ValueError("approval_preview_unavailable")
-    if declaration is not None and card_fields(declaration, preview, request) != payload:
+    if card_fields(declaration, preview, request) != payload:
         raise ValueError("approval_card_invalid")
     held = canonical(payload)
     if (not isinstance(expected_hash, str) or not HASH.fullmatch(expected_hash) or len(held.encode("utf-8")) > MAX_PAYLOAD_BYTES
@@ -267,7 +279,10 @@ def operation_record(app, operation):
     if operation == approval.get("prepare"):
         return {"name": operation, "class": "prepare"}
     if operation == approval.get("card"):
-        return {"name": operation, "class": "needs-card", "prepare": approval["prepare"]}
+        record = {"name": operation, "class": "needs-card", "prepare": approval["prepare"]}
+        if isinstance(approval.get("fields"), dict):  # the declaration (cp#352 commit 4); absent = undeclared
+            record["card"] = {**approval["fields"], "bind": approval.get("bind")}
+        return record
     return None
 
 

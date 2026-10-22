@@ -114,18 +114,28 @@ ORDER_ALREADY_TOLD = ("This order is placed and the owner was already told so in
                       "only give receipt details they ask for or still need, such as a payment link.")
 
 
-# CARD-OV (Phase 1 item 6): a GENERIC app's entry may carry `approval: {prepare, card}`, the names of its one prepare
-# op and its one needs-card op (the cp serves it only for an app whose manifest declares `approval.card`; absent for
-# every reviewed app and every app without a card, so every projection today validates byte for byte as before).
-# Such an entry lists exactly an accepted generic operations list (or none) followed by those two ops, in that order.
+# CARD-OV (Phase 1 item 6; CARD-COMMON amendment 14:00Z): a GENERIC app's entry may carry `approval: {prepare, card,
+# fields: {item, total, when, shared}, bind: [[requestPath, previewPath], ...]}`: its one prepare op, its one needs-card
+# op and that op's card declaration (cp#352). Absent for every reviewed app and every app without a card, so every
+# projection today validates byte for byte as before. `{prepare, card}` without the declaration is accepted too, and
+# the box then refuses the card op (`approval_card_undeclared`, never proposed). Such an entry lists exactly an accepted
+# generic operations list (or none) followed by those two ops, in that order. The paths are checked when used.
 CARD_ENTRY_KEYS = frozenset({"prepare", "card"})
+CARD_DECLARED_KEYS = frozenset({"prepare", "card", "fields", "bind"})
+CARD_FIELD_KEYS = frozenset({"item", "total", "when", "shared"})
 CARD_OPERATION = re.compile(r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,3}")
 
 
 def _card_entry_ok(app) -> bool:
     approval, name = app["approval"], app["id"]
-    if not isinstance(approval, dict) or set(approval) != CARD_ENTRY_KEYS:
+    if not isinstance(approval, dict) or set(approval) not in (CARD_ENTRY_KEYS, CARD_DECLARED_KEYS):
         return False
+    if "fields" in approval:
+        fields, bind = approval["fields"], approval["bind"]
+        if (not isinstance(fields, dict) or set(fields) != CARD_FIELD_KEYS or not all(isinstance(v, str) and 0 < len(v) <= 200 for v in fields.values())
+                or not isinstance(bind, list) or len(bind) > 32
+                or not all(isinstance(pair, list) and len(pair) == 2 and all(isinstance(p, str) and 0 < len(p) <= 200 for p in pair) for pair in bind)):
+            return False
     prepare, card = approval["prepare"], approval["card"]
     if (not all(isinstance(op, str) and CARD_OPERATION.fullmatch(op) and op.split(".", 1)[0] == name for op in (prepare, card))
             or prepare == card):

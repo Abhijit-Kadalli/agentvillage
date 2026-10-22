@@ -1354,7 +1354,7 @@ def _generic_card_op(home, context, config, generic, args):
         raise _InvalidArguments(op, accepts)
     if record["class"] == "prepare":
         card_op = _mini_app_card.card_operation_for(app, op)
-        if card_op is None:
+        if card_op is None or card_op.get("card") is None:  # no declared card: never prepare a draft the box cannot check
             return json.dumps({"error": "approval_card_undeclared", "instruction": _mini_app_card.ACTION_UNDECLARED})
         try:
             gate_verified()
@@ -1375,7 +1375,9 @@ def _generic_card_op(home, context, config, generic, args):
     # needs-card
     if set(arguments) != {"draftId"} or not isinstance(arguments["draftId"], str) or not _mini_app_card.DRAFT_ID.fullmatch(arguments["draftId"]):
         raise _InvalidArguments(op, accepts)
-    declaration = record.get("card")  # None: the projection carries no declaration (the cp re-derives the strings)
+    declaration = record.get("card")
+    if declaration is None:  # no declaration in the entry: never propose (CARD-COMMON amendment 14:00Z)
+        return json.dumps({"error": "approval_card_undeclared", "instruction": _mini_app_card.ACTION_UNDECLARED})
     draft_id = arguments["draftId"]
     try:
         saved = _mini_app_card.load_preview(home, app_id, draft_id, config, record)

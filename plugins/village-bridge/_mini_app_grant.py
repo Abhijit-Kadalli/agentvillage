@@ -269,7 +269,8 @@ def advance(home, config, transport, lookup, app_id, draft_id, now=None) -> str:
         return "marker_invalid"
     owner = config.get("ownerTelegramId")
     projected = lookup(home, operation)
-    entry = projected[2] if projected is not None and projected[0] == app_id and projected[2].get("class") == "needs-card" else None
+    entry = (projected[2] if projected is not None and projected[0] == app_id and projected[2].get("class") == "needs-card"
+             and projected[2].get("card") is not None else None)  # no declaration: nothing may run (fail closed)
     name = card.app_name(projected[1]) if entry is not None else card.APP_NAME_FALLBACK
     done = placed(home, app_id, draft_id)
     if done is not None:
