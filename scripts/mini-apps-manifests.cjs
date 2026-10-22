@@ -2,7 +2,7 @@
  * Mini-apps manifest v2: the JSON Schema and the ONE validator (MINIAPPS-PLATFORM-v2-design.md §1.1, §1.3,
  * §8 Phase 0 item 1). One JSON document per app is its whole definition; this module decides whether a
  * document is one, and derives from it the v1 catalog entry the cp serves today (byte for byte), so the
- * five reviewed constants can be served from five manifests.
+ * six reviewed constants can be served from six manifests.
  *
  * This file is byte-identical in three repos (each pins its sha256 twice: a pins file and its test):
  *   agentvillage-controlplane  control-plane/src/mini-apps-manifests.js
@@ -17,7 +17,7 @@
  * Phase 0 (dark): nothing reads a manifest at runtime unless the cp's MINI_APPS_MANIFESTS=1 is set. The
  * `legacy` block carries what today's exact-equality v1 entry needs and v2 does not model (provenance,
  * the per-box person entry, the op prefixes that predate "first segment = id"); it retires with the
- * signed projection (design §1.2, §2.3, Phase 2). Only the five first-party ids may carry it, and only
+ * signed projection (design §1.2, §2.3, Phase 2). Only the six first-party ids may carry it, and only
  * as FIRST_PARTY below grants: a manifest's own content never widens what it may claim.
  */
 'use strict';
@@ -30,7 +30,9 @@ const MAX_ERRORS = 32;
 const APP_ID = '^[a-z0-9][a-z0-9-]{0,39}$';
 // Two to four dot-separated segments; `_` is allowed because today's names use it (zzz.list_rooms).
 const OPERATION_NAME = '^[a-z0-9][a-z0-9_-]*(\\.[a-z0-9][a-z0-9_-]*){1,3}$';
-const SEMVER = '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(-[0-9A-Za-z][0-9A-Za-z.-]{0,31})?$';
+// Digits only, no pre-release (RA36 M2, lead L19834 (4)): the box's generic-entry rule is MAJOR.MINOR.PATCH, so a
+// pre-release version the cp let through was refused on the box; the cp now fails it where the author sees it.
+const SEMVER = '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$';
 // The same UUID forms as the cp's CREDIT_UUID and the app's z.uuid(): RFC version/variant, nil and max.
 const UUID = '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|[fF]{8}-[fF]{4}-[fF]{4}-[fF]{4}-[fF]{12})$';
 const HTTPS_URL = '^https://[^\\s]{1,2040}$';
@@ -39,9 +41,12 @@ const TRIMMED = '^\\S(.*\\S)?$';
 const RELAY_OPERATION = 'mini-app.read';
 const CONTEXT_OPERATIONS = Object.freeze(['mini-app.context.read', 'mini-app.context.write']);
 const PROVENANCE = 'first-party-reviewed-external';
-// The five first-party apps, pinned HERE, never by a manifest field (security review "authorization-
+// The six first-party apps, pinned HERE, never by a manifest field (security review "authorization-
 // reserved-namespace"): what only each may carry. `internal`: service.kind "internal" (core handlers in
-// app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `prefixes`: the op
+// app code, design §2.1: rolodex.*, skylight.*, gold-stars.* "are first-party"); `none`: service.kind
+// "none" (no service at all: a context-only app, whose page in the app writes the resident's own context
+// namespace; served as Dizko's `mini-app.read` with no mcp block; lead ruling CLAIMS L16434, Mosaic alone,
+// cp#334's MOSAIC and MOSAIC_CONTEXT); `prefixes`: the op
 // namespaces it owns beyond its id; `provenance`, `personOnly`: its exact Phase 0 legacy block;
 // `secretRef`: the one app-server env var outside MINI_APP_<ID>_ it may name (the token the app sends
 // today, forkicks-client.ts); `staff`: it may say `"staff": true` (fold 2: kept installed for every agent,
@@ -54,6 +59,7 @@ const FIRST_PARTY = deepFreeze({
   zzzbot: { provenance: PROVENANCE, prefixes: ['zzz'] },
   slopfolio: { provenance: PROVENANCE },
   forkicks: { secretRef: 'FORKICKS_AV_TOKEN' },
+  mosaic: { none: true },
 });
 // Ids no manifest may take: the platform's own op namespaces and the overlay's baseline (non-app) skill
 // names (an app's skill is named for its id, so such an id would shadow a shipped skill on the box), and
@@ -65,6 +71,16 @@ const RESERVED_ID_FAMILY = /^(?:av|agentvillage|agent-village|mini-app|mini-apps
 const reservedId = id => RESERVED_IDS.includes(id) || RESERVED_ID_FAMILY.test(id) ||
   Object.entries(FIRST_PARTY).some(([owner, grant]) => owner !== id && (grant.prefixes || []).includes(id));
 const DEFAULTS = Object.freeze({ maxRequestBytes: 4096, maxResponseBytes: 262144, timeoutMs: 25000, framing: 'data' });
+// The generic approval card (Phase 1 item 6, CARD-COMMON contract 1): a needs-card op's `approval.card` names
+// the four strings of the minimal card by dotted path under the prepare op's preview (and `bind`, the request
+// to preview equalities the app enforces at prepare). A path is 1..8 segments; a segment is an identifier
+// (no array index: a card string is one value, never a list). The preview's platform keys (CARD_PLATFORM_KEYS:
+// the app, the needs-card op and the draft, bound by the approval key itself) are neither shown nor bound.
+const CARD_FIELDS = Object.freeze(['item', 'total', 'when', 'shared']);
+const CARD_PATH = '^[A-Za-z_][A-Za-z0-9_]{0,63}(\\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,7}$';
+// One segment of a card path (CARD_PATH's segment rule): a card prepare op's input property name must be one.
+const CARD_SEGMENT = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const CARD_PLATFORM_KEYS = Object.freeze(['appId', 'draftId', 'operation']);
 
 const text = (max, extra = {}) => ({ type: 'string', minLength: 1, maxLength: max, ...extra });
 const SCHEMA = {
@@ -109,7 +125,7 @@ const SCHEMA = {
     service: {
       type: 'object', required: ['kind'], additionalProperties: false,
       properties: {
-        kind: { enum: ['mcp', 'https-json', 'internal'] },
+        kind: { enum: ['mcp', 'https-json', 'internal', 'none'] },
         baseUrl: { type: 'string', pattern: HTTPS_URL },
         auth: {
           type: 'object', required: ['mode'], additionalProperties: false,
@@ -128,7 +144,10 @@ const SCHEMA = {
         },
       },
     },
-    operations: { type: 'array', minItems: 1, maxItems: 32, items: { $ref: '#/$defs/operation' } },
+    operations: {
+      description: 'At least one, except for service kind none (a context-only app), which has none: the validator checks it, by kind.',
+      type: 'array', maxItems: 32, items: { $ref: '#/$defs/operation' },
+    },
     data: {
       type: 'object', additionalProperties: false,
       properties: {
@@ -214,11 +233,20 @@ const SCHEMA = {
             prepare: { type: 'string', maxLength: 100, pattern: OPERATION_NAME },
             summary: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 500 } },
             summaryMaxBytes: { type: 'integer', minimum: 1, maximum: 3000 },
+            card: {
+              description: 'The generic approval card: four dotted paths under the prepare op preview, each naming a string, and bind, the (request path, preview path) equalities the app enforces at prepare. Every other preview key must be bound.',
+              type: 'object', required: [...CARD_FIELDS, 'bind'], additionalProperties: false,
+              properties: {
+                ...Object.fromEntries(CARD_FIELDS.map(field => [field, { $ref: '#/$defs/cardPath' }])),
+                bind: { type: 'array', maxItems: 32, items: { type: 'array', minItems: 2, maxItems: 2, items: { $ref: '#/$defs/cardPath' } } },
+              },
+            },
           },
         },
       },
     },
     jsonPath: { type: 'string', maxLength: 200, pattern: '^\\$(\\.[A-Za-z_][A-Za-z0-9_]{0,63}){1,8}$' },
+    cardPath: { type: 'string', maxLength: 200, pattern: CARD_PATH },
   },
 };
 
@@ -474,6 +502,9 @@ function semantics(m, compileInput) {
   if (service.kind === 'internal') {
     if (own(service, 'baseUrl')) fail('/service/baseUrl', 'internal_has_endpoint');
     if (auth) fail('/service/auth', 'internal_has_auth');
+  } else if (service.kind === 'none') {
+    if (own(service, 'baseUrl')) fail('/service/baseUrl', 'none_has_endpoint');
+    if (auth) fail('/service/auth', 'none_has_auth');
   } else if (!auth) fail('/service/auth', 'auth_required');
   if (auth) {
     if ((auth.mode === 'oauth') !== own(auth, 'oauth')) fail('/service/auth', 'oauth_mismatch');
@@ -494,6 +525,14 @@ function semantics(m, compileInput) {
     if (!auth.secretRef.startsWith(prefix) || !/^[A-Z0-9]+$/.test(auth.secretRef.slice(prefix.length))) fail('/service/auth/secretRef', 'not_granted');
   }
   if (service.kind === 'internal' && !grant?.internal) fail('/service/kind', 'internal_first_party_only');
+  // service.kind "none" is the pinned grant's alone (Mosaic): no ops of its own (the cp serves it the generic
+  // `mini-app.read`, and the context ops per box) and a data.context block, the one thing it has. Every
+  // other kind keeps at least one op (the schema's minItems before kind "none").
+  if (service.kind === 'none') {
+    if (!grant?.none) fail('/service/kind', 'none_first_party_only');
+    if (m.operations.length) fail('/operations', 'none_has_operations');
+    if (!m.data?.context) fail('/data/context', 'none_without_context');
+  } else if (!m.operations.length) fail('/operations', 'operations_required');
   // `staff: true` installs the app on every agent for good: only the pinned grant may say it. `listed: false`
   // only hides an app, so any app may say it; `listed: true` is the default and widens nothing.
   if (m.staff === true && !grant?.staff) fail('/staff', 'staff_reserved');
@@ -540,6 +579,7 @@ function semantics(m, compileInput) {
     if (!op.approval) return;
     const prepare = byName.get(op.approval.prepare);
     if (!prepare || prepare.class !== 'prepare') fail(`/operations/${i}/approval/prepare`, 'unknown_prepare');
+    if (op.approval.card) cardRefusals(op.approval.card, prepare, `/operations/${i}/approval/card`, fail);
   });
   if (m.visibility === 'everyone' && m.data?.context?.ceiling === 'public') fail('/data/context/ceiling', 'lane_ceiling');
   const skill = m.skills[0];
@@ -555,6 +595,67 @@ function semantics(m, compileInput) {
     if (personOnly.permissions.length >= m.permissions.length) fail('/legacy/personOnly/permissions', 'empty_base');
   }
   return errors;
+}
+
+/**
+ * The static checks of a needs-card op's `approval.card` beyond the schema (CARD-COMMON contract 1). The preview's
+ * own keys are not declared anywhere static (the prepare op's `returns` names only where the preview sits and its
+ * size), so "every preview key is shown or bound" is enforced where the preview is seen, at request time (the cp's
+ * mini-apps-approval.js cardFields over the preview the app sends); here:
+ *   'card_prepare_returns' the prepare op declares no `returns` (the preview's byte budget, previewMaxBytes);
+ *   'card_path_reused'     two of the four paths are the same key, or one is inside another (a string has no keys):
+ *                          the four rows are four different values;
+ *   'card_path_reserved'   a shown or bound preview path in a platform key (appId, draftId, operation: bound by the
+ *                          approval key, never by the app);
+ *   'card_bind_reused'     a preview path bound twice;
+ * and RA42 S3 (option 1, the validator): the card guarantees preview <-> card, so every argument the app acts on must
+ * be bound into the preview. The prepare op declares its arguments, and each one is the root of a bound request path:
+ *   'card_prepare_input_missing'        the prepare op declares no `input` object schema with at least one property;
+ *   'card_prepare_input_open'           that `input` does not say `additionalProperties: false`;
+ *   'card_prepare_input_unbound:<name> (bind the whole property)'
+ *                                       a top-level input property that is no `bind` request path EXACTLY (security
+ *                                       review fold 2: binding only a sub-path, `<name>.<...>`, leaves the property's
+ *                                       other keys, a sibling amount, unbound; the whole property must be bound);
+ *   'card_prepare_input_name:<name>'    (security review fold 3) a top-level input property name that is no single
+ *                                       path segment (CARD_SEGMENT: no `.`, no `[`), so it cannot be compared with a
+ *                                       bind request path unambiguously;
+ *   'card_prepare_input_keyword:<kw>'   (security review fold) a top-level keyword of that `input` outside the closed
+ *                                       allowlist CARD_INPUT_KEYWORDS (type, properties, required, additionalProperties,
+ *                                       description; no `title`): patternProperties, propertyNames,
+ *                                       unevaluatedProperties, dependentSchemas, allOf/anyOf/oneOf/not/if/then/else,
+ *                                       $ref, ... could admit top-level keys the bind check never sees.
+ * (Not expressible in the JSON Schema, which cannot relate one op's input to another op's card: a static check here.)
+ */
+const CARD_INPUT_KEYWORDS = Object.freeze(['type', 'properties', 'required', 'additionalProperties', 'description']);
+function cardRefusals(card, prepare, at, fail) {
+  if (prepare && prepare.class === 'prepare' && !prepare.returns) fail(at, 'card_prepare_returns');
+  if (prepare && prepare.class === 'prepare') {
+    const input = prepare.input;
+    const properties = input && typeof input === 'object' && !Array.isArray(input) && input.type === 'object' &&
+      input.properties && typeof input.properties === 'object' && !Array.isArray(input.properties) ? Object.keys(input.properties) : [];
+    if (!properties.length) fail(at, 'card_prepare_input_missing');
+    else {
+      for (const keyword of Object.keys(input)) if (!CARD_INPUT_KEYWORDS.includes(keyword)) fail(at, `card_prepare_input_keyword:${keyword}`);
+      if (input.additionalProperties !== false) fail(at, 'card_prepare_input_open');
+      const whole = new Set(card.bind.map(([request]) => request));
+      for (const name of properties) {
+        if (!CARD_SEGMENT.test(name)) fail(at, `card_prepare_input_name:${name}`);
+        else if (!whole.has(name)) fail(`${at}/bind`, `card_prepare_input_unbound:${name} (bind the whole property)`);
+      }
+    }
+  }
+  const inside = (a, b) => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+  const reserved = path => CARD_PLATFORM_KEYS.includes(path.split('.')[0]);
+  CARD_FIELDS.forEach((field, i) => {
+    if (CARD_FIELDS.slice(0, i).some(other => inside(card[field], card[other]))) fail(`${at}/${field}`, 'card_path_reused');
+    if (reserved(card[field])) fail(`${at}/${field}`, 'card_path_reserved');
+  });
+  const bound = [];
+  card.bind.forEach(([, path], i) => {
+    if (reserved(path)) fail(`${at}/bind/${i}`, 'card_path_reserved');
+    if (bound.includes(path)) fail(`${at}/bind/${i}`, 'card_bind_reused');
+    bound.push(path);
+  });
 }
 
 /**
@@ -610,7 +711,10 @@ const v1Unrepresentable = reason => Object.assign(new Error(V1_CODE), { code: V1
  * `person`: the per-box person entry (legacy.personOnly kept); `context`: the per-box context entry (the
  * generic context ops after the app's own, for an app that declares data.context). A public MCP app
  * (service mcp, auth none) is served as today's generic relay: `mini-app.read` plus an `mcp` block of its
- * ops' tools; every op must be a `read`, or it throws (the relay is a read on the box). A v2 `admins` app is served restricted (the narrower v1 audience: allowlisted tenants only).
+ * ops' tools; every op must be a `read`, or it throws (the relay is a read on the box). A context-only app
+ * (service none, FIRST_PARTY `none`: Mosaic) is served as `mini-app.read` and its data.context with no `mcp`
+ * block, as cp#334's MOSAIC and MOSAIC_CONTEXT; any other kind-none document throws (it never passed the
+ * validator). A v2 `admins` app is served restricted (the narrower v1 audience: allowlisted tenants only).
  * @returns {Record<string, any>}
  */
 function v1Entry(m, { person = false, context = false } = {}) {
@@ -619,6 +723,9 @@ function v1Entry(m, { person = false, context = false } = {}) {
   const keepOp = op => person || !personOnly || !personOnly.operations.includes(op.name);
   const keepPermission = p => person || !personOnly || !personOnly.permissions.includes(p.label);
   const relay = m.service.kind === 'mcp' && m.service.auth?.mode === 'none';
+  const contextOnly = m.service.kind === 'none';
+  if (contextOnly && (!(own(FIRST_PARTY, m.id) && FIRST_PARTY[m.id].none === true) || m.operations.length || !m.data?.context ||
+      own(m.service, 'baseUrl') || own(m.service, 'auth'))) throw v1Unrepresentable('none_not_context_only');
   const entry = { id: m.id, name: m.name, description: m.description, version: m.version, homepage: m.homepage };
   if (m.legacy?.provenance) entry.provenance = m.legacy.provenance;
   if (m.service.auth?.mode === 'oauth') entry.auth = 'oauth';
@@ -629,7 +736,7 @@ function v1Entry(m, { person = false, context = false } = {}) {
   entry.permissions = m.permissions.filter(keepPermission).map(p => ({ kind: p.kind, label: p.label, description: p.description }));
   entry.skills = m.skills.map(skill => skill.name);
   const ops = m.operations.filter(keepOp);
-  entry.operations = relay ? [RELAY_OPERATION] : ops.map(op => op.name);
+  entry.operations = relay || contextOnly ? [RELAY_OPERATION] : ops.map(op => op.name);
   if (context && m.data?.context) entry.operations.push(...CONTEXT_OPERATIONS);
   if (m.data?.context) entry.data = { context: { maxEntries: m.data.context.maxEntries } };
   if (relay) {
@@ -654,5 +761,5 @@ function deepFreeze(value) {
 module.exports = {
   MANIFEST_VERSION, CODE, V1_CODE, SCHEMA, INDEX_SCHEMA, RELAY_OPERATION, CONTEXT_OPERATIONS, DEFAULTS, FIRST_PARTY, RESERVED_IDS,
   checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze, endpointRefusal, ENDPOINT_FIELDS, textRefusal,
-  targetPathRefusal,
+  targetPathRefusal, CARD_FIELDS, CARD_PLATFORM_KEYS, CARD_PATH,
 };
