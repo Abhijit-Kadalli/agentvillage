@@ -96,6 +96,7 @@ class ManagedRunnerTest(unittest.TestCase):
                   patch.object(runner, "_job", return_value="abcdef123456"),
                   patch.object(runner, "_config", return_value={}),
                   patch.object(runner, "_approval_gate", return_value=object()),
+                  patch.object(runner, "_runner_turn", side_effect=lambda _home: self.accepted_turn()),
                   patch.object(runner, "_shim_allowed", return_value=True),
                   patch.object(runner, "_pending_post", return_value="Can we meet at three?"),
                   patch.object(runner, "_native", side_effect=lambda *args: native.append(args[-1]) or {})):
@@ -185,6 +186,7 @@ class ManagedRunnerTest(unittest.TestCase):
               patch.object(runner, "_job", return_value="abcdef123456"),
               patch.object(runner, "_config", return_value={}),
               patch.object(runner, "_approval_gate", return_value=object()),
+              patch.object(runner, "_runner_turn", side_effect=lambda _home: self.accepted_turn()),
               patch.object(runner, "_shim_allowed", return_value=True),
               patch.object(runner, "_native", side_effect=lambda *args: calls.append(args[-1]) or {})):
             runner.run(SAFE_TEMP_PARENT)
@@ -205,6 +207,11 @@ class ManagedRunnerTest(unittest.TestCase):
         self.assertEqual(result, {"kind": "zzz.thread", "posts": []})
         self.assertEqual(calls[0][0], {"operation": "zzz.read_thread", "arguments":
             {"thread": "thread_a", "after": "7", "limit": 1}})
+
+    @staticmethod
+    @contextmanager
+    def accepted_turn():
+        yield True
 
     def test_runner_failure_exposes_only_nonzero_status(self):
         with patch.object(runner, "run", side_effect=ValueError("private-pair-body")), \
@@ -266,9 +273,11 @@ class ManagedRunnerTest(unittest.TestCase):
             pair = {"roomId": "room_a", "requestId": "req_a", "consentEpoch": 1,
                     "status": "agent_messaging_enabled"}
             writes = []
+            transport_calls = []
             write_mode = ["ok"]
             def zzz_transport(_cfg, payload, **_kwargs):
                 op = payload["operation"]
+                transport_calls.append(op)
                 if op == "zzz.pairs":
                     return {"kind": "zzz.pairs", "pairs": [pair]}
                 if op == "zzz.changes":
@@ -334,6 +343,15 @@ class ManagedRunnerTest(unittest.TestCase):
             with managed.locked_state(home) as state:
                 self.assertEqual(state["replies"], 1)
                 self.assertIsNone(state["pending"])
+            # A second cron child while this turn holds its nonblocking lock
+            # reaches neither ZZZ nor the owner policy/model, even with a
+            # pending post in the same thread.
+            ready_again()
+            before_overlap = (len(transport_calls), len(requests), len(client.calls), len(writes))
+            with runner._runner_turn(home) as acquired:
+                self.assertTrue(acquired)
+                execute()
+            self.assertEqual((len(transport_calls), len(requests), len(client.calls), len(writes)), before_overlap)
             # A third reply is stopped before cursor polling or another model call.
             ready_again(replies=2)
             before = (len(client.calls), len(requests), len(writes))

@@ -16,6 +16,7 @@ if __name__ == "__main__" and not sys.flags.isolated:
         os._exit(0)
 
 import hashlib
+import fcntl
 import importlib.util
 import json
 import re
@@ -24,6 +25,7 @@ import stat
 import subprocess
 import uuid
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 from urllib.parse import urlsplit
@@ -302,12 +304,44 @@ def _reply(body: str, home: Path):
     return text
 
 
-def run(home: Path) -> None:
-    bridge, managed = _bridge(home)
-    job_id = _job(managed, home)
-    if not managed.participation_on(home) or not bridge.installed(home, "zzzbot", "zzz.list_rooms"):
-        return
-    gate = _approval_gate(home)
+@contextmanager
+def _runner_turn(home: Path):
+    """One whole pair turn per home, across polling, inference and native write.
+
+    The state lock protects individual mutations; it cannot prevent a stale
+    concurrent model result from answering a newer post in the same thread.
+    Keep this separate inode until the installer tears the state directory down.
+    """
+    folder = home / "zzzbot"
+    if any(part.is_symlink() for part in (folder, *folder.parents)):
+        raise ValueError("runner-lock-link")
+    folder.mkdir(mode=0o700, exist_ok=True)
+    directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(directory)
+        if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
+                or stat.S_IMODE(parent.st_mode) != 0o700):
+            raise ValueError("runner-lock-directory")
+        fd = os.open("managed-run.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     0o600, dir_fd=directory)
+    finally:
+        os.close(directory)
+    try:
+        meta = os.fstat(fd)
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.geteuid()
+                or meta.st_nlink != 1 or stat.S_IMODE(meta.st_mode) != 0o600):
+            raise ValueError("runner-lock-shape")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def _run_turn(home: Path, bridge, managed, job_id: str, gate) -> None:
     if not managed.budget_available(home):
         return
     config = _config(managed, home)
@@ -346,6 +380,17 @@ def run(home: Path) -> None:
         _native(bridge, session_id, task_id, {
             "operation": "zzz.reply", "thread": event["threadId"], "body": answer,
         })
+
+
+def run(home: Path) -> None:
+    bridge, managed = _bridge(home)
+    job_id = _job(managed, home)
+    if not managed.participation_on(home) or not bridge.installed(home, "zzzbot", "zzz.list_rooms"):
+        return
+    gate = _approval_gate(home)
+    with _runner_turn(home) as acquired:
+        if acquired:
+            _run_turn(home, bridge, managed, job_id, gate)
 
 
 def main() -> None:
