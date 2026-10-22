@@ -260,6 +260,47 @@ class SupersedeTest(unittest.TestCase):
         self.assertIn('data', self.confirm(D2))
         self.assertEqual(self.app.orders, {D2: 1})
 
+    def test_a_draft_refused_after_its_start_is_never_placed_by_the_agents_adoption(self):
+        # Security review of 5a984408: the pass starts D1, D2 is prepared, the pass refuses D1 before its confirm
+        # (tombstone); the agent's later confirm of D1 reads the spent grant (nothing-to-wait-for) and must not adopt it.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_guarded = grant.guarded_start
+
+        def guarded(home, draft_id, start):
+            out = real_guarded(home, draft_id, start)
+            grant.set_latest(self.home, D2)
+            return out
+
+        with patch.object(grant, 'guarded_start', side_effect=guarded):
+            self.run_pass()
+        self.daemon.start.assert_called_once()
+        self.assertTrue((self.home / 'forkicks-drafts' / (D1 + '.refused')).exists())
+        self.assertEqual(json.loads((self.home / 'forkicks-drafts' / (D1 + '.refused')).read_text()), {'code': 'superseded'})
+        for _ in range(3):
+            response = self.confirm(D1)
+            self.assertEqual(response, {'error': 'approval_card_closed', 'instruction': mini.ORDER_SUPERSEDED})
+        self.assertEqual(self.app.orders, {})
+        self.assertEqual(self.sent, [('42', grant.SUPERSEDED_LINE)])
+        # A corrupt tombstone fails closed.
+        (self.home / 'forkicks-drafts' / (D1 + '.refused')).write_text('{not json')
+        self.assertEqual(self.confirm(D1)['error'], 'approval_card_closed')
+        self.assertTrue(grant.tombstoned(self.home, D1))
+        self.assertEqual(self.app.orders, {})
+
+    def test_an_order_in_flight_without_a_tombstone_keeps_its_confirm(self):
+        # A started draft whose start was never refused is an order in flight: the agent's confirm adopts it,
+        # even after a newer prepare (the newest rule's only exception).
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        self.assertIn('data', self.confirm(D1))  # the agent places D1 (start + confirm)
+        self.app.orders.clear()
+        (self.home / 'forkicks-drafts' / (D1 + '.placed')).unlink()  # force the adoption read (no recorded receipt)
+        self.prepare(D2, qty=3)
+        self.assertIn('data', self.confirm(D1))  # a retry adopts the spent grant: same draft, merchant-idempotent
+        self.assertEqual(self.app.orders, {D1: 1})
+        self.assertFalse((self.home / 'forkicks-drafts' / (D1 + '.refused')).exists())
+
     def test_set_latest_and_the_guarded_start_share_one_lock(self):
         import threading
         self.prepare(D1)

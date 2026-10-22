@@ -286,7 +286,19 @@ def load_preview(home, draft_id, config):
     checked_payload(record.get("payload"), draft_id, record.get("payloadHash"), record.get("preview"))
     return record
 
-def authorize_order(record, draft_id, on_requested=None, known_task=None, on_proposed=None, guard_start=None):
+def _adopted(proof, guard_adopt):
+    """An already-started draft's proof, unless its start was refused after the fact (a `.refused` tombstone, read
+    fail-closed under the drafts lock: security review of 5a984408). Every adoption is a started draft, so the
+    newest-draft rule's in-flight exception applies to it exactly when no tombstone exists."""
+    if guard_adopt is not None:
+        reason = guard_adopt()
+        if reason is not None:
+            return None, {"error": "approval_card_closed", "instruction": ORDER_SUPERSEDED}
+    return proof, None
+
+
+def authorize_order(record, draft_id, on_requested=None, known_task=None, on_proposed=None, guard_start=None,
+                    guard_adopt=None):
     """The human grant for this exact saved order, or a refusal. Never places anything itself.
 
     FK-CARD-AT-PREPARE (approval L19920 (2), one live card per draft): `known_task` is the task this box already
@@ -314,7 +326,7 @@ def authorize_order(record, draft_id, on_requested=None, known_task=None, on_pro
             on_proposed(task)
         proof["taskId"] = task
         if answer.doc.get("state") == "executed":
-            return proof, None  # The CP re-reads the direct grant/start; same draft is merchant-idempotent.
+            return _adopted(proof, guard_adopt)  # The CP re-reads the direct grant/start; same draft is merchant-idempotent.
     else:
         task = known_task
         if not isinstance(task, str) or not re.fullmatch(r"propose:[a-f0-9]{32}", task):
@@ -326,7 +338,7 @@ def authorize_order(record, draft_id, on_requested=None, known_task=None, on_pro
         # path does, only when this draft's own action reads granted (a human's decision; the pass's same check).
         mine = [a for a in (granted.doc.get("actions") or []) if isinstance(a, dict) and a.get("action_key") == key]
         if len(mine) == 1 and mine[0].get("state") == "granted":
-            return proof, None
+            return _adopted(proof, guard_adopt)
     if granted.exit_code in (1, 3, 7) or granted.status in CARD_CLOSED_STATES:
         # S2: the card is declined, withdrawn, expired or void (core: wait exit 1/3/7). No start runs, and this draft
         # gets no second card: nothing was ordered, and only a new preview can be approved.
@@ -341,8 +353,8 @@ def authorize_order(record, draft_id, on_requested=None, known_task=None, on_pro
         # An already-started draft (the adoption paths above) is an order in flight and keeps its confirm.
         reason, started = guard_start(lambda: ap.start(task, key, held))
         if reason is not None:
-            return None, {"error": "approval_card_closed", "instruction": ORDER_SUPERSEDED if reason == "superseded"
-                          else ORDER_NEWEST_UNREADABLE}
+            return None, {"error": "approval_card_closed", "instruction": ORDER_NEWEST_UNREADABLE if reason == "latest_unreadable"
+                          else ORDER_SUPERSEDED}
     else:
         started = ap.start(task, key, held)
     if not started.ok or started.doc.get("authorization") != "grant":

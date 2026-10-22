@@ -281,13 +281,43 @@ def newest_reason(home, draft_id):
     return "superseded" if newest is not None and newest != draft_id else None
 
 
+def tombstone(home, draft_id, code) -> None:
+    """A durable `<draftId>.refused` (O_EXCL, the code inside): this draft is never placed, by any path."""
+    path = _path(home, draft_id, ".refused")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _create(path, {"code": code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,40}", code) else "refused"})
+
+
+def tombstoned(home, draft_id) -> bool:
+    """True when the draft has a tombstone; an unreadable or corrupt one counts (fail closed)."""
+    try:
+        doc = _read(_path(home, draft_id, ".refused"))
+    except FileNotFoundError:
+        return False
+    except Exception:  # noqa: BLE001 - fail closed
+        return True
+    return True
+
+
 def guarded_start(home, draft_id, start):
-    """(reason, None) when this draft may not start, else (None, start()). Check and start under drafts_lock."""
+    """(reason, None) when this draft may not start, else (None, start()). Check and start under drafts_lock.
+    A refusal leaves a tombstone, so no later adoption of a grant can place this draft."""
     with drafts_lock(home):
+        if tombstoned(home, draft_id):
+            return "refused", None
         reason = newest_reason(home, draft_id)
         if reason is not None:
+            if reason == "superseded":  # an older draft never places (an unreadable record may be repaired)
+                tombstone(home, draft_id, reason)
             return reason, None
         return None, start()
+
+
+def guard_adopt(home, draft_id):
+    """For adopting an already-started grant: refused only by a tombstone (read fail-closed under the lock).
+    A started draft without one is an order in flight and keeps its confirm."""
+    with drafts_lock(home):
+        return "refused" if tombstoned(home, draft_id) else None
 
 
 def latest(home):
@@ -519,13 +549,19 @@ def _not_placed(home, draft_id, task, owner, marker_path, outcome, code, reason)
 
 
 def _refuse_older(home, draft_id, task, owner, marker_path, reason):
-    """S1: never start an older draft (or any draft while `.latest` is unreadable). One line per draft, a code."""
-    if reason == "superseded":
+    """S1: never start an older draft (or any draft while `.latest` is unreadable). One line per draft, a code.
+    The tombstone keeps every later path (the agent's confirm adopting a spent grant included) from placing it."""
+    try:
+        with drafts_lock(home):
+            tombstone(home, draft_id, reason)
+    except Exception:  # noqa: BLE001 - the marker is still dropped; logged
+        LOG.warning("village_bridge forkicks tombstone code=unwritable")
+    if reason != "latest_unreadable":
         try:
             approval_modules().withdraw(task, "superseded")
         except Exception:  # noqa: BLE001 - this draft is never started from here on anyway
             pass
-        return _finish(home, draft_id, task, owner, marker_path, "denied", "superseded", SUPERSEDED_LINE)
+        return _finish(home, draft_id, task, owner, marker_path, "denied", reason, SUPERSEDED_LINE)
     LOG.warning("village_bridge forkicks newest_check code=%s", reason)
     return _finish(home, draft_id, task, owner, marker_path, "denied", reason, LATEST_UNREADABLE_LINE)
 
@@ -561,6 +597,9 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     except Exception:  # noqa: BLE001 - not this box's draft (or not this owner's): ignored, no line
         _drop(marker_path)
         return "not_this_box"
+    if phase != "attempted" and tombstoned(home, draft_id):
+        _drop(marker_path)
+        return "refused_earlier"
     if phase == "awaiting":
         reason = newest_reason(home, draft_id)
         if reason is not None:
