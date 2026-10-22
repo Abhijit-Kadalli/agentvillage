@@ -8,9 +8,9 @@ For a partner developer adding a **generic** mini-app. A generic app is a change
 - **You do not write those names.** The cp derives them from your manifest. Your manifest must be a public read relay: `service.kind` `mcp`, `auth.mode` `none`, an `https://` `baseUrl`, and every operation `class: "read"` with a `target.tool` and an `input` schema, named `<id>.<verb>` (`hello-village.read`). The cp serves that as `mini-app.read`. A `data.context` block adds the two context operations on a box whose overlay takes the context entry; other boxes get `["mini-app.read"]`. With `oauth` or `app-token` auth, or `https-json`, the cp projects your own operation names, so the box refuses the app. A `write`, `prepare` or `needs-card` operation has no generic form: the cp drops the manifest.
 - **No approval card, ever.** Reads and your own context lines run on their own by default (a resident may choose to be asked); a generic app has nothing gated, so the resident never sees a card for it. What a gated action looks like when v3 brings one: [developer guide section 7](MINI-APPS-DEVELOPER.md#7-approvals-what-your-apps-actions-feel-like).
 - **Context only.** The context operations read and write only your app's own namespace (`apps.<id>`): Private to the resident's agent until the resident moves a line, at most `data.context.maxEntries` lines, one line of at most 200 characters each. No approval card, no payment, no sending, no other app's operations.
-- **The skill.** Exactly one `SKILL.md`, named for your id: UTF-8, not empty, at most 32 KiB (32768 bytes). Its frontmatter is plain `key: value` lines (no comments, no quoted keys), with exactly one `name:` line whose value is your id; anything else is refused `bundle_invalid`.
+- **The skill.** Exactly one `SKILL.md`, named for your id: UTF-8, not empty, at most 32 KiB (32768 bytes). Its frontmatter starts with exactly `---` (no BOM), holds plain ASCII `key: value` lines (no comments, no quoted keys) with exactly one `name:` line whose value is your id, and closes with exactly `---`; anything else is refused `bundle_invalid`.
 - **The id.** `^[a-z][a-z0-9-]{0,39}$` (a letter first). Not a reviewed id (`gold-stars`, `dizko`, `zzzbot`, `slopfolio`, `forkicks`, `mosaic`). Not reserved: `mini-app`, `mini-apps`, `rolodex`, `skylight`, `zzz`, `village`, `marketplace`, `approval`, `agent-commons`, `agent-plaza`, `agent-profile`, `edgeos`, `hooks`, `index-network`, `recall`, `record-intention`, `simocracy`, `token-usage-audit`, `moralmod`, `odin`, `index`, and any id that is or starts `av-`, `agentvillage-`, `agent-village-`, `mini-app-`, `mini-apps-`, `staff-`, `admin-`, `edge-`, `edgecity-`, `edge-city-`, `core-`, `cp-`, `platform-` or `system-`. Not the name of any other skill: one in this repo's `skills/`, a Hermes bundled skill, or a resident's own skill, by folder or by frontmatter `name:` (that box refuses it: `shadows_reviewed`).
-- **The version.** `version` (manifest and `skills[0].version`) is plain `MAJOR.MINOR.PATCH`, digits only, no `-suffix`: the cp accepts a pre-release, but the box then fails the whole stage for every app of that resident.
+- **The version.** `version` (manifest and `skills[0].version`) is plain `MAJOR.MINOR.PATCH`, digits only, no `-suffix`: the cp's validator refuses a pre-release (red cp CI), and a box refuses such an app alone.
 
 ## 2. The three files, in ONE cp pull request
 
@@ -20,7 +20,7 @@ For a partner developer adding a **generic** mini-app. A generic app is a change
 | `manifest.json` | `control-plane/src/mini-apps/<id>/manifest.json` |
 | (none) | `control-plane/src/mini-apps/catalog.json`: append `"<id>"` to `apps` |
 
-Adding an app turns these cp tests red: `tests/mini-apps-manifests.test.js` (the six-id lists and the catalog golden, whose flag-off and flag-on halves then differ for good), `tests/mini-apps-v2-landing.test.js`, `tests/mini-apps-skills.test.js`, `tests/revendor-skills.test.js`, and `tests/mini-apps.test.js` under `MINI_APPS_MANIFESTS=1`. That is a test-design change Edge City makes in your pull request (the golden has no regeneration tool), until those tests derive the catalog.
+Adding an app turns these cp tests red: `tests/mini-apps-manifests.test.js` (the six-id lists and the catalog golden, whose flag-off and flag-on halves then differ for good), `tests/mini-apps-v2-landing.test.js`, `tests/mini-apps-skills.test.js`, and `tests/mini-apps.test.js` under `MINI_APPS_MANIFESTS=1`. That is a test-design change Edge City makes in your pull request (the golden has no regeneration tool), until those tests derive the catalog.
 
 The skill (`skills/hello-village/SKILL.md`, with a final newline):
 
@@ -133,7 +133,7 @@ Paste the 64 hex characters into `skills[0].sha256`. Any byte change to the skil
 node -e 'const v=require("./control-plane/src/mini-apps-manifests.js");const r=v.validateManifest(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")));console.log(JSON.stringify(r.ok?{ok:true}:r));process.exit(r.ok?0:1)' path/to/manifest.json
 ```
 
-(In this repo the same validator is `scripts/mini-apps-manifests.cjs`, the same bytes.) cp CI also runs `node control-plane/tools/revendor-skills.js --check <an overlay checkout at its current release>`, which binds your bytes to your pin.
+(This repo's copy, `scripts/mini-apps-manifests.cjs`, can lag the cp's between releases; the cp's is the one CI runs, so check with it.) cp CI also runs `node control-plane/tools/revendor-skills.js --check <an overlay checkout at its current release>`, which binds your bytes to your pin.
 
 ## 4. What happens on the box
 
@@ -165,4 +165,4 @@ The cp records `offer_missing`, `operations_not_generic` and `budget` itself, be
 - No reserved or reviewed id, no `mini-app.*` name in your manifest, no operation beyond public reads.
 - No secrets, tenant ids or person names anywhere; no `http:` URLs.
 
-Sources: cp `control-plane/src/mini-apps-manifests.js` (validator: id `:30` with the letter-first rule from `skills[0].name` `:155`, reserved `:65-70`, kinds `:481-514`, skill `:563-565`, served form `:637-668`) and `mini-apps-skills.js` (caps `:18-19`, generic lists `:29-32`, codes `:36`, pin `:56`) at cp#337 `927e2164`; box `install/install_miniapps.ts` at ov#455 `e79f9334`: lists, id (`GENERIC_ID`), semver and codes `:120-123`, `checkApp` `:262-278`, shadows `:269`, frontmatter `:276` (`namesItself` `:201-212`). The proof: `install/tests/install_miniapps_quickstart.test.ts`.
+Sources: cp `control-plane/src/mini-apps-manifests.js` (validator: id `:30` with the letter-first rule from `skills[0].name` `:157`, version `:35`, reserved `:67-72`, kinds `:483-516`, skill `:565-567`, served form `:639-670`) and `mini-apps-skills.js` (caps `:18-19`, generic lists `:29-32`, codes `:36`, pin `:56`) at cp#337 `e9962d0e`; box `install/install_miniapps.ts` at ov#455 `a4893e40`: `GENERIC_ID`, the lists and the codes at the top of the file, `checkApp` `:276-292`, shadows `:283`, rule 5 `:287`, frontmatter `:291` (`namesItself` `:214-223`). The proof: `install/tests/install_miniapps_quickstart.test.ts`.
