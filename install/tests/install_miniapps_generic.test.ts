@@ -38,6 +38,8 @@ const OFFER = "cd".repeat(32);
 const READ = "mini-app.read", CTX_READ = "mini-app.context.read", CTX_WRITE = "mini-app.context.write";
 const GENERIC_OPS = [READ, CTX_READ, CTX_WRITE];
 const TEXT = "---\nname: civic-board\nversion: 1.0.0\n---\n# Civic Board\nRead the board with mini-app.read.\n";
+/** A generic app's SKILL.md answers to exactly its id (frontmatter `name:`, RA34 S1). */
+const skillText = (id: string) => TEXT.replace("name: civic-board", `name: ${id}`);
 type Entry = { id: string; sha256: string; bytes: string };
 type Delivery = { offer?: string; skills?: string };
 const entry = (id: string, text: string | Buffer, digest = sha(text)): Entry => ({ id, sha256: digest, bytes: Buffer.from(text).toString("base64") });
@@ -179,7 +181,8 @@ test("bundle_invalid: bad base64, oversize, non-UTF-8 or a malformed bundle refu
     .toEqual([{ id: "gold-stars", code: "mini_apps_skill_bundle_invalid" }, { id: "dizko", code: "mini_apps_skill_bundle_invalid" }]);
   // Exactly at the size cap is served.
   const root = home();
-  expect(staged({ version: 1, apps: [generic()] }, root, bundle(entry("civic-board", Buffer.alloc(SKILL_MAX_BYTES, "a")))).skills.served).toEqual(["civic-board"]);
+  const atCap = TEXT + "a".repeat(SKILL_MAX_BYTES - Buffer.byteLength(TEXT));
+  expect(staged({ version: 1, apps: [generic()] }, root, bundle(entry("civic-board", atCap))).skills.served).toEqual(["civic-board"]);
 });
 
 test("budget: a bundle over the box's caps (characters, entries) refuses a generic app with `budget`", () => {
@@ -264,7 +267,7 @@ test("an unsafe id or a malformed generic entry fails the whole stage; nothing i
   }
   // The longest safe id is 40 characters.
   const root = home(), id = "a".repeat(40);
-  expect(staged({ version: 1, apps: [generic(id)] }, root, bundle(entry(id, TEXT))).refused).toBeUndefined();
+  expect(staged({ version: 1, apps: [generic(id)] }, root, bundle(entry(id, skillText(id)))).refused).toBeUndefined();
 });
 
 test("the old fail-the-whole-reconcile case now stages the good apps, in projection order (library and CLI)", () => {
@@ -451,7 +454,7 @@ test("security fold (2): a generic app that leaves the projection or is refused 
 test("security fold: the ownership file is the installer's own; a malformed or linked one is fatal", () => {
   const one = [sha(TEXT)];
   for (const bad of ["{not json", JSON.stringify({ version: 2, skills: {} }), JSON.stringify({ version: 1, ids: ["civic-board"] }), JSON.stringify({ version: 1, skills: [] }),
-    JSON.stringify({ version: 1, skills: { "../x": one } }), JSON.stringify({ version: 1, skills: { dizko: one } }), JSON.stringify({ version: 1, skills: { approval: one } }),
+    JSON.stringify({ version: 1, skills: { "../x": one } }), JSON.stringify({ version: 1, skills: { "9lives": one } }),
     JSON.stringify({ version: 1, skills: { a: [] } }), JSON.stringify({ version: 1, skills: { a: ["NOT-HEX"] } }), JSON.stringify({ version: 1, skills: { a: [one[0], one[0]] } }),
     JSON.stringify({ version: 1, skills: { a: [sha("1"), sha("2"), sha("3")] } }), JSON.stringify({ version: 1, skills: {}, extra: 1 })]) {
     const root = home();
@@ -468,4 +471,65 @@ test("security fold: the ownership file is the installer's own; a malformed or l
   const plain = home();
   staged({ version: 1, apps: [gold(), dizko()] }, plain);
   expect(existsSync(join(plain, GENERIC_STATE))).toBe(false);
+});
+
+test("RA34 S1: the offered SKILL.md must answer to exactly its id (frontmatter name:), else bundle_invalid", () => {
+  for (const text of ["# Civic Board\nno frontmatter\n", "---\nname: approval\n---\n# x\n", "---\nname: civic-board-x\n---\n", "---\nversion: 1.0.0\n---\n# x\n",
+    "---\nversion: 1.0.0\n---\nname: civic-board\n", "---\nname: civic-board\n# never closed\n", "---\nname: Civic-Board\n---\n"]) {
+    refusedAlone(generic(), bundle(entry("civic-board", text)), "bundle_invalid");
+  }
+  for (const text of [TEXT, "---\nname: \"civic-board\"\n---\n", "﻿---\nname: 'civic-board'\ndescription: x\n---\nbody\n"]) {
+    const root = home();
+    expect(staged({ version: 1, apps: [gold(), generic()] }, root, bundle(entry("civic-board", text))).refused).toBeUndefined();
+  }
+});
+
+test("RA34 S1: an id any other skill under skills/** answers to (category dir name, frontmatter name, flat .md, a link) is refused, its skill untouched", () => {
+  const delivery = bundle(entry("civic-board", TEXT));
+  const plant: ((root: string) => void)[] = [
+    root => { mkdirSync(join(root, "skills", "productivity", "civic-board"), { recursive: true }); writeFileSync(join(root, "skills", "productivity", "civic-board", "SKILL.md"), "---\nname: civic-board\n---\n"); },
+    root => { mkdirSync(join(root, "skills", "productivity", "helper"), { recursive: true }); writeFileSync(join(root, "skills", "productivity", "helper", "SKILL.md"), "---\nname: civic-board\n---\n"); },
+    root => { mkdirSync(join(root, "skills", "my-notes"), { recursive: true }); writeFileSync(join(root, "skills", "my-notes", "SKILL.md"), "---\nname: \"civic-board\"\n---\n"); },
+    root => { mkdirSync(join(root, "skills", "legacy"), { recursive: true }); writeFileSync(join(root, "skills", "legacy", "civic-board.md"), "# flat\n"); },
+    root => { const outside = home(); mkdirSync(join(root, "skills", "cat"), { recursive: true }); symlinkSync(outside, join(root, "skills", "cat", "civic-board")); },
+  ];
+  for (const p of plant) {
+    const root = home();
+    p(root);
+    const before = snapshot(join(root, "skills"));
+    expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toEqual([{ id: "civic-board", code: "shadows_reviewed" }]);
+    const after = snapshot(join(root, "skills"));
+    for (const key of Object.keys(before)) expect(after[key]).toBe(before[key]);
+    expect(existsSync(skillPath(root, "civic-board"))).toBe(false);
+  }
+  // Hermes skips dot directories (.hub, .archive): a copy there shadows nothing.
+  const root = home();
+  mkdirSync(join(root, "skills", ".archive", "civic-board"), { recursive: true });
+  writeFileSync(join(root, "skills", ".archive", "civic-board", "SKILL.md"), TEXT);
+  expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toBeUndefined();
+  // Our own staged skill never shadows itself on a re-stage.
+  expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toBeUndefined();
+});
+
+test("RA34 S2: a recorded generic id a later overlay made something else's is dropped (no unlink, no throw); Gold Stars still stages", () => {
+  const delivery = bundle(entry("civic-board", TEXT));
+  // A later overlay ships a checkout skill directory with that name.
+  const source = join(home(), "skills");
+  cpSync(join(REPO, "skills"), source, { recursive: true });
+  const root = home();
+  reconcileMiniApps({ version: 1, apps: [gold(), generic()] }, root, source, false, delivery);
+  mkdirSync(join(source, "civic-board"));
+  writeFileSync(join(source, "civic-board", "SKILL.md"), "---\nname: civic-board\n---\npromoted\n");
+  const receipt = reconcileMiniApps({ version: 1, apps: [gold()] }, root, source);
+  expect(receipt.apps).toEqual([{ id: "gold-stars", version: "1.1.0" }]);
+  expect(readFileSync(skillPath(root, "civic-board"), "utf8")).toBe(TEXT);
+  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
+  expect(reconcileMiniApps({ version: 1, apps: [gold()] }, root, source, true)).toEqual(receipt);
+  // A recorded reviewed, shipped or retired id: dropped the same way, the file rewritten without it.
+  for (const id of ["dizko", "approval", EDGE_SKILL_NAMES.find(n => !REVIEWED_IDS.has(n))!, ...RETIRED_SKILL_DIRS]) {
+    const box = home();
+    writeFileSync(join(box, GENERIC_STATE), JSON.stringify({ version: 1, skills: { [id]: [sha(TEXT)] } }));
+    expect(staged({ version: 1, apps: [gold()] }, box).apps).toEqual([{ id: "gold-stars", version: "1.1.0" }]);
+    expect(JSON.parse(readFileSync(join(box, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
+  }
 });

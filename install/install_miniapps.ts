@@ -83,8 +83,9 @@ function regular(path: string): void {
  *      installer ships (SHIPPED_SKILLS), a retired one (RETIRED_SKILL_DIRS), any skill directory in this
  *      overlay checkout (approval, recall, agent-profile, hooks, ... : every skill another installer step
  *      stages), or a `skills/<id>/` that already exists on the box unless it holds the SKILL.md this installer
- *      wrote there (GENERIC_STATE, per file). The repo carries no list of Hermes's bundled skill names, so a
- *      bundled or resident skill is caught by that last rule (its directory exists and is not ours);
+ *      wrote there (GENERIC_STATE, per file), or any other SKILL.md under skills/** (a bundled skill in its
+ *      category dir, a resident's own) whose directory name or frontmatter `name:` is the id: Hermes resolves a
+ *      skill by either and refuses an ambiguous name (review-a RA34 S1);
  *   4. operations must be EXACTLY one of GENERIC_OPERATIONS_ACCEPTED (the bridge's APP_OPERATIONS_ACCEPTED, the
  *      same lists in the same order; the cp has no other operations gate before this one):
  *      `operations_not_generic`;
@@ -92,7 +93,8 @@ function regular(path: string): void {
  *   6. its SKILL.md comes ONLY from the cp's offer (MINI_APPS_SKILLS + a well-formed MINI_APPS_SKILLS_OFFER),
  *      never from a checkout copy: no offer or no entry for it `offer_missing`; a bundle over the box's caps
  *      `budget`; any other bad bundle or entry (keys, strict base64, at most SKILL_MAX_BYTES, UTF-8)
- *      `bundle_invalid`; bytes that do not hash to the entry's sha256 `sha_mismatch`. The pin is the offer's
+ *      `bundle_invalid`; bytes that do not hash to the entry's sha256 `sha_mismatch`; a SKILL.md whose frontmatter
+ *      `name:` is not exactly the id `bundle_invalid` (RA34 S1). The pin is the offer's
  *      sha256 (the cp offers bytes only when they equal its validated manifest pin); the box reads no sha or
  *      path from the projection or anywhere else.
  * Ownership and removal are PER FILE: GENERIC_STATE (`mini-apps-generic.json`, written only by this installer)
@@ -102,15 +104,18 @@ function regular(path: string): void {
  * (left the projection, or refused) loses its SKILL.md (and its directory when empty) on the next stage;
  * --verify fails `mini_apps_removal_pending` while such a file of ours remains. Before any skill file is written
  * the state holds both the on-disk sha and the new one, and the result last, so an interrupted stage never loses
- * ownership of a file it may have written. A malformed state file is fatal (`mini_apps_generic_state_invalid`).
+ * ownership of a file it may have written. A malformed state file is fatal (`mini_apps_generic_state_invalid`); a
+ * well-formed entry whose id a later overlay made a reviewed app, a shipped/retired skill or a checkout skill
+ * directory is dropped (no unlink, no write), never fatal (RA34 S2).
  * A refused app fails ONLY itself: the receipt carries `refused: [{ id, code }]` (omitted when nothing is
  * refused, so today's receipts are byte-identical), `apps` / `files` / mini-apps.json / projectionSha256 cover
  * exactly the projection minus the refused ids, in projection order, and --verify recomputes that same subset
  * (a generic app verified without its offer is refused again, so verify fails closed on the authority file).
  * FATAL (the whole stage fails, nothing written, as before): a projection that is not exactly
  * {version: 1, apps: [...]}, an entry that is not an object, an id that is not a string or fails GENERIC_ID,
- * a duplicate id, a reviewed id that matches no reviewed entry, a generic entry that fails rule 5, and every
- * filesystem check (symlinks, non-files, a reviewed app's missing checkout copy).
+ * a duplicate id, a reviewed id that matches no reviewed entry, a generic entry that passes rules 3 and 4 but fails
+ * rule 5 (one that rule 3 or 4 already refused is refused alone: RA34 N7), and every filesystem check (symlinks,
+ * non-files, a reviewed app's missing checkout copy).
  */
 export const GENERIC_OPERATIONS_ACCEPTED = [["mini-app.read", "mini-app.context.read", "mini-app.context.write"], ["mini-app.read"]] as const;
 export const GENERIC_ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -135,23 +140,30 @@ function offered(served: ReturnType<typeof parseSkillDelivery>, id: string): Buf
 /** Skill names something other than a generic app owns, whatever the box holds (see rule 3). */
 const STATIC_SHADOWS: ReadonlySet<string> = new Set<string>([...EDGE_SKILL_NAMES, ...RETIRED_SKILL_DIRS]);
 export const GENERIC_STATE = "mini-apps-generic.json";
-/** Per generic id, the sha256s of the SKILL.md this installer wrote (GENERIC_STATE); absent = none. Malformed is fatal. */
-function ownedGeneric(home: string, source: string): Map<string, string[]> {
+/**
+ * Per generic id, the sha256s of the SKILL.md this installer wrote (GENERIC_STATE); absent = none. A malformed file
+ * is fatal. RA34 S2: a well-formed entry whose id has since become something else's (a reviewed app, a shipped or
+ * retired skill, a checkout skill directory: a later overlay) is DROPPED, never unlinked or overwritten, and never
+ * fails the stage; `dropped` says the file must be rewritten without it.
+ */
+function ownedGeneric(home: string, source: string): { recorded: Map<string, string[]>; dropped: boolean } {
   const path = join(home, GENERIC_STATE);
   regular(path);
-  if (!exists(path)) return new Map();
+  if (!exists(path)) return { recorded: new Map(), dropped: false };
+  let entries: [string, string[]][];
   try {
     if (lstatSync(path).size > 65536) throw new Error("size");
     const doc = JSON.parse(readFileSync(path, "utf8"));
     if (!closed(doc, "skills,version") || doc.version !== 1 || !doc.skills || typeof doc.skills !== "object" || Array.isArray(doc.skills)) throw new Error("shape");
-    const entries = Object.entries(doc.skills as Record<string, unknown>);
+    entries = Object.entries(doc.skills as Record<string, unknown>) as [string, string[]][];
     if (entries.length > 256) throw new Error("size");
     for (const [id, shas] of entries) {
-      if (!GENERIC_ID.test(id) || REVIEWED_IDS.has(id) || STATIC_SHADOWS.has(id) || exists(join(source, id)) || !Array.isArray(shas) || shas.length < 1 || shas.length > 2 ||
+      if (!GENERIC_ID.test(id) || !Array.isArray(shas) || shas.length < 1 || shas.length > 2 ||
           shas.some(x => typeof x !== "string" || !HEX64.test(x)) || new Set(shas).size !== shas.length) throw new Error("entry");
     }
-    return new Map(entries as [string, string[]][]);
   } catch { throw new Error("mini_apps_generic_state_invalid"); }
+  const kept = entries.filter(([id]) => !REVIEWED_IDS.has(id) && !STATIC_SHADOWS.has(id) && !exists(join(source, id)));
+  return { recorded: new Map(kept), dropped: kept.length !== entries.length };
 }
 /** The sha256 of skills/<id>/SKILL.md when it is a plain regular file this installer wrote (a recorded sha), else null. */
 function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) => string | null {
@@ -167,9 +179,65 @@ function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) 
     } catch { return null; }
   };
 }
-/** Rule 3 on a box: static names, a checkout skill directory, or an existing skills/<id>/ not holding our own SKILL.md. */
+/**
+ * A SKILL.md's frontmatter `name:` as Hermes reads it (agent/skill_utils.py parse_frontmatter: a leading `---`, closed
+ * by the next `\n---` line), unquoted; null when there is none.
+ */
+export function frontmatterName(text: string): string | null {
+  const content = text.replace(/^﻿/, "");
+  if (!content.startsWith("---")) return null;
+  const end = /\n---[ \t\r]*\n/.exec(content.slice(3));
+  if (!end) return null;
+  const line = /^name[ \t]*:[ \t]*(.*?)[ \t\r]*$/m.exec(content.slice(3, end.index + 3));
+  return line ? line[1].replace(/^(["'])(.*)\1$/, "$2") : null;
+}
+const WALK_MAX_ENTRIES = 20000;
+const WALK_MAX_DEPTH = 8;
+/**
+ * review-a RA34 S1: Hermes resolves a skill by its directory name OR its frontmatter `name:`, anywhere under
+ * skills/ (bundled skills live in category dirs, skills/<category>/<name>/), and refuses a name with two candidates.
+ * Every name a SKILL.md (or a legacy flat <name>.md) under skills/ answers to, keyed by the top-level entry it sits
+ * in, so skills/<id>/SKILL.md itself can be left out. Dot directories are skipped (Hermes's .hub, .archive, ...);
+ * a symlink is never followed but its name counts. Null when the walk cannot finish (too big, unreadable): every
+ * generic app is then refused, never staged blind.
+ */
+function skillNames(home: string): { top: string; names: string[] }[] | null {
+  const root = join(home, "skills");
+  const out: { top: string; names: string[] }[] = [];
+  let seen = 0;
+  const walk = (dir: string, top: string, depth: number): void => {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    if ((seen += entries.length) > WALK_MAX_ENTRIES || depth > WALK_MAX_DEPTH) throw new Error("walk");
+    const hasSkill = entries.some(e => e.name === "SKILL.md");
+    for (const e of entries) {
+      const path = join(dir, e.name), t = top || e.name;
+      if (e.isSymbolicLink()) out.push({ top: t, names: [e.name === "SKILL.md" ? parse(dir).base : e.name.replace(/\.md$/, "")] });
+      else if (e.isDirectory()) { if (!e.name.startsWith(".")) walk(path, t, depth + 1); }
+      else if (e.name === "SKILL.md" && e.isFile()) {
+        const names = [parse(dir).base];
+        if (lstatSync(path).size <= 65536) { const name = frontmatterName(readFileSync(path, "utf8")); if (name) names.push(name); }
+        out.push({ top: t, names });
+      } else if (!hasSkill && e.isFile() && e.name.endsWith(".md")) out.push({ top: t, names: [e.name.slice(0, -3)] });
+    }
+  };
+  try {
+    safePath(root);
+    if (exists(root)) walk(root, "", 0);
+    return out;
+  } catch { return null; }
+}
+/**
+ * Rule 3 on a box: static names, a checkout skill directory, an existing skills/<id>/ not holding our own SKILL.md,
+ * or any other skill under skills/** answering to the id by directory or frontmatter name (walked once, and only
+ * when the projection holds a non-reviewed id).
+ */
 function shadowsOnBox(home: string, source: string, ours: (id: string) => string | null): (id: string) => boolean {
-  return id => STATIC_SHADOWS.has(id) || exists(join(source, id)) || (exists(join(home, "skills", id)) && ours(id) === null);
+  let names: ReturnType<typeof skillNames> | undefined;
+  return id => {
+    if (STATIC_SHADOWS.has(id) || exists(join(source, id)) || (exists(join(home, "skills", id)) && ours(id) === null)) return true;
+    if (names === undefined) names = skillNames(home);
+    return names === null || names.some(x => x.names.includes(id) && x.top !== id);
+  };
 }
 function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): Staged | { code: RefusalCode } {
   if (!GENERIC_ID.test(app.id)) throw new Error("mini_apps_invalid_entry");
@@ -184,6 +252,8 @@ function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnT
   if (Object.keys(app).sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) throw new Error("mini_apps_invalid_entry");
   const bytes = offered(served, app.id);
   if (typeof bytes === "string") return { code: bytes };
+  // RA34 S1: Hermes also finds a skill by its frontmatter name, so the offered SKILL.md must answer to exactly its id.
+  if (frontmatterName(bytes.toString("utf8")) !== app.id) return { code: "bundle_invalid" };
   return { app: { id: app.id, version: app.version, operations: [...operations], skills: [app.id] }, generic: bytes };
 }
 function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): { projection: Projection; staged: Staged[]; refused: { id: string; code: RefusalCode }[]; intentEmpty: boolean } {
@@ -277,7 +347,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   regular(target);
   // Per app: a refused generic app fails only itself (REFUSAL_CODES); everything else here is as before.
   const state = join(home, GENERIC_STATE);
-  const recorded = ownedGeneric(home, source);
+  const { recorded, dropped } = ownedGeneric(home, source);
   const ours = ownedFile(home, recorded);
   const { projection, staged, refused, intentEmpty } = resolveApps(value, served, shadowsOnBox(home, source, ours));
   const accepted = staged.filter(x => x.generic).map(x => x.app.id);
@@ -334,7 +404,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     for (const id of recorded.keys()) { const digest = ours(id); if (digest) before.set(id, [digest]); }
     for (const { app, generic } of staged) if (generic) before.set(app.id, [...new Set([...(before.get(app.id) ?? []), hash(generic)])]);
     const record = (map: Map<string, string[]>) => atomic(state, JSON.stringify({ version: 1, skills: Object.fromEntries([...map].sort(([a], [b]) => a < b ? -1 : 1)) }));
-    if (before.size || recorded.size) record(before);
+    if (before.size || recorded.size || dropped) record(before);
     atomic(target, JSON.stringify({ version: 1, apps: [] }));
     if (intentEmpty && exists(credential)) unlinkSync(credential);
     for (const app of REVIEWED_MINI_APPS) {
@@ -351,7 +421,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     atomic(target, bytes);
     // The result: exactly the files this stage wrote (a leaving id's ownership ends with its file).
-    if (before.size || recorded.size) record(new Map(staged.filter(x => x.generic).map(({ app, generic }) => [app.id, [hash(generic!)]])));
+    if (before.size || recorded.size || dropped) record(new Map(staged.filter(x => x.generic).map(({ app, generic }) => [app.id, [hash(generic!)]])));
   }
   // `skills` also marks an installer that can take served bytes (an older one never writes it).
   return { version: 1, projectionSha256: hash(bytes), files, apps: projection.apps.map(({ id, version }) => ({ id, version })), staged: true,
