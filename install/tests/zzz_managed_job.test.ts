@@ -199,6 +199,12 @@ test("S1 teardown scope (nonav L17033): a failed stage removes ONLY the zzz job,
       mkdirSync(join(home, path, ".."), { recursive: true });
       writeFileSync(join(home, path), bytes);
     }
+    // The shared av-events registry also contains jobs managed by Index.
+    // Revoke must remove only the ZZZ id, keeping those unrelated ids intact.
+    const registryPath = join(home, "av-events", "installed_jobs.json");
+    const unrelatedId = "cccccccccccc";
+    const managedId = jobs().find((job: { name: string }) => job.name === ZZZ_JOB_NAME)!.id;
+    writeFileSync(registryPath, `${JSON.stringify({ ids: [unrelatedId, managedId], zzzJobId: managedId })}\n`);
     const before = snapshot(home);
     for (const path of ZZZ_OWNED) expect(before).toHaveProperty([path]);
     for (const app of REVIEWED_MINI_APPS) if (app.skills.length) expect(before).toHaveProperty([`skills/${app.id}/SKILL.md`]);
@@ -212,6 +218,9 @@ test("S1 teardown scope (nonav L17033): a failed stage removes ONLY the zzz job,
     const harness = ["cron/jobs.json", "hermes-calls.jsonl", "hermes-env.jsonl"];
     for (const path of [...ZZZ_OWNED, ...harness]) delete expected[path];
     for (const path of harness) delete after[path];
+    expect(JSON.parse(readFileSync(registryPath, "utf8"))).toEqual({ ids: [unrelatedId] });
+    delete expected["av-events/installed_jobs.json"];
+    delete after["av-events/installed_jobs.json"];
     expect(after).toEqual(expected);
     // Gold Stars and every other app keep their authority: the projection file is untouched.
     expect(after["mini-apps.json"]).toBe(before["mini-apps.json"]);
@@ -442,9 +451,9 @@ test("review-b N2: gate off still removes a managed job from a bare-list store, 
   }
 });
 
-test("review-b N2: with the gate on, every jobs.json shape Hermes loads is handled (bare list, id-keyed map, BOM, control characters)", () => {
+const HERMES_LOADABLE_STORES = (() => {
   const resident = { id: "aaaaaaaaaaaa", name: "Morning digest", script: "digest.sh", enabled: true };
-  const stores = {
+  return {
     "empty bare list": "[]",
     "bare list": JSON.stringify([resident]),
     "id-keyed map": JSON.stringify({ jobs: { aaaaaaaaaaaa: { name: resident.name, script: resident.script, enabled: true } } }),
@@ -452,7 +461,10 @@ test("review-b N2: with the gate on, every jobs.json shape Hermes loads is handl
     "BOM": "﻿" + JSON.stringify({ jobs: [resident] }),
     "raw control character in a string": `{"jobs": [{"id": "aaaaaaaaaaaa", "name": "Morning\tdigest", "script": "digest.sh", "enabled": true}]}`,
   };
-  for (const [label, text] of Object.entries(stores)) {
+})();
+
+for (const [label, text] of Object.entries(HERMES_LOADABLE_STORES)) {
+  test(`review-b N2: gate on handles Hermes-loadable jobs.json shape: ${label}`, () => {
     const { home, stage, jobs } = fakeBox();
     mkdirSync(join(home, "cron"));
     writeFileSync(join(home, "cron", "jobs.json"), text);
@@ -460,7 +472,10 @@ test("review-b N2: with the gate on, every jobs.json shape Hermes loads is handl
     const managedJobs = jobs().filter((job: { name: string }) => job.name === ZZZ_JOB_NAME);
     expect(managedJobs).toHaveLength(1);
     expect(`${label}: ${stage(projection, ["--verify"]).status}`).toBe(`${label}: 0`);
-  }
+  });
+}
+
+test("review-b N2: gate on refuses jobs.json shapes Hermes cannot load", () => {
   // Hermes refuses any other top-level shape, and so does the installer with the gate on (fail closed, stage fails).
   const { home, stage } = fakeBox();
   mkdirSync(join(home, "cron"));
