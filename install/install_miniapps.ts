@@ -171,7 +171,7 @@ function ownedGeneric(home: string, source: string): { recorded: Map<string, str
  * the path is not a regular file. A file over `max` returns its first `max` bytes and its real size.
  */
 export function readHead(path: string, max: number): { bytes: Buffer; size: number } | null {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) return null;
