@@ -22,9 +22,9 @@ to join.
   `notifications/initialized` (HTTP 202), `tools/list`, `tools/call`, `ping`.
   Answers as SSE when the request accepts `text/event-stream`, else JSON.
   No session id, no caller identity, no cookies, no auth.
-- `tools/list` serves each `inputSchema` byte-for-byte as pinned in
-  `manifest.json`: plain JSON Schema objects with `additionalProperties:
-  false` and no `$schema` key. The server applies the same exact check
+- `tools/list` serves each `inputSchema` byte-for-byte as pinned in the v2
+  manifest's `operations[].input`: plain JSON Schema objects with
+  `additionalProperties: false` and no `$schema` key. The server applies the same exact check
   itself: any other argument, a non-integer or an out-of-range `limit` is a
   tool error (`isError: true`) before any data is read. An unknown tool is
   JSON-RPC error `-32602`.
@@ -58,3 +58,29 @@ and install it, this bundle stays read-only and residents use the website.
 Changes to these files start on the Kismet side (source: the Kismet
 repository, `src/lib/mcp.ts` for the MCP schemas) and reach
 `Edge-City/agentvillage` as pull requests.
+
+## V2 packaging and reproducible fixtures
+
+The manifest uses v2, starts at `visibility: "sandbox"` and pins the unchanged
+author skill by SHA-256. Its three named read operations project to the existing
+`mini-app.read` relay; no Kismet account action from #405 is included. Staff must
+approve the restricted catalog/installer rollout and set the per-app tenant
+allowlist before a sandbox install can work. No production setting is changed.
+
+Fixtures are in `scripts/tests/fixtures/kismet/`, outside the closed
+`mini-apps/` tree. `live-success.json` files are actual public MCP result bodies
+captured on 22 October 2026; `tool-refusal.json` preserves a real MCP tool error.
+They contain no identity, credential or private date data. With the conformance
+v0 runner from #422, run:
+
+```sh
+bun /path/to/conformance-checkout/scripts/mini-apps-conformance.ts \
+  mini-apps/kismet/manifest.json --fixtures scripts/tests/fixtures/kismet \
+  --base origin/main --out /tmp/kismet-conformance.json
+```
+
+Conformance v0 requires a closed `{code, detail}` error fixture. This MCP service
+instead returns a standard `isError` text-content envelope. The actual refusal
+is kept intact rather than relabelled or replaced with a fabricated response:
+the error-body hygiene check is NOT RUN and the overall v0 report does not pass.
+Successful live reads and the static validator do not erase that mismatch.

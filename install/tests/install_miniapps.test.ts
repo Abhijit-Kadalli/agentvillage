@@ -403,7 +403,7 @@ test("kismet: a public read-only entry, staged and removed like dizko's read-onl
   expect(existsSync(join(REPO, "skills", "agent-dates"))).toBe(false);
   expect(existsSync(join(REPO, "mini-apps", "agent-dates"))).toBe(false);
   // the manifest and skill agree with the entry, and the manifest asks for nothing beyond the public read
-  const manifest = JSON.parse(readFileSync(join(REPO, "mini-apps", "kismet", "manifest.json"), "utf8"));
+  const manifest = reviewedManifest("kismet");
   expect([manifest.id, manifest.name, manifest.version, manifest.skills, manifest.operations]).toEqual([kismet.id, "Kismet", kismet.version, [...kismet.skills], [...kismet.operations]]);
   expect(manifest.permissions.map((p: { kind: string }) => p.kind)).toEqual(["read"]);
   expect(manifest.mcp.url).toBe("https://kismet-village.vercel.app/mcp");

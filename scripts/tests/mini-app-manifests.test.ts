@@ -91,7 +91,7 @@ describe("the shared files", () => {
 describe("mini-apps/: the published catalog", () => {
   test("catalog.json is a valid index, in the order the cp serves, and mini-apps/ holds only reviewed catalog files", () => {
     expect(m.checkSchema(index, m.INDEX_SCHEMA)).toEqual([]);
-    expect(index.apps).toEqual(["gold-stars", "dizko", "zzzbot", "slopfolio", "forkicks", "mosaic"]);
+    expect(index.apps).toEqual(["gold-stars", "dizko", "zzzbot", "slopfolio", "forkicks", "mosaic", "kismet"]);
     expect(treeViolations(DIR, index.apps)).toEqual([]);
   });
 
