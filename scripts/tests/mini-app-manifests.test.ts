@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateProjection } from "../../install/install_miniapps";
+import { REVIEWED_MINI_APPS, validateProjection } from "../../install/install_miniapps";
 
 // Mini-apps v2 Phase 0, P0-1 (MINIAPPS-PLATFORM-v2-design.md §1.1, §1.3, §8): the CI check over
 // mini-apps/**. Every published manifest (mini-apps/catalog.json) is a valid v2 manifest by the ONE
@@ -79,12 +79,19 @@ describe("the shared files", () => {
     expect(bytes("mini-apps/manifest.v2.schema.json").toString("utf8")).toBe(JSON.stringify(m.SCHEMA, null, 2) + "\n");
   });
 
-  test.skipIf(!process.env.AV_CONTROLPLANE_DIR)("cmp: the control plane's copies and vendored manifests, byte for byte (AV_CONTROLPLANE_DIR)", () => {
+  // cp#337 N4 (generic apps are cp-sourced): the cp's index may hold generic apps that never enter this repo, so
+  // catalog.json is compared as "this index == the cp's index filtered to the reviewed ids, in the cp's order";
+  // the validator, the schema, the pins and every reviewed manifest stay byte for byte.
+  test.skipIf(!process.env.AV_CONTROLPLANE_DIR)("cmp: the control plane's copies and vendored manifests, byte for byte; its index filtered to the reviewed ids is this index (AV_CONTROLPLANE_DIR)", () => {
     const cp = join(process.env.AV_CONTROLPLANE_DIR!, "control-plane", "src");
     const pairs = [["scripts/mini-apps-manifests.cjs", "mini-apps-manifests.js"],
-      ...["manifest.v2.schema.json", "manifests.pins.json", "catalog.json", ...index.apps.map((id: string) => `${id}/manifest.json`)]
+      ...["manifest.v2.schema.json", "manifests.pins.json", ...index.apps.map((id: string) => `${id}/manifest.json`)]
         .map(file => [`mini-apps/${file}`, `mini-apps/${file}`])];
     for (const [mine, theirs] of pairs) expect([mine, Buffer.compare(readFileSync(join(cp, theirs)), bytes(mine))]).toEqual([mine, 0]);
+    const theirs = JSON.parse(readFileSync(join(cp, "mini-apps", "catalog.json"), "utf8"));
+    const reviewed = new Set(REVIEWED_MINI_APPS.map(app => app.id));
+    expect([theirs.catalog, theirs.apps.filter((id: string) => reviewed.has(id))]).toEqual([index.catalog, index.apps]);
+    for (const id of theirs.apps.filter((id: string) => !reviewed.has(id))) expect([id, lstatSync(join(cp, "mini-apps", "skills", id, "SKILL.md")).isFile()]).toEqual([id, true]);
   });
 });
 
