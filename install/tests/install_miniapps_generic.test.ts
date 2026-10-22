@@ -237,7 +237,7 @@ test("a reviewed id is never refused alone and never staged as a generic app: a 
   expect(readFileSync(skillPath(box, "dizko"))).toEqual(readFileSync(join(REPO, "skills", "dizko", "SKILL.md")));
 });
 
-test("an unsafe id or a malformed generic entry fails the whole stage; nothing is written", () => {
+test("an unsafe id or a malformed projection fails the whole stage, nothing written; a malformed generic entry is refused alone", () => {
   const delivery = bundle(entry("civic-board", TEXT));
   const fatal: [unknown, string][] = [
     [{ version: 2, apps: [gold()] }, "mini_apps_invalid_projection"],
@@ -252,10 +252,6 @@ test("an unsafe id or a malformed generic entry fails the whole stage; nothing i
     [{ version: 1, apps: [gold(), dizko(), { ...dizko(), operations: [READ] }] }, "mini_apps_unreviewed_bundle"],
     ...["../escape", "../../escape", "a/b", "civic/../board", ".hidden", "-lead", "Civic", "civic_board", "civic board", "", "a".repeat(41), "9lives"]
       .map(id => [{ version: 1, apps: [gold(), generic(id)] }, "mini_apps_invalid_entry"] as [unknown, string]),
-    ...[{ ...generic(), version: "1" }, { ...generic(), version: 1 }, { ...generic(), skills: ["other"] }, { ...generic(), skills: [] },
-      { ...generic(), skills: ["civic-board", "civic-board"] }, { ...generic(), hooks: ["sh"] }, { ...generic(), skillSha256: sha(TEXT) },
-      { id: "civic-board", operations: GENERIC_OPS, skills: ["civic-board"] }]
-      .map(app => [{ version: 1, apps: [gold(), app] }, "mini_apps_invalid_entry"] as [unknown, string]),
   ];
   for (const [value, code] of fatal) {
     const parent = home(), root = join(parent, "box");
@@ -264,6 +260,12 @@ test("an unsafe id or a malformed generic entry fails the whole stage; nothing i
     const before = snapshot(parent);
     expect(() => reconcileMiniApps(value, root, undefined, false, delivery)).toThrow(code);
     expect(snapshot(parent)).toEqual(before);
+  }
+  // A malformed generic entry (rule 5) is refused alone, never the whole stage (RA36 M2): Gold Stars and dizko still stage.
+  for (const app of [{ ...generic(), version: "1.0.0-beta.1" }, { ...generic(), version: "1" }, { ...generic(), version: 1 }, { ...generic(), skills: ["other"] },
+    { ...generic(), skills: [] }, { ...generic(), skills: ["civic-board", "civic-board"] }, { ...generic(), hooks: ["sh"] }, { ...generic(), skillSha256: sha(TEXT) },
+    { id: "civic-board", operations: GENERIC_OPS, skills: ["civic-board"] }]) {
+    refusedAlone(app, delivery, "bundle_invalid");
   }
   // The longest safe id is 40 characters.
   const root = home(), id = "a".repeat(40);

@@ -89,7 +89,8 @@ function regular(path: string): void {
  *   4. operations must be EXACTLY one of GENERIC_OPERATIONS_ACCEPTED (the bridge's APP_OPERATIONS_ACCEPTED, the
  *      same lists in the same order; the cp has no other operations gate before this one):
  *      `operations_not_generic`;
- *   5. keys exactly id, operations, skills, version; skills exactly [id]; a semver version (the bridge's rule);
+ *   5. keys exactly id, operations, skills, version; skills exactly [id]; a plain x.y.z version (the bridge's rule):
+ *      `bundle_invalid` for that app alone (a pre-release such as 1.0.0-beta.1 included);
  *   6. its SKILL.md comes ONLY from the cp's offer (MINI_APPS_SKILLS + a well-formed MINI_APPS_SKILLS_OFFER),
  *      never from a checkout copy: no offer or no entry for it `offer_missing`; a bundle over the box's caps
  *      `budget`; any other bad bundle or entry (keys, strict base64, at most SKILL_MAX_BYTES, UTF-8)
@@ -113,9 +114,8 @@ function regular(path: string): void {
  * (a generic app verified without its offer is refused again, so verify fails closed on the authority file).
  * FATAL (the whole stage fails, nothing written, as before): a projection that is not exactly
  * {version: 1, apps: [...]}, an entry that is not an object, an id that is not a string or fails GENERIC_ID,
- * a duplicate id, a reviewed id that matches no reviewed entry, a generic entry that passes rules 3 and 4 but fails
- * rule 5 (one that rule 3 or 4 already refused is refused alone: RA34 N7), and every filesystem check (symlinks,
- * non-files, a reviewed app's missing checkout copy).
+ * a duplicate id, a reviewed id that matches no reviewed entry, and every filesystem check (symlinks, non-files, a
+ * reviewed app's missing checkout copy). A generic entry failing rule 5 is refused alone (RA34 N7, RA36 M2).
  */
 export const GENERIC_OPERATIONS_ACCEPTED = [["mini-app.read", "mini-app.context.read", "mini-app.context.write"], ["mini-app.read"]] as const;
 export const GENERIC_ID = /^[a-z][a-z0-9-]{0,39}$/;
@@ -277,7 +277,8 @@ function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnT
   if (shadows(app.id)) return { code: "shadows_reviewed" };
   const operations = GENERIC_OPERATIONS_ACCEPTED.find(ops => same(app.operations, ops));
   if (!operations) return { code: "operations_not_generic" };
-  if (Object.keys(app).sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) throw new Error("mini_apps_invalid_entry");
+  // Rule 5 refuses this app alone (context L19825 / RA36 M2: a cp-valid pre-release version must never fail Gold Stars).
+  if (Object.keys(app).sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) return { code: "bundle_invalid" };
   const bytes = offered(served, app.id);
   if (typeof bytes === "string") return { code: bytes };
   // RA34 S1: Hermes also finds a skill by its frontmatter name, so the offered SKILL.md must answer to exactly its id.
