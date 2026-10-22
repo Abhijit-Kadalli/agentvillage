@@ -23,9 +23,9 @@ import { validateProjection } from "../../install/install_miniapps";
 // Nothing on a box reads these files yet (no skill, plugin or installer step): data only, no roll.
 //   bun test scripts/tests/mini-app-manifests.test.ts
 
-const MODULE_SHA256 = "b57067b1c21825ab86615bca63b45bda11d01afad00d5cf932a9d21dfcf6f7e0";
-const SCHEMA_SHA256 = "5f1102dcb44f772a81759bb1ffea99834eecf7bf524ffcd1850c1a3d7867298c";
-const PINS_SHA256 = "91ce39f5285954c5cc600bee4766ec45c413a792f6ff6a5fc8aee746f0e310fa";
+const MODULE_SHA256 = "777542ef0eb3145be81badb8a1383638a0a000dc3b725d307239f3c52f55df88";
+const SCHEMA_SHA256 = "13de632e759feb71a02694b9a10335b2662ab6e5d27393927623fab0757f8a92";
+const PINS_SHA256 = "108a8598fb8fe95afa012fbc812b6caa42960a10cef0bfa5342ad67f85fec0e1";
 const REPO = join(import.meta.dir, "..", "..");
 const DIR = join(REPO, "mini-apps");
 const m = createRequire(import.meta.url)("../mini-apps-manifests.cjs");
