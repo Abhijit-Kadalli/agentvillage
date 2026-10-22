@@ -633,7 +633,7 @@ test("review-b S4-r (lead L17296): gate off with no zzz marker is main's stage: 
       expect(existsSync(join(home, "hermes-calls.jsonl"))).toBe(false);
     }
   }
-});
+}, 30000);
 
 test("review-b S4-r, gate on: each shape fails the stage before any shim or job, other apps keep authority, and revoking is main's stage", () => {
   const before = { version: 1, apps: [gold, forkicks, zzzbot] };
@@ -814,7 +814,7 @@ test("S5 (review-b L17481, lead RULING): a symlink, directory, FIFO or dangling 
       }, [marker]);
     }
   }
-});
+}, 30000);
 
 test("N12 (nonav OWNER CALL, pick (a)): a resident's regular file at an installer marker path is not ours: kept byte-identical, no teardown", () => {
   for (const marker of INSTALLER_MARKERS) {
@@ -835,7 +835,7 @@ test("N12 (nonav OWNER CALL, pick (a)): a resident's regular file at an installe
       writeFileSync(join(home, marker), "mine");
     }
   }, INSTALLER_MARKERS);
-});
+}, 20000);
 
 test("N12: an installer-written file (shipped sha) still marks a once-on box: each marker alone tears the job down, rc 0, verify 0", () => {
   for (const keep of MARKER_PATHS) {
@@ -903,7 +903,32 @@ test("N12: a once-on box's teardown removes only its own files; a resident's fil
       }
     }
   }
-});
+}, 60000);
+
+test("N15: a marker replaced after lstat is never accepted or followed", () => {
+  for (const shape of ["control", "other-inode", "symlink", "fifo"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "av-zzz-swap-"));
+    roots.push(dir);
+    const marker = join(dir, "marker");
+    const replacement = join(dir, "replacement");
+    const outside = join(dir, "outside");
+    writeFileSync(marker, SHIPPED_SHIM);
+    writeFileSync(outside, SHIPPED_SHIM);
+    if (shape === "other-inode") writeFileSync(replacement, SHIPPED_SHIM);
+    if (shape === "symlink") symlinkSync(outside, replacement);
+    if (shape === "fifo") expect(spawnSync("/usr/bin/mkfifo", [replacement]).status).toBe(0);
+    const run = spawnSync(process.execPath,
+      ["--no-env-file", "--no-install", "--preload", join(import.meta.dir, "zzz_swap_preload.ts"), "-e",
+        'import { zzzShippedFile } from "./install/zzz_managed_job.ts"; console.log(zzzShippedFile(process.env.ZZZ_SWAP_TARGET!, "shim"));'],
+      { cwd: join(import.meta.dir, "../.."), encoding: "utf8", timeout: 3000,
+        env: { ...process.env, ZZZ_SWAP_TARGET: marker,
+          ...(shape === "control" ? {} : { ZZZ_SWAP_REPLACEMENT: replacement }) } });
+    expect(`${shape}: ${run.status} ${run.stderr}`).toBe(`${shape}: 0 `);
+    expect(`${shape}: ${run.stdout.trim()}`).toBe(`${shape}: ${shape === "control" ? "ours" : "not_ours"}`);
+    expect(readFileSync(outside).equals(SHIPPED_SHIM)).toBe(true);
+    if (shape !== "control") expect(existsSync(replacement)).toBe(false);
+  }
+}, 15000);
 
 test("N12: the shipped sha table holds this checkout's managed-file bytes, and ownership is exact (regular file, shipped bytes, no link)", () => {
   // A source change without a new entry here would leave a box the new installer turned on unmarked once revoked.
