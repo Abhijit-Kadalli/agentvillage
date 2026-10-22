@@ -82,9 +82,9 @@ function regular(path: string): void {
  *   3. an id that names a skill something else owns is refused: `shadows_reviewed`. That is a skill the
  *      installer ships (SHIPPED_SKILLS), a retired one (RETIRED_SKILL_DIRS), any skill directory in this
  *      overlay checkout (approval, recall, agent-profile, hooks, ... : every skill another installer step
- *      stages), or a `skills/<id>/` that already exists on the box and was NOT staged by this installer as a
- *      generic app (GENERIC_STATE). The repo carries no list of Hermes's bundled skill names, so a bundled
- *      or resident skill is caught by that last rule (its directory exists and is not ours);
+ *      stages), or a `skills/<id>/` that already exists on the box unless it holds the SKILL.md this installer
+ *      wrote there (GENERIC_STATE, per file). The repo carries no list of Hermes's bundled skill names, so a
+ *      bundled or resident skill is caught by that last rule (its directory exists and is not ours);
  *   4. operations must be EXACTLY one of GENERIC_OPERATIONS_ACCEPTED (the bridge's APP_OPERATIONS_ACCEPTED, the
  *      same lists in the same order; the cp has no other operations gate before this one):
  *      `operations_not_generic`;
@@ -95,12 +95,14 @@ function regular(path: string): void {
  *      `bundle_invalid`; bytes that do not hash to the entry's sha256 `sha_mismatch`. The pin is the offer's
  *      sha256 (the cp offers bytes only when they equal its validated manifest pin); the box reads no sha or
  *      path from the projection or anywhere else.
- * Ownership and removal: GENERIC_STATE (`mini-apps-generic.json`, written only by this installer) lists every
- * generic id whose `skills/<id>/` this installer created. A generic id that was staged and is no longer
- * accepted (left the projection, or refused) loses its SKILL.md (and its directory when empty) on the next
- * stage; the id stays owned while its directory remains. --verify fails `mini_apps_removal_pending` while such
- * a SKILL.md remains. The state is written as the union before any skill file and as the result last, so an
- * interrupted stage never loses ownership. A malformed state file is fatal (`mini_apps_generic_state_invalid`).
+ * Ownership and removal are PER FILE: GENERIC_STATE (`mini-apps-generic.json`, written only by this installer)
+ * records, per generic id, the sha256 of the SKILL.md this installer wrote. The installer overwrites or unlinks
+ * `skills/<id>/SKILL.md` only while that file is a regular file hashing to a recorded sha; otherwise the file is
+ * not ours, is never touched, and ownership is dropped. A generic id that was staged and is no longer accepted
+ * (left the projection, or refused) loses its SKILL.md (and its directory when empty) on the next stage;
+ * --verify fails `mini_apps_removal_pending` while such a file of ours remains. Before any skill file is written
+ * the state holds both the on-disk sha and the new one, and the result last, so an interrupted stage never loses
+ * ownership of a file it may have written. A malformed state file is fatal (`mini_apps_generic_state_invalid`).
  * A refused app fails ONLY itself: the receipt carries `refused: [{ id, code }]` (omitted when nothing is
  * refused, so today's receipts are byte-identical), `apps` / `files` / mini-apps.json / projectionSha256 cover
  * exactly the projection minus the refused ids, in projection order, and --verify recomputes that same subset
@@ -133,23 +135,41 @@ function offered(served: ReturnType<typeof parseSkillDelivery>, id: string): Buf
 /** Skill names something other than a generic app owns, whatever the box holds (see rule 3). */
 const STATIC_SHADOWS: ReadonlySet<string> = new Set<string>([...EDGE_SKILL_NAMES, ...RETIRED_SKILL_DIRS]);
 export const GENERIC_STATE = "mini-apps-generic.json";
-/** The generic ids this installer staged (GENERIC_STATE), validated; absent = none. Anything malformed is fatal. */
-function ownedGeneric(home: string): string[] {
+/** Per generic id, the sha256s of the SKILL.md this installer wrote (GENERIC_STATE); absent = none. Malformed is fatal. */
+function ownedGeneric(home: string): Map<string, string[]> {
   const path = join(home, GENERIC_STATE);
   regular(path);
-  if (!exists(path)) return [];
+  if (!exists(path)) return new Map();
   try {
-    if (lstatSync(path).size > 16384) throw new Error("size");
+    if (lstatSync(path).size > 65536) throw new Error("size");
     const doc = JSON.parse(readFileSync(path, "utf8"));
-    if (!closed(doc, "ids,version") || doc.version !== 1 || !Array.isArray(doc.ids) || doc.ids.length > 256) throw new Error("shape");
-    const ids = doc.ids as unknown[];
-    if (ids.some(id => typeof id !== "string" || !GENERIC_ID.test(id) || REVIEWED_IDS.has(id) || STATIC_SHADOWS.has(id)) || new Set(ids).size !== ids.length) throw new Error("ids");
-    return ids as string[];
+    if (!closed(doc, "skills,version") || doc.version !== 1 || !doc.skills || typeof doc.skills !== "object" || Array.isArray(doc.skills)) throw new Error("shape");
+    const entries = Object.entries(doc.skills as Record<string, unknown>);
+    if (entries.length > 256) throw new Error("size");
+    for (const [id, shas] of entries) {
+      if (!GENERIC_ID.test(id) || REVIEWED_IDS.has(id) || STATIC_SHADOWS.has(id) || !Array.isArray(shas) || shas.length < 1 || shas.length > 2 ||
+          shas.some(x => typeof x !== "string" || !HEX64.test(x)) || new Set(shas).size !== shas.length) throw new Error("entry");
+    }
+    return new Map(entries as [string, string[]][]);
   } catch { throw new Error("mini_apps_generic_state_invalid"); }
 }
-/** Rule 3 on a box: static names, a checkout skill directory, or an existing skills/<id>/ this installer does not own. */
-function shadowsOnBox(home: string, source: string, owned: ReadonlySet<string>): (id: string) => boolean {
-  return id => STATIC_SHADOWS.has(id) || exists(join(source, id)) || (!owned.has(id) && exists(join(home, "skills", id)));
+/** The sha256 of skills/<id>/SKILL.md when it is a plain regular file this installer wrote (a recorded sha), else null. */
+function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) => string | null {
+  return id => {
+    const shas = recorded.get(id);
+    const path = join(home, "skills", id, "SKILL.md");
+    if (!shas) return null;
+    try {
+      safePath(path);
+      if (!exists(path) || !lstatSync(path).isFile() || lstatSync(path).size > SKILL_MAX_BYTES) return null;
+      const digest = hash(readFileSync(path));
+      return shas.includes(digest) ? digest : null;
+    } catch { return null; }
+  };
+}
+/** Rule 3 on a box: static names, a checkout skill directory, or an existing skills/<id>/ not holding our own SKILL.md. */
+function shadowsOnBox(home: string, source: string, ours: (id: string) => string | null): (id: string) => boolean {
+  return id => STATIC_SHADOWS.has(id) || exists(join(source, id)) || (exists(join(home, "skills", id)) && ours(id) === null);
 }
 function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): Staged | { code: RefusalCode } {
   if (!GENERIC_ID.test(app.id)) throw new Error("mini_apps_invalid_entry");
@@ -257,11 +277,12 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   regular(target);
   // Per app: a refused generic app fails only itself (REFUSAL_CODES); everything else here is as before.
   const state = join(home, GENERIC_STATE);
-  const previous = ownedGeneric(home);
-  const { projection, staged, refused, intentEmpty } = resolveApps(value, served, shadowsOnBox(home, source, new Set(previous)));
+  const recorded = ownedGeneric(home);
+  const ours = ownedFile(home, recorded);
+  const { projection, staged, refused, intentEmpty } = resolveApps(value, served, shadowsOnBox(home, source, ours));
   const accepted = staged.filter(x => x.generic).map(x => x.app.id);
   // Previously staged generic apps no longer accepted: their SKILL.md goes (removal), the directory when empty.
-  const leaving = previous.filter(id => !accepted.includes(id));
+  const leaving = [...recorded.keys()].filter(id => !accepted.includes(id));
   const servedIds: string[] = [];
   const fallback: { id: string; code: FallbackCode }[] = [];
   const bytes = JSON.stringify(projection);
@@ -271,7 +292,6 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   // Preflight every exact owned path, never recursively remove a resident's files.
   for (const app of REVIEWED_MINI_APPS) regular(join(home, "skills", app.id, "SKILL.md"));
   for (const { app, generic } of staged) if (generic) regular(join(home, "skills", app.id, "SKILL.md"));
-  for (const id of leaving) regular(join(home, "skills", id, "SKILL.md"));
   // No desired apps and no mini-app state on the box (every non-cohort box): write nothing at all.
   const stateless = () => !exists(target) && !exists(credential) && !exists(state) &&
     REVIEWED_MINI_APPS.every(app => !owned(app.id) || !exists(join(home, "skills", app.id, "SKILL.md")));
@@ -305,12 +325,16 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     if (intentEmpty && exists(credential)) throw new Error("mini_apps_credential_removal_pending");
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
-    for (const id of leaving) if (exists(join(home, "skills", id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
+    for (const id of leaving) if (ours(id) !== null) throw new Error("mini_apps_removal_pending");
   } else if (!(projection.apps.length === 0 && stateless())) {
     // Fail closed even if copying/removal is interrupted. Publish desired authority last.
-    // Ownership first (the union), so an interrupted stage never forgets a generic directory it may create.
-    const union = [...new Set([...previous, ...accepted])].sort();
-    if (union.length) atomic(state, JSON.stringify({ version: 1, ids: union }));
+    // Ownership first: every file of ours on disk now, plus each file about to be written, so an interrupted
+    // stage never forgets a file it may have written. Only files that are ours right now are carried.
+    const before = new Map<string, string[]>();
+    for (const id of recorded.keys()) { const digest = ours(id); if (digest) before.set(id, [digest]); }
+    for (const { app, generic } of staged) if (generic) before.set(app.id, [...new Set([...(before.get(app.id) ?? []), hash(generic)])]);
+    const record = (map: Map<string, string[]>) => atomic(state, JSON.stringify({ version: 1, skills: Object.fromEntries([...map].sort(([a], [b]) => a < b ? -1 : 1)) }));
+    if (before.size || recorded.size) record(before);
     atomic(target, JSON.stringify({ version: 1, apps: [] }));
     if (intentEmpty && exists(credential)) unlinkSync(credential);
     for (const app of REVIEWED_MINI_APPS) {
@@ -318,14 +342,16 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
       if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(path)) unlinkSync(path);
     }
     for (const id of leaving) {
+      // Only our own file (a recorded sha, a plain file) is ever unlinked; anything else is left as it is.
       const dir = join(home, "skills", id);
-      if (exists(join(dir, "SKILL.md"))) unlinkSync(join(dir, "SKILL.md"));
-      if (exists(dir) && lstatSync(dir).isDirectory() && readdirSync(dir).length === 0) rmdirSync(dir);
+      if (ours(id) === null) continue;
+      unlinkSync(join(dir, "SKILL.md"));
+      if (readdirSync(dir).length === 0) rmdirSync(dir);
     }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     atomic(target, bytes);
-    // Still owned: every accepted generic id, and a leaving one whose directory a resident's file keeps.
-    if (union.length) atomic(state, JSON.stringify({ version: 1, ids: union.filter(id => accepted.includes(id) || exists(join(home, "skills", id))) }));
+    // The result: exactly the files this stage wrote (a leaving id's ownership ends with its file).
+    if (before.size || recorded.size) record(new Map(staged.filter(x => x.generic).map(({ app, generic }) => [app.id, [hash(generic!)]])));
   }
   // `skills` also marks an installer that can take served bytes (an older one never writes it).
   return { version: 1, projectionSha256: hash(bytes), files, apps: projection.apps.map(({ id, version }) => ({ id, version })), staged: true,

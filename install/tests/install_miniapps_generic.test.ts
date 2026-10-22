@@ -334,15 +334,14 @@ test("review-b N1 (box side): a symlinked skill directory or file for a generic 
     expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toEqual([{ id: "civic-board", code: "shadows_reviewed" }]);
     expect(readdirSync(outside)).toEqual([]);
   }
-  // Our own staged SKILL.md replaced by a link: fatal, nothing written through it.
+  // Our own staged SKILL.md replaced by a link: no longer our file, so that app is refused and the link left alone.
   const root = home(), outside = home();
   staged({ version: 1, apps: [generic()] }, root, delivery);
   rmSync(skillPath(root, "civic-board"));
   symlinkSync(join(outside, "SKILL.md"), skillPath(root, "civic-board"));
-  const before = readFileSync(join(root, "mini-apps.json"), "utf8");
-  expect(() => reconcileMiniApps({ version: 1, apps: [generic()] }, root, undefined, false, delivery)).toThrow("mini_apps_symlink_refused");
+  expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toEqual([{ id: "civic-board", code: "shadows_reviewed" }]);
   expect(readdirSync(outside)).toEqual([]);
-  expect(readFileSync(join(root, "mini-apps.json"), "utf8")).toBe(before);
+  expect(statSync(join(root, "skills", "civic-board")).isDirectory()).toBe(true);
 });
 
 test("security fold (1): a generic id never shadows a skill something else owns", () => {
@@ -370,10 +369,40 @@ test("security fold (1): a generic id never shadows a skill something else owns"
   // A directory this installer staged as a generic app stays ours across stages (a re-stage, a new SKILL.md).
   const root = home();
   staged({ version: 1, apps: [generic()] }, root, delivery("civic-board"));
-  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, ids: ["civic-board"] });
+  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: { "civic-board": [sha(TEXT)] } });
   const next = "---\nname: civic-board\nversion: 1.0.1\n---\n# Civic Board v-next\n";
   expect(staged({ version: 1, apps: [generic()] }, root, bundle(entry("civic-board", next))).refused).toBeUndefined();
   expect(readFileSync(skillPath(root, "civic-board"), "utf8")).toBe(next);
+  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: { "civic-board": [sha(next)] } });
+});
+
+test("security fold (3): ownership is per file: a SKILL.md this installer did not write is never overwritten or unlinked", () => {
+  const delivery = bundle(entry("civic-board", TEXT));
+  // A resident (or agent) replaces our SKILL.md with their own: the id is refused, their file is never overwritten.
+  const root = home();
+  staged({ version: 1, apps: [gold(), generic()] }, root, delivery);
+  writeFileSync(skillPath(root, "civic-board"), "resident's own");
+  expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toEqual([{ id: "civic-board", code: "shadows_reviewed" }]);
+  expect(readFileSync(skillPath(root, "civic-board"), "utf8")).toBe("resident's own");
+  // Ownership ended with our file: the state no longer names it, and leaving the projection never unlinks theirs.
+  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
+  staged({ version: 1, apps: [gold()] }, root);
+  expect(readFileSync(skillPath(root, "civic-board"), "utf8")).toBe("resident's own");
+  // Same while the id is still recorded (a foreign file put there between stages): never unlinked, ownership dropped.
+  const other = home();
+  staged({ version: 1, apps: [generic()] }, other, delivery);
+  writeFileSync(skillPath(other, "civic-board"), "agent's own");
+  staged({ version: 1, apps: [gold()] }, other);
+  expect(readFileSync(skillPath(other, "civic-board"), "utf8")).toBe("agent's own");
+  expect(JSON.parse(readFileSync(join(other, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
+  expect(reconcileMiniApps({ version: 1, apps: [gold()] }, other, undefined, true).apps).toEqual([{ id: "gold-stars", version: "1.1.0" }]);
+  // Our file removed while the directory stays: ownership is dropped, and the id is not ours to write into again.
+  const third = home();
+  staged({ version: 1, apps: [generic()] }, third, delivery);
+  rmSync(skillPath(third, "civic-board"));
+  expect(staged({ version: 1, apps: [generic()] }, third, delivery).refused).toEqual([{ id: "civic-board", code: "shadows_reviewed" }]);
+  expect(existsSync(skillPath(third, "civic-board"))).toBe(false);
+  expect(JSON.parse(readFileSync(join(third, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
 });
 
 test("security fold (2): a generic app that leaves the projection or is refused later loses its SKILL.md; verify fails while one remains", () => {
@@ -388,28 +417,27 @@ test("security fold (2): a generic app that leaves the projection or is refused 
     staged({ version: 1, apps: [gold(), generic()] }, root, delivery);
     staged(later.projection, root, later.delivery);
     expect(existsSync(join(root, "skills", "civic-board"))).toBe(false);
-    expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, ids: [] });
+    expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
     expect(pluginInstalled(root, [["civic-board", READ]])).toEqual([false]);
     // Re-added later: staged again (the directory is gone, so nothing shadows it).
     expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toBeUndefined();
     expect(readFileSync(skillPath(root, "civic-board"), "utf8")).toBe(TEXT);
   }
-  // A resident's file in the directory keeps the directory (and our ownership of it); only SKILL.md goes.
+  // A resident's file in the directory keeps the directory; only our SKILL.md goes, and with it our ownership
+  // (the directory is then not ours: a later re-add is refused rather than written into a resident's directory).
   const root = home();
   staged({ version: 1, apps: [generic()] }, root, delivery);
   writeFileSync(join(root, "skills", "civic-board", "notes.txt"), "keep");
   staged({ version: 1, apps: [gold()] }, root);
   expect(existsSync(skillPath(root, "civic-board"))).toBe(false);
   expect(readFileSync(join(root, "skills", "civic-board", "notes.txt"), "utf8")).toBe("keep");
-  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, ids: ["civic-board"] });
-  expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toBeUndefined();
-  // An interrupted removal (the SKILL.md still there, the id still owned): verify says removal pending.
-  writeFileSync(skillPath(root, "civic-board"), TEXT);
-  staged({ version: 1, apps: [gold(), generic()] }, root, delivery);
+  expect(JSON.parse(readFileSync(join(root, GENERIC_STATE), "utf8"))).toEqual({ version: 1, skills: {} });
+  expect(staged({ version: 1, apps: [gold(), generic()] }, root, delivery).refused).toEqual([{ id: "civic-board", code: "shadows_reviewed" }]);
+  // An interrupted removal (our SKILL.md still there, still recorded): verify says removal pending.
   const left = home();
   staged({ version: 1, apps: [gold(), generic()] }, left, delivery);
   staged({ version: 1, apps: [gold()] }, left);
-  writeFileSync(join(left, GENERIC_STATE), JSON.stringify({ version: 1, ids: ["civic-board"] }));
+  writeFileSync(join(left, GENERIC_STATE), JSON.stringify({ version: 1, skills: { "civic-board": [sha(TEXT)] } }));
   mkdirSync(join(left, "skills", "civic-board"));
   writeFileSync(skillPath(left, "civic-board"), TEXT);
   expect(() => reconcileMiniApps({ version: 1, apps: [gold()] }, left, undefined, true)).toThrow("mini_apps_removal_pending");
@@ -419,8 +447,11 @@ test("security fold (2): a generic app that leaves the projection or is refused 
 });
 
 test("security fold: the ownership file is the installer's own; a malformed or linked one is fatal", () => {
-  for (const bad of ["{not json", JSON.stringify({ version: 2, ids: [] }), JSON.stringify({ version: 1, ids: ["../x"] }), JSON.stringify({ version: 1, ids: ["dizko"] }),
-    JSON.stringify({ version: 1, ids: ["approval"] }), JSON.stringify({ version: 1, ids: ["a", "a"] }), JSON.stringify({ version: 1, ids: [] , extra: 1 })]) {
+  const one = [sha(TEXT)];
+  for (const bad of ["{not json", JSON.stringify({ version: 2, skills: {} }), JSON.stringify({ version: 1, ids: ["civic-board"] }), JSON.stringify({ version: 1, skills: [] }),
+    JSON.stringify({ version: 1, skills: { "../x": one } }), JSON.stringify({ version: 1, skills: { dizko: one } }), JSON.stringify({ version: 1, skills: { approval: one } }),
+    JSON.stringify({ version: 1, skills: { a: [] } }), JSON.stringify({ version: 1, skills: { a: ["NOT-HEX"] } }), JSON.stringify({ version: 1, skills: { a: [one[0], one[0]] } }),
+    JSON.stringify({ version: 1, skills: { a: [sha("1"), sha("2"), sha("3")] } }), JSON.stringify({ version: 1, skills: {}, extra: 1 })]) {
     const root = home();
     writeFileSync(join(root, GENERIC_STATE), bad);
     const before = snapshot(root);
@@ -428,7 +459,7 @@ test("security fold: the ownership file is the installer's own; a malformed or l
     expect(snapshot(root)).toEqual(before);
   }
   const root = home(), outside = home();
-  writeFileSync(join(outside, "state.json"), JSON.stringify({ version: 1, ids: [] }));
+  writeFileSync(join(outside, "state.json"), JSON.stringify({ version: 1, skills: {} }));
   symlinkSync(join(outside, "state.json"), join(root, GENERIC_STATE));
   expect(() => reconcileMiniApps({ version: 1, apps: [gold()] }, root)).toThrow("mini_apps_symlink_refused");
   // A box that never had a generic app gets no ownership file.
