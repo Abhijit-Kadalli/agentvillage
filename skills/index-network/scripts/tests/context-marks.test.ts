@@ -375,7 +375,7 @@ describe("the golden: today's inputs give byte-identical outputs", () => {
 });
 
 describe("writers are unchanged: nothing in the overlay writes a new id", () => {
-  test("only the two readers (and these tests) name an id, anywhere in the repo", () => {
+  test("only the two readers, the Private items rule in tools.md (and these tests) name an id, anywhere in the repo", () => {
     const REPO = join(import.meta.dir, "..", "..", "..", "..");
     const hits: string[] = [];
     // Every file git tracks or would add (OV-415 refute N6): the whole checkout, less what .gitignore drops.
@@ -392,6 +392,8 @@ describe("writers are unchanged: nothing in the overlay writes a new id", () => 
       if (text.includes("agentvillage/private") || text.includes("agentvillage/edgecityindia2026")) hits.push(rel);
     }
     expect(hits.sort()).toEqual([
+      // ov#431: the developer docs describe the vocabulary; write nothing.
+      "docs/MINI-APPS-DEVELOPER.md",
       "scripts/tests/memory-signal-gate.test.ts",
       "skills/index-network/scripts/context-tags.ts",
       "skills/index-network/scripts/memory_signal_gate.py",
@@ -399,6 +401,8 @@ describe("writers are unchanged: nothing in the overlay writes a new id", () => 
       "skills/index-network/scripts/tests/context-marks.test.ts",
       "skills/index-network/scripts/tests/context-private-skip.test.ts",
       "skills/index-network/scripts/tests/fixtures/context-marks-golden.json",
+      // VISIBILITY B3 prompt half: the agent's reader-side rule ("Private items"), which writes nothing.
+      "skills/index-network/tools.md",
     ]);
   });
 });
