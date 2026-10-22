@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /** Disk-only curated reconciliation. CP owns intent, leasing, restart and applied evidence. */
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, parse } from "node:path";
-import { EDGE_SKILL_NAMES, hermesHome } from "./paths";
+import { EDGE_SKILL_NAMES, hermesHome, RETIRED_SKILL_DIRS } from "./paths";
 
 /**
  * ROLODEX.PERSON (rc42, CLAIMS 7799): the gold-stars entry also carries `rolodex.person` (a read of
@@ -79,7 +79,12 @@ function regular(path: string): void {
  *      plugins/village-bridge/_mini_apps.py, so the box never stages an id its bridge would refuse);
  *   2. a REVIEWED id takes today's path only (exact id + operations + version + skills, else the WHOLE stage
  *      fails as today): a reviewed id is never refused alone and never staged as a generic app;
- *   3. an id the installer ships as a skill (SHIPPED_SKILLS) is refused: `shadows_reviewed`;
+ *   3. an id that names a skill something else owns is refused: `shadows_reviewed`. That is a skill the
+ *      installer ships (SHIPPED_SKILLS), a retired one (RETIRED_SKILL_DIRS), any skill directory in this
+ *      overlay checkout (approval, recall, agent-profile, hooks, ... : every skill another installer step
+ *      stages), or a `skills/<id>/` that already exists on the box and was NOT staged by this installer as a
+ *      generic app (GENERIC_STATE). The repo carries no list of Hermes's bundled skill names, so a bundled
+ *      or resident skill is caught by that last rule (its directory exists and is not ours);
  *   4. operations must be EXACTLY one of GENERIC_OPERATIONS_ACCEPTED (the bridge's APP_OPERATIONS_ACCEPTED, the
  *      same lists in the same order; the cp has no other operations gate before this one):
  *      `operations_not_generic`;
@@ -90,6 +95,12 @@ function regular(path: string): void {
  *      `bundle_invalid`; bytes that do not hash to the entry's sha256 `sha_mismatch`. The pin is the offer's
  *      sha256 (the cp offers bytes only when they equal its validated manifest pin); the box reads no sha or
  *      path from the projection or anywhere else.
+ * Ownership and removal: GENERIC_STATE (`mini-apps-generic.json`, written only by this installer) lists every
+ * generic id whose `skills/<id>/` this installer created. A generic id that was staged and is no longer
+ * accepted (left the projection, or refused) loses its SKILL.md (and its directory when empty) on the next
+ * stage; the id stays owned while its directory remains. --verify fails `mini_apps_removal_pending` while such
+ * a SKILL.md remains. The state is written as the union before any skill file and as the result last, so an
+ * interrupted stage never loses ownership. A malformed state file is fatal (`mini_apps_generic_state_invalid`).
  * A refused app fails ONLY itself: the receipt carries `refused: [{ id, code }]` (omitted when nothing is
  * refused, so today's receipts are byte-identical), `apps` / `files` / mini-apps.json / projectionSha256 cover
  * exactly the projection minus the refused ids, in projection order, and --verify recomputes that same subset
@@ -119,14 +130,35 @@ function offered(served: ReturnType<typeof parseSkillDelivery>, id: string): Buf
   if (entry.code) return entry.code === "mini_apps_skill_hash_mismatch" ? "sha_mismatch" : "bundle_invalid";
   return entry.bytes;
 }
-function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnType<typeof parseSkillDelivery>): Staged | { code: RefusalCode } {
+/** Skill names something other than a generic app owns, whatever the box holds (see rule 3). */
+const STATIC_SHADOWS: ReadonlySet<string> = new Set<string>([...EDGE_SKILL_NAMES, ...RETIRED_SKILL_DIRS]);
+export const GENERIC_STATE = "mini-apps-generic.json";
+/** The generic ids this installer staged (GENERIC_STATE), validated; absent = none. Anything malformed is fatal. */
+function ownedGeneric(home: string): string[] {
+  const path = join(home, GENERIC_STATE);
+  regular(path);
+  if (!exists(path)) return [];
+  try {
+    if (lstatSync(path).size > 16384) throw new Error("size");
+    const doc = JSON.parse(readFileSync(path, "utf8"));
+    if (!closed(doc, "ids,version") || doc.version !== 1 || !Array.isArray(doc.ids) || doc.ids.length > 256) throw new Error("shape");
+    const ids = doc.ids as unknown[];
+    if (ids.some(id => typeof id !== "string" || !GENERIC_ID.test(id) || REVIEWED_IDS.has(id) || STATIC_SHADOWS.has(id)) || new Set(ids).size !== ids.length) throw new Error("ids");
+    return ids as string[];
+  } catch { throw new Error("mini_apps_generic_state_invalid"); }
+}
+/** Rule 3 on a box: static names, a checkout skill directory, or an existing skills/<id>/ this installer does not own. */
+function shadowsOnBox(home: string, source: string, owned: ReadonlySet<string>): (id: string) => boolean {
+  return id => STATIC_SHADOWS.has(id) || exists(join(source, id)) || (!owned.has(id) && exists(join(home, "skills", id)));
+}
+function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): Staged | { code: RefusalCode } {
   if (!GENERIC_ID.test(app.id)) throw new Error("mini_apps_invalid_entry");
   if (REVIEWED_IDS.has(app.id)) {
     const reviewed = ALL_REVIEWED.find(x => x.id === app.id && same(app.operations, x.operations));
     if (!reviewed || Object.keys(app).sort().join(",") !== "id,operations,skills,version" || app.version !== reviewed.version || !same(app.skills, reviewed.skills)) throw new Error("mini_apps_unreviewed_bundle");
     return { app: reviewed };
   }
-  if (SHIPPED_SKILLS.has(app.id)) return { code: "shadows_reviewed" };
+  if (shadows(app.id)) return { code: "shadows_reviewed" };
   const operations = GENERIC_OPERATIONS_ACCEPTED.find(ops => same(app.operations, ops));
   if (!operations) return { code: "operations_not_generic" };
   if (Object.keys(app).sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) throw new Error("mini_apps_invalid_entry");
@@ -134,7 +166,7 @@ function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnT
   if (typeof bytes === "string") return { code: bytes };
   return { app: { id: app.id, version: app.version, operations: [...operations], skills: [app.id] }, generic: bytes };
 }
-function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDelivery>): { projection: Projection; staged: Staged[]; refused: { id: string; code: RefusalCode }[]; intentEmpty: boolean } {
+function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): { projection: Projection; staged: Staged[]; refused: { id: string; code: RefusalCode }[]; intentEmpty: boolean } {
   if (!value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "apps,version" || !("version" in value) || value.version !== 1 || !("apps" in value) || !Array.isArray(value.apps)) throw new Error("mini_apps_invalid_projection");
   const seen = new Set<string>();
   const staged: Staged[] = [];
@@ -143,7 +175,7 @@ function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDeliver
     if (!app || typeof app !== "object" || Array.isArray(app) || !("id" in app) || typeof app.id !== "string") throw new Error("mini_apps_invalid_entry");
     if (seen.has(app.id)) throw new Error("mini_apps_unreviewed_bundle");
     seen.add(app.id);
-    const result = checkApp(app as Record<string, unknown> & { id: string }, served);
+    const result = checkApp(app as Record<string, unknown> & { id: string }, served, shadows);
     if ("code" in result) refused.push({ id: app.id, code: result.code });
     else staged.push(result);
   }
@@ -151,7 +183,7 @@ function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDeliver
 }
 /** All or nothing: the projection with every app accepted (a generic app needs its offer), or the first refusal's code. */
 export function validateProjection(value: unknown, delivery: SkillDelivery = {}): Projection {
-  const { projection, refused } = resolveApps(value, parseSkillDelivery(delivery));
+  const { projection, refused } = resolveApps(value, parseSkillDelivery(delivery), id => STATIC_SHADOWS.has(id));
   if (refused.length) throw new Error(refused[0].code);
   return projection;
 }
@@ -224,7 +256,12 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   const credential = join(home, "village-bridge.json");
   regular(target);
   // Per app: a refused generic app fails only itself (REFUSAL_CODES); everything else here is as before.
-  const { projection, staged, refused, intentEmpty } = resolveApps(value, served);
+  const state = join(home, GENERIC_STATE);
+  const previous = ownedGeneric(home);
+  const { projection, staged, refused, intentEmpty } = resolveApps(value, served, shadowsOnBox(home, source, new Set(previous)));
+  const accepted = staged.filter(x => x.generic).map(x => x.app.id);
+  // Previously staged generic apps no longer accepted: their SKILL.md goes (removal), the directory when empty.
+  const leaving = previous.filter(id => !accepted.includes(id));
   const servedIds: string[] = [];
   const fallback: { id: string; code: FallbackCode }[] = [];
   const bytes = JSON.stringify(projection);
@@ -234,8 +271,9 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   // Preflight every exact owned path, never recursively remove a resident's files.
   for (const app of REVIEWED_MINI_APPS) regular(join(home, "skills", app.id, "SKILL.md"));
   for (const { app, generic } of staged) if (generic) regular(join(home, "skills", app.id, "SKILL.md"));
+  for (const id of leaving) regular(join(home, "skills", id, "SKILL.md"));
   // No desired apps and no mini-app state on the box (every non-cohort box): write nothing at all.
-  const stateless = () => !exists(target) && !exists(credential) &&
+  const stateless = () => !exists(target) && !exists(credential) && !exists(state) &&
     REVIEWED_MINI_APPS.every(app => !owned(app.id) || !exists(join(home, "skills", app.id, "SKILL.md")));
   const desired = staged.map(({ app, generic }) => {
     const entry = served.entries.get(app.id);
@@ -267,16 +305,27 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     if (intentEmpty && exists(credential)) throw new Error("mini_apps_credential_removal_pending");
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
+    for (const id of leaving) if (exists(join(home, "skills", id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
   } else if (!(projection.apps.length === 0 && stateless())) {
     // Fail closed even if copying/removal is interrupted. Publish desired authority last.
+    // Ownership first (the union), so an interrupted stage never forgets a generic directory it may create.
+    const union = [...new Set([...previous, ...accepted])].sort();
+    if (union.length) atomic(state, JSON.stringify({ version: 1, ids: union }));
     atomic(target, JSON.stringify({ version: 1, apps: [] }));
     if (intentEmpty && exists(credential)) unlinkSync(credential);
     for (const app of REVIEWED_MINI_APPS) {
       const path = join(home, "skills", app.id, "SKILL.md");
       if (owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(path)) unlinkSync(path);
     }
+    for (const id of leaving) {
+      const dir = join(home, "skills", id);
+      if (exists(join(dir, "SKILL.md"))) unlinkSync(join(dir, "SKILL.md"));
+      if (exists(dir) && lstatSync(dir).isDirectory() && readdirSync(dir).length === 0) rmdirSync(dir);
+    }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     atomic(target, bytes);
+    // Still owned: every accepted generic id, and a leaving one whose directory a resident's file keeps.
+    if (union.length) atomic(state, JSON.stringify({ version: 1, ids: union.filter(id => accepted.includes(id) || exists(join(home, "skills", id))) }));
   }
   // `skills` also marks an installer that can take served bytes (an older one never writes it).
   return { version: 1, projectionSha256: hash(bytes), files, apps: projection.apps.map(({ id, version }) => ({ id, version })), staged: true,
