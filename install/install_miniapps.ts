@@ -184,7 +184,8 @@ function ownedFile(home: string, recorded: Map<string, string[]>): (id: string) 
 function frontmatter(text: string): string | null {
   const content = text.replace(/^﻿/, "");
   if (!content.startsWith("---")) return null;
-  const end = /\n---[ \t\r]*\n/.exec(content.slice(3));
+  // Python's str \s (Hermes's `\n---\s*\n`) also covers \x1c-\x1f and \x85, which JS \s does not.
+  const end = /\n---[\s\x1c-\x1f\x85]*?\n/.exec(content.slice(3));
   return end ? content.slice(3, end.index + 3) : null;
 }
 const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, "$2");
@@ -192,10 +193,13 @@ const unquote = (value: string) => value.replace(/^(["'])(.*)\1$/, "$2");
  * Every value a frontmatter line could give `name` (any line whose key reads as name, quoted or not, any indent):
  * an over-approximation, so a skill already on the box is never missed by a YAML form this reader does not model.
  */
-function frontmatterNames(text: string): string[] {
+function frontmatterNames(text: string): string[] | null {
   const block = frontmatter(text);
   if (block === null) return [];
-  return [...block.matchAll(/^[ \t]*["']?name["']?[ \t]*:[ \t]*(.*?)[ \t\r]*$/gm)].flatMap(m => [unquote(m[1]), unquote(m[1].replace(/[ \t]+#.*$/, ""))]);
+  const values = [...block.matchAll(/^[ \t]*["']?name["']?[ \t]*:[ \t]*(.*?)[ \t\r]*$/gm)].map(m => m[1]);
+  // A name this reader cannot read as one plain line (empty, block scalar, alias, anchor, tag, flow): unknown.
+  if (values.some(v => v === "" || /^[|>&*!{[]/.test(v))) return null;
+  return values.flatMap(v => [unquote(v), unquote(v.replace(/[ \t]+#.*$/, ""))]);
 }
 /**
  * RA34 S1 for the OFFERED bytes, canonical so no YAML reading can differ: every frontmatter line is blank, a
@@ -209,7 +213,7 @@ export function namesItself(text: string, id: string): boolean {
   const lines = block.split("\n").map(l => l.replace(/\r$/, ""));
   if (!lines.every(l => /^[ \t]*$/.test(l) || /^[ \t]/.test(l) || /^- /.test(l) || /^[A-Za-z0-9_-]+:([ \t]|$)/.test(l))) return false;
   const names = lines.filter(l => /^name:/.test(l));
-  return names.length === 1 && [id, `"${id}"`, `'${id}'`].includes(names[0].slice(5).trim()) && frontmatterNames(text).every(n => n === id);
+  return names.length === 1 && [id, `"${id}"`, `'${id}'`].includes(names[0].slice(5).trim()) && !!frontmatterNames(text)?.every(n => n === id);
 }
 const WALK_MAX_ENTRIES = 20000;
 const WALK_MAX_DEPTH = 8;
@@ -235,7 +239,11 @@ function skillNames(home: string): { top: string; names: string[] }[] | null {
       else if (e.isDirectory()) { if (!e.name.startsWith(".")) walk(path, t, depth + 1); }
       else if (e.name === "SKILL.md" && e.isFile()) {
         const names = [parse(dir).base];
-        if (lstatSync(path).size <= 65536) names.push(...frontmatterNames(readFileSync(path, "utf8")));
+        // Only the head is read (the frontmatter is at the top); a frontmatter not closed inside it is unknown.
+        const head = readFileSync(path).subarray(0, 65536).toString("utf8");
+        const found = frontmatterNames(head);
+        if (found === null || (head.startsWith("---") && frontmatter(head) === null && lstatSync(path).size > 65536)) throw new Error("unknown");
+        names.push(...found);
         out.push({ top: t, names });
       } else if (!hasSkill && e.isFile() && e.name.endsWith(".md")) out.push({ top: t, names: [e.name.slice(0, -3)] });
     }

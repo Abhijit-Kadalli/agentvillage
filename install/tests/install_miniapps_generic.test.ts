@@ -494,6 +494,14 @@ test("RA34 S1: an id any other skill under skills/** answers to (category dir na
     root => { mkdirSync(join(root, "skills", "productivity", "helper"), { recursive: true }); writeFileSync(join(root, "skills", "productivity", "helper", "SKILL.md"), "---\nname: civic-board\n---\n"); },
     root => { mkdirSync(join(root, "skills", "my-notes"), { recursive: true }); writeFileSync(join(root, "skills", "my-notes", "SKILL.md"), "---\nname: \"civic-board\"\n---\n"); },
     root => { mkdirSync(join(root, "skills", "a", "b"), { recursive: true }); writeFileSync(join(root, "skills", "a", "b", "SKILL.md"), "---\nname: b\n\"name\": civic-board # last wins\n---\n"); },
+    // Closed by a fence only Python's \s accepts (\x1c): still read.
+    root => { mkdirSync(join(root, "skills", "a", "c"), { recursive: true }); writeFileSync(join(root, "skills", "a", "c", "SKILL.md"), "---\nname: civic-board\n---\x1c\n"); },
+    // A name this reader cannot read as one plain line: unknown, so every generic app is refused.
+    ...["name: |\n  civic-board", "name: >-\n  other", "name: *anchor", "name: !!str other", "name:\n  civic-board"].map(fm => (root: string) => {
+      mkdirSync(join(root, "skills", "a", "d"), { recursive: true }); writeFileSync(join(root, "skills", "a", "d", "SKILL.md"), `---\n${fm}\n---\n`);
+    }),
+    // Over the read cap with its frontmatter never closed inside the head: unknown.
+    root => { mkdirSync(join(root, "skills", "a", "e"), { recursive: true }); writeFileSync(join(root, "skills", "a", "e", "SKILL.md"), "---\ndescription: " + "x".repeat(70000) + "\nname: civic-board\n---\n"); },
     root => { mkdirSync(join(root, "skills", "legacy"), { recursive: true }); writeFileSync(join(root, "skills", "legacy", "civic-board.md"), "# flat\n"); },
     root => { const outside = home(); mkdirSync(join(root, "skills", "cat"), { recursive: true }); symlinkSync(outside, join(root, "skills", "cat", "civic-board")); },
   ];
