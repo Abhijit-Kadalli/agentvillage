@@ -184,7 +184,7 @@ function probeLister(): { lister: Lister | null; why: string } {
 }
 
 const XATTR = probeLister();
-if (!XATTR.lister) console.warn(`restore_memory_xattr: SKIPPING the no-xattr assertion: ${XATTR.why}`);
+if (!XATTR.lister && process.platform !== "linux") console.warn(`restore_memory_xattr: SKIPPING the no-xattr assertion: ${XATTR.why}`);
 
 /** The attributes the OS puts on any file this process writes in `dir`: none on
  * Linux; on macOS, `com.apple.provenance` when the process is provenance-tracked. */
@@ -228,10 +228,13 @@ describe("restore-memory and tar extended headers (PAX x/g, Solaris X)", () => {
     expect(marker(home)).toMatchObject({ status: "restored" });
   });
 
-  test.skipIf(!XATTR.lister)(
+  // On Linux (CI's platform) a missing lister is a failure, never a skip: the
+  // assertion must not go quiet if CI loses python3 or a settable tmp.
+  test.skipIf(!XATTR.lister && process.platform !== "linux")(
     `control ok-regular: the restored file carries no extended attribute${XATTR.lister ? "" : ` (SKIPPED: ${XATTR.why})`}`,
     async () => {
-      const lister = XATTR.lister!;
+      if (!XATTR.lister) throw new Error(`no working xattr lister on linux: ${XATTR.why}`);
+      const lister = XATTR.lister;
       const f = loadFixture("ok-regular");
       const home = tempDir("home");
       expect(await restore(home, f)).toMatchObject({ status: "restored", written: 1 });
