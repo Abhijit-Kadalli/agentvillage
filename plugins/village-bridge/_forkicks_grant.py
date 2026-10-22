@@ -554,8 +554,18 @@ def _refuse_older(home, draft_id, task, owner, marker_path, reason):
     try:
         with drafts_lock(home):
             tombstone(home, draft_id, reason)
-    except Exception:  # noqa: BLE001 - the marker is still dropped; logged
+    except Exception:  # noqa: BLE001 - fail closed (security review of 9e201d83)
         LOG.warning("village_bridge forkicks tombstone code=unwritable")
+        # No line and no withdraw yet: the marker goes back to awaiting, so the next pass re-runs the newest check
+        # first and retries the tombstone; a started marker would let the pass confirm this draft.
+        try:
+            _replace(marker_path, {**_read(marker_path), "phase": "awaiting"})
+        except Exception:  # noqa: BLE001 - the pass never places a draft without a marker
+            try:
+                _drop(marker_path)
+            except Exception:  # noqa: BLE001 - logged above
+                pass
+        return "tombstone_unwritable"
     if reason != "latest_unreadable":
         try:
             approval_modules().withdraw(task, "superseded")

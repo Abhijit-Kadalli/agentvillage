@@ -288,6 +288,34 @@ class SupersedeTest(unittest.TestCase):
         self.assertTrue(grant.tombstoned(self.home, D1))
         self.assertEqual(self.app.orders, {})
 
+    def test_an_unwritable_tombstone_fails_closed_and_the_next_pass_retries_it(self):
+        # Security review of 9e201d83: a refusal whose tombstone cannot be written sends no line and leaves the
+        # marker at awaiting, so the pass never confirms the draft and the next pass refuses it for good.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_guarded = grant.guarded_start
+
+        def guarded(home, draft_id, start):
+            out = real_guarded(home, draft_id, start)
+            grant.set_latest(self.home, D2)
+            return out
+
+        with patch.object(grant, 'guarded_start', side_effect=guarded), \
+                patch.object(grant, 'tombstone', side_effect=OSError('no space')):
+            self.run_pass()
+        self.daemon.start.assert_called_once()
+        marker = json.loads((self.home / 'forkicks-drafts' / (D1 + '.await')).read_text())
+        self.assertEqual(marker['phase'], 'awaiting')
+        self.assertFalse((self.home / 'forkicks-drafts' / (D1 + '.refused')).exists())
+        self.assertEqual(self.sent, [])
+        self.daemon.withdraw.assert_not_called()
+        self.run_pass()
+        self.assertTrue(grant.tombstoned(self.home, D1))
+        self.assertFalse((self.home / 'forkicks-drafts' / (D1 + '.await')).exists())
+        self.assertEqual(self.sent, [('42', grant.SUPERSEDED_LINE)])
+        self.assertEqual(self.confirm(D1), {'error': 'approval_card_closed', 'instruction': mini.ORDER_SUPERSEDED})
+        self.assertEqual(self.app.orders, {})
+
     def test_an_order_in_flight_without_a_tombstone_keeps_its_confirm(self):
         # A started draft whose start was never refused is an order in flight: the agent's confirm adopts it,
         # even after a newer prepare (the newest rule's only exception).
