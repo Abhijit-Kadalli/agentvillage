@@ -4,14 +4,23 @@ The model receives a fixed instruction and one current pair post. No AIAgent,
 conversation history, plugin prompt, tools, or compression is constructed.
 """
 from __future__ import annotations
+import os
+import sys
+
+# Hermes launches .py cron scripts with its bound interpreter. Isolate before
+# other imports: neither scripts/ nor PYTHONPATH may shadow library modules.
+if __name__ == "__main__" and not sys.flags.isolated:
+    try:
+        os.execv(sys.executable, [sys.executable, "-I", os.path.realpath(__file__)])
+    except OSError:
+        os._exit(0)
 
 import hashlib
 import importlib.util
 import json
-import os
 import re
 import signal
-import sys
+import stat
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +40,13 @@ SYSTEM = (
     "Do not invent facts about the resident or claim human review. "
     "Return only the reply body, with no preface or tool call."
 )
+# Only fixed OpenAI-compatible HTTPS endpoints are supported. Hermes provider
+# discovery can import owner-installed agent plugins, including ACP processes.
+DIRECT_ENDPOINTS = {
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+    "openai-api": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+}
 
 
 def _bridge(home: Path):
@@ -118,18 +134,91 @@ def _pending_post(bridge, managed, home: Path, session_id: str, task_id: str, ev
     return post["body"][:4096]
 
 
-def _reply(body: str):
-    # Use Hermes's supported provider adapter directly. Auxiliary call_llm and
-    # AIAgent add orchestration/middleware paths that are outside this boundary.
-    from agent.auxiliary_client import resolve_provider_client
-    client, model = resolve_provider_client("auto")
-    if client is None or not isinstance(model, str) or not model:
-        raise ValueError("model")
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": body}],
-        max_tokens=512, timeout=30,
-    )
+def _model_route(home: Path):
+    # This child does not import Hermes's provider registry: discovery imports
+    # arbitrary owner-installed model-provider code. Read only the selection.
+    import yaml
+    path = home / "config.yaml"
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("config-link")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as source:
+        meta = os.fstat(source.fileno())
+        if not stat.S_ISREG(meta.st_mode) or meta.st_size > 65536:
+            raise ValueError("config-size")
+        config = yaml.safe_load(source)
+    selected = config.get("model") if isinstance(config, dict) else None
+    provider = selected.get("provider") if isinstance(selected, dict) else None
+    configured_model = selected.get("default") if isinstance(selected, dict) else None
+    if (not isinstance(configured_model, str) or not 1 <= len(configured_model) <= 200
+            or any(ord(char) < 32 for char in configured_model)):
+        raise ValueError("model-not-configured")
+    # The control plane sets model.default without a provider. A slash-form
+    # model and this profile's OpenRouter key give a single fixed route; never
+    # consult Hermes's automatic provider registry or a sibling's process key.
+    implicit = provider in (None, "", "auto")
+    if implicit:
+        if "/" not in configured_model or not _home_env_key(home, "OPENROUTER_API_KEY"):
+            raise ValueError("provider-not-bounded")
+        provider = "openrouter"
+    if not isinstance(provider, str) or provider not in DIRECT_ENDPOINTS:
+        raise ValueError("provider-not-bounded")
+    endpoint, key_name = DIRECT_ENDPOINTS[provider]
+    if selected.get("base_url") not in (None, "", endpoint):
+        raise ValueError("base-url")
+    if selected.get("api_mode") not in (None, "", "chat_completions"):
+        raise ValueError("api-mode")
+    key = _home_env_key(home, key_name) or (None if implicit else selected.get("api_key") or os.environ.get(key_name))
+    if (not isinstance(key, str) or not 1 <= len(key) <= 4096
+            or any(ord(char) < 33 for char in key)):
+        raise ValueError("credential")
+    return endpoint, key, configured_model
+
+
+def _home_env_key(home: Path, key_name: str):
+    """Read only one bound profile key; Hermes scrubs undeclared child envs."""
+    path = home / ".env"
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("env-link")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as source:
+        meta = os.fstat(source.fileno())
+        if not stat.S_ISREG(meta.st_mode) or meta.st_size > 65536:
+            raise ValueError("env-size")
+        values = []
+        for raw in source:
+            line = raw.decode("utf-8").strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            name, sep, value = line.partition("=")
+            if sep and name.strip() == key_name:
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                values.append(value)
+        if len(values) > 1:
+            raise ValueError("duplicate-credential")
+        return values[0] if values else None
+
+
+def _reply(body: str, home: Path):
+    if len(body.encode("utf-8")) > 8192:
+        raise ValueError("post-size")
+    endpoint, key, model = _model_route(home)
+    # One fixed HTTPS endpoint, no tools, retries, Hermes provider plugins,
+    # AIAgent, auxiliary hooks, or inherited proxy settings.
+    import httpx
+    from openai import OpenAI
+    with httpx.Client(trust_env=False, timeout=30) as http:
+        with OpenAI(api_key=key, base_url=endpoint, http_client=http, max_retries=0) as client:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": body}],
+                max_tokens=512, timeout=30,
+            )
     choices = response.choices
     if not isinstance(choices, list) or len(choices) != 1:
         raise ValueError("choices")
@@ -161,12 +250,13 @@ def run(home: Path) -> None:
     task_id = "cron:" + job_id + ":" + uuid.uuid4().hex
     with managed.managed_runner_scope(job_id, session_id):
         if event.get("kind") == "bootstrap":
-            _native(bridge, session_id, task_id, {"operation": "zzz.create_thread", "room": event["roomId"]})
+            _native(bridge, session_id, task_id, {"operation": "zzz.create_thread", "room": event["roomId"],
+                "title": managed.INTRO_TITLE, "body": managed.INTRO_BODY})
             return
         if event.get("kind") != "incoming":
             return
         post = _pending_post(bridge, managed, home, session_id, task_id, event)
-        answer = _reply(post)
+        answer = _reply(post, home)
         # Native handle rechecks current pair, revocation, pending thread and
         # daily budget immediately before consuming the write reservation.
         _native(bridge, session_id, task_id, {
@@ -176,20 +266,15 @@ def run(home: Path) -> None:
 
 def main() -> None:
     try:
-        # Hermes selects its own interpreter for .py cron scripts. Re-enter
-        # isolated mode before loading its provider or the staged bridge, so
-        # resident files in scripts/ and PYTHONPATH cannot shadow imports.
-        if not sys.flags.isolated:
-            os.execv(sys.executable, [sys.executable, "-I", str(Path(__file__).resolve(strict=True))])
         signal.alarm(90)
         home = Path(__file__).resolve(strict=True).parent.parent
         if os.environ.get("HERMES_HOME") and Path(os.environ["HERMES_HOME"]).resolve(strict=True) != home:
-            return
+            raise ValueError("home")
         run(home)
     except Exception:
-        # The no_agent job is local and silent. Never put pair text, model
-        # output, credentials or provider errors on its stdout/stderr.
-        pass
+        # The scheduler records a failed script status. Never put pair text,
+        # model output, credentials or provider errors on stdout/stderr.
+        os._exit(1)
 
 
 if __name__ == "__main__":

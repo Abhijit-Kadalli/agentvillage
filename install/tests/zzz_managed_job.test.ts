@@ -183,7 +183,7 @@ function seedState(home: string) {
 test("S1 teardown scope (nonav L17033): a failed stage removes ONLY the zzz job, shim, managed files and state", () => {
   const { home, stage, jobs } = fakeBox();
   const full = { version: 1, apps: REVIEWED_MINI_APPS };
-  const unknown = { version: 1, apps: [...REVIEWED_MINI_APPS, { id: "unknown-app", version: "1.0.0", operations: ["mini-app.read"], skills: ["unknown-app"] }] };
+  const unknown = { version: 1, apps: [...REVIEWED_MINI_APPS, { id: "unknown_app", version: "1.0.0", operations: ["mini-app.read"], skills: ["unknown_app"] }] };
   for (const failure of [{ input: "not json" as unknown, args: [] as string[] }, { input: unknown, args: [] }, { input: full, args: ["--force"] }]) {
     expect(stage(full).status).toBe(0);
     expect(jobs()).toHaveLength(1);
@@ -876,7 +876,7 @@ test("N12: an installer-written file (shipped sha) still marks a once-on box: ea
   }
 });
 
-test("N12: a once-on box's teardown removes only its own files; a resident's file or other object at a marker path stays as it is", () => {
+for (const replaced of MARKER_PATHS) test(`N12: a once-on box's teardown preserves a resident's object at ${replaced}`, () => {
   const replacements: [string, (path: string, elsewhere: string, original: Buffer) => void][] = [
     ["resident's file", path => writeFileSync(path, "mine", { mode: 0o600 })],
     ["directory", path => { mkdirSync(path); writeFileSync(join(path, "inside"), "resident"); }],
@@ -887,7 +887,7 @@ test("N12: a once-on box's teardown removes only its own files; a resident's fil
   // The other (installer-written) markers keep the teardown going; a successful revocation and a failed stage
   // (failClosedZzz) both run it. A regular file by a plugin state name is the plugin's (its bytes vary per box): only
   // non-regular objects there.
-  for (const replaced of MARKER_PATHS) for (const input of [alone as unknown, "not json"]) {
+  for (const input of [alone as unknown, "not json"]) {
     for (const [label, plant] of replacements) {
       if (replaced.startsWith("zzzbot/") && label === "resident's file") continue;
       const { home, stage, jobs } = fakeBox();
@@ -919,7 +919,7 @@ test("N12: a once-on box's teardown removes only its own files; a resident's fil
       }
     }
   }
-}, 60000);
+}, 30000);
 
 test("N15: a marker replaced after lstat is never accepted or followed", () => {
   for (const shape of ["control", "other-inode", "symlink", "fifo"] as const) {
@@ -935,7 +935,7 @@ test("N15: a marker replaced after lstat is never accepted or followed", () => {
     if (shape === "fifo") expect(spawnSync("/usr/bin/mkfifo", [replacement]).status).toBe(0);
     const run = spawnSync(process.execPath,
       ["--no-env-file", "--no-install", "--preload", join(import.meta.dir, "zzz_swap_preload.ts"), "-e",
-        'import { zzzShippedFile } from "./install/zzz_managed_job.ts"; console.log(zzzShippedFile(process.env.ZZZ_SWAP_TARGET!, "shim"));'],
+        'import { zzzShippedFile } from "./install/zzz_managed_job.ts"; console.log(zzzShippedFile(process.env.ZZZ_SWAP_TARGET!, "runner"));'],
       { cwd: join(import.meta.dir, "../.."), encoding: "utf8", timeout: 3000,
         env: { ...process.env, ZZZ_SWAP_TARGET: marker,
           ...(shape === "control" ? {} : { ZZZ_SWAP_REPLACEMENT: replacement }) } });

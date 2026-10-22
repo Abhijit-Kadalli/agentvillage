@@ -5,6 +5,7 @@ import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdi
 import { dirname, isAbsolute, join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
 import { hermesAvailable } from "./install_index";
+import { syncZzzInstalledJobId } from "./zzz_job_registry";
 
 export const ZZZ_JOB_NAME = "Edge — zzz pairs";
 export const ZZZ_JOB_SCRIPT = "zzz_managed_runner.py";
@@ -19,14 +20,13 @@ const ID = /^[0-9a-f]{12}$/;
 
 /**
  * ov#441 S5 + N12 (nonav OWNER CALL, pick (a)): the sha256 of every version of the installer-written managed files
- * this installer ever shipped. The shim is copied byte for byte (skills/zzzbot/scripts -> scripts/), never generated
- * per box. Derived from the git history of skills/zzzbot/{scripts/agentvillage_zzz_pairs.sh,prompts/participate.md}:
- * one version each (3de7d213), in no earlier tag. Append a new version's sha when the source changes; never drop one
- * (a box an older installer turned on must still be torn down). A test pins the current source's sha in each list.
+ * this installer ever shipped. The runner and legacy shim are copied byte for byte from skills/zzzbot/scripts to
+ * scripts/. Keep the legacy shim hash so a box running an older installer can still be torn down. Append new hashes
+ * when shipped source changes; a test pins the current source hashes.
  */
 export const ZZZ_SHIPPED_SHA256 = {
   shim: ["1db538dc9d5d602bfbc71bbb8da0b49b4fee0280b603f75222df94e43ef82eff"],
-  runner: ["abcfb73fd0b5dda0b7c33d604933dc96f08076233750a4a6cddf10b424c58b5e"],
+  runner: ["7986413386089ff3cfa6934999e949ad3cb14d3d35e4214ee9809fe19919c5e0"],
   prompt: ["f5d0d69e6af8a9076e92d31114fc7ff8ec6f99b54a0b980c7a308f5e8b7f42d2"],
 } as const;
 export type ZzzShippedKind = keyof typeof ZZZ_SHIPPED_SHA256;
@@ -293,6 +293,8 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
       if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_job_invalid");
       jobApi(python!, home, { action: "remove", id: job.id, name: ZZZ_JOB_NAME });
     }
+    if (lingeringJobs(home).length) throw new Error("zzz_job_removal_pending");
+    syncZzzInstalledJobId(home, null);
     // The installer only ever writes the shim into a real scripts/ directory; never follow a symlinked one. N12: it
     // removes only its own shim (a shipped version's bytes); a resident's file or any other object by that name stays.
     const dir = realScriptsDir(home);
@@ -322,7 +324,11 @@ export function reconcileZzzManagedJob(home: string, installed: boolean): void {
   jobApi(python, home, { action: "install", ...(id ? { id } : {}), name: ZZZ_JOB_NAME,
     prompt, script: ZZZ_JOB_SCRIPT, schedule: ZZZ_JOB_SCHEDULE,
     toolsets: [...ZZZ_JOB_TOOLSETS], home });
-  if (!confirmed(jobs(home))) throw new Error("zzz_job_not_confirmed");
+  const installedJob = jobs(home);
+  if (!confirmed(installedJob)) throw new Error("zzz_job_not_confirmed");
+  const confirmedId = installedJob[0].id;
+  if (typeof confirmedId !== "string" || !ID.test(confirmedId)) throw new Error("zzz_job_invalid");
+  syncZzzInstalledJobId(home, confirmedId);
   const legacy = join(scriptsDir(home), LEGACY_JOB_SCRIPT);
   if (zzzShippedFile(legacy, "shim") === "ours") unlinkSync(legacy);
 }
