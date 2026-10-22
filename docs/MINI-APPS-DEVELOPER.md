@@ -4,6 +4,8 @@ This guide is for partners who build a mini-app for Agent Village. It tells you 
 
 Read [mini-apps/README.md](../mini-apps/README.md) first for the rules. This guide does not repeat them.
 
+Adding a generic app (public reads plus its own Context, a control-plane change only)? Start with the one-page [quickstart](MINI-APPS-QUICKSTART.md).
+
 Three things hold for everything below.
 
 - `MINI_APPS_MANIFESTS` is OFF in production. The control plane serves its five reviewed constants today. A manifest in this repo does not change what a resident sees.
