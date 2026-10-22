@@ -1254,23 +1254,47 @@ describe("the CLI", () => {
   });
 });
 
-describe("the five real manifests", () => {
+describe("the real manifests in mini-apps/catalog.json", () => {
+  // The id list comes FROM the catalog, so the next first-party app does not break this test.
   const index = JSON.parse(readFileSync(join(REPO, "mini-apps", "catalog.json"), "utf8"));
+  const EXPECTED = {
+    "manifest.validator_pin": true, "manifest.schema": true, "skills.sha256": true, "version.bump": null,
+    "service.reachability": null, "service.budgets": null,
+    "approval.prepare_pair": true, "approval.summary_render": null, "approval.fake_cp": null,
+    "hygiene.fixtures": null, "hygiene.secrets": null, "hygiene.duplicate_keys": null, "hygiene.error_bodies": null,
+  };
+  test("the catalog lists unique ids, each with mini-apps/<id>/manifest.json", () => {
+    expect(Array.isArray(index.apps)).toBe(true);
+    expect(index.apps.length).toBeGreaterThan(0);
+    expect(new Set(index.apps).size).toBe(index.apps.length);
+    for (const id of index.apps) expect([id, existsSync(join(REPO, "mini-apps", id, "manifest.json"))]).toEqual([id, true]);
+  });
   test("each runs without crashing: item 1 passes, item 5 is not_run (no fixtures in the closed mini-apps/ tree), so each fails honestly", () => {
-    expect(index.apps).toEqual(["gold-stars", "dizko", "zzzbot", "slopfolio", "forkicks"]);
     for (const id of index.apps) {
       const r = runConformance({ manifest: `mini-apps/${id}/manifest.json` }, { cwd: REPO });
       invariants(r);
       expect([id, r.sha256]).toEqual([id, sha256(readFileSync(join(REPO, "mini-apps", id, "manifest.json")))]);
       const got = Object.fromEntries(r.results.map(x => [x.check, x.pass]));
-      expect([id, got]).toEqual([id, {
-        "manifest.validator_pin": true, "manifest.schema": true, "skills.sha256": true, "version.bump": null,
-        "service.reachability": null, "service.budgets": null,
-        "approval.prepare_pair": true, "approval.summary_render": null, "approval.fake_cp": null,
-        "hygiene.fixtures": null, "hygiene.secrets": null, "hygiene.duplicate_keys": null, "hygiene.error_bodies": null,
-      }]);
+      expect([id, got]).toEqual([id, EXPECTED]);
       expect([id, r.passed]).toEqual([id, false]);
       expect(main([`mini-apps/${id}/manifest.json`], { cwd: REPO, print: () => {}, warn: () => {} })).toBe(1);
     }
+  });
+  test("mosaic (service.kind \"none\", no operations): every service check is not_run, never a FAIL and never a silent PASS; items 1 and 4 still run", () => {
+    expect(index.apps).toContain("mosaic");
+    const path = "mini-apps/mosaic/manifest.json";
+    const m = JSON.parse(readFileSync(join(REPO, path), "utf8"));
+    expect([m.service, m.operations]).toEqual([{ kind: "none" }, []]);
+    const r = runConformance({ manifest: path }, { cwd: REPO });
+    invariants(r);
+    expect(Object.fromEntries(r.results.map(x => [x.check, x.pass]))).toEqual(EXPECTED);
+    const service = r.results.filter(x => x.check.startsWith("service."));
+    expect(service.length).toBeGreaterThan(0);
+    for (const x of service) expect([x.check, x.pass]).toEqual([x.check, null]);
+    const note = Object.fromEntries(r.results.map(x => [x.check, x.note]));
+    expect([note["manifest.schema"].startsWith("a valid v2 manifest"), note["skills.sha256"], note["approval.prepare_pair"]])
+      .toEqual([true, "matches: skills/mosaic/SKILL.md", "no needs-card operation"]);
+    expect(r.passed).toBe(false);
+    expect(main([path], { cwd: REPO, print: () => {}, warn: () => {} })).toBe(1);
   });
 });
