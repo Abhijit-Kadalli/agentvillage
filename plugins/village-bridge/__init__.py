@@ -28,6 +28,7 @@ from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIO
                          ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD)
 from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from . import _forkicks_grant
+from . import _mini_app_card, _mini_app_grant
 from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
 
 SETTINGS = "https://agents.edgecity.live/connections/village"
@@ -762,13 +763,19 @@ class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
 
-def transport(config, payload, flat_card=True):
+# A generic app's refusal code (design 2.2): forwarded alone, never upstream text.
+GENERIC_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def transport(config, payload, flat_card=True, operation_class=None):
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if payload.get("operation", "").startswith("forkicks.") and len(data) > 65536:
         raise ValueError("request_too_large")
+    if operation_class is not None and len(data) > 65536:
+        raise ValueError("request_too_large")  # a generic prepare / needs-card op (CARD-OV): the needs-card ceiling
     headers = {"Authorization": "Bearer " + config["token"], "Content-Type": "application/json"}
     zzz = payload.get("operation") in ZZZ_OPERATIONS
-    if payload.get("operation") in (*ZZZ_WRITE_OPERATIONS, "slopfolio.prepare", "forkicks.order.confirm"):
+    if payload.get("operation") in (*ZZZ_WRITE_OPERATIONS, "slopfolio.prepare", "forkicks.order.confirm") or operation_class is not None:
         # The app selects a larger request budget only for these declared writes.
         headers["X-Village-Operation"] = payload["operation"]
     if payload.get("operation") == "forkicks.order.prepare" and flat_card:
@@ -778,7 +785,8 @@ def transport(config, payload, flat_card=True):
                       headers=headers, method="POST")
     opener = build_opener(ProxyHandler({}), NoRedirect())
     try:
-        with opener.open(request, timeout=60 if payload.get("operation") in ("gold-stars.send", "forkicks.order.confirm") else 25) as response:
+        long = payload.get("operation") in ("gold-stars.send", "forkicks.order.confirm") or operation_class == "needs-card"
+        with opener.open(request, timeout=60 if long else 25) as response:
             # rolodex.person: a tighter overall byte bound (the largest legitimate answer is about 30 KB), applied
             # before any parse, and a duplicate key at any depth refuses the whole answer.
             image_request = payload.get("operation") == "forkicks.menu" and payload.get("format") == "image"
@@ -786,11 +794,21 @@ def transport(config, payload, flat_card=True):
             data = response.read(limit + 1)
             if len(data) > limit:
                 return {"error": "response_too_large", "instruction": RESPONSE_TOO_LARGE}
-            if payload.get("operation") == "rolodex.person" or image_request:
+            if payload.get("operation") == "rolodex.person" or image_request or operation_class is not None:
                 return json.loads(data, object_pairs_hook=no_duplicate_keys)
             return json.loads(data)
     except HTTPError as error:
         # Never print URLs, headers or response text on failure.
+        if operation_class is not None:
+            # A generic app's refusal: its code (when it is one) and the status; never its text (design 2.2).
+            try:
+                raw = error.read(4097)
+                refusal = json.loads(raw, object_pairs_hook=no_duplicate_keys) if len(raw) <= 4096 else {}
+                code = refusal.get("code") if isinstance(refusal, dict) else None
+            except Exception:
+                code = None
+            return {"error": code if isinstance(code, str) and GENERIC_CODE.fullmatch(code) else "connection_or_request_refused",
+                    "status": error.code}
         codes = {
             "star_daily_limit": "All three stars are used today. More arrive at midnight India time.",
             "star_already_sent": "You already sent this person a star today.",
@@ -849,12 +867,18 @@ def handle(args, **kwargs):
         if not isinstance(args, dict):
             raise _InvalidArguments()
         op = args.get("operation")
-        if not isinstance(op, str) or (op not in READ_OPERATIONS and op not in WRITE_OPERATIONS):
+        # CARD-OV: a generic app's prepare / needs-card op is known only from an op record in the projection
+        # (_mini_app_card.projected_operation); every v1 projection carries none, so this stays None and every
+        # operation outside the reviewed sets is refused exactly as before.
+        generic = (_mini_app_card.projected_operation(home, op)
+                   if isinstance(op, str) and op not in READ_OPERATIONS and op not in WRITE_OPERATIONS else None)
+        if not isinstance(op, str) or (op not in READ_OPERATIONS and op not in WRITE_OPERATIONS and generic is None):
             raise _InvalidArguments()
-        app_id = (args.get("appId") if op in APP_SCOPED_OPERATIONS else "forkicks" if op.startswith("forkicks.")
-                  else "zzzbot" if op in ZZZ_OPERATIONS else "slopfolio" if op in ("slopfolio.prepare", "slopfolio.status") else "gold-stars")
-        if not isinstance(app_id, str) or not installed(home, app_id, op):
-            return json.dumps({"error": "mini_app_not_installed"})
+        if generic is None:
+            app_id = (args.get("appId") if op in APP_SCOPED_OPERATIONS else "forkicks" if op.startswith("forkicks.")
+                      else "zzzbot" if op in ZZZ_OPERATIONS else "slopfolio" if op in ("slopfolio.prepare", "slopfolio.status") else "gold-stars")
+            if not isinstance(app_id, str) or not installed(home, app_id, op):
+                return json.dumps({"error": "mini_app_not_installed"})
         path = home / "village-bridge.json"
         if not path.is_file() or path.stat().st_size > 2048:
             return json.dumps({"error": "agent_access_pending", "settingsUrl": SETTINGS, "instruction": "This installed mini-app is awaiting verified runtime access. Retry shortly or use its website. Never provide credentials in chat."})
@@ -868,6 +892,8 @@ def handle(args, **kwargs):
             raise ValueError("invalid_configuration")
         if datetime.fromisoformat(config["expiresAt"].replace("Z", "+00:00")) <= datetime.now(timezone.utc):
             return json.dumps({"error": "sign_in_expired", "signInUrl": SIGNIN, "instruction": "Sign in to Agent Village again; the paired agent updates automatically. Never ask for codes or credentials in chat."})
+        if generic is not None:
+            return _generic_card_op(home, context, config, generic, args)
         payload = {"operation": op}
         if op == "rolodex.search" and set(args) == {"operation", "query"}:
             query = args["query"]
@@ -1296,6 +1322,84 @@ def _forkicks_card_at_prepare(home, config, draft_id):
             "error": refusal.get("error") or "approval_refused", "instruction": ORDER_CARD_NOT_RAISED}
 
 
+def _generic_error(result):
+    """A generic app's refusal for the agent: the code and the plugin's own instruction, never upstream text."""
+    code = result.get("error") if isinstance(result, dict) else None
+    code = code if isinstance(code, str) and GENERIC_CODE.fullmatch(code) else "village_unavailable"
+    if code == "mini_app_confirm_in_progress":
+        return {"error": code, "instruction": _mini_app_card.ACTION_CONFIRM_IN_PROGRESS, "retryable": True}
+    if code == "mini_app_approval_required":
+        return {"error": code, "instruction": _mini_app_card.ACTION_APPROVE_IN_BOT}
+    out = {"error": code, "instruction": _mini_app_card.ACTION_UNCLEAR}
+    if isinstance(result, dict) and type(result.get("status")) is int and 400 <= result["status"] <= 599:
+        out["status"] = result["status"]
+    return out
+
+
+def _generic_card_op(home, context, config, generic, args):
+    """CARD-OV: a generic app's `prepare` op saves its preview for its needs-card op; a `needs-card` op goes through
+    `authorize_action` (member class, a human card, start with grant) before the app call. Dark until a projection
+    carries op records (see _mini_app_card.projected_app)."""
+    app_id, app, record = generic
+    op = record["name"]
+    arguments = args.get("arguments")
+    accepts = ("Nothing was sent. " + op + " accepts only: arguments (an object" +
+               (", exactly {draftId} for a confirm" if record["class"] == "needs-card" else "") +
+               "). Fix the arguments and call again; this is not an outage.")
+    if set(args) != {"operation", "arguments"} or not isinstance(arguments, dict):
+        raise _InvalidArguments(op, accepts)
+    if record["class"] == "prepare":
+        card_op = _mini_app_card.card_operation_for(app, op)
+        if card_op is None or card_op.get("card") is None:
+            return json.dumps({"error": "approval_card_undeclared"})  # never prepare a draft no card can show
+        try:
+            gate_verified()
+        except Exception:
+            return json.dumps({"error": "approval_unavailable", "instruction": "Preparing this needs this agent's verified approval gate, which is unavailable now. Do not claim anything was prepared."})
+        payload = {"operation": op, "arguments": arguments,
+                   "turnId": str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["mini-app-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))}
+        result = _mini_app_card.unframe(transport(config, payload, operation_class="prepare"), app_id, op)
+        if not isinstance(result, dict) or "error" in result:
+            return json.dumps(_generic_error(result))
+        try:
+            _mini_app_card.save_preview(home, app_id, op, card_op, result, arguments, context, config)
+        except ValueError as error:
+            code = str(error) if str(error) in _mini_app_card.CARD_ERRORS else "approval_preview_unavailable"
+            LOG.warning("village_bridge mini_app card_refused code=%s", code)  # the code only
+            return json.dumps({"error": code, "instruction": _mini_app_card.ACTION_CARD_REFUSED})
+        return json.dumps({"data": scrubbed_tree(result), "handling": HANDLING}, ensure_ascii=False)
+    # needs-card
+    if set(arguments) != {"draftId"} or not isinstance(arguments["draftId"], str) or not _mini_app_card.DRAFT_ID.fullmatch(arguments["draftId"]):
+        raise _InvalidArguments(op, accepts)
+    declaration = record.get("card")
+    if declaration is None:
+        return json.dumps({"error": "approval_card_undeclared"})  # never propose
+    draft_id = arguments["draftId"]
+    try:
+        saved = _mini_app_card.load_preview(home, app_id, draft_id, config, record)
+    except Exception:
+        return json.dumps({"error": "approval_preview_unavailable", "instruction": "This exact prepared draft is unavailable. Do not claim anything was done or retry an uncertain confirm by preparing another."})
+    if saved.get("session") != context["SESSION_KEY"] or saved.get("message") == context["MESSAGE_ID"]:
+        return json.dumps({"error": "mini_app_confirmation_required", "instruction": _mini_app_card.ACTION_CONFIRMATION_REQUIRED})
+    done = _mini_app_grant.placed(home, app_id, draft_id)
+    if done is not None:  # the on-grant pass (or an earlier confirm) placed it: that receipt, and nothing is called
+        return json.dumps({"data": {"receipt": done["receipt"]}, "handling": HANDLING}, ensure_ascii=False)
+    proof, refusal = _mini_app_card.authorize_action(saved, app_id, op, draft_id, declaration, on_requested=lambda task: _mini_app_grant.instruction_if_tracked(
+        home, app_id, op, draft_id, task, _ensure_mini_app_pass))
+    if refusal:
+        return json.dumps(refusal)
+    again = _mini_app_card.projected_operation(home, op)  # recheck after the daemon round trips, before any effect
+    if again is None or again[2].get("class") != "needs-card" or again[2].get("card") != declaration:
+        return json.dumps({"error": "mini_app_not_installed"})
+    result = _mini_app_card.unframe(transport(config, {"operation": op, "arguments": {"draftId": draft_id}, "approval": proof},
+                                              operation_class="needs-card"), app_id, op)
+    receipt = _mini_app_grant.receipt_of(result)
+    if receipt is None:
+        return json.dumps(_generic_error(result))
+    _mini_app_grant.record_placed(home, app_id, draft_id, receipt, "agent")
+    return json.dumps({"data": scrubbed_tree(result), "handling": HANDLING}, ensure_ascii=False)
+
+
 # FK-ON-GRANT (CLAIMS L17710/L17711/L17726): the For Kicks on-grant pass (_forkicks_grant.py) on av-events'
 # approval poller, in the gateway process only (a `village` call runs only in the owner's Telegram DM there).
 LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", "acp", "subagent", "local", ""})
@@ -1340,7 +1444,45 @@ def _ensure_forkicks_pass():
     if not ap.configured() or ap.process_env(ap.POLLER_ENV).lower() in ("0", "false", "no", "off"):
         return False
     ap.register_pass(_forkicks_grant.PASS_NAME, _forkicks_grant_pass)
+    _register_busy(ap)
     return bool(ap.ensure_poller())
+
+
+def _register_busy(ap):
+    """Adaptive polling (approval L19771 (c); core has no push): while a card of either pass is younger than its TTL,
+    av-events runs the passes every MIN_POLL_S (5 s) instead of AV_APPROVAL_POLL_S (30 s). An older av-events without
+    register_busy keeps the fixed interval."""
+    register_busy = getattr(ap, "register_busy", None)
+    if not callable(register_busy):
+        return
+    register_busy(_forkicks_grant.PASS_NAME, lambda: _mini_app_grant.young_marker([hermes_home() / "forkicks-drafts"], _forkicks_grant.TTL_S))
+    register_busy(_mini_app_grant.PASS_NAME, lambda: _mini_app_grant.busy(hermes_home()))
+
+
+def _mini_app_grant_pass(execute=True):
+    if not execute:
+        return  # a one-shot pass outside the gateway never starts, confirms or sends (av-events S3)
+    home = hermes_home()
+    config = _pass_config(home)
+    if config is None:
+        return
+    _mini_app_grant.run_pass(home, config, transport, _mini_app_card.projected_operation)
+
+
+def _ensure_mini_app_pass():
+    """The generic card's on-grant pass, as `_ensure_forkicks_pass` registers For Kicks' (same operators' switch)."""
+    ap = importlib.import_module("hermes_plugins.av_events._approval")
+    if not ap.configured() or ap.process_env(ap.POLLER_ENV).lower() in ("0", "false", "no", "off"):
+        return False
+    ap.register_pass(_mini_app_grant.PASS_NAME, _mini_app_grant_pass)
+    _register_busy(ap)
+    return bool(ap.ensure_poller())
+
+
+def _mini_apps_resume():
+    """Register the generic pass only on a box that has generic drafts (none today: the path is dark)."""
+    if _mini_app_card.drafts_root(hermes_home()).is_dir():
+        _ensure_mini_app_pass()
 
 
 def _gateway_argv():
@@ -1361,6 +1503,14 @@ def _forkicks_on_session_start(*_args, **kwargs):
         pass
 
 
+def _mini_apps_on_session_start(*_args, **kwargs):
+    try:
+        if str(kwargs.get("platform") or "").strip().lower() not in LOCAL_PLATFORMS:
+            _mini_apps_resume()
+    except Exception:
+        pass
+
+
 _REGISTERED = False
 def register(ctx):
     global _REGISTERED
@@ -1371,10 +1521,15 @@ def register(ctx):
     if callable(emit):
         _forkicks_grant.set_emitter(lambda event: emit("forkicks.order_outcome", event))
         _forkicks_grant.set_card_emitter(lambda event: emit("forkicks.card_requested", event))
+        _mini_app_grant.set_emitter(lambda event: emit("mini_app.action_outcome", event))
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         try:
             register_hook("on_session_start", _forkicks_on_session_start)
+        except Exception:
+            pass
+        try:
+            register_hook("on_session_start", _mini_apps_on_session_start)
         except Exception:
             pass
     if _gateway_argv():
@@ -1382,4 +1537,8 @@ def register(ctx):
             _ensure_forkicks_pass()
         except Exception:
             pass  # av-events not loaded yet: the first session start registers it
+        try:
+            _mini_apps_resume()
+        except Exception:
+            pass
     _REGISTERED = True
