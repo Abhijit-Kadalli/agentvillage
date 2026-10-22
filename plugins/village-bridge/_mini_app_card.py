@@ -1,22 +1,26 @@
 """The ONE generic approval card (mini-apps v2 Phase 1 item 6): any catalog app's `needs-card` operation gets the For
-Kicks minimal card, four plain strings re-derived on the box from the app's saved preview through the op's manifest
-`approval.card` declaration, then the For Kicks authorize path generalised.
+Kicks minimal card, four plain strings, then the For Kicks authorize path generalised.
 
-Contract (CARD-COMMON, design MINIAPPS-PLATFORM-v2 section 3): spec + golden vectors in
+Contract (CARD-COMMON; cp#352 context-card-cp; design MINIAPPS-PLATFORM-v2 section 3). Spec + golden vectors in
 tests/vectors/mini-app-card.{md,json} (byte-identical copies in the app and the control plane).
 
-- The four strings: `card_fields(declaration, preview, request=None)`; the fit rules are For Kicks' own
-  (`card_value_fits`, `card_name_fakes_line`, imported, never copied). A string that does not fit is refused, never cut.
-- Class and key (CARD-COMMON item 3; Carter L19773, approval L19771): the parent `marketplace.app.action` is autonomous for
-  everyone, so a needs-card op proposes under its MEMBER class `marketplace.app.action.<operation>` (the operation's full
-  name, whose first segment is the app id: the gold-stars.send member row's shape) with key `<class>:<draftId>`. The
-  decision must be `requested` (approval pins that member row to ask when the app is reviewed); `autonomous` (no row yet)
-  is refused `approval_card_unpinned` and nothing runs: a payment never runs without its card.
-- The draft cache: `$HERMES_HOME/mini-apps/drafts/<appId>/<draftId>.json`, 0600, O_EXCL, owner + origin + hash, no links.
-- How the box learns an op's class and card: from an op RECORD in the projection, `{"name", "class", "prepare"?, "card"?}`
-  (`projected_operation`). The v1 projection (`mini-apps.json` version 1) carries operation NAMES only, and the cp's
-  v1Entry refuses any non-read op of a generic app (`relay_non_read_op`), so on every box today no op has a class here and
-  every generic path below is dark: `projected_app` returns None until a projection that carries op records exists.
+- The four strings: `card_fields(declaration, preview, request=None)`, the cp's cardFields twin; the fit rule is For
+  Kicks' own `card_value_fits` (imported, never copied), with NO line break in any of the four. A string that does not
+  fit is refused, never cut, and a generic app has no technical-card fallback: nothing runs.
+- Class and key (CARD-COMMON item 3): the parent `marketplace.app.action` is autonomous for everyone, so a needs-card op
+  proposes under its MEMBER class `marketplace.app.action.<operation>` (the operation's full name; its first segment is
+  the app id: the gold-stars.send member row's shape) with key `<class>:<draftId>`, payload = the four strings, summary =
+  `What: ..\nTotal: ..\nWhen & where: ..\nShared with: ..` (the cp checks those bytes). The decision must be
+  `requested`; `autonomous` (no member row yet) is refused `approval_card_unpinned` and nothing runs.
+- The draft cache: `$HERMES_HOME/mini-apps/drafts/<appId>/<draftId>.json`, 0600, O_EXCL, owner + origin + hash, no links;
+  the app's preview (carrying the platform keys appId, operation, draftId) is kept and sent BESIDE the payload on
+  confirm, as For Kicks' flat card does.
+- How the box learns the card op: the cp's projection entry for a GENERIC app carries `approval: {prepare, card}` (the
+  two op names; `_mini_apps.projection` checks it). Absent = no card: a confirm-shaped call is refused
+  `approval_card_undeclared` and nothing is proposed. The entry carries no declaration (the four paths + bind), so the
+  box cannot re-derive the strings from the preview: it checks the payload's fit, the summary budget, the preview's
+  platform keys and the hash; the cp re-derives the strings from the preview (cardFields) before anything runs.
+  `checked_payload` re-derives too whenever a declaration is handed to it.
 
 For Kicks' module (`_forkicks.py`, `_forkicks_grant.py`) is not changed by this train.
 """
@@ -30,9 +34,8 @@ import stat
 import unicodedata
 from pathlib import Path
 
-from ._forkicks import (CARD_VALUE_MAX, SUMMARY_HTML_MAX_BYTES, SUMMARY_MAX_BYTES, canonical, card_name_fakes_line,
-                        card_value_fits)
-from ._mini_apps import approval_modules
+from ._forkicks import CARD_VALUE_MAX, SUMMARY_HTML_MAX_BYTES, SUMMARY_MAX_BYTES, canonical, card_value_fits
+from ._mini_apps import approval_modules, projection
 
 PARENT_CLASS = "marketplace.app.action"
 SHOWN = ("item", "total", "when", "shared")
@@ -41,10 +44,13 @@ DECLARATION_KEYS = frozenset((*SHOWN, "bind"))
 SEGMENT = r"[A-Za-z_][A-Za-z0-9_]{0,63}"
 PATH = re.compile(SEGMENT + r"(?:\." + SEGMENT + r"){0,7}")
 SEGMENT_RE = re.compile(SEGMENT)
-#: Bound by the approval key and the per-draft record; never shown or bound by a declaration, skipped by coverage.
-RESERVED = frozenset({"appId", "draftId"})
+#: The preview's platform keys: bound by the approval key itself; never shown or bound by a declaration, skipped by
+#: the shown-or-bound walk (the cp's CARD_PLATFORM_KEYS).
+RESERVED = frozenset({"appId", "draftId", "operation"})
 BIND_MAX = 32
-DEPTH_MAX = 16
+#: The cp's CARD_DEPTH_MAX: a value at this depth that is not shown or bound is refused whole.
+DEPTH_MAX = 8
+PREVIEW_MAX_BYTES = 65536
 #: The four rows' labels in the propose summary (approval L19771). The card's own row labels are the cp template's say entry.
 LABELS = {"item": "What", "total": "Total", "when": "When & where", "shared": "Shared with"}
 CARD_ERRORS = frozenset({"approval_card_invalid", "approval_card_not_minimal", "approval_card_too_long", "approval_card_undeclared"})
@@ -56,8 +62,6 @@ TASK = re.compile(r"propose:[a-f0-9]{32}")
 HASH = re.compile(r"[0-9a-f]{64}")
 #: Apps with their own reviewed path in this overlay: never routed through the generic card (they flip in a later PR).
 REVIEWED_APPS = frozenset({"gold-stars", "forkicks", "zzzbot", "slopfolio", "mini-app"})
-GENERIC_CLASSES = frozenset({"prepare", "needs-card"})
-OP_RECORD_KEYS = frozenset({"name", "class", "prepare", "card", "maxRequestBytes", "timeoutMs", "framing"})
 MAX_PAYLOAD_BYTES = 60000
 RECORD_MAX_BYTES = 131072
 
@@ -85,6 +89,8 @@ ACTION_UNPINNED = ("This action has no approval card set up yet, so it cannot ru
                    "is not ready for this yet; never retry it or work around it.")
 ACTION_CARD_REFUSED = ("This draft cannot be shown whole on a plain approval card, so it cannot be confirmed. Nothing was "
                        "done. Tell the owner; do not retry it or prepare it again in another form.")
+ACTION_UNDECLARED = ("This app has no approval card for that action, so it cannot run here. Nothing was sent. Do not retry "
+                     "it; tell the owner the app does not support it yet.")
 ACTION_UNCLEAR = ("Do not claim it was done. To retry a confirm, use the SAME draftId; never prepare another draft after an "
                   "uncertain confirm.")
 ACTION_CONFIRMATION_REQUIRED = "Show the exact saved preview and wait for a new owner reply confirming it."
@@ -149,67 +155,46 @@ def _resolve(value, path):
     return value
 
 
-def _leaves(value, prefix, depth):
-    """Every leaf path of an object (objects are descended; everything else, and an empty object, is a leaf)."""
-    if depth > DEPTH_MAX:
-        raise ValueError("approval_card_invalid")
-    for key, child in value.items():
-        if not isinstance(key, str) or not SEGMENT_RE.fullmatch(key):
-            raise ValueError("approval_card_invalid")
-        path = (*prefix, key)
-        if isinstance(child, dict) and child:
-            yield from _leaves(child, path, depth + 1)
-        else:
-            yield path
-
-
-def _text_ok(value, lines):
-    return not any(unicodedata.category(c) in {"Cc", "Cf", "Cs", "Zl", "Zp"} and not (lines and c == "\n") for c in value)
-
-
-def _fits(key, value):
-    lines = key == "item"
-    if not card_value_fits(value, lines=lines) or not value.strip(" "):
+def _unshown(value, at, shown, bound, depth):
+    """The cp's walk: a path that is neither one of the four shown paths nor a bound preview path (whose whole subtree
+    it covers) is refused when it is a leaf (not a non-empty object) or DEPTH_MAX deep; keys must be path segments."""
+    if at in shown or at in bound:
         return False
-    if lines and (any(not line.strip(" ") for line in value.split("\n")) or card_name_fakes_line(value)):
-        return False
-    return True
+    if depth >= DEPTH_MAX or not isinstance(value, dict) or not value:
+        return True
+    return any(not isinstance(key, str) or not SEGMENT_RE.fullmatch(key) or _unshown(child, at + "." + key, shown, bound, depth + 1)
+               for key, child in value.items())
 
 
 def card_fields(declaration, preview, request=None):
     """The four strings of the generic minimal card {item, total, when, shared}, or ValueError(<card code>).
     `request` (the prepare op's arguments) checks every bind pair; the control plane, which has none, passes None.
-    Mirrored byte for byte by the app and the cp; check order and codes: tests/vectors/mini-app-card.md."""
-    shown, pairs = _check_declaration(declaration)
+    Mirrored by the cp's cardFields and the app's drafts.ts cardFields; check order and codes:
+    tests/vectors/mini-app-card.md. The summary budget is `card_summary`'s, checked apart (as the cp does)."""
+    shown_paths, pairs = _check_declaration(declaration)
     if not isinstance(preview, dict):
         raise ValueError("approval_card_invalid")
+    shown = {".".join(path) for path in shown_paths}
+    bound = {".".join(preview_path) for _, preview_path in pairs}
+    for key, value in preview.items():
+        if key in RESERVED:
+            continue
+        if not isinstance(key, str) or not SEGMENT_RE.fullmatch(key) or _unshown(value, key, shown, bound, 1):
+            raise ValueError("approval_card_invalid")
     fields = {}
-    for key, path in zip(SHOWN, shown):
+    for key, path in zip(SHOWN, shown_paths):
         value = _resolve(preview, path)
         if not isinstance(value, str):
             raise ValueError("approval_card_invalid")
         fields[key] = value
-    for request_path, preview_path in pairs:
-        bound = _resolve(preview, preview_path)
-        if bound is _MISSING:
-            raise ValueError("approval_card_invalid")
-        if request is not None:
+    if request is not None:
+        for request_path, preview_path in pairs:
+            bound_value = _resolve(preview, preview_path)
             sent = _resolve(request, request_path) if isinstance(request, dict) else _MISSING
-            if sent is _MISSING or canonical(sent) != canonical(bound):
+            if bound_value is _MISSING or sent is _MISSING or canonical(sent) != canonical(bound_value):
                 raise ValueError("approval_card_invalid")
-    shown_set = set(shown)
-    bound_paths = [preview_path for _, preview_path in pairs]
-    top = {key: value for key, value in preview.items() if key not in RESERVED}
-    for leaf in _leaves(top, (), 1):
-        if leaf not in shown_set and not any(leaf[:len(b)] == b for b in bound_paths):
-            raise ValueError("approval_card_invalid")
-    for key in SHOWN:
-        if not _text_ok(fields[key], key == "item"):
-            raise ValueError("approval_card_invalid")
-    for key in SHOWN:
-        if not _fits(key, fields[key]):
-            raise ValueError("approval_card_not_minimal")
-    card_summary(fields)
+    if not all(card_value_fits(fields[key]) for key in SHOWN):
+        raise ValueError("approval_card_not_minimal")  # no line break in any of the four: no row carries lines
     return fields
 
 
@@ -236,12 +221,24 @@ def payload_hash(fields) -> str:
     return hashlib.sha256(canonical(fields).encode("utf-8")).hexdigest()
 
 
-def checked_payload(payload, expected_hash, declaration, preview, request=None):
-    """The app's four-string payload, re-derived here from its own saved preview and refused on any difference; the
-    canonical bytes the daemon holds."""
-    if not isinstance(payload, dict) or set(payload) != CARD_KEYS:
+def fits(payload):
+    """The four-string payload, each drawn whole and unmarked on the minimal card, within the summary budget."""
+    if not isinstance(payload, dict) or set(payload) != CARD_KEYS or not all(isinstance(payload[key], str) for key in SHOWN):
         raise ValueError("approval_preview_unavailable")
-    if card_fields(declaration, preview, request) != payload:
+    if not all(card_value_fits(payload[key]) for key in SHOWN):
+        raise ValueError("approval_card_not_minimal")
+    return card_summary(payload)
+
+
+def checked_payload(payload, expected_hash, preview, app_id, operation, draft_id, declaration=None, request=None):
+    """The app's four-string payload, checked; the canonical bytes the daemon holds. The preview is the app's own, with
+    the platform keys naming this app, needs-card op and draft. With a declaration the strings are re-derived from the
+    preview and refused on any difference (the projection carries none today: the cp re-derives them)."""
+    fits(payload)
+    if (not isinstance(preview, dict) or preview.get("appId") != app_id or preview.get("operation") != operation
+            or preview.get("draftId") != draft_id or len(canonical(preview).encode("utf-8")) > PREVIEW_MAX_BYTES):
+        raise ValueError("approval_preview_unavailable")
+    if declaration is not None and card_fields(declaration, preview, request) != payload:
         raise ValueError("approval_card_invalid")
     held = canonical(payload)
     if (not isinstance(expected_hash, str) or not HASH.fullmatch(expected_hash) or len(held.encode("utf-8")) > MAX_PAYLOAD_BYTES
@@ -250,53 +247,59 @@ def checked_payload(payload, expected_hash, declaration, preview, request=None):
     return held
 
 
-# ---- the projection: how the box learns an op's class and card -------------------------------------------------------
+# ---- the projection: how the box learns the card op -------------------------------------------------------
 
 
 def projected_app(home: Path, app_id: str):
-    """The projection's entry for `app_id` with its op RECORDS, `{"id", "name"?, "operations": [{"name", "class", ...}]}`,
-    or None. FINDING (CARD-OV): the v1 projection carries op NAMES only (`installed()` checks `{id, version, skills,
-    operations}` by exact equality, and the cp's v1Entry throws `relay_non_read_op` for a generic app with any non-read op),
-    so no box can learn a class or a card today: this returns None for every projection, and the generic path is dark.
-    The cp's signed v2 projection (design 2.2-2.3) plugs in here; until then nothing reads a class from disk."""
-    return None
+    """The validated projection's entry for a GENERIC app (`_mini_apps.projection`), or None."""
+    if not isinstance(app_id, str) or not APP_ID.fullmatch(app_id) or app_id in REVIEWED_APPS:
+        return None
+    apps = projection(home)
+    found = [app for app in apps or () if app.get("id") == app_id]
+    return found[0] if len(found) == 1 else None
 
 
 def operation_record(app, operation):
-    """The op record `{name, class, prepare?, card?}` a projected app carries for `operation`, checked; or None."""
-    if not isinstance(app, dict) or not isinstance(app.get("operations"), list):
+    """`{name, class, prepare?}` for the entry's declared prepare or needs-card op (its `approval`), or None."""
+    approval = app.get("approval") if isinstance(app, dict) else None
+    if not isinstance(approval, dict) or operation not in app.get("operations", ()):
         return None
-    found = [op for op in app["operations"] if isinstance(op, dict) and op.get("name") == operation]
-    if len(found) != 1:
-        return None
-    record = found[0]
-    if not set(record) <= OP_RECORD_KEYS or record.get("class") not in GENERIC_CLASSES:
-        return None
-    if record["class"] == "needs-card" and (not isinstance(record.get("prepare"), str) or not OPERATION.fullmatch(record["prepare"])):
-        return None
-    return record
+    if operation == approval.get("prepare"):
+        return {"name": operation, "class": "prepare"}
+    if operation == approval.get("card"):
+        return {"name": operation, "class": "needs-card", "prepare": approval["prepare"]}
+    return None
 
 
 def projected_operation(home: Path, operation):
-    """`(appId, app entry, op record)` for a generic prepare / needs-card op, or None (every v1 projection)."""
+    """`(appId, entry, op record)` for a generic app's declared prepare / needs-card op, or None (no `approval` on the
+    entry: every projection today)."""
     if not isinstance(operation, str) or not OPERATION.fullmatch(operation):
         return None
     app_id = operation.split(".", 1)[0]
-    if app_id in REVIEWED_APPS or not APP_ID.fullmatch(app_id):
-        return None
     app = projected_app(home, app_id)
-    if not isinstance(app, dict) or app.get("id") != app_id:
-        return None
     record = operation_record(app, operation)
     return None if record is None else (app_id, app, record)
 
 
 def card_operation_for(app, prepare):
-    """The one needs-card op of `app` whose `prepare` is this op, or None (no card declared for it)."""
-    if not isinstance(app, dict) or not isinstance(app.get("operations"), list):
+    """The needs-card op whose prepare is this op (the entry's `approval`), or None."""
+    approval = app.get("approval") if isinstance(app, dict) else None
+    if not isinstance(approval, dict) or approval.get("prepare") != prepare:
         return None
-    found = [op for op in app["operations"] if isinstance(op, dict) and op.get("class") == "needs-card" and op.get("prepare") == prepare]
-    return found[0] if len(found) == 1 and operation_record(app, found[0].get("name")) is not None else None
+    return operation_record(app, approval.get("card"))
+
+
+def undeclared_confirm(home: Path, operation, args) -> bool:
+    """A confirm-shaped call (`{operation, arguments: {draftId}}`) for an installed generic app whose entry declares no
+    card op by that name: refused `approval_card_undeclared`, nothing proposed or sent."""
+    if not isinstance(operation, str) or not OPERATION.fullmatch(operation) or not isinstance(args, dict):
+        return False
+    arguments = args.get("arguments")
+    if set(args) != {"operation", "arguments"} or not isinstance(arguments, dict) or set(arguments) != {"draftId"} \
+            or not isinstance(arguments["draftId"], str):
+        return False
+    return projected_app(home, operation.split(".", 1)[0]) is not None
 
 
 def app_name(app):
@@ -332,16 +335,16 @@ def _expires_ok(value):
 
 
 def save_preview(home, app_id, prepare, card_op, result, request, context, config):
-    """Save the app's prepare answer for its needs-card op, after re-deriving the four strings from the app's preview
-    (and checking every bind against the request this box sent). O_EXCL: the first preview of a draft is immutable."""
+    """Save the app's prepare answer for its needs-card op once its payload is checked (`checked_payload`; with a
+    declaration, re-derived and every bind checked against the request this box sent). O_EXCL: the first preview of a
+    draft is immutable."""
     if not isinstance(result, dict) or result.get("error") or not result.get("draftId"):
         return None  # a refused prepare has no draft and cannot be confirmed
     draft_id = result["draftId"]
     declaration = card_op.get("card") if isinstance(card_op, dict) else None
     preview = result.get("preview")
-    if isinstance(preview, dict) and (preview.get("appId", app_id) != app_id or preview.get("draftId", draft_id) != draft_id):
-        raise ValueError("approval_preview_unavailable")
-    held = checked_payload(result.get("approvalPayload"), result.get("payloadHash"), declaration, preview, request)
+    held = checked_payload(result.get("approvalPayload"), result.get("payloadHash"), preview, app_id, card_op["name"], draft_id,
+                           declaration, request)
     if not _expires_ok(result.get("expiresAt")):
         raise ValueError("approval_preview_unavailable")
     path = cache_path(home, app_id, draft_id)
@@ -367,7 +370,7 @@ def save_preview(home, app_id, prepare, card_op, result, request, context, confi
 
 
 def load_preview(home, app_id, draft_id, config, card_op):
-    """A draft this box saved, for this owner and origin and this needs-card op, re-checked against its declaration."""
+    """A draft this box saved, for this owner and origin and this needs-card op, its payload checked again."""
     path = cache_path(home, app_id, draft_id)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as handle:
@@ -379,7 +382,8 @@ def load_preview(home, app_id, draft_id, config, card_op):
             or record.get("appId") != app_id or not isinstance(card_op, dict) or record.get("operation") != card_op.get("name")
             or record.get("prepare") != card_op.get("prepare")):
         raise ValueError("approval_preview_unavailable")
-    checked_payload(record.get("payload"), record.get("payloadHash"), card_op.get("card"), record.get("preview"), record.get("request"))
+    checked_payload(record.get("payload"), record.get("payloadHash"), record.get("preview"), app_id, card_op["name"], draft_id,
+                    card_op.get("card"), record.get("request"))
     return record
 
 
@@ -388,12 +392,14 @@ def load_preview(home, app_id, draft_id, config, card_op):
 
 def authorize_action(record, app_id, operation, draft_id, declaration, on_requested=None):
     """`authorize_order` generalised: propose the op's member class with the four-string payload, require `requested`
-    (a human card), read the decision once, start with `authorization: grant`. `(proof, None)` or `(None, refusal)`."""
+    (a human card), read the decision once, start with `authorization: grant`. `(proof, None)` or `(None, refusal)`; the
+    proof is `{taskId, payloadHash, payload, preview}` (the cp's generic body: the preview BESIDE the payload)."""
     if (not isinstance(record, dict) or record.get("appId") != app_id or record.get("operation") != operation
             or not isinstance(operation, str) or operation.split(".", 1)[0] != app_id):
         return None, {"error": "approval_preview_unavailable"}
     try:
-        held = checked_payload(record.get("payload"), record.get("payloadHash"), declaration, record.get("preview"), record.get("request"))
+        held = checked_payload(record.get("payload"), record.get("payloadHash"), record.get("preview"), app_id, operation, draft_id,
+                               declaration, record.get("request"))
         summary = card_summary(record["payload"])
     except ValueError as error:
         return None, {"error": str(error)}
@@ -410,7 +416,7 @@ def authorize_action(record, app_id, operation, draft_id, declaration, on_reques
         return None, {"error": "approval_card_unpinned", "instruction": ACTION_UNPINNED}
     if decision != "requested":
         return None, {"error": "approval_refused"}
-    proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": record["payload"]}
+    proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": record["payload"], "preview": record["preview"]}
     if answer.doc.get("state") == "executed":
         return proof, None  # an earlier start of this draft: the cp re-reads the grant; the app replays its receipt
     granted = ap.wait(task)

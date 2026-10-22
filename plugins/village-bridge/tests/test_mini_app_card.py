@@ -41,10 +41,13 @@ TASK = 'propose:' + 'c' * 32
 PREPARE, CONFIRM = 'acme.rental.prepare', 'acme.rental.confirm'
 CLASS = 'marketplace.app.action.acme.rental.confirm'
 KEY = CLASS + ':' + DRAFT
-APP = {'id': 'acme', 'name': 'Acme Kayaks', 'operations': [
-    {'name': PREPARE, 'class': 'prepare'},
-    {'name': CONFIRM, 'class': 'needs-card', 'prepare': PREPARE, 'card': DECL}]}
+# The cp's projection entry for a generic app with a card (cp#352): the two op names under `approval`.
+APP = {'id': 'acme', 'version': '1.0.0', 'skills': ['acme'], 'operations': ['mini-app.read', PREPARE, CONFIRM],
+       'approval': {'prepare': PREPARE, 'card': CONFIRM}}
+CONFIRM_RECORD = {'name': CONFIRM, 'class': 'needs-card', 'prepare': PREPARE}
+NAME = mc.APP_NAME_FALLBACK  # the projection carries no display name
 RECEIPT = {'id': 'rental-77', 'summary': 'Kayak k-2 booked, 2 hours'}
+PLATFORM = {'appId': 'acme', 'operation': CONFIRM, 'draftId': DRAFT}
 
 
 def hashed(payload):
@@ -63,7 +66,8 @@ class GoldenVectorTest(unittest.TestCase):
         self.assertEqual(VECTORS['valueMax'], fk.CARD_VALUE_MAX)
         self.assertEqual((VECTORS['summaryMaxBytes'], VECTORS['summaryHtmlMaxBytes']), (fk.SUMMARY_MAX_BYTES, fk.SUMMARY_HTML_MAX_BYTES))
         self.assertEqual(VECTORS['labels'], mc.LABELS)
-        self.assertGreaterEqual(len(VECTORS['vectors']), 50)
+        self.assertEqual(set(VECTORS['platformKeys']), mc.RESERVED)
+        self.assertGreaterEqual(len(VECTORS['vectors']), 80)
         for v in VECTORS['vectors']:
             with self.subTest(v['name']):
                 if 'card' in v:
@@ -71,21 +75,32 @@ class GoldenVectorTest(unittest.TestCase):
                     self.assertEqual(fields, v['card'])
                     self.assertEqual(list(fields), ['item', 'total', 'when', 'shared'])
                     self.assertEqual(mc.payload_hash(fields), v['payloadHash'])
-                    self.assertEqual(mc.card_summary(fields), v['summary'])
+                    if 'summary' in v:
+                        self.assertEqual(mc.card_summary(fields), v['summary'])
+                    else:
+                        with self.assertRaisesRegex(ValueError, '^' + v['summaryError'] + '$'):
+                            mc.card_summary(fields)
                 else:
                     with self.assertRaisesRegex(ValueError, '^' + v['error'] + '$'):
                         mc.card_fields(v['declaration'], v['preview'], v.get('request'))
+                if v.get('requestOnly'):  # without the request (the cp) the bind is the app's: a card
+                    self.assertIn('request', v)
+                    mc.card_fields(v['declaration'], v['preview'])
+
+    def test_no_generic_card_string_carries_a_line_break(self):
+        for name in ('acme: a newline in item', 'a newline in total', 'a carriage return', 'a line separator',
+                     "item: two lines that For Kicks' Order row would fit", 'forkicks through a declaration (two lines)'):
+            self.assertEqual(vector(name)['error'], 'approval_card_not_minimal', name)
 
     def test_every_rule_has_a_vector(self):
         names = [v['name'] for v in VECTORS['vectors']]
         for needle in ('missing path', 'non-string value', 'neither shown nor bound', 'forkicks through a declaration',
-                       'declaration absent', 'bound value differs', '279 code points', 'too long'):
+                       'bound value differs', '279 code points', 'too long', 'cp: '):
             self.assertTrue(any(needle in n for n in names), needle)
 
     def test_for_kicks_preview_through_a_declaration_is_for_kicks_own_card(self):
         # One engine renders both: For Kicks' own vector strings come out of the generic declaration unchanged.
-        for fk_name, name in (('target-card', 'forkicks through a declaration (target-card)'),
-                              ('two lines, one without options', 'forkicks through a declaration (two lines)')):
+        for fk_name, name in (('target-card', 'forkicks through a declaration (target-card)'),):
             own = next(v for v in FK_VECTORS['vectors'] if v['name'].startswith(fk_name))
             self.assertEqual(fk.card_fields(own['preview']), own['card'])
             generic = vector(name)
@@ -94,7 +109,6 @@ class GoldenVectorTest(unittest.TestCase):
 
     def test_fit_rules_are_for_kicks_own_by_import(self):
         self.assertIs(mc.card_value_fits, fk.card_value_fits)
-        self.assertIs(mc.card_name_fakes_line, fk.card_name_fakes_line)
         self.assertIs(mc.canonical, fk.canonical)
 
     def test_member_class_and_key(self):
@@ -106,30 +120,69 @@ class GoldenVectorTest(unittest.TestCase):
 # ---- 2. the projection: dark on every v1 box -------------------------------------------------------------------------
 
 
-class ProjectionTest(unittest.TestCase):
-    def test_v1_projection_carries_no_class_so_nothing_is_generic(self):
-        for op in (PREPARE, CONFIRM, 'forkicks.order.confirm', 'gold-stars.send', 'mini-app.read', 'acme', None, 3):
-            self.assertIsNone(mc.projected_operation(Path('/nonexistent'), op))
+def write_projection(home, *apps):
+    Path(home, 'mini-apps.json').write_text(json.dumps({'version': 1, 'apps': [{'id': 'gold-stars', **mini.GOLD_STARS}, *apps]}))
 
-    def test_op_records_are_checked(self):
-        with patch.object(mc, 'projected_app', return_value=APP):
-            self.assertEqual(mc.projected_operation(Path('/x'), CONFIRM), ('acme', APP, APP['operations'][1]))
-            self.assertEqual(mc.projected_operation(Path('/x'), PREPARE)[2]['class'], 'prepare')
-            self.assertIsNone(mc.projected_operation(Path('/x'), 'acme.rental.status'))
-        for bad in ({**APP['operations'][1], 'class': 'write'}, {**APP['operations'][1], 'extra': 1},
-                    {k: v for k, v in APP['operations'][1].items() if k != 'prepare'}):
-            with self.subTest(bad=bad), patch.object(mc, 'projected_app', return_value={**APP, 'operations': [APP['operations'][0], bad]}):
-                self.assertIsNone(mc.projected_operation(Path('/x'), CONFIRM))
-        # A reviewed app never takes the generic path, whatever a projection says.
-        for reviewed in ('forkicks', 'gold-stars', 'zzzbot', 'slopfolio'):
-            with patch.object(mc, 'projected_app', return_value={'id': reviewed, 'operations': [{'name': reviewed + '.x.confirm', 'class': 'needs-card', 'prepare': reviewed + '.x.prepare', 'card': DECL}]}):
-                self.assertIsNone(mc.projected_operation(Path('/x'), reviewed + '.x.confirm'))
+
+class ProjectionTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile_dir(self)
+        self.home = Path(self.tmp)
+
+    def test_without_approval_nothing_is_generic(self):
+        write_projection(self.home, {'id': 'dizko', 'version': '1.0.0', 'skills': ['dizko'], 'operations': ['mini-app.read']})
+        for op in (PREPARE, CONFIRM, 'dizko.x.confirm', 'forkicks.order.confirm', 'gold-stars.send', 'mini-app.read', 'acme', None, 3):
+            self.assertIsNone(mc.projected_operation(self.home, op))
+        self.assertIsNone(mc.projected_operation(Path('/nonexistent'), CONFIRM))
+
+    def test_the_entry_approval_names_the_prepare_and_card_ops(self):
+        write_projection(self.home, APP)
+        self.assertEqual(mc.projected_operation(self.home, PREPARE), ('acme', APP, {'name': PREPARE, 'class': 'prepare'}))
+        self.assertEqual(mc.projected_operation(self.home, CONFIRM), ('acme', APP, CONFIRM_RECORD))
+        self.assertEqual(mc.card_operation_for(APP, PREPARE), CONFIRM_RECORD)
+        self.assertIsNone(mc.card_operation_for(APP, CONFIRM))
+        for op in ('mini-app.read', 'acme.rental.status'):
+            self.assertIsNone(mc.projected_operation(self.home, op))
+        self.assertTrue(mini.installed(self.home, 'acme', CONFIRM))
+        self.assertTrue(mini.installed(self.home, 'gold-stars', 'gold-stars.send'))
+
+    def test_installed_accepts_the_approval_key_only_in_its_exact_shape(self):
+        good = [APP, {**APP, 'operations': [PREPARE, CONFIRM]},
+                {**APP, 'operations': ['mini-app.read', 'mini-app.context.read', 'mini-app.context.write', PREPARE, CONFIRM]}]
+        bad = [{**APP, 'operations': ['mini-app.read', CONFIRM, PREPARE]},  # order
+               {**APP, 'operations': ['mini-app.read', PREPARE]},  # the card op missing
+               {**APP, 'operations': ['mini-app.read', PREPARE, CONFIRM, 'acme.rental.status']},
+               {**APP, 'approval': {'prepare': PREPARE, 'card': CONFIRM, 'extra': 'x'}},
+               {**APP, 'approval': {'prepare': PREPARE}},
+               {**APP, 'approval': {'prepare': CONFIRM, 'card': CONFIRM}, 'operations': ['mini-app.read', CONFIRM, CONFIRM]},
+               {**APP, 'approval': {'prepare': 'other.rental.prepare', 'card': CONFIRM}, 'operations': ['mini-app.read', 'other.rental.prepare', CONFIRM]},
+               {**APP, 'approval': [PREPARE, CONFIRM]},
+               {**APP, 'approval': None},
+               {'id': 'forkicks', **mini.FORKICKS, 'approval': {'prepare': 'forkicks.order.prepare', 'card': 'forkicks.order.confirm'}},
+               {**APP, 'extra': 1}]
+        for entry in good:
+            with self.subTest(good=entry):
+                write_projection(self.home, entry)
+                self.assertTrue(mini.installed(self.home, 'acme', CONFIRM))
+        for entry in bad:
+            with self.subTest(bad=entry):
+                write_projection(self.home, entry)
+                # A malformed entry refuses the WHOLE projection, as today.
+                self.assertFalse(mini.installed(self.home, 'gold-stars', 'gold-stars.send'))
+                self.assertIsNone(mc.projected_operation(self.home, CONFIRM))
 
     def test_app_name_is_cleaned_or_the_fallback(self):
-        self.assertEqual(mc.app_name(APP), 'Acme Kayaks')
+        self.assertEqual(mc.app_name(APP), mc.APP_NAME_FALLBACK)  # the projection carries no name
         self.assertEqual(mc.app_name({'name': '**Acme** <Kayaks>\n'}), 'Acme Kayaks')
         for bad in ({'name': 'x' * 41}, {'name': 3}, {'name': '***'}, {}, None):
             self.assertEqual(mc.app_name(bad), mc.APP_NAME_FALLBACK)
+
+
+def tempfile_dir(test):
+    import tempfile
+    tmp = tempfile.TemporaryDirectory()
+    test.addCleanup(tmp.cleanup)
+    return tmp.name
 
 
 # ---- the fakes -------------------------------------------------------------------------------------------------------
@@ -172,9 +225,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.setUp_bridge()
         self.home = Path(self.tmp.name)
-        self.app = copy.deepcopy(APP)
-        p = patch.object(mc, 'projected_app', side_effect=lambda home, app_id: self.app if app_id == 'acme' else None)
-        p.start(); self.addCleanup(p.stop)
+        self.install(APP)
         for target, name, value in ((bridge, 'gate_verified', None), (bridge, '_ensure_mini_app_pass', True)):
             p = patch.object(target, name, return_value=value); p.start(); self.addCleanup(p.stop)
         self.daemon = Daemon()
@@ -188,8 +239,11 @@ class Base(unittest.TestCase):
         self.orders = 0
         self.transport.side_effect = self.app_server
 
+    def install(self, *apps):
+        write_projection(self.home, *apps)
+
     def prepared(self, card=None, preview=None, expires='2099-01-01T00:00:00+05:30'):
-        preview = {'appId': 'acme', 'draftId': DRAFT, **copy.deepcopy(BASE['preview'] if preview is None else preview)}
+        preview = {**PLATFORM, **copy.deepcopy(BASE['preview'] if preview is None else preview)}
         card = dict(CARD if card is None else card)
         return {'draftId': DRAFT, 'approvalPayload': card, 'payloadHash': hashed(card), 'preview': preview, 'expiresAt': expires}
 
@@ -220,18 +274,24 @@ class Base(unittest.TestCase):
 
 
 class DispatchTest(Base):
-    def test_on_a_v1_box_a_generic_op_is_refused_exactly_as_before(self):
-        # Fail-before twin: origin/main refuses these with invalid_arguments and sends nothing; so does this head
-        # whenever the projection carries no op record (every v1 box).
-        with patch.object(mc, 'projected_app', return_value=None):
-            for args in ({'operation': PREPARE, 'arguments': dict(REQUEST)}, {'operation': CONFIRM, 'arguments': {'draftId': DRAFT}}):
-                response = self.call(args)
-                self.assertEqual(response['error'], 'invalid_arguments')
-                self.assertNotIn(PREPARE, response['instruction'])
+    def test_without_approval_on_the_entry_nothing_is_proposed_or_sent(self):
+        # Fail-before twin: origin/main refuses both with invalid_arguments and sends nothing. With no `approval` on
+        # the entry (every projection today) a prepare-shaped call is refused as before, and a confirm-shaped call
+        # for the installed generic app is refused approval_card_undeclared (cp#352): never proposed, never sent.
+        self.install({'id': 'acme', 'version': '1.0.0', 'skills': ['acme'], 'operations': ['mini-app.read']})
+        self.assertEqual(self.call({'operation': PREPARE, 'arguments': dict(REQUEST)})['error'], 'invalid_arguments')
+        self.assertEqual(self.call({'operation': CONFIRM, 'arguments': {'draftId': DRAFT}}),
+                         {'error': 'approval_card_undeclared', 'instruction': mc.ACTION_UNDECLARED})
+        # Not confirm-shaped, or no such generic app installed: the old refusal, byte for byte.
+        for args in ({'operation': CONFIRM, 'arguments': {'draftId': DRAFT, 'x': 1}}, {'operation': CONFIRM, 'draftId': DRAFT},
+                     {'operation': 'other.rental.confirm', 'arguments': {'draftId': DRAFT}},
+                     {'operation': 'forkicks.x.confirm', 'arguments': {'draftId': DRAFT}}):
+            with self.subTest(args=args):
+                self.assertEqual(self.call(args)['error'], 'invalid_arguments')
         self.transport.assert_not_called()
         self.daemon.propose.assert_not_called()
 
-    def test_prepare_saves_the_re_derived_card_owner_private(self):
+    def test_prepare_saves_the_checked_card_owner_private(self):
         response = self.prepare()
         self.assertEqual(response['data']['approvalPayload'], CARD)
         call = self.transport.call_args
@@ -243,21 +303,41 @@ class DispatchTest(Base):
         record = json.loads(path.read_text())
         self.assertEqual((record['appId'], record['prepare'], record['operation'], record['payload'], record['request']),
                          ('acme', PREPARE, CONFIRM, CARD, REQUEST))
+        self.assertEqual(record['preview'], {**PLATFORM, **BASE['preview']})
 
-    def test_prepare_without_a_card_declaration_is_undeclared_and_sends_nothing(self):
-        del self.app['operations'][1]['card']
-        self.assertEqual(self.prepare(), {'error': 'approval_card_undeclared'})
-        self.transport.assert_not_called()
-
-    def test_prepare_refuses_a_payload_the_box_does_not_re_derive(self):
-        for card, preview in (({**CARD, 'total': '₹1, pay at the jetty'}, None),  # the app's strings differ from its preview
-                              (None, {**BASE['preview'], 'request': {**REQUEST, 'kayakId': 'k-9'}}),  # bound to another request
-                              (None, {**BASE['preview'], 'note': 'unshown'})):  # a key neither shown nor bound
-            with self.subTest(card=card, preview=preview):
-                response = self.prepare(card=card, preview=preview)
-                self.assertEqual(response['error'], 'approval_card_invalid')
-                self.assertNotIn('data', response)
+    def test_prepare_refuses_a_card_that_does_not_fit_and_saves_nothing(self):
+        # No technical-card fallback for a generic app: a string with a line break (or any unfit one) is refused.
+        for card, code in (({**CARD, 'item': '1 × Kayak\n2 × Paddle'}, 'approval_card_not_minimal'),
+                           ({**CARD, 'shared': 'x' * 279}, 'approval_card_not_minimal'),
+                           ({**CARD, 'shared': '\U0001f33f' * 278, 'item': '\U0001f33f' * 278, 'when': '\U0001f33f' * 278,
+                             'total': '\U0001f33f' * 278}, 'approval_card_too_long')):
+            with self.subTest(card=card):
+                response = self.prepare(card=card)
+                self.assertEqual(response, {'error': code, 'instruction': mc.ACTION_CARD_REFUSED})
                 self.assertFalse((self.draft_dir() / (DRAFT + '.json')).exists())
+
+    def test_prepare_refuses_a_preview_naming_another_draft_op_or_app_or_a_bad_hash(self):
+        for change in ({'appId': 'other'}, {'operation': PREPARE}, {'draftId': 'other'}, {'appId': None}):
+            with self.subTest(change=change):
+                self.prepare_answer = None
+                answer_ = self.prepared()
+                answer_['preview'] = {k: v for k, v in {**answer_['preview'], **change}.items() if v is not None}
+                self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
+                self.prepare_answer = answer_
+                self.assertEqual(self.call({'operation': PREPARE, 'arguments': dict(REQUEST)})['error'], 'approval_preview_unavailable')
+        self.prepare_answer = {**self.prepared(), 'payloadHash': '0' * 64}
+        self.assertEqual(self.call({'operation': PREPARE, 'arguments': dict(REQUEST)})['error'], 'approval_preview_unavailable')
+        self.assertFalse((self.draft_dir() / (DRAFT + '.json')).exists())
+
+    def test_with_a_declaration_the_box_re_derives_the_strings(self):
+        preview = {**PLATFORM, **BASE['preview']}
+        held = mc.checked_payload(CARD, hashed(CARD), preview, 'acme', CONFIRM, DRAFT, DECL, REQUEST)
+        self.assertEqual(held, fk.canonical(CARD))
+        other = {**CARD, 'total': '₹1, pay at the jetty'}
+        with self.assertRaisesRegex(ValueError, '^approval_card_invalid$'):
+            mc.checked_payload(other, hashed(other), preview, 'acme', CONFIRM, DRAFT, DECL, REQUEST)
+        with self.assertRaisesRegex(ValueError, '^approval_card_invalid$'):
+            mc.checked_payload(CARD, hashed(CARD), preview, 'acme', CONFIRM, DRAFT, DECL, {**REQUEST, 'kayakId': 'k-9'})
 
     def test_prepare_refused_while_the_gate_is_off(self):
         with patch.object(bridge, 'gate_verified', side_effect=ValueError('approval_unavailable')):
@@ -269,8 +349,8 @@ class DispatchTest(Base):
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
         self.assertEqual(self.confirm()['error'], 'mini_app_confirmation_required')
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
-        del self.app['operations'][1]['card']
-        self.assertEqual(self.confirm(), {'error': 'approval_card_undeclared'})
+        self.install({'id': 'acme', 'version': '1.0.0', 'skills': ['acme'], 'operations': ['mini-app.read']})
+        self.assertEqual(self.confirm()['error'], 'approval_card_undeclared')
         self.daemon.propose.assert_not_called()
         self.assertEqual(self.confirms(), [])
 
@@ -286,7 +366,8 @@ class DispatchTest(Base):
         self.daemon.start.assert_called_once_with(TASK, KEY, held)
         [call] = self.confirms()
         self.assertEqual(call.args[1], {'operation': CONFIRM, 'arguments': {'draftId': DRAFT},
-                                        'approval': {'taskId': TASK, 'payloadHash': hashed(CARD), 'payload': CARD}})
+                                        'approval': {'taskId': TASK, 'payloadHash': hashed(CARD), 'payload': CARD,
+                                                     'preview': {**PLATFORM, **BASE['preview']}}})
         self.assertEqual(call.kwargs, {'operation_class': 'needs-card'})
         self.assertEqual(mg.placed(self.home, 'acme', DRAFT), {'by': 'agent', 'receipt': RECEIPT})
         # A retry answers the recorded receipt and calls nothing.
@@ -377,7 +458,7 @@ class CacheTest(Base):
 
     def test_owner_origin_and_hash_are_checked(self):
         path = self.saved()
-        entry = self.app['operations'][1]
+        entry = CONFIRM_RECORD
         config = json.loads((self.home / 'village-bridge.json').read_text())
         self.assertEqual(mc.load_preview(self.home, 'acme', DRAFT, config, entry)['payload'], CARD)
         for bad in ({**config, 'ownerTelegramId': '43'}, {**config, 'origin': 'https://other.example'}):
@@ -385,8 +466,10 @@ class CacheTest(Base):
                 mc.load_preview(self.home, 'acme', DRAFT, bad, entry)
         record = json.loads(path.read_text())
         for field, value in (('payload', {**CARD, 'total': '₹1'}), ('payloadHash', '0' * 64),
-                             ('preview', {**record['preview'], 'sharedWith': 'Your display name: Other'}),
-                             ('request', {**REQUEST, 'kayakId': 'k-9'}), ('operation', 'acme.other.confirm'), ('appId', 'other')):
+                             ('preview', {**record['preview'], 'operation': 'acme.other.confirm'}),
+                             ('preview', {k: v for k, v in record['preview'].items() if k != 'draftId'}),
+                             ('payload', {**CARD, 'item': '1 × Kayak\n2 × Paddle'}),
+                             ('operation', 'acme.other.confirm'), ('prepare', 'acme.other.prepare'), ('appId', 'other')):
             with self.subTest(field=field):
                 path.write_text(json.dumps({**record, field: value}))
                 with self.assertRaises(ValueError):
@@ -398,7 +481,7 @@ class CacheTest(Base):
     def test_links_are_refused(self):
         path = self.saved()
         config = json.loads((self.home / 'village-bridge.json').read_text())
-        entry = self.app['operations'][1]
+        entry = CONFIRM_RECORD
         target = self.home / 'elsewhere.json'; target.write_text(path.read_text())
         path.unlink(); path.symlink_to(target)
         with self.assertRaises(Exception):
@@ -449,7 +532,7 @@ class OnGrantTest(Base):
         self.assertEqual(self.run_pass(), {'placed:on_grant:line_sent': 1})
         self.assertEqual(len(self.confirms()), 1)
         self.assertEqual(self.confirms()[0].kwargs, {'operation_class': 'needs-card'})
-        self.assertEqual(self.sent, [('42', 'Approved: your Acme Kayaks action is placed: Kayak k-2 booked, 2 hours.')])
+        self.assertEqual(self.sent, [('42', 'Approved: your mini-app action is placed: Kayak k-2 booked, 2 hours.')])
         self.assertEqual(self.events, [{'outcome': 'placed', 'code': 'on_grant'}])
         self.assertFalse(self.marker().exists())
         self.assertEqual(self.run_pass(), {})
@@ -465,7 +548,7 @@ class OnGrantTest(Base):
         receipts = iter([{'id': 'rental-78'}])
         self.transport.side_effect = lambda config, payload, **kw: {'receipt': next(receipts)}
         self.run_pass()
-        self.assertEqual(self.sent, [('42', 'Approved: your Acme Kayaks action is placed.')])
+        self.assertEqual(self.sent, [('42', 'Approved: your mini-app action is placed.')])
         for text in (*CARD.values(), *map(str, REQUEST.values()), 'Sunbird', 'kayak'):
             self.assertNotIn(text, self.sent[0][1])
 
@@ -499,7 +582,7 @@ class OnGrantTest(Base):
                 self.ask()
                 self.daemon.state = state
                 self.assertEqual(self.run_pass(), {code + ':line_sent': 1})
-                self.assertEqual(self.sent, [('42', f"Your Acme Kayaks action wasn't placed: {reason}.")])
+                self.assertEqual(self.sent, [('42', f"Your mini-app action wasn't placed: {reason}.")])
                 self.assertEqual(self.confirms(), [])
                 self.daemon.start.assert_not_called()
                 self.assertFalse(self.marker().exists())
@@ -542,7 +625,7 @@ class OnGrantTest(Base):
         self.assertEqual(self.run_pass(), {'approval_not_verified': 1})
         self.assertEqual(self.run_pass(), {'approval_not_verified': 1})
         self.assertEqual(self.run_pass(), {'failed:approval_not_verified:line_sent': 1})
-        self.assertEqual(self.sent, [('42', "Your Acme Kayaks action wasn't placed: the app couldn't take it.")])
+        self.assertEqual(self.sent, [('42', "Your mini-app action wasn't placed: the app couldn't take it.")])
 
     def test_uncertain_answers_retry_the_same_draft_and_line_once(self):
         self.ask()
@@ -565,7 +648,7 @@ class OnGrantTest(Base):
 
     def test_not_projected_waits_then_closes(self):
         self.ask()
-        self.app = {'id': 'acme', 'operations': []}
+        self.install({'id': 'acme', 'version': '1.0.0', 'skills': ['acme'], 'operations': ['mini-app.read']})
         self.assertEqual(self.run_pass(), {'not_installed': 1})
         self.assertTrue(self.marker().exists())
         self.assertEqual(self.run_pass(now=time.time() + mg.TTL_S + 60), {'failed:not_installed:line_sent': 1})

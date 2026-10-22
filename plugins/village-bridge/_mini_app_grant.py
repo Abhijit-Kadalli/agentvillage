@@ -285,7 +285,8 @@ def advance(home, config, transport, lookup, app_id, draft_id, now=None) -> str:
         return _not_placed(home, app_id, draft_id, task, owner, marker_path, name, "failed", "not_installed", "failed")
     try:
         record = card.load_preview(home, app_id, draft_id, config, entry)
-        held = card.checked_payload(record["payload"], record["payloadHash"], entry.get("card"), record.get("preview"), record.get("request"))
+        held = card.checked_payload(record["payload"], record["payloadHash"], record.get("preview"), app_id, operation, draft_id,
+                                    entry.get("card"), record.get("request"))
     except Exception:  # noqa: BLE001 - not this box's draft (or not this owner's, or no longer this card): ignored, no line
         _drop(marker_path)
         return "not_this_box"
@@ -328,7 +329,7 @@ def advance(home, config, transport, lookup, app_id, draft_id, now=None) -> str:
         return _not_placed(home, app_id, draft_id, task, owner, marker_path, name, "expired", "draft_expired", "expired")
     # Recorded BEFORE the confirm is sent: from here on a lost answer may be a placed action.
     _replace(marker_path, {**marker, "phase": "attempted"})
-    proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": record["payload"]}
+    proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": record["payload"], "preview": record["preview"]}
     try:
         result = card.unframe(transport(config, {"operation": operation, "arguments": {"draftId": draft_id}, "approval": proof},
                                         operation_class="needs-card"), app_id, operation)

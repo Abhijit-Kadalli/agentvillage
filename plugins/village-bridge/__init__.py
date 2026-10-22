@@ -867,12 +867,16 @@ def handle(args, **kwargs):
         if not isinstance(args, dict):
             raise _InvalidArguments()
         op = args.get("operation")
-        # CARD-OV: a generic app's prepare / needs-card op is known only from an op record in the projection
-        # (_mini_app_card.projected_operation); every v1 projection carries none, so this stays None and every
-        # operation outside the reviewed sets is refused exactly as before.
+        # CARD-OV: a generic app's prepare / needs-card op is known only from its projection entry's `approval`
+        # (_mini_app_card.projected_operation); no projection carries one today, so this stays None and every
+        # operation outside the reviewed sets is refused as before.
         generic = (_mini_app_card.projected_operation(home, op)
                    if isinstance(op, str) and op not in READ_OPERATIONS and op not in WRITE_OPERATIONS else None)
         if not isinstance(op, str) or (op not in READ_OPERATIONS and op not in WRITE_OPERATIONS and generic is None):
+            if _mini_app_card.undeclared_confirm(home, op, args):
+                # A confirm-shaped call for an installed generic app that declares no card op by that name (cp#352):
+                # nothing is proposed or sent.
+                return json.dumps({"error": "approval_card_undeclared", "instruction": _mini_app_card.ACTION_UNDECLARED})
             raise _InvalidArguments()
         if generic is None:
             app_id = (args.get("appId") if op in APP_SCOPED_OPERATIONS else "forkicks" if op.startswith("forkicks.")
@@ -1338,8 +1342,8 @@ def _generic_error(result):
 
 def _generic_card_op(home, context, config, generic, args):
     """CARD-OV: a generic app's `prepare` op saves its preview for its needs-card op; a `needs-card` op goes through
-    `authorize_action` (member class, a human card, start with grant) before the app call. Dark until a projection
-    carries op records (see _mini_app_card.projected_app)."""
+    `authorize_action` (member class, a human card, start with grant) before the app call. Dark until the cp serves a
+    generic entry's `approval: {prepare, card}` (cp#352)."""
     app_id, app, record = generic
     op = record["name"]
     arguments = args.get("arguments")
@@ -1350,8 +1354,8 @@ def _generic_card_op(home, context, config, generic, args):
         raise _InvalidArguments(op, accepts)
     if record["class"] == "prepare":
         card_op = _mini_app_card.card_operation_for(app, op)
-        if card_op is None or card_op.get("card") is None:
-            return json.dumps({"error": "approval_card_undeclared"})  # never prepare a draft no card can show
+        if card_op is None:
+            return json.dumps({"error": "approval_card_undeclared", "instruction": _mini_app_card.ACTION_UNDECLARED})
         try:
             gate_verified()
         except Exception:
@@ -1371,9 +1375,7 @@ def _generic_card_op(home, context, config, generic, args):
     # needs-card
     if set(arguments) != {"draftId"} or not isinstance(arguments["draftId"], str) or not _mini_app_card.DRAFT_ID.fullmatch(arguments["draftId"]):
         raise _InvalidArguments(op, accepts)
-    declaration = record.get("card")
-    if declaration is None:
-        return json.dumps({"error": "approval_card_undeclared"})  # never propose
+    declaration = record.get("card")  # None: the projection carries no declaration (the cp re-derives the strings)
     draft_id = arguments["draftId"]
     try:
         saved = _mini_app_card.load_preview(home, app_id, draft_id, config, record)
@@ -1389,7 +1391,7 @@ def _generic_card_op(home, context, config, generic, args):
     if refusal:
         return json.dumps(refusal)
     again = _mini_app_card.projected_operation(home, op)  # recheck after the daemon round trips, before any effect
-    if again is None or again[2].get("class") != "needs-card" or again[2].get("card") != declaration:
+    if again is None or again[2] != record:
         return json.dumps({"error": "mini_app_not_installed"})
     result = _mini_app_card.unframe(transport(config, {"operation": op, "arguments": {"draftId": draft_id}, "approval": proof},
                                               operation_class="needs-card"), app_id, op)
