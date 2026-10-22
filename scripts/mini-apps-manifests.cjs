@@ -69,6 +69,14 @@ const RESERVED_ID_FAMILY = /^(?:av|agentvillage|agent-village|mini-app|mini-apps
 const reservedId = id => RESERVED_IDS.includes(id) || RESERVED_ID_FAMILY.test(id) ||
   Object.entries(FIRST_PARTY).some(([owner, grant]) => owner !== id && (grant.prefixes || []).includes(id));
 const DEFAULTS = Object.freeze({ maxRequestBytes: 4096, maxResponseBytes: 262144, timeoutMs: 25000, framing: 'data' });
+// The generic approval card (Phase 1 item 6, CARD-COMMON contract 1): a needs-card op's `approval.card` names
+// the four strings of the minimal card by dotted path under the prepare op's preview (and `bind`, the request
+// to preview equalities the app enforces at prepare). A path is 1..8 segments; a segment is an identifier
+// (no array index: a card string is one value, never a list). The preview's platform keys (CARD_PLATFORM_KEYS:
+// the app, the needs-card op and the draft, bound by the approval key itself) are neither shown nor bound.
+const CARD_FIELDS = Object.freeze(['item', 'total', 'when', 'shared']);
+const CARD_PATH = '^[A-Za-z_][A-Za-z0-9_]{0,63}(\\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,7}$';
+const CARD_PLATFORM_KEYS = Object.freeze(['appId', 'draftId', 'operation']);
 
 const text = (max, extra = {}) => ({ type: 'string', minLength: 1, maxLength: max, ...extra });
 const SCHEMA = {
@@ -221,11 +229,20 @@ const SCHEMA = {
             prepare: { type: 'string', maxLength: 100, pattern: OPERATION_NAME },
             summary: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 500 } },
             summaryMaxBytes: { type: 'integer', minimum: 1, maximum: 3000 },
+            card: {
+              description: 'The generic approval card: four dotted paths under the prepare op preview, each naming a string, and bind, the (request path, preview path) equalities the app enforces at prepare. Every other preview key must be bound.',
+              type: 'object', required: [...CARD_FIELDS, 'bind'], additionalProperties: false,
+              properties: {
+                ...Object.fromEntries(CARD_FIELDS.map(field => [field, { $ref: '#/$defs/cardPath' }])),
+                bind: { type: 'array', maxItems: 32, items: { type: 'array', minItems: 2, maxItems: 2, items: { $ref: '#/$defs/cardPath' } } },
+              },
+            },
           },
         },
       },
     },
     jsonPath: { type: 'string', maxLength: 200, pattern: '^\\$(\\.[A-Za-z_][A-Za-z0-9_]{0,63}){1,8}$' },
+    cardPath: { type: 'string', maxLength: 200, pattern: CARD_PATH },
   },
 };
 
@@ -558,6 +575,7 @@ function semantics(m, compileInput) {
     if (!op.approval) return;
     const prepare = byName.get(op.approval.prepare);
     if (!prepare || prepare.class !== 'prepare') fail(`/operations/${i}/approval/prepare`, 'unknown_prepare');
+    if (op.approval.card) cardRefusals(op.approval.card, prepare, `/operations/${i}/approval/card`, fail);
   });
   if (m.visibility === 'everyone' && m.data?.context?.ceiling === 'public') fail('/data/context/ceiling', 'lane_ceiling');
   const skill = m.skills[0];
@@ -573,6 +591,34 @@ function semantics(m, compileInput) {
     if (personOnly.permissions.length >= m.permissions.length) fail('/legacy/personOnly/permissions', 'empty_base');
   }
   return errors;
+}
+
+/**
+ * The static checks of a needs-card op's `approval.card` beyond the schema (CARD-COMMON contract 1). The preview's
+ * own keys are not declared anywhere static (the prepare op's `returns` names only where the preview sits and its
+ * size), so "every preview key is shown or bound" is enforced where the preview is seen, at request time (the cp's
+ * mini-apps-approval.js cardFields over the preview the app sends); here:
+ *   'card_prepare_returns' the prepare op declares no `returns` (the preview's byte budget, previewMaxBytes);
+ *   'card_path_reused'     two of the four paths are the same key, or one is inside another (a string has no keys):
+ *                          the four rows are four different values;
+ *   'card_path_reserved'   a shown or bound preview path in a platform key (appId, draftId, operation: bound by the
+ *                          approval key, never by the app);
+ *   'card_bind_reused'     a preview path bound twice.
+ */
+function cardRefusals(card, prepare, at, fail) {
+  if (prepare && prepare.class === 'prepare' && !prepare.returns) fail(at, 'card_prepare_returns');
+  const inside = (a, b) => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+  const reserved = path => CARD_PLATFORM_KEYS.includes(path.split('.')[0]);
+  CARD_FIELDS.forEach((field, i) => {
+    if (CARD_FIELDS.slice(0, i).some(other => inside(card[field], card[other]))) fail(`${at}/${field}`, 'card_path_reused');
+    if (reserved(card[field])) fail(`${at}/${field}`, 'card_path_reserved');
+  });
+  const bound = [];
+  card.bind.forEach(([, path], i) => {
+    if (reserved(path)) fail(`${at}/bind/${i}`, 'card_path_reserved');
+    if (bound.includes(path)) fail(`${at}/bind/${i}`, 'card_bind_reused');
+    bound.push(path);
+  });
 }
 
 /**
@@ -678,5 +724,5 @@ function deepFreeze(value) {
 module.exports = {
   MANIFEST_VERSION, CODE, V1_CODE, SCHEMA, INDEX_SCHEMA, RELAY_OPERATION, CONTEXT_OPERATIONS, DEFAULTS, FIRST_PARTY, RESERVED_IDS,
   checkSchema, validateManifest, buildCatalog, v1Entry, operationBudgets, deepFreeze, endpointRefusal, ENDPOINT_FIELDS, textRefusal,
-  targetPathRefusal,
+  targetPathRefusal, CARD_FIELDS, CARD_PLATFORM_KEYS, CARD_PATH,
 };
