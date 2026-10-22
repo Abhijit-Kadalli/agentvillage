@@ -227,7 +227,11 @@ class ForKicksTest(unittest.TestCase):
             ap = self.daemon(); ap.wait.return_value = answer(status=status)
             with patch.object(fk, 'approval_modules', return_value=ap):
                 output = self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})
-            self.assertEqual(output['error'], 'approval_required'); self.assertIn('SAME draftId', output['instruction']); ap.start.assert_not_called()
+            if status == 'requested':
+                self.assertEqual(output['error'], 'approval_required'); self.assertIn('SAME draftId', output['instruction'])
+            else:  # S2: a closed card is never "approve on its card"; nothing was ordered, a new preview is needed
+                self.assertEqual(output, {'error': 'approval_card_closed', 'instruction': mini.ORDER_CARD_CLOSED})
+            ap.start.assert_not_called()
         ap = self.daemon(); ap.start.return_value = answer(ok=True, authorization='policy')
         with patch.object(fk, 'approval_modules', return_value=ap):
             self.assertEqual(self.call({'operation': 'forkicks.order.confirm', 'draftId': result['draftId']})['error'], 'approval_not_started')

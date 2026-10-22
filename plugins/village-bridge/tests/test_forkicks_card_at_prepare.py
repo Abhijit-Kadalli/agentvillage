@@ -5,7 +5,6 @@ Offline: a fake daemon, a fake app, no Telegram, no network."""
 import hashlib
 import importlib.util
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 import re
@@ -62,8 +61,6 @@ class CardAtPrepareTest(unittest.TestCase):
         p.start(); self.addCleanup(p.stop)
         self.events = []
         grant.set_emitter(self.events.append); self.addCleanup(grant.set_emitter, None)
-        p = patch.object(grant, '_spawn', side_effect=lambda work: work())  # the link send, inline
-        p.start(); self.addCleanup(p.stop)
         self.app = on_grant.App(self)
         self.transport.side_effect = self.app
         self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('9')
@@ -306,7 +303,7 @@ class CardAtPrepareTest(unittest.TestCase):
         self.assertEqual((cls, key, held), ('marketplace.app.action', 'marketplace.app.action:forkicks.order.confirm:' + legacy_draft,
                                             fk.canonical(legacy['approvalPayload'])))
         folder = self.home / 'forkicks-drafts'
-        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(legacy_draft + s for s in ('.json', '.card', '.await')))
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), sorted(['.latest'] + [legacy_draft + s for s in ('.json', '.card', '.await')]))
 
     # ---- one card per draft, the owner's own DM -----------------------------------------------------
 
@@ -396,120 +393,6 @@ class CardAtPrepareTest(unittest.TestCase):
         payload = grant.card_requested(TASK, now=0)
         self.assertEqual(payload, {'task_hash': hashlib.sha256(TASK.encode()).hexdigest()[:16], 'at': '1970-01-01T00:00:00.000Z'})
         ctx.emit.assert_called_once_with('forkicks.card_requested', payload)
-
-    # ---- the approvals-bot link line (lead L20038) -----------------------------------------------------
-
-    BOT = 'AgentVillageApprovalsBot'
-    LINK = 'Your approval card is in your approvals bot: https://t.me/AgentVillageApprovalsBot'
-
-    def with_bot(self, value):
-        p = patch.dict(os.environ, {'AV_APPROVALS_BOT_USERNAME': value}); p.start(); self.addCleanup(p.stop)
-
-    def test_link_line_goes_once_per_draft_to_the_owner_with_the_exact_url(self):
-        self.with_bot(self.BOT)
-        response = self.prepare()
-        self.assertEqual(self.sent, [('42', self.LINK)])  # the paired owner's own DM, the exact URL
-        self.assertEqual(response['instruction'], mini.ORDER_PLACED_ON_APPROVAL + mini.ORDER_LINK_SENT_NOTE)
-        answers = [response]
-        for _ in range(25):
-            answers.append(self.confirm())  # same turn, a loop
-        self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
-        answers.append(self.prepare())  # a replayed prepare of the same draft
-        self.assertEqual(self.sent, [('42', self.LINK)])
-        self.assertEqual(self.daemon.propose.call_count, 1)
-        for answer_ in answers:
-            self.assertNotIn('t.me', json.dumps(answer_))  # the agent never repeats the link
-            self.assertNotIn(self.BOT, json.dumps(answer_))
-        self.assertTrue(self.marker('.link').exists())
-        # The tap: one placed line follows; never a second link.
-        self.daemon.state = 'granted'
-        self.run_pass()
-        self.assertEqual(self.sent, [('42', self.LINK), ('42', PLACED)])
-
-    def test_link_claim_holds_even_when_the_card_record_cannot_be_kept(self):
-        # Second guard: with the <draftId>.card record unwritable every confirm proposes again (core answers the same
-        # task), but the <draftId>.link O_EXCL claim still allows one line per draft.
-        self.with_bot(self.BOT)
-        with patch.object(grant, 'record_card', side_effect=OSError('read-only')):
-            self.prepare()
-            for _ in range(25):
-                self.confirm()
-        self.assertGreater(self.daemon.propose.call_count, 1)
-        self.assertEqual(self.sent, [('42', self.LINK)])
-        self.assertEqual(grant.send_card_link(self.home, DRAFT, '42'), 'link_already_sent')
-        self.assertEqual(grant.send_card_link(self.home, DRAFT, '43;rm'), 'line_owner_invalid')
-        self.assertEqual(self.sent, [('42', self.LINK)])
-
-    def test_no_link_line_when_the_username_is_absent_or_invalid(self):
-        for value in (None, '', '   ', 'abcd', 'a' * 33, '@AgentVillageApprovalsBot', 'Agent-Village', 'bot/../evil',
-                      'Approvals Bot', 'Approvals\nBot', 'ApprovalsBot?start=x', 'ApprovalsBot.example', 'Bøt_approvals'):
-            with self.subTest(value=value):
-                for path in self.home.joinpath('forkicks-drafts').glob('*'):
-                    path.unlink()
-                self.sent.clear()
-                self.daemon = on_grant.Daemon()
-                for mock in self.modules.values():
-                    mock.configure_mock(side_effect=None, return_value=self.daemon)
-                with patch.dict(os.environ, {} if value is None else {'AV_APPROVALS_BOT_USERNAME': value}):
-                    response = self.prepare()
-                self.assertEqual(response['approval'], 'requested')  # the card itself still goes out
-                self.assertEqual(response['instruction'], mini.ORDER_PLACED_ON_APPROVAL)  # the no-link wording
-                self.assertEqual(self.sent, [])
-                self.assertFalse(self.marker('.link').exists())
-        self.assertTrue(grant.BOT_USERNAME.fullmatch('a' * 32) and grant.BOT_USERNAME.fullmatch('abcde'))
-        # Only the AV_ key in the gateway's env (release L20048); the daemon-side name is not read.
-        for path in self.home.joinpath('forkicks-drafts').glob('*'):
-            path.unlink()
-        self.daemon = on_grant.Daemon()
-        for mock in self.modules.values():
-            mock.configure_mock(side_effect=None, return_value=self.daemon)
-        with patch.dict(os.environ, {'APPROVALS_BOT_USERNAME': self.BOT}):
-            self.prepare()
-        self.assertEqual(self.sent, [])
-
-    def test_no_link_line_unless_the_propose_answered_requested(self):
-        self.with_bot(self.BOT)
-        for doc in ({'decision': 'autonomous'}, {'decision': 'supervised'}, {'ok': False}, {'payload_hash': '0' * 64}):
-            with self.subTest(doc=doc):
-                for path in self.home.joinpath('forkicks-drafts').glob('*'):
-                    path.unlink()
-                self.daemon.propose = Mock(side_effect=lambda cls, key, summary, payload, doc=doc: answer(0, **{
-                    'ok': True, 'task': TASK, 'decision': 'requested', 'payload_hash': hashlib.sha256(payload.encode()).hexdigest(), **doc}))
-                response = self.prepare()
-                self.assertEqual(response['instruction'], mini.ORDER_CARD_NOT_RAISED)
-                self.confirm()
-                self.assertEqual(self.sent, [])
-                self.assertFalse(self.marker('.link').exists())
-        # The approval gate unavailable: no propose, no line.
-        for path in self.home.joinpath('forkicks-drafts').glob('*'):
-            path.unlink()
-        self.modules[fk].configure_mock(side_effect=ValueError('approval_unavailable'))
-        self.prepare(); self.confirm()
-        self.assertEqual(self.sent, [])
-
-    def test_the_link_never_comes_from_the_app_answer_or_goes_to_another_chat(self):
-        self.prepared, order = self.preview()
-        self.prepared['approvalsBot'] = 'EvilApprovalsBot'  # an app answer naming a bot is data, never the link
-        self.prepared['quote']['location']['name'] = 'https://t.me/EvilApprovalsBot'
-        self.prepared['payloadHash'] = hashlib.sha256(fk.canonical(self.prepared['approvalPayload']).encode()).hexdigest()
-        self.transport.side_effect = lambda config, payload: self.prepared
-        self.call({'operation': 'forkicks.order.prepare', **order})
-        self.assertEqual(self.sent, [])  # no username in the environment: no line, whatever the app says
-        for path in self.home.joinpath('forkicks-drafts').glob('*'):
-            path.unlink()
-        self.daemon = on_grant.Daemon()
-        for mock in self.modules.values():
-            mock.configure_mock(side_effect=None, return_value=self.daemon)
-        self.with_bot(self.BOT)
-        self.call({'operation': 'forkicks.order.prepare', **order})
-        self.assertEqual(self.sent, [('42', self.LINK)])
-        # Another chat (bound_context): nothing at all.
-        for path in self.home.joinpath('forkicks-drafts').glob('*'):
-            path.unlink()
-        self.sent.clear()
-        self.sc._VAR_MAP['HERMES_SESSION_CHAT_ID'].set('43')
-        self.assertEqual(self.call({'operation': 'forkicks.order.prepare', **order}), {'error': 'private_owner_chat_required'})
-        self.assertEqual(self.sent, [])
 
     # ---- product words (lead L19923: no delivery claim) --------------------------------------------
 

@@ -48,7 +48,6 @@ import logging
 import os
 import re
 import stat
-import threading
 import time
 import uuid
 from datetime import date as _date, datetime, timedelta, timezone
@@ -229,52 +228,93 @@ def record_card(home, draft_id, task) -> bool:
     return _create(path, {"task": task})
 
 
-# ---- the approvals-bot link (lead L20038, Carter: option A tonight) ----------------------------------
-
-#: The approvals bot's public username (no "@"), from the Hermes gateway's own env (~/.hermes/.env, rendered by the
-#: cp's AV_* env_write path, release L20048), read from the process environment the gateway started with, as
-#: av-events `_approval._process_env` reads AV_APPROVAL_URL: never the model's text or the app's answer. Absent or
-#: not this shape: no line at all (an older box keeps the no-link wording).
-BOT_USERNAME_ENV = "AV_APPROVALS_BOT_USERNAME"
-BOT_USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
-# Product's words (lead L20038). A plain link: Hermes's native sender has no buttons.
-CARD_LINK_LINE = "Your approval card is in your approvals bot: https://t.me/{username}"
+# ---- one live order per owner (S1, review-a RA41, lead L20080) --------------------------------------
+# Every saved prepare raises a card, so a changed order would leave the earlier card tappable (two taps, two
+# orders). The newest saved draft is recorded; at a new prepare the other drafts' waiting cards are withdrawn, and
+# the pass never starts an older draft (belt and braces, e.g. when a withdraw could not reach the daemon).
+LATEST = ".latest"  # a dot name: never a draft id (cache_path's [A-Za-z0-9_-])
+SUPERSEDED_LINE = "Nothing was ordered from your earlier For Kicks preview: your newer one replaced it."
 
 
-def approvals_bot_username():
-    value = os.environ.get(BOT_USERNAME_ENV, "").strip()
-    return value if BOT_USERNAME.fullmatch(value) else None
+def set_latest(home, draft_id) -> None:
+    cache_path(home, draft_id)  # validates the id
+    folder = home / "forkicks-drafts"
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = folder / LATEST
+    if path.is_symlink():
+        raise ValueError("marker_invalid")
+    _replace(path, {"draftId": draft_id})
 
 
-def _spawn(work) -> None:
-    """The send runs beside the tool call (a Telegram round trip never delays the prepare answer, and never runs
-    inside the caller's event loop). Tests replace this to run it inline."""
-    threading.Thread(target=work, name="forkicks-card-link", daemon=True).start()
+def latest(home):
+    """The newest saved draft id, or None (no record: no draft is refused as older)."""
+    try:
+        doc = _read(home / "forkicks-drafts" / LATEST)
+    except FileNotFoundError:
+        return None
+    value = doc.get("draftId")
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value):
+        raise ValueError("marker_invalid")
+    return value
 
 
-def send_card_link(home, draft_id, owner) -> str:
-    """At most one link line per draft (`<draftId>.link` O_EXCL claim before the send), only to `owner`'s own DM.
-    A code: link_unconfigured (no line), line_owner_invalid, link_already_sent, link_dispatched."""
-    username = approvals_bot_username()
-    if username is None:
-        return "link_unconfigured"
-    if not isinstance(owner, str) or not OWNER.fullmatch(owner):
-        return "line_owner_invalid"
-    path = _path(home, draft_id, ".link")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not _create(path, {"sent": True}):
-        return "link_already_sent"
-    text = CARD_LINK_LINE.format(username=username)
+def waiting_tasks(home, keep, now=None):
+    """Other drafts' cards that may still be waiting: their `.await` task, else a recent `.card` with no `.placed`."""
+    now = float(now if now is not None else time.time())
+    folder = home / "forkicks-drafts"
+    if folder.is_symlink() or not folder.is_dir():
+        return []
+    found = {}
+    with os.scandir(folder) as entries:
+        for index, entry in enumerate(entries):
+            if index >= SCAN_LIMIT or len(found) >= MAX_PER_PASS:
+                break
+            for suffix in (".await", ".card"):
+                if not entry.name.endswith(suffix) or not entry.is_file(follow_symlinks=False):
+                    continue
+                draft = entry.name[:-len(suffix)]
+                if draft == keep or draft in found or (folder / (draft + ".placed")).exists():
+                    continue
+                if suffix == ".card" and now - entry.stat(follow_symlinks=False).st_mtime > TTL_S:
+                    continue
+                try:
+                    task = _read(_path(home, draft, suffix)).get("task")
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(task, str) and TASK.fullmatch(task):
+                    found[draft] = task
+    return list(found.values())
 
-    def work():
+
+def supersede(home, keep) -> int:
+    """Withdraw the owner's other waiting For Kicks cards (best effort, codes-only). The withdrawn drafts' markers
+    stay: the pass closes each with SUPERSEDED_LINE."""
+    tasks = waiting_tasks(home, keep)
+    if not tasks:
+        return 0
+    ap = approval_modules()
+    done = 0
+    for task in tasks:
         try:
-            code = "link_sent" if _telegram_dm(owner, text) else "link_failed"
-        except Exception:  # noqa: BLE001 - at most once: a failed send is not retried
-            code = "link_failed"
-        LOG.info("village_bridge forkicks card_link code=%s", code)
+            ap.withdraw(task, "superseded")
+            done += 1
+        except Exception:  # noqa: BLE001 - the pass still refuses the older draft
+            pass
+    LOG.info("village_bridge forkicks superseded count=%d", done)
+    return done
 
-    _spawn(work)
-    return "link_dispatched"
+
+def awaiting_any(home) -> bool:
+    folder = home / "forkicks-drafts"
+    if folder.is_symlink() or not folder.is_dir():
+        return False
+    with os.scandir(folder) as entries:
+        for index, entry in enumerate(entries):
+            if index >= SCAN_LIMIT:
+                break
+            if entry.name.endswith(".await") and entry.is_file(follow_symlinks=False):
+                return True
+    return False
 
 
 def receipt_of(result):
@@ -465,6 +505,18 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     except Exception:  # noqa: BLE001 - not this box's draft (or not this owner's): ignored, no line
         _drop(marker_path)
         return "not_this_box"
+    if phase == "awaiting":
+        try:
+            newest = latest(home)
+        except Exception:  # noqa: BLE001 - an unreadable record refuses nothing
+            newest = None
+        if newest is not None and newest != draft_id:
+            # S1: a newer draft replaced this one. Never started (phase awaiting): withdraw its card, one line.
+            try:
+                approval_modules().withdraw(task, "superseded")
+            except Exception:  # noqa: BLE001 - the card cannot be started for this draft from here on anyway
+                pass
+            return _finish(home, draft_id, task, owner, marker_path, "denied", "superseded", SUPERSEDED_LINE)
     if now - since > TTL_S:
         if phase == "attempted":  # the order may exist: no line; the agent's confirm of this draft recovers it
             return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_ttl", None)

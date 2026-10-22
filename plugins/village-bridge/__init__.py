@@ -14,6 +14,8 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -23,7 +25,7 @@ from urllib.error import HTTPError
 from urllib.parse import unquote, urlsplit
 from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT,
                          ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS, ORDER_CARD_NOT_RAISED, ORDER_APPROVAL_REFUSED,
-                         ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD, ORDER_LINK_SENT_NOTE)
+                         ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD)
 from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from . import _forkicks_grant
 from ._forkicks_media import materialize, menu_shape, JSON_BYTES as MENU_IMAGE_JSON_BYTES
@@ -1171,48 +1173,83 @@ def handle(args, **kwargs):
 
 # FK-CARD-AT-PREPARE (CLAIMS L19913/L19916/L19920): the For Kicks card is raised by the bridge right after a saved
 # prepare, through the same authorize_order path confirm uses, and each draft gets at most one propose.
-def _forkicks_remember_card(home, draft_id, task, owner=None):
+def _forkicks_remember_card(home, draft_id, task):
     """authorize_order's `on_proposed`: the first `requested` propose for this draft. Records its task (one card per
-    draft) and, once per draft, the codes-only card_requested line + event that card latency is measured from, and
-    the approvals-bot link line to the owner's own DM (lead L20038; only with a valid AV_APPROVALS_BOT_USERNAME).
-    True when the link line was dispatched."""
+    draft) and, once per draft, the codes-only card_requested line + event that card latency is measured from."""
     try:
         first = _forkicks_grant.record_card(home, draft_id, task)
     except Exception:  # noqa: BLE001 - the card is out; a lost marker only means core's idempotent propose on a retry
         LOG.warning("village_bridge forkicks card_marker code=unwritable")
         first = True
-    if not first:
-        return False
+    if first:
+        try:
+            _forkicks_grant.card_requested(task)
+        except Exception:  # noqa: BLE001 - a measurement never costs the card
+            pass
+
+
+# N5 (lead L20080): tap -> placed under 5 s. av-events' shared poller runs every AV_APPROVAL_POLL_S (default 30,
+# floor 5) for all passes. Option (a), the smaller change: while any For Kicks card awaits its tap (an `.await`
+# marker), a small thread wakes that poller (ap.kick) every AV_FORKICKS_POLL_S seconds (default 2), so the passes
+# keep their own lock and order; no markers, no thread, no work. AV_APPROVAL_POLL_S is unchanged.
+FORKICKS_POLL_ENV = "AV_FORKICKS_POLL_S"
+FORKICKS_POLL_S = 2.0
+_TICKER = None
+_TICKER_LOCK = threading.Lock()
+
+
+def _forkicks_poll_s():
     try:
-        _forkicks_grant.card_requested(task)
-    except Exception:  # noqa: BLE001 - a measurement never costs the card
+        value = float(os.environ.get(FORKICKS_POLL_ENV, "").strip() or FORKICKS_POLL_S)
+    except ValueError:
+        value = FORKICKS_POLL_S
+    if value != value:  # NaN
+        value = FORKICKS_POLL_S
+    return min(30.0, max(1.0, value))
+
+
+def _forkicks_tick(home, ap, sleep=time.sleep):
+    """Wake the shared poller every _forkicks_poll_s() while a card awaits its tap; return when none does."""
+    while _forkicks_grant.awaiting_any(home):
+        sleep(_forkicks_poll_s())
+        if ap.poller_alive():
+            ap.kick()
+
+
+def _ensure_forkicks_ticker(home):
+    global _TICKER
+    try:
+        ap = importlib.import_module("hermes_plugins.av_events._approval")
+        with _TICKER_LOCK:
+            if _TICKER is not None and _TICKER.is_alive():
+                return
+            _TICKER = threading.Thread(target=_forkicks_tick, args=(home, ap), name="forkicks-fast-poll", daemon=True)
+            _TICKER.start()
+    except Exception:  # noqa: BLE001 - the poller's own interval still places it
         pass
-    try:
-        return _forkicks_grant.send_card_link(home, draft_id, owner) == "link_dispatched"
-    except Exception:  # noqa: BLE001 - the link is a convenience; the card is out either way
-        LOG.warning("village_bridge forkicks card_link code=error")
-        return False
+
+
+def _forkicks_on_requested(home, draft_id, task):
+    instruction = _forkicks_grant.instruction_if_tracked(home, draft_id, task, _ensure_forkicks_pass)
+    if instruction is not None:
+        _ensure_forkicks_ticker(home)  # after track: the marker exists
+    return instruction
 
 
 def _forkicks_authorize(home, record, draft_id):
     """authorize_order with this draft's card task reused (no second propose) and the FK-ON-GRANT hand-off.
     Every failure before an order is sent comes back as a refusal with an honest instruction."""
-    linked = []
-    # The owner load_preview checked against the paired config (bound_context: the owner's own DM).
-    owner = record.get("owner")
     try:
         known = _forkicks_grant.card_task(home, draft_id)
         authorization, refusal = authorize_order(
             record, draft_id, known_task=known,
-            on_requested=lambda task: _forkicks_grant.instruction_if_tracked(home, draft_id, task, _ensure_forkicks_pass),
-            on_proposed=lambda task: linked.append(_forkicks_remember_card(home, draft_id, task, owner)))
+            on_requested=lambda task: _forkicks_on_requested(home, draft_id, task),
+            on_proposed=lambda task: _forkicks_remember_card(home, draft_id, task))
     except Exception:
         LOG.warning("village_bridge forkicks approval code=approval_unavailable")  # the code only
         return None, {"error": "approval_unavailable", "instruction": ORDER_APPROVAL_UNAVAILABLE}
     if refusal is not None and "instruction" not in refusal:
         refusal = {**refusal, "instruction": ORDER_APPROVAL_REFUSED}
-    if refusal is not None and refusal.get("error") == "approval_required" and any(linked):
-        refusal = {**refusal, "instruction": refusal["instruction"] + ORDER_LINK_SENT_NOTE}
     return authorization, refusal
 
 
@@ -1227,7 +1264,16 @@ def _forkicks_card_at_prepare(home, config, draft_id):
         record = load_preview(home, draft_id, config)
     except Exception:
         return {"approval": "unavailable", "error": "approval_unavailable", "instruction": ORDER_CARD_NOT_RAISED}
+    try:
+        _forkicks_grant.set_latest(home, draft_id)  # S1: from now on the pass never starts an older draft
+    except Exception:  # noqa: BLE001
+        LOG.warning("village_bridge forkicks latest code=unwritable")
     authorization, refusal = _forkicks_authorize(home, record, draft_id)
+    try:
+        # S1: after this draft's card is out (never delaying it), withdraw the owner's other waiting cards.
+        _forkicks_grant.supersede(home, draft_id)
+    except Exception:  # noqa: BLE001 - the pass's newest-draft check still holds
+        LOG.warning("village_bridge forkicks superseded code=error")
     if authorization is not None:
         # The owner had already approved this draft (a replayed prepare): nothing is placed here; confirm places it.
         return {"approval": "granted", "instruction": "The owner already approved this exact order. Call "
@@ -1307,7 +1353,8 @@ def _forkicks_on_session_start(*_args, **kwargs):
     # A gateway restart resumes awaited drafts at its first session (cron or chat), not the resident's next message.
     try:
         if str(kwargs.get("platform") or "").strip().lower() not in LOCAL_PLATFORMS:
-            _ensure_forkicks_pass()
+            if _ensure_forkicks_pass():
+                _ensure_forkicks_ticker(hermes_home())  # markers left from before a restart
     except Exception:
         pass
 

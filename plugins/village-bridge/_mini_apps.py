@@ -99,9 +99,10 @@ ORDER_APPROVAL_REFUSED = ("The approval check refused this order, so nothing was
 ORDER_APPROVAL_UNAVAILABLE = ("The approval check could not run just now, so nothing was ordered by this request. Tell the "
                               "owner plainly that it is not placed; never say it was. Retry forkicks.order.confirm with this "
                               "SAME draftId later; never prepare another order.")
-# Appended when the owner was also sent the approvals-bot link line (_forkicks_grant.CARD_LINK_LINE, lead L20038).
-ORDER_LINK_SENT_NOTE = (" A message with the link to their approvals bot was also sent in this chat: do not repeat the "
-                        "link or the address.")
+# S2 (review-a RA41, lead L20080): a confirm that reads this draft's card as declined, withdrawn, expired or void.
+# No new card is raised for a draft (one card per draft), so the agent never points at a card that is gone.
+ORDER_CARD_CLOSED = ("This draft's approval card was declined, withdrawn or expired, so nothing was ordered. Tell the "
+                     "owner: \"Nothing was ordered. Ask me for a new preview.\" Do not retry this draft.")
 # The receipt the on-grant pass recorded: the owner already got the placed line in this chat (one line per order).
 ORDER_ALREADY_TOLD = ("This order is placed and the owner was already told so in this chat. Do not announce it again; "
                       "only give receipt details they ask for or still need, such as a payment link.")

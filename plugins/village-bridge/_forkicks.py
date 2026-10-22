@@ -7,7 +7,7 @@ import re
 import stat
 import unicodedata
 from pathlib import Path
-from ._mini_apps import approval_modules, ORDER_APPROVE_IN_BOT
+from ._mini_apps import approval_modules, ORDER_APPROVE_IN_BOT, ORDER_CARD_CLOSED
 
 MAX_PAYLOAD_BYTES = 60000
 SUMMARY_MAX_BYTES = 4096
@@ -24,6 +24,8 @@ SUMMARY_HTML_MAX_BYTES = 3000
 # Both shapes are proposed under the same class and per-draftId key as before (approval L17713: no class change in the
 # v2.1.10 hotfix). Spec + golden vectors: tests/vectors/forkicks-approval-card.{md,json}.
 APPROVAL_CLASS = "marketplace.app.action"
+# A card core will never grant again (wait exit 1 rejected/revoked/withdrawn/not-registered, 3 expired, 7 void).
+CARD_CLOSED_STATES = frozenset({"rejected", "revoked", "withdrawn", "not-registered", "expired", "void"})
 # The card refusals the prepare path answers by preparing once more in the legacy shape (__init__.py, lead L17847).
 CARD_FALLBACK_ERRORS = frozenset({"approval_card_invalid", "approval_card_not_minimal", "approval_card_too_long"})
 LEGACY_KEYS = frozenset({"appId", "operation", "preview"})
@@ -325,6 +327,10 @@ def authorize_order(record, draft_id, on_requested=None, known_task=None, on_pro
         mine = [a for a in (granted.doc.get("actions") or []) if isinstance(a, dict) and a.get("action_key") == key]
         if len(mine) == 1 and mine[0].get("state") == "granted":
             return proof, None
+    if granted.exit_code in (1, 3, 7) or granted.status in CARD_CLOSED_STATES:
+        # S2: the card is declined, withdrawn, expired or void (core: wait exit 1/3/7). No start runs, and this draft
+        # gets no second card: nothing was ordered, and only a new preview can be approved.
+        return None, {"error": "approval_card_closed", "instruction": ORDER_CARD_CLOSED}
     if granted.exit_code != 0 or granted.status != "granted":
         # FK-ON-GRANT: a card still waiting for its tap (wait exit 6) is handed to the on-grant pass
         # (_forkicks_grant.track), which places the order on the resident's grant; it returns the instruction.
