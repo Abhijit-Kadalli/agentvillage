@@ -770,7 +770,7 @@ shared by `digest.share` and `village.vote` later through `register_pass`) and
 | `AV_APPROVAL_URL` | The daemon: `http://127.0.0.1:<port>` (or `localhost`, `[::1]`), `unix:<absolute socket path>`, or an `https://` origin (the hosted dogfood). No path, no query, nothing else. |
 | `AV_APPROVAL_TOKEN_FILE` | The agent credential's file. Else `$HERMES_HOME/approval/agent-token` when it exists, else `AV_APPROVAL_TOKEN`: the shim's order. A token file must be absolute, a regular file owned by this uid, mode 0600; a named file that fails never falls back. |
 | `AV_APPROVAL_DAEMON_UID` | The uid that must own the loopback listener or the socket (default 10001). |
-| `AV_APPROVAL_POLL_S` | Seconds between poller passes (default 30, at least 5). |
+| `AV_APPROVAL_POLL_S` | Seconds between poller passes (default 30, at least 5). While a registered busy probe (`register_busy`) reports live work, e.g. a village-bridge approval card waiting for its tap, the poller waits 5 s instead (adaptive polling; core has no push). |
 | `AV_APPROVAL_POLLER` | `1` starts the poller thread in any process; `0` never (session-start passes still run). |
 
 **The calls, exactly as the plugin makes them** (`POST /verb/<name>` with `Authorization: Bearer

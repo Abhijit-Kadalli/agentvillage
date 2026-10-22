@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import os
 import re
 import stat
@@ -114,47 +115,114 @@ ORDER_ALREADY_TOLD = ("This order is placed and the owner was already told so in
                       "only give receipt details they ask for or still need, such as a payment link.")
 
 
-def installed(home: Path, app_id: str, operation: str) -> bool:
+# CARD-OV (Phase 1 item 6; CARD-COMMON amendment 14:00Z): a GENERIC app's entry may carry `approval: {prepare, card,
+# fields: {item, total, when, shared}, bind: [[requestPath, previewPath], ...]}`: its one prepare op, its one needs-card
+# op and that op's card declaration (cp#352). Absent for every reviewed app and every app without a card, so every
+# projection today validates byte for byte as before. `{prepare, card}` without the declaration is accepted too, and
+# the box then refuses the card op (`approval_card_undeclared`, never proposed). Such an entry lists exactly an accepted
+# generic operations list (or none) followed by those two ops, in that order. The paths are checked when used.
+CARD_ENTRY_KEYS = frozenset({"prepare", "card"})
+CARD_DECLARED_KEYS = frozenset({"prepare", "card", "fields", "bind"})
+CARD_FIELD_KEYS = frozenset({"item", "total", "when", "shared"})
+CARD_OPERATION = re.compile(r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,3}")
+
+
+def _card_entry_ok(app) -> bool:
+    approval, name = app["approval"], app["id"]
+    if not isinstance(approval, dict) or set(approval) not in (CARD_ENTRY_KEYS, CARD_DECLARED_KEYS):
+        return False
+    if "fields" in approval:
+        fields, bind = approval["fields"], approval["bind"]
+        if (not isinstance(fields, dict) or set(fields) != CARD_FIELD_KEYS or not all(isinstance(v, str) and 0 < len(v) <= 200 for v in fields.values())
+                or not isinstance(bind, list) or len(bind) > 32
+                or not all(isinstance(pair, list) and len(pair) == 2 and all(isinstance(p, str) and 0 < len(p) <= 200 for p in pair) for pair in bind)):
+            return False
+    prepare, card = approval["prepare"], approval["card"]
+    if (not all(isinstance(op, str) and CARD_OPERATION.fullmatch(op) and op.split(".", 1)[0] == name for op in (prepare, card))
+            or prepare == card):
+        return False
+    return any(app["operations"] == [*ops, prepare, card] for ops in (*APP_OPERATIONS_ACCEPTED, ()))
+
+
+# RA42 ov S1 (lead L20281): a GENERIC entry (any id but the reviewed four) that fails its own check is refused PER APP:
+# skipped and logged once (its id only), and every other app of the file stays installed, as the installer's checkApp
+# refuses per app (ov#455). What stays WHOLE-FILE is the structure: the doc shape, version 1, an app that is not an
+# object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
+REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), "slopfolio": (SLOPFOLIO,)}
+LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+LOG = logging.getLogger("village_bridge")
+_REFUSED_LOGGED = set()
+REFUSED_LOG_MAX = 256
+
+
+def _generic_entry_ok(app) -> bool:
+    """A generic app's own check: id, version, skills == [id], and an accepted operations list, or a card entry
+    (`_card_entry_ok`) when it carries `approval`. Any failure (or error) refuses this entry alone."""
+    try:
+        name = app["id"]
+        if set(app) - {"approval"} != {"id", "version", "skills", "operations"} or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name):
+            return False
+        if "approval" in app:
+            return (isinstance(app["version"], str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", app["version"]) is not None
+                    and app["skills"] == [name] and _card_entry_ok(app))
+        return not (not isinstance(app["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", app["version"])
+                    or app["skills"] != [name] or not any(app["operations"] == list(ops) for ops in APP_OPERATIONS_ACCEPTED))
+    except Exception:  # noqa: BLE001 - a malformed generic entry is refused alone
+        return False
+
+
+def _entry_refused(name: str) -> None:
+    """One codes-only line per refused generic id per process: `mini_apps.entry_refused app=<id>`, nothing else."""
+    shown = name if LOGGED_ID.fullmatch(name) else "invalid"
+    if shown in _REFUSED_LOGGED or len(_REFUSED_LOGGED) >= REFUSED_LOG_MAX:
+        return
+    _REFUSED_LOGGED.add(shown)
+    LOG.warning("village_bridge mini_apps.entry_refused app=%s", shown)
+
+
+def projection(home: Path):
+    """The installed apps of a valid projection (`mini-apps.json`), each checked as `installed` requires; a refused
+    generic entry is left out (RA42 ov S1). None when the file itself is refused."""
     try:
         path = home / "mini-apps.json"
         if any(p.is_symlink() for p in (path, *path.parents)):
-            return False
+            return None
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd) as handle:
             st = os.fstat(handle.fileno())
             if not stat.S_ISREG(st.st_mode) or st.st_size > 16384:
-                return False
+                return None
             doc = json.load(handle)
         if not isinstance(doc, dict) or set(doc) != {"version", "apps"} or type(doc["version"]) is not int or doc["version"] != 1 or not isinstance(doc["apps"], list):
-            return False
-        seen = set()
+            return None
+        seen, apps = set(), []
         for app in doc["apps"]:
-            if not isinstance(app, dict) or set(app) != {"id", "version", "skills", "operations"} or not isinstance(app["id"], str):
-                return False
+            if not isinstance(app, dict) or not isinstance(app.get("id"), str):
+                return None
             name = app["id"]
-            if name in seen or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", name):
-                return False
+            if name in seen:
+                return None
+            seen.add(name)
             if name == "gold-stars":
                 if not any(app == {"id": name, **entry} for entry in GOLD_STARS_ACCEPTED):
-                    return False
-            elif name == "forkicks":
-                if app != {"id": name, **FORKICKS}:
-                    return False
-            elif name == "zzzbot":
-                if app != {"id": name, **ZZZBOT}:
-                    return False
-            elif name == "slopfolio":
-                if app != {"id": name, **SLOPFOLIO}:
-                    return False
-            elif (not isinstance(app["version"], str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", app["version"])
-                  or app["skills"] != [name] or not any(app["operations"] == list(ops) for ops in APP_OPERATIONS_ACCEPTED)):
-                return False
+                    return None
+            elif name in REVIEWED_ENTRIES:
+                if not any(app == {"id": name, **entry} for entry in REVIEWED_ENTRIES[name]):
+                    return None
+            elif not _generic_entry_ok(app):
+                _entry_refused(name)
+                continue
             # CP/server remains authoritative for the endpoint, exact tool and schema.
             # A projection cannot introduce an endpoint or an unreviewed write operation.
-            seen.add(name)
-        return any(app["id"] == app_id and operation in app["operations"] for app in doc["apps"])
+            apps.append(app)
+        return apps
     except Exception:
-        return False
+        return None
+
+
+def installed(home: Path, app_id: str, operation: str) -> bool:
+    apps = projection(home)
+    return apps is not None and any(app["id"] == app_id and operation in app["operations"] for app in apps)
 
 
 def gate_verified() -> None:
