@@ -42,6 +42,7 @@ Python 3.11, standard library only.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -84,12 +85,38 @@ REASONS = {
 OUTCOMES = ("placed", "denied", "expired", "failed")
 
 _EMIT = None
+_EMIT_CARD = None
 
 
 def set_emitter(emit) -> None:
     """`emit(payload)` publishes `forkicks.order_outcome` on the plugin bus (bridge register)."""
     global _EMIT
     _EMIT = emit
+
+
+def set_card_emitter(emit) -> None:
+    """`emit(payload)` publishes `forkicks.card_requested` on the plugin bus (bridge register)."""
+    global _EMIT_CARD
+    _EMIT_CARD = emit
+
+
+def task_hash(task: str) -> str:
+    """The join key for card latency (lead L20022): sha256 of the full task string, hex, first 16 characters."""
+    return hashlib.sha256(task.encode("utf-8")).hexdigest()[:16]
+
+
+def card_requested(task: str, now=None) -> dict:
+    """FK-CARD-AT-PREPARE latency (lead L20022): once per draft, when its first propose answered `requested`.
+    One codes-only log line and one plugin-bus event: the task's hash and the UTC time (ms). No ids, no text."""
+    moment = datetime.fromtimestamp(now if now is not None else time.time(), timezone.utc)
+    payload = {"task_hash": task_hash(task), "at": moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+    LOG.info("village_bridge forkicks card_requested task_hash=%s at=%s", payload["task_hash"], payload["at"])
+    if _EMIT_CARD is not None:
+        try:
+            _EMIT_CARD(payload)
+        except Exception:  # noqa: BLE001 - an event never costs the card
+            pass
+    return payload
 
 
 def _event(outcome: str, code: str) -> None:

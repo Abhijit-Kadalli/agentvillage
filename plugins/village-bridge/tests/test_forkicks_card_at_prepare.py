@@ -5,7 +5,9 @@ Offline: a fake daemon, a fake app, no Telegram, no network."""
 import hashlib
 import importlib.util
 import json
+from datetime import datetime
 from pathlib import Path
+import re
 import sys
 import time
 import types
@@ -329,6 +331,68 @@ class CardAtPrepareTest(unittest.TestCase):
                         self.sc._VAR_MAP[name].set(value)
         self.transport.assert_not_called()
         self.daemon.propose.assert_not_called()
+
+    # ---- card latency: one codes-only line + event per draft (lead L20022) ---------------------------
+
+    LINE = re.compile(r'^INFO:village_bridge:village_bridge forkicks card_requested task_hash=([0-9a-f]{16}) '
+                      r'at=(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)$')
+
+    def card_lines(self, logs):
+        return [line for line in logs.output if 'card_requested' in line]
+
+    def test_card_requested_fires_once_per_draft_with_the_hash_and_time_only(self):
+        cards = []
+        grant.set_card_emitter(cards.append); self.addCleanup(grant.set_card_emitter, None)
+        before = time.time()
+        with self.assertLogs('village_bridge', 'INFO') as logs:
+            self.prepare()
+            for _ in range(25):
+                self.confirm()  # same turn, a loop
+            self.sc._VAR_MAP['HERMES_SESSION_MESSAGE_ID'].set('10')
+            self.prepare()  # a replayed prepare of the same draft
+            self.confirm()
+        after = time.time()
+        [line] = self.card_lines(logs)
+        found = self.LINE.match(line)
+        self.assertIsNotNone(found, line)
+        expected = hashlib.sha256(TASK.encode()).hexdigest()[:16]
+        self.assertEqual(found.group(1), expected)
+        self.assertEqual(cards, [{'task_hash': expected, 'at': found.group(2)}])
+        stamp = datetime.fromisoformat(found.group(2).replace('Z', '+00:00')).timestamp()
+        self.assertTrue(before - 0.001 <= stamp <= after + 0.001)
+        for private in (DRAFT, TASK, TASK.split(':')[1], 'Priya', 'Caf', 'Coffee'):  # no ids, no text
+            self.assertNotIn(private, line + json.dumps(cards))
+        self.assertEqual(set(cards[0]), {'task_hash', 'at'})
+        self.assertEqual(self.daemon.propose.call_count, 1)
+
+    def test_card_requested_never_fires_without_a_requested_propose_and_fires_at_a_first_confirm(self):
+        cards = []
+        grant.set_card_emitter(cards.append); self.addCleanup(grant.set_card_emitter, None)
+        real = self.daemon.propose.side_effect
+        self.daemon.propose.side_effect = lambda cls, key, summary, payload: answer(
+            0, ok=True, task=TASK, decision='autonomous', payload_hash=hashlib.sha256(payload.encode()).hexdigest())
+        with self.assertLogs('village_bridge', 'INFO') as logs:
+            self.prepare(); self.confirm()
+            self.modules[fk].configure_mock(side_effect=ValueError('approval_unavailable'))
+            self.confirm()
+            grant.LOG.info('village_bridge test sentinel')  # assertLogs needs one line
+        self.assertEqual((self.card_lines(logs), cards), ([], []))
+        # The prepare-time card could not be raised; the first `requested` propose is a later confirm's: it fires there, once.
+        self.modules[fk].configure_mock(side_effect=None, return_value=self.daemon)
+        self.daemon.propose.side_effect = real
+        with self.assertLogs('village_bridge', 'INFO') as logs:
+            self.confirm(); self.confirm(); self.confirm()
+        self.assertEqual(len(self.card_lines(logs)), 1)
+        self.assertEqual(len(cards), 1)
+
+    def test_register_publishes_card_requested_on_the_plugin_bus(self):
+        ctx = Mock()
+        with patch.object(bridge, '_REGISTERED', False), patch.object(bridge, '_gateway_argv', return_value=False):
+            bridge.register(ctx)
+        self.addCleanup(grant.set_card_emitter, None); self.addCleanup(grant.set_emitter, None)
+        payload = grant.card_requested(TASK, now=0)
+        self.assertEqual(payload, {'task_hash': hashlib.sha256(TASK.encode()).hexdigest()[:16], 'at': '1970-01-01T00:00:00.000Z'})
+        ctx.emit.assert_called_once_with('forkicks.card_requested', payload)
 
     # ---- product words (lead L19923: no delivery claim) --------------------------------------------
 

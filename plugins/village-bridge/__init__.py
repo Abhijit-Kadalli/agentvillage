@@ -1172,10 +1172,18 @@ def handle(args, **kwargs):
 # FK-CARD-AT-PREPARE (CLAIMS L19913/L19916/L19920): the For Kicks card is raised by the bridge right after a saved
 # prepare, through the same authorize_order path confirm uses, and each draft gets at most one propose.
 def _forkicks_remember_card(home, draft_id, task):
+    """authorize_order's `on_proposed`: the first `requested` propose for this draft. Records its task (one card per
+    draft) and, once per draft, the codes-only card_requested line + event that card latency is measured from."""
     try:
-        _forkicks_grant.record_card(home, draft_id, task)
+        first = _forkicks_grant.record_card(home, draft_id, task)
     except Exception:  # noqa: BLE001 - the card is out; a lost marker only means core's idempotent propose on a retry
         LOG.warning("village_bridge forkicks card_marker code=unwritable")
+        first = True
+    if first:
+        try:
+            _forkicks_grant.card_requested(task)
+        except Exception:  # noqa: BLE001 - a measurement never costs the card
+            pass
 
 
 def _forkicks_authorize(home, record, draft_id):
@@ -1300,6 +1308,7 @@ def register(ctx):
     emit = getattr(ctx, "emit", None)
     if callable(emit):
         _forkicks_grant.set_emitter(lambda event: emit("forkicks.order_outcome", event))
+        _forkicks_grant.set_card_emitter(lambda event: emit("forkicks.card_requested", event))
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         try:
