@@ -173,7 +173,6 @@ class ProjectionTest(unittest.TestCase):
                {**APP, 'approval': {'prepare': 'other.rental.prepare', 'card': CONFIRM}, 'operations': ['mini-app.read', 'other.rental.prepare', CONFIRM]},
                {**APP, 'approval': [PREPARE, CONFIRM]},
                {**APP, 'approval': None},
-               {'id': 'forkicks', **mini.FORKICKS, 'approval': {'prepare': 'forkicks.order.prepare', 'card': 'forkicks.order.confirm'}},
                {**APP, 'extra': 1}]
         for entry in good:
             with self.subTest(good=entry):
@@ -182,9 +181,14 @@ class ProjectionTest(unittest.TestCase):
         for entry in bad:
             with self.subTest(bad=entry):
                 write_projection(self.home, entry)
-                # A malformed entry refuses the WHOLE projection, as today.
-                self.assertFalse(mini.installed(self.home, 'gold-stars', 'gold-stars.send'))
+                # RA42 ov S1: a malformed GENERIC entry is refused alone; the reviewed apps stay installed.
+                self.assertFalse(any(mini.installed(self.home, 'acme', op) for op in ('mini-app.read', PREPARE, CONFIRM)))
+                self.assertTrue(mini.installed(self.home, 'gold-stars', 'gold-stars.send'))
                 self.assertIsNone(mc.projected_operation(self.home, CONFIRM))
+        # A REVIEWED entry carrying `approval` fails its exact equality: the tamper signal refuses the WHOLE file.
+        write_projection(self.home, APP, {'id': 'forkicks', **mini.FORKICKS, 'approval': {'prepare': 'forkicks.order.prepare', 'card': 'forkicks.order.confirm'}})
+        self.assertFalse(mini.installed(self.home, 'gold-stars', 'gold-stars.send'))
+        self.assertIsNone(mc.projected_operation(self.home, CONFIRM))
 
     def test_app_name_is_cleaned_or_the_fallback(self):
         self.assertEqual(mc.app_name(APP), mc.APP_NAME_FALLBACK)  # the projection carries no name
