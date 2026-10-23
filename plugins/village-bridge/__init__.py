@@ -1114,7 +1114,7 @@ def handle(args, **kwargs):
             if done is not None:
                 told = {"instruction": ORDER_ALREADY_TOLD} if done["by"] == "pass" else {}
                 return json.dumps({"data": done["receipt"], "handling": HANDLING, **told}, ensure_ascii=False)
-            authorization, refusal = _forkicks_authorize(home, record, payload["draftId"])
+            authorization, refusal = _forkicks_authorize(home, record, payload["draftId"], confirm=True)
             if refusal:
                 return json.dumps(refusal)
             if not installed(home, "forkicks", op):
@@ -1266,9 +1266,10 @@ def _forkicks_on_requested(home, draft_id, task):
     return instruction
 
 
-def _forkicks_authorize(home, record, draft_id):
+def _forkicks_authorize(home, record, draft_id, confirm=False):
     """authorize_order with this draft's card task reused (no second propose) and the FK-ON-GRANT hand-off.
-    Every failure before an order is sent comes back as a refusal with an honest instruction."""
+    Every failure before an order is sent comes back as a refusal with an honest instruction. On the agent's
+    confirm, a quote already past its `expiresAt` closes the draft (lead L20310): ORDER_CARD_CLOSED, card withdrawn."""
     try:
         known = _forkicks_grant.card_task(home, draft_id)
         authorization, refusal = authorize_order(
@@ -1276,7 +1277,8 @@ def _forkicks_authorize(home, record, draft_id):
             on_requested=lambda task: _forkicks_on_requested(home, draft_id, task),
             on_proposed=lambda task: _forkicks_remember_card(home, draft_id, task),
             guard_start=lambda start: _forkicks_grant.guarded_start(home, draft_id, start),
-            guard_adopt=lambda: _forkicks_grant.guard_adopt(home, draft_id))
+            guard_adopt=lambda: _forkicks_grant.guard_adopt(home, draft_id),
+            on_quote_expired=(lambda task: _forkicks_grant.close_expired(home, draft_id, task)) if confirm else None)
     except Exception:
         LOG.warning("village_bridge forkicks approval code=approval_unavailable")  # the code only
         return None, {"error": "approval_unavailable", "instruction": ORDER_APPROVAL_UNAVAILABLE}
