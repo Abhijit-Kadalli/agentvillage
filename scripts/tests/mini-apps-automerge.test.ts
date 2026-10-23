@@ -382,6 +382,8 @@ describe("Fold 1, review-b M1 (ov#477): the verdict is bound to THIS pull reques
       f[P(`compare/${"c".repeat(40)}...main?per_page=1`)] = { status: "diverged", ahead_by: 4, behind_by: 9 };
     })), "review_verdict_pass");
     onlyFalse(decideFor(fixture((f) => { report(f).base_ref = "release-x"; })), "review_verdict_pass");
+    // The edit moves the pull request's base.sha to main's tip; the JSON still holds the sha the run checked out.
+    onlyFalse(decideFor(fixture((f) => { f[PR].base.sha = "e".repeat(40); })), "review_verdict_pass");
   });
   test("base_sha not on main (diverged, behind), the compare unreadable, or the sha malformed => no merge", () => {
     for (const status of ["diverged", "behind", undefined]) {
@@ -410,6 +412,8 @@ describe("Fold 1, review-b M1 (ov#477): the verdict is bound to THIS pull reques
       }
     });
     expect(decideFor(sameRepo({ ref: "main", sha: BASE })).merge).toBe(true);
+    // A same-repository run lists this PR, but another PR was opened from the same branch: CI is not bound.
+    onlyFalse(decideFor((() => { const f = sameRepo({ ref: "main", sha: BASE }); f[P("pulls?state=all&head=Edge-City%3Ahello-board&per_page=100")].push({ number: 902, state: "open" }); return f; })()), "ci_green");
     onlyFalse(decideFor(sameRepo({ ref: "release-x", sha: BASE })), "review_verdict_pass");
     onlyFalse(decideFor(sameRepo({ ref: "main", sha: "d".repeat(40) })), "review_verdict_pass");
   });

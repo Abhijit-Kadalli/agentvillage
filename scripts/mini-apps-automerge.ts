@@ -27,13 +27,23 @@
  *                        completed/success, and its one job "mini-apps review (bot v0, advisory)" succeeded at sha
  *   review_verdict_pass  that run's artifact mini-apps-review (exactly one, unexpired, <= 5 MB, of that run and
  *                        sha) holds mini-apps-review.json with bot av-miniapp-review, head === sha, verdict PASS.
- *                        The check's colour is never enough: NEEDS_HUMAN exits 0 (green).
+ *                        The check's colour is never enough: NEEDS_HUMAN exits 0 (green). Fold 1 (review-b M1,
+ *                        ov#477): the JSON is bound to THIS pull request into main: pr === n, base_ref === "main",
+ *                        base_sha (the event's pull_request.base.sha the bot's tool tree was checked out at,
+ *                        mini-apps-review.yml checkout + --base) equals the pull request's base.sha (GitHub sets it
+ *                        at each push or base edit, so a base edited after the run breaks it) and is on main
+ *                        (compare base_sha...main is ahead or identical); a same-repository run's own
+ *                        pull_requests entry must say base main at that sha. A JSON without these fields (every
+ *                        bot run before fold 1) never merges.
  *   review_lane_mini_app the bot's own classifier said a manifest lane (sandbox | admins | everyone), never core,
  *                        and no finding gate_changed, core_path, first_party_package (ov#475), baseline_skill,
  *                        bot_error
  *   ci_green             the NEWEST run of .github/workflows/test.yml for this sha (same matching) is
  *                        completed/success and each of CI_JOBS appears exactly once, succeeded, at sha. A missing
- *                        check is no merge.
+ *                        check is no merge. test.yml writes no JSON to bind it, so (fold 1) a CI run counts only
+ *                        when this pull request is the ONLY one ever opened from its head label (pulls?state=all&
+ *                        head=<owner:branch> lists exactly #n): a fork run (empty pull_requests) is never accepted
+ *                        on sha, branch and repository alone.
  *   label_present        the pull request carries mini-app:automerge
  *   label_by_writer      the timeline's LAST labeled/unlabeled event for that label is a labeled event by a
  *                        User whose repository role (collaborators/{login}/permission role_name) is
@@ -85,6 +95,7 @@ const SHA_RE = /^[0-9a-f]{40}$/;
 const REPO_RE = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const HEAD_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}:[A-Za-z0-9._\/-]{1,250}$/;
 const SCOPE_RE = /^(?:mini-apps|skills)\/[a-z0-9][a-z0-9-]{0,39}\/(.+)$/;
 
 type Obj = Record<string, any>;
@@ -104,6 +115,10 @@ export type Facts = {
   files: unknown[] | null;
   timeline: unknown[] | null;
   labelPermission: unknown;
+  /** pulls?state=all&head=<head label>: every pull request ever opened from this head (fold 1). */
+  headPulls: unknown[] | null;
+  /** compare/<the JSON's base_sha>...main (fold 1). */
+  baseCompare: unknown;
   review: { workflow: unknown; runs: unknown[] | null; jobs: unknown[] | null; artifacts: unknown[] | null; report: unknown };
   ci: { workflow: unknown; runs: unknown[] | null; jobs: unknown[] | null };
 };
@@ -142,14 +157,16 @@ function validWorkflow(wf: unknown, path: string): wf is Obj {
   return isObj(wf) && safeInt(wf.id) && wf.path === path;
 }
 /** The runs of THIS workflow file for THIS pull request's head (sha, branch, repository). */
-export function matchingRuns(runs: unknown[] | null, wf: unknown, path: string, pr: Obj | null, n: number, sha: string | null, repo: string): Obj[] {
+export function matchingRuns(runs: unknown[] | null, wf: unknown, path: string, pr: Obj | null, n: number, sha: string | null, repo: string, acceptUnlisted: boolean): Obj[] {
   if (!Array.isArray(runs) || !validWorkflow(wf, path) || !isObj(pr) || !sha) return [];
   const headRef = pr.head?.ref, headRepo = fullName(pr.head?.repo);
   if (typeof headRef !== "string" || typeof headRepo !== "string") return [];
   return runs.filter(isObj).filter(r =>
     safeInt(r.id) && r.workflow_id === wf.id && r.path === path && r.head_sha === sha && r.event === "pull_request" &&
     r.head_branch === headRef && fullName(r.head_repository) === headRepo && fullName(r.repository) === repo &&
-    Array.isArray(r.pull_requests) && (r.pull_requests.length === 0 || r.pull_requests.some((p: unknown) => isObj(p) && p.number === n)));
+    // A run that lists no pull request (every fork run) is accepted only when the caller binds it another way
+    // (fold 1: the bot's JSON names the PR; CI needs this PR to be the only one from its head label).
+    Array.isArray(r.pull_requests) && (r.pull_requests.length === 0 ? acceptUnlisted : r.pull_requests.some((p: unknown) => isObj(p) && p.number === n)));
 }
 export function newestRun(runs: Obj[]): Obj | null {
   const num = (v: unknown) => (Number.isSafeInteger(v) ? (v as number) : -1);
@@ -161,6 +178,10 @@ function jobGreen(jobs: unknown[] | null, run: Obj, name: string, sha: string): 
   if (!Array.isArray(jobs) || !jobs.every(j => isObj(j) && j.run_id === run.id)) return false;
   const named = (jobs as Obj[]).filter(j => j.name === name);
   return named.length === 1 && named[0].head_sha === sha && green(named[0]);
+}
+/** Fold 1: this pull request is the only one ever opened from its head label (open or closed). */
+export function headUnique(headPulls: unknown[] | null, n: number): boolean {
+  return Array.isArray(headPulls) && headPulls.length === 1 && isObj(headPulls[0]) && headPulls[0].number === n;
 }
 /** The last labeled/unlabeled event for LABEL, when it is a labeled one; else null. */
 export function labelEvent(timeline: unknown[] | null): Obj | null {
@@ -190,7 +211,7 @@ export function decide(f: Facts): Decision {
   c.set("no_forbidden_path", complete && !all.some(forbiddenPath));
 
   // The bot: its newest run for this head, its job, its artifact, its report.
-  const rRuns = matchingRuns(f.review.runs, f.review.workflow, REVIEW_WORKFLOW, pr, f.n, sha, f.repo);
+  const rRuns = matchingRuns(f.review.runs, f.review.workflow, REVIEW_WORKFLOW, pr, f.n, sha, f.repo, true);
   const rRun = newestRun(rRuns);
   c.set("review_run_green", !!rRun && !!sha && green(rRun) && jobGreen(f.review.jobs, rRun, REVIEW_JOB, sha));
   const arts = Array.isArray(f.review.artifacts) ? f.review.artifacts.filter(a => isObj(a) && a.name === REVIEW_ARTIFACT) as Obj[] : [];
@@ -198,14 +219,21 @@ export function decide(f: Facts): Decision {
   const artOk = !!rRun && !!art && art.expired === false && typeof art.size_in_bytes === "number" && art.size_in_bytes <= MAX_ARTIFACT_BYTES &&
     isObj(art.workflow_run) && art.workflow_run.id === rRun.id && art.workflow_run.head_sha === sha;
   const rep = artOk && isObj(f.review.report) ? f.review.report : null;
-  c.set("review_verdict_pass", !!rep && rep.bot === REVIEW_BOT && rep.head === sha && rep.verdict === "PASS");
+  // Fold 1: bound to this pull request into main (see the header).
+  const runEntries = rRun && Array.isArray(rRun.pull_requests) ? rRun.pull_requests.filter(isObj) : [];
+  const runBase = runEntries.length === 0 || runEntries.some(p => p.number === f.n && isObj(p.base) && p.base.ref === BASE_BRANCH && p.base.sha === rep?.base_sha);
+  const bound = !!rep && !!pr && Number.isSafeInteger(rep.pr) && rep.pr === f.n && rep.base_ref === BASE_BRANCH &&
+    typeof rep.base_sha === "string" && SHA_RE.test(rep.base_sha) && pr.base?.sha === rep.base_sha && runBase &&
+    isObj(f.baseCompare) && (f.baseCompare.status === "ahead" || f.baseCompare.status === "identical");
+  c.set("review_verdict_pass", !!rep && bound && rep.bot === REVIEW_BOT && rep.head === sha && rep.verdict === "PASS");
   c.set("review_lane_mini_app", !!rep && MINI_APP_LANES.includes(rep.lane) && Array.isArray(rep.findings) &&
     rep.findings.every((x: unknown) => isObj(x) && typeof x.code === "string" && !DENY_CODES.includes(x.code)));
 
-  // CI: the closed list, every check present, at this sha.
-  const cRuns = matchingRuns(f.ci.runs, f.ci.workflow, CI_WORKFLOW, pr, f.n, sha, f.repo);
+  // CI: the closed list, every check present, at this sha, from runs bound to this pull request (fold 1).
+  const unique = headUnique(f.headPulls, f.n);
+  const cRuns = matchingRuns(f.ci.runs, f.ci.workflow, CI_WORKFLOW, pr, f.n, sha, f.repo, unique);
   const cRun = newestRun(cRuns);
-  c.set("ci_green", !!cRun && !!sha && green(cRun) && CI_JOBS.every(name => jobGreen(f.ci.jobs, cRun, name, sha)));
+  c.set("ci_green", unique && !!cRun && !!sha && green(cRun) && CI_JOBS.every(name => jobGreen(f.ci.jobs, cRun, name, sha)));
 
   // The label: present, set by a writer, after the last head change.
   c.set("label_present", !!pr && Array.isArray(pr.labels) && pr.labels.some((l: unknown) => isObj(l) && l.name === LABEL));
@@ -240,8 +268,9 @@ function pages(io: Io, path: string): unknown[] | null {
   }
   return path.endsWith("/files") ? out : null; // files: 3000 entries is the API's cap, which files_complete refuses
 }
-function list(v: unknown, key: string): unknown[] | null {
-  return isObj(v) && Array.isArray(v[key]) && v[key].length < 100 ? v[key] : null;
+function list(v: unknown, key?: string): unknown[] | null {
+  const arr = key === undefined ? v : isObj(v) ? v[key] : null;
+  return Array.isArray(arr) && arr.length < 100 ? arr : null;
 }
 
 export function gather(io: Io, repo: string, n: number, switchValue: string | undefined): Facts {
@@ -254,17 +283,20 @@ export function gather(io: Io, repo: string, n: number, switchValue: string | un
   const ev = labelEvent(timeline);
   const login = ev && isObj(ev.actor) && typeof ev.actor.login === "string" && LOGIN_RE.test(ev.actor.login) ? ev.actor.login : null;
   const labelPermission = login ? tryGet(io, `${R}/collaborators/${login}/permission`) : null;
+  const label = pr && typeof pr.head?.label === "string" && HEAD_LABEL_RE.test(pr.head.label) ? pr.head.label : null;
+  const headPulls = label ? list(tryGet(io, `${R}/pulls?state=all&head=${encodeURIComponent(label)}&per_page=100`)) : null;
+  const unique = headUnique(headPulls, n);
 
-  const runsOf = (file: string, path: string) => {
+  const runsOf = (file: string, path: string, acceptUnlisted: boolean) => {
     const workflow = tryGet(io, `${R}/actions/workflows/${file}`);
     const runs = validWorkflow(workflow, path) && pinnedSha
       ? list(tryGet(io, `${R}/actions/workflows/${workflow.id}/runs?head_sha=${pinnedSha}&event=pull_request&per_page=100`), "workflow_runs")
       : null;
-    const newest = newestRun(matchingRuns(runs, workflow, path, pr, n, pinnedSha, repo));
+    const newest = newestRun(matchingRuns(runs, workflow, path, pr, n, pinnedSha, repo, acceptUnlisted));
     const jobs = newest ? list(tryGet(io, `${R}/actions/runs/${newest.id}/jobs?filter=latest&per_page=100`), "jobs") : null;
     return { workflow, runs, newest, jobs };
   };
-  const r = runsOf("mini-apps-review.yml", REVIEW_WORKFLOW);
+  const r = runsOf("mini-apps-review.yml", REVIEW_WORKFLOW, true);
   const artifacts = r.newest ? list(tryGet(io, `${R}/actions/runs/${r.newest.id}/artifacts?per_page=100`), "artifacts") : null;
   let report: unknown = null;
   const named = (artifacts ?? []).filter(a => isObj(a) && a.name === REVIEW_ARTIFACT) as Obj[];
@@ -273,9 +305,11 @@ export function gather(io: Io, repo: string, n: number, switchValue: string | un
       art.size_in_bytes <= MAX_ARTIFACT_BYTES && isObj(art.workflow_run) && art.workflow_run.id === r.newest.id) {
     try { report = JSON.parse(io.artifactJson(repo, art.id)); } catch { report = null; }
   }
-  const c = runsOf("test.yml", CI_WORKFLOW);
+  const c = runsOf("test.yml", CI_WORKFLOW, unique);
+  const baseSha = isObj(report) && typeof report.base_sha === "string" && SHA_RE.test(report.base_sha) ? report.base_sha : null;
+  const baseCompare = baseSha ? tryGet(io, `${R}/compare/${baseSha}...${BASE_BRANCH}?per_page=1`) : null;
   return {
-    repo, n, switchValue, pinnedSha, pr, files, timeline, labelPermission,
+    repo, n, switchValue, pinnedSha, pr, files, timeline, labelPermission, headPulls, baseCompare,
     review: { workflow: r.workflow, runs: r.runs, jobs: r.jobs, artifacts, report },
     ci: { workflow: c.workflow, runs: c.runs, jobs: c.jobs },
   };
@@ -325,6 +359,8 @@ export function sweep(io: Io, repo: string, env: Record<string, string | undefin
       io.log(`mini-apps automerge: no merge of pull request ${n}: the second read does not agree`);
       continue;
     }
+    // Fold 1 (review-b S1): at most ONE merge attempt per run, whatever its outcome. The next labeled pull
+    // request waits for the next run, whose checks and reads then see the main this merge made.
     try {
       const answer = io.merge(repo, n, first.sha);
       if (isObj(answer) && answer.merged === true) {
@@ -337,6 +373,7 @@ export function sweep(io: Io, repo: string, env: Record<string, string | undefin
       io.log(`mini-apps automerge: merge refused for pull request ${n}: ${clean(e)}`);
       rc = 1;
     }
+    break;
   }
   return rc;
 }
