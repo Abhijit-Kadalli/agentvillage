@@ -109,7 +109,7 @@ class Server:
             if not self.ratings:
                 return self.P.Reply(422, {"error": "incomplete"}, "incomplete")
             self.state = "submitted"
-            return self.P.Reply(200, {"state": "submitted", "revision": 10, "progress": {}}, "submitted")
+            return self.P.Reply(200, {"state": "submitted", "revision": 10, "n_rated": len(self.ratings), "n_statements": len(self.order), "progress": {}}, "submitted")
         if self.state == "submitted":
             return self.P.Reply(409, {"error": "submitted"}, "submitted")
         assert body["pool_sha256"] == SHA
@@ -415,6 +415,7 @@ def test_cp_call_posts_the_box_key_to_its_own_tenant(plugin, home, monkeypatch):
     try:
         assert plugin.cp_call("read", {}).code == "not_configured"
         monkeypatch.setenv("CONTROL_PLANE_URL", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setenv("AV_GODCONST_BALLOT_KEY", "ballot_key_box")
         monkeypatch.setenv("EDGEOS_API_KEY", "eos_live_box_key")
         rate = plugin.cp_call("rate", {"pool_sha256": SHA, "statement_id": "s001", "rating": 3})
         read = plugin.cp_call("read", {})
@@ -424,8 +425,8 @@ def test_cp_call_posts_the_box_key_to_its_own_tenant(plugin, home, monkeypatch):
     assert (read.status, read.code, read.ok) == (409, "stale_pool", False)
     tenant = "0190a5b2-aaaa-4222-8333-444455556666"
     assert seen == [
-        (f"/tenants/{tenant}/godconst/ballot/rate", "Bearer eos_live_box_key", {"pool_sha256": SHA, "statement_id": "s001", "rating": 3}),
-        (f"/tenants/{tenant}/godconst/ballot", "Bearer eos_live_box_key", {}),
+        (f"/tenants/{tenant}/godconst/ballot/rate", "Bearer ballot_key_box", {"pool_sha256": SHA, "statement_id": "s001", "rating": 3}),
+        (f"/tenants/{tenant}/godconst/ballot", "Bearer ballot_key_box", {}),
     ]
 
 
@@ -440,16 +441,18 @@ def test_submit_asks_then_submits_the_merged_draft_and_forgets_the_ballot(plugin
     start(plugin, bot, server)
     first, second = bot.cards()
     submit_data = second.reply_markup.inline_keyboard[1][0].callback_data
+    server.ratings["s005"] = 2  # rated on the web page: the box re-reads, so the count is the app's
     assert tap(plugin, bot, server, second, 1, data=submit_data).answers == ["Confirm below."]
     confirm = bot.sent[-1]
-    assert confirm.text.startswith("Submit your ratings now? You rated 0 of 6")
+    assert confirm.text.startswith("Submit your ratings now? You rated 1 of 6")
+    server.ratings.clear()
     yes, no = confirm.reply_markup.inline_keyboard[0]
     assert tap(plugin, bot, server, confirm, 1, data=yes.callback_data).answers == ["Rate at least one statement before you submit."]
     assert tap(plugin, bot, server, confirm, 1, data=no.callback_data).answers == ["Not submitted. You can keep rating."]
     tap(plugin, bot, server, first, 4)
     q = tap(plugin, bot, server, confirm, 1, data=yes.callback_data)
     assert q.answers == ["Submitted"] and q.edited == [None]
-    assert bot.sent[-1].text == "Submitted. Thank you: your ratings are final."
+    assert bot.sent[-1].text == "Submitted: 1 of 6 rated. Thank you: your ratings are final."
     assert ("submit", {"pool_sha256": SHA}) in server.calls
     stored = json.loads(ledger_text(home))
     assert stored["session"] is None and stored["ended"]["status"] == "submitted"

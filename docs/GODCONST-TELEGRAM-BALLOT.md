@@ -50,7 +50,7 @@ round" heading is dropped, because a heading that names authorship invites guess
 `RATING_LABELS`, exactly. When every statement is rated, one line follows:
 `All 30 statements rated. Thank you. Press Submit my ratings to make them final, ...` with `[Submit my ratings]`.
 If the resident skipped some, the line reads `That's every statement. You rated 24 of 30; the others count as no
-opinion. ...`. Submit always asks first (`Submit your ratings now? You rated X of N ... final` with `[Yes, submit]
+opinion. ...`. Submit always asks first, after re-reading the ballot so X is the app's count (`Submit your ratings now? You rated X of N ... final` with `[Yes, submit]
 [Not yet]`); Yes answers `Submitted` and every later tap answers `Your ballot is submitted, so rating is closed for you.`
 
 ## 2. The data path
@@ -59,21 +59,28 @@ opinion. ...`. Submit always asks first (`Submit your ratings now? You rated X o
  resident's bot (Telegram)           box (Hermes + av-godconst)             control plane                     app
  ───────────────────────────         ────────────────────────────           ─────────────                     ───
  cards  <── sendMessage ───────────  pass every 60 s:                       POST /tenants/:id/godconst/ballot
-                                     read at most every 5 min (open)  ───>  Bearer <box EDGEOS_API_KEY>  ───>  POST /api/v1/constitution/telegram-ballot
-                                     or 10 min (idle)                       checkTenantEdgeosKey               Bearer REFERENDUM_RUNTIME_BRIDGE_KEY
+                                     read at most every 5 min (open)  ───>  Bearer <AV_GODCONST_BALLOT_KEY>  ───>  POST /api/v1/constitution/telegram-ballot
+                                     or 10 min (idle)                       checkBallotKey (stored sha256)     Bearer REFERENDUM_RUNTIME_BRIDGE_KEY
  tap gcb:r:<nonce>:<pos>:<v>  ─────> owner check, nonce check               GODCONST_BALLOT_TENANTS            {tenant_id} (the AUTHENTICATED tenant)
                                      POST .../godconst/ballot/rate   ───>   research consent in force   ───>  POST .../telegram-ballot/rate
                                                                             forward, pass the answer back      {tenant_id, pool_sha256, statement_id, rating}
 ```
 
 **Who authenticates as whom.**
-- The box never holds an app credential. It calls its own control plane with its own `EDGEOS_API_KEY`. This is the
-  ask-village wire (`plugins/av-events/_ask_village.py`): `CONTROL_PLANE_URL` is pinned to `CP_HOSTS`, with no
-  redirects and no proxy.
-- The control plane verifies that key against the path's tenant (`edgeos-directory.js checkTenantEdgeosKey`). It
-  forwards with B7's GODCONST bridge key (`REFERENDUM_RUNTIME_BRIDGE_KEY`), the key B7 already uses in both
-  directions, so there is no new secret. It adds `tenant_id`, which is the authenticated tenant; a `tenant_id` in the
-  box's body is refused.
+- The box never holds an app credential, and never uses its `EDGEOS_API_KEY` here: that key is `agent_readable`
+  (av-approval `custody_keys.json`), so the agent's terminal could have read, rated and submitted its human's ballot
+  with it. The control plane refuses it on these routes.
+- The box presents **`AV_GODCONST_BALLOT_KEY`**, a per-tenant key the control plane derives
+  (`godconst-ballot-key.js`: HMAC under an HKDF subkey of `CONTROL_PLANE_MASTER_KEY`, versioned) and writes to the box's
+  `.env` with `AV_GODCONST_BALLOT=1` (the same env-write path), after recording its SHA-256 in `godconst_ballot_keys`
+  (cp migration 0089). The route compares the presented key's hash with that row in constant time; deleting the row
+  revokes the key.
+- av-approval custody marks it `strip` and puts it in `_custody.FLOOR`, so no agent-run child (foreground and
+  background terminal, execute_code, cron scripts) sees it. Only av-godconst, inside the gateway, reads it. The
+  residual is the same as for every FLOOR key: `$HERMES_HOME/.env` itself stays readable by the agent's user
+  (APPROVAL-CUSTODY).
+- The control plane forwards with B7's GODCONST bridge key (`REFERENDUM_RUNTIME_BRIDGE_KEY`; no new secret on that
+  hop) and adds `tenant_id`, the authenticated tenant; a `tenant_id` in the box's body is refused.
 - The app trusts the bridge for one fact only: which cp tenant is asking. From that tenant it finds the one
   `agent_setups` row (none or several: 404) and applies the page's own rules:
   - `godconstAdmits`: `GODCONST_COHORT`, or the join code;
@@ -246,9 +253,11 @@ not changed here.
   (+1, 4 updated).
 
 **Control plane** (`feat/godconst-telegram-ballot`, from origin/main)
-- `control-plane/src/godconst-ballot.js` (new): the three forwards, read / rate / submit (box key, tenant list,
+- `control-plane/src/godconst-ballot.js` (new): the three forwards, read / rate / submit (the per-tenant ballot key only, tenant list,
   research consent, strict body, limits, pass-through). Log line: `godconst_ballot op tenant=<id8> status code
   app_status ms`, never a body or a full id.
+- `control-plane/src/godconst-ballot-key.js` (new) + migration 0089 `godconst_ballot_keys`: the ballot key, its
+  stored hash, the env line beside `AV_GODCONST_BALLOT` (`tenants.js writeIngestEnv`).
 - `control-plane/src/index.js`: the three routes, dispatched before the API-key gate, as ask-village is.
 - `control-plane/src/box-event-flags.js`: `AV_GODCONST_BALLOT` by `GODCONST_BALLOT_TENANTS`, only while
   `GODCONST_BALLOT_ENABLED=1` (as `AV_PRAY`).
@@ -265,6 +274,8 @@ read is within 10 minutes.
   `plugin.yaml`, `tests/` (24).
 - `install/av_godconst.ts` + `install/install.ts`: residents list `av-godconst` in `plugins.enabled`.
 - `install/profile.ts`: ODIN boxes never do.
+- `plugins/av-approval/custody_keys.json` + `_custody.py` FLOOR: `AV_GODCONST_BALLOT_KEY` stripped from every
+  agent-run child (test: it is gone from the foreground and execute_code child envs).
 - `plugins/av-approval/expected_plugins.json`: `av-godconst` in the expected set (new `expected_set_version`); its
   inventory test counts 10 expected plugins.
 - `pytest.ini`: the test path.
@@ -298,7 +309,8 @@ The press order (each step is a human Railway variable edit or an owner press; e
 3. **App:** set `GODCONST_TELEGRAM_BALLOT=1`. `GODCONST_COHORT` and `REFERENDUM_RUNTIME_BRIDGE_KEY` are already set
    for B7 and B3.
 4. **Control plane:** set `GODCONST_BALLOT_ENABLED=1` and `GODCONST_BALLOT_TENANTS=<Carter's tenant id>` (then
-   rewire that tenant, so its `.env` gets `AV_GODCONST_BALLOT=1`). `VILLAGE_BRIDGE_ORIGIN` already points at the app.
+   rewire that tenant, so its `.env` gets `AV_GODCONST_BALLOT=1` and its `AV_GODCONST_BALLOT_KEY`; migration 0089 must
+   have run). `VILLAGE_BRIDGE_ORIGIN` already points at the app.
 5. **Check the order rule on Carter's box.** The plugin logs `outcome=order n=30 rule=godconst-order-v2` when it
    starts. If it says `godconst-order-v1`, the pairing dependency (section 9) is not deployed: stop here.
 6. **Rehearse** with Carter's tenant on a test pool. Open rating in `/admin/constitution`; within about 10 minutes the
@@ -314,6 +326,21 @@ To stop:
 - `GODCONST_BALLOT_ENABLED` unset: the cp routes are 404 at once.
 - `GODCONST_TELEGRAM_BALLOT` unset: the app routes are 404 at once.
 - The web page is never affected.
+
+## 8a. Release and merge notes (lead's decision)
+
+The overlay ships DARK behind `AV_GODCONST_BALLOT` (default off) via a normal PR merge: no release tag, no
+RC-MANIFEST line. One release cut carries #442 (av-rate), #478 (av-elicit), #480 (GC-ELICIT O2 installer) and this
+plugin, then one roll to the canaries. Conflicts when merging in any order (checked with `git merge-tree` against
+the PR heads):
+
+| File | With | Resolution |
+|---|---|---|
+| `install/install.ts` | #442, #480 | None: merges cleanly (this branch adds two lines: the import above `./av_vote`, `if (resident) configureAvGodconst();` after `configureAvVote`). #442 must rebase onto main anyway (its base lacks `if (resident)`). |
+| `plugins/av-approval/expected_plugins.json` | #442, #480 | `overlay` = the sorted union (av-elicit, av-godconst, av-rate added); keep #480's `av-elicit` in `conditional`; recompute `expected_set_version` with `_plugins.set_version` (all four merged: `26f6e2cd2b70`). |
+| `plugins/av-approval/tests/test_plugins.py` | #442, #480 | Inventory test: 9 + av-rate + av-elicit + av-godconst = `expected_loaded: 12` and "12 expected" in the log line. |
+| `plugins/av-approval/custody_keys.json` | #442, #480 | Merges textually clean today (the entries land in different places); check the result keeps every entry: `AV_RATE_SESSION_KEY` (#442, not_secret), `AV_ELICIT_SESSION_KEY` (#480, not_secret), `AV_GODCONST_BALLOT_KEY` (this branch, strip). Also keep this branch's `_custody.FLOOR` entry and the custody test's count of 7. |
+| `pytest.ini` | #478 | Keep both test paths on the one `testpaths` line. Note: #442 never adds `plugins/av-rate/tests` to `pytest.ini`, so a bare `pytest` skips av-rate's tests; add it in the release cut. |
 
 ## 9. Dependency on the uncommitted authors branch
 

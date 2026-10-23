@@ -7,8 +7,8 @@ saved on the SAME ballot the /constitution page shows; the next pair arrives onc
 is a revision; "rate as many as you can" (unrated = no opinion).
 
 **The data path.** The box never reaches the app and holds no app credential. It calls its control plane with its
-own EdgeOS key (``CONTROL_PLANE_URL`` pinned to ``CP_HOSTS``, ``Authorization: Bearer $EDGEOS_API_KEY``, the
-ask-village wire): ``POST /tenants/<own tenant>/godconst/ballot`` (read) and ``.../ballot/rate`` (one tap). The control
+own ballot key (``CONTROL_PLANE_URL`` pinned to ``CP_HOSTS``, ``Authorization: Bearer $AV_GODCONST_BALLOT_KEY``, a
+per-tenant credential custody keeps from every agent-run child; the ask-village wire otherwise): ``POST /tenants/<own tenant>/godconst/ballot`` (read) and ``.../ballot/rate`` (one tap). The control
 plane authenticates the key against this tenant, checks its switches and research consent, and forwards with the
 GODCONST bridge key and the authenticated tenant id; the app maps that tenant to its one resident and applies every
 GODCONST rule (cohort, take-part consent, pool phase, order, ballot) on every call. So every send follows a fresh read
@@ -73,11 +73,14 @@ logger = logging.getLogger(__name__)
 PLUGIN_ID = "av-godconst"
 ON_SWITCH = "AV_GODCONST_BALLOT"
 URL_ENV = "CONTROL_PLANE_URL"
-CREDENTIAL_ENV = "EDGEOS_API_KEY"
+#: The per-tenant ballot credential the control plane writes (godconst-ballot-key.js). Never EDGEOS_API_KEY: the agent
+#: can read that one. av-approval custody strips this name from every agent-run child (custody_keys.json, FLOOR), so
+#: only this plugin, inside the gateway, holds it.
+CREDENTIAL_ENV = "AV_GODCONST_BALLOT_KEY"
 HOME_CHANNEL_ENV = "TELEGRAM_HOME_CHANNEL"
 TENANT_ENVS = ("AV_TENANT_ID", "TENANT_ID")
 TRUTHY = frozenset({"1", "true", "yes", "on"})
-#: av-events _pray.CP_HOSTS (directory.ts): the only hosts the box's EdgeOS key is sent to over https.
+#: av-events _pray.CP_HOSTS (directory.ts): the only hosts the ballot key is sent to over https.
 CP_HOSTS = frozenset({"control-plane-production-606c.up.railway.app"})
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 READ_PATH = "/tenants/{tenant}/godconst/ballot"
@@ -793,7 +796,7 @@ async def _answer(query: Any, text: str) -> None:
     try:
         await query.answer(text=text if len(text) <= ANSWER_MAX else text[: ANSWER_MAX - 3] + "...")
     except Exception:  # noqa: BLE001 - an expired query cannot be answered
-        logger.debug("av-godconst: answerCallbackQuery failed", exc_info=True)
+        logger.debug("av-godconst: answerCallbackQuery failed")  # no exc_info: an exception can echo the callback data
 
 
 def make_handler(adapter: Any = None, *, make_button: Callable, make_markup: Callable, home: Optional[str] = None,
@@ -938,11 +941,24 @@ async def _submit(query: Any, message: Any, kind: str, session: dict, ledger: di
     bot = _bot_of(query, message)
     chat = getattr(getattr(message, "chat", None), "id", None)
     if kind == "submit":
+        # The count shown is the app's, read now (a rating given on the web page since the last tap counts too).
+        read = await asyncio.to_thread(call, "read", {}, home)
+        view = L.valid_view(read.data) if read.ok else None
+        if view is None:
+            if read.code in REFUSAL_STATUS:
+                await _refused(query, read, session, ledger, home)
+            else:
+                await _answer(query, FAILED)
+            return
+        if view["state"] != "open":
+            await _answer(query, SUBMITTED if view["state"] == "submitted" else CLOSED)
+            return
+        n = len(view["statements"])
+        rated = sum(1 for st in view["statements"] if st["id"] in view["ratings"])
         await _answer(query, "Confirm below.")
         if bot is not None and chat is not None:
-            rated = len(session.get("rated", []))
-            await _send(bot, str(chat), L.confirm_text(rated, len(session["order"])), make_markup(L.confirm_rows(session["nonce"], make_button)))
-        _log("submit_asked")
+            await _send(bot, str(chat), L.confirm_text(rated, n), make_markup(L.confirm_rows(session["nonce"], make_button)))
+        _log("submit_asked", n_rated=rated)
         return
     if kind == "cancel":
         await _answer(query, "Not submitted. You can keep rating.")
@@ -968,8 +984,9 @@ async def _submit(query: Any, message: Any, kind: str, session: dict, ledger: di
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:  # noqa: BLE001
         _log("edit_failed")
+    n_rated = reply.data.get("n_rated") if isinstance(reply.data.get("n_rated"), int) else None
     if bot is not None and chat is not None:
-        await _send(bot, str(chat), L.submitted_text())
+        await _send(bot, str(chat), L.submitted_text(n_rated, len(session["order"])))
 
 
 async def _control(query: Any, message: Any, kind: str, session: dict, ledger: dict, make_button: Callable, make_markup: Callable,

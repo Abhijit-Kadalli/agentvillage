@@ -249,7 +249,10 @@ def confirm_text(rated: int, n: int) -> str:
                  "Once submitted, your ratings are final and can no longer change, here or on the Constitution page."])
 
 
-def submitted_text() -> str:
+def submitted_text(n_rated: Optional[int] = None, n: Optional[int] = None) -> str:
+    """`n_rated` is the app's count from the submit's answer (never the box's own tally)."""
+    if isinstance(n_rated, int) and isinstance(n, int):
+        return _esc([f"Submitted: {n_rated} of {n} rated. Thank you: your ratings are final."])
     return _esc(["Submitted. Thank you: your ratings are final."])
 
 
