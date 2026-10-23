@@ -10,6 +10,7 @@ import {
   loadValidator, main, parseArgs, passedOf, redact, requiredBump, runConformance, secretFindings, secretPattern, show, strictJson,
   summary, withoutAnnotations, type Report, type Result,
   ADVISORY, MAX_SERVICE_REQUESTS, OUR_HOSTS, SERVICE_DEADLINE_MS, describeValue, inputCompatibility, mainAsync, ownReport, runConformanceAsync, serviceTarget, shapeProblems, tlsDial, type ServiceDeps,
+  toolErrorProblems,
 } from "../mini-apps-conformance";
 import { createServer, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:tls";
@@ -2233,6 +2234,23 @@ describe("MCP error envelopes: a well-formed one conforms, a malformed one does 
         expect([why, r.pass, r.note]).toEqual([why, false, expect.stringContaining(want)]);
       });
     }
+  });
+  test("S1 (review-b on ov#474): every content item is checked, not only the first twelve; only the notes are capped", () => {
+    const good = Array.from({ length: 13 }, (_, i) => ({ type: "text", text: `Line ${i}.` }));
+    withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/error-x.json": JSON.stringify({ isError: true, content: good }) } }, c => {
+      expect(row(run(c), "hygiene.error_bodies").pass).toBe(true);
+    });
+    for (const last of [42, { type: "text" }, { text: "no type" }]) {
+      const body = { isError: true, content: [...good.slice(0, 12), last] };
+      withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/error-x.json": JSON.stringify(body) } }, c => {
+        const r = row(run(c), "hygiene.error_bodies");
+        expect([JSON.stringify(last), r.pass, r.note]).toEqual([JSON.stringify(last), false, expect.stringContaining("content/12 ")]);
+      });
+      expect(toolErrorProblems(body).length).toBe(1);
+    }
+    // Thirty bad items: each is checked, the note lists twelve and counts the rest.
+    const many = toolErrorProblems({ isError: true, content: Array.from({ length: 30 }, () => 42) });
+    expect([many.length, many[11], many[12]]).toEqual([13, "content/11 has no string type", "and 18 more content item problem(s)"]);
   });
   test("v0: an https-json app gets no envelope rule: its error fixture is still exactly {code, detail}", () => {
     withCatalog({ manifest: httpsJsonAcme(), fixtures: { ...GOOD_FIXTURES, "acme.lookup/error-x.json": JSON.stringify(TOOL_TEXT) } }, c => {
