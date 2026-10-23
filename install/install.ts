@@ -101,6 +101,7 @@ import {
 } from "./config";
 import { configureTelegramDisplay } from "./display_defaults";
 import { configureAvDisplay, configureVillageMenu } from "./av_display";
+import { configureAvGodconst } from "./av_godconst";
 import { configureAvVote } from "./av_vote";
 import { configureAvRate } from "./av_rate";
 import { copySkillBundles, removeRetiredSkillDirs } from "./skill_copy";
@@ -381,6 +382,8 @@ function main(): void {
   configureVillageMenu();
   // Suggestion rating cards (plugins/av-rate): enabled, and allowed to hand the recorded rating to the agent.
   configureAvRate();
+  // GC-TELEGRAM-BALLOT (plugins/av-godconst): residents only; dark until the control plane writes its flag and key.
+  if (resident) configureAvGodconst();
   // Opt-in and off the core path: a failure here is counted, never fatal.
   safeInstallRecall(SOURCE_SKILLS);
   // GC-ELICIT (av_elicit.ts): opt-in on AV_ELICIT_ENABLED, set per tenant by the control plane; unset changes nothing;
