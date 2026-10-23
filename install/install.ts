@@ -100,6 +100,7 @@ import {
 } from "./config";
 import { configureTelegramDisplay } from "./display_defaults";
 import { configureAvDisplay, configureVillageMenu } from "./av_display";
+import { configureAvGodconst } from "./av_godconst";
 import { configureAvVote } from "./av_vote";
 import { copySkillBundles, removeRetiredSkillDirs } from "./skill_copy";
 import { hermesBin, hermesExecEnv, hermesRunner } from "./hermes_cli";
@@ -368,13 +369,14 @@ function main(): void {
   configureDashboardAuth();
   configureAvEvents();
   configureAvApproval();
-  // ODIN-PROFILE: the village bridge, av-vote, the Index plugin, its crons and EdgeOS are the resident's.
+  // ODIN-PROFILE: the village bridge, av-vote, av-godconst, the Index plugin, its crons and EdgeOS are the resident's.
   if (resident) configureVillageBridge();
   else for (const name of unlistPlugins(RESIDENT_ONLY_PLUGINS)) console.log(`→ removed plugin ${name} from plugins.enabled (profile odin)`);
   for (const name of unlistPlugins(NOT_STAGED_PLUGINS)) console.log(`→ removed plugin ${name} from plugins.enabled (not staged: OV-300 M1)`);
   if (resident) configureIndexLinks();
   configureAvDisplay();
   if (resident) configureAvVote();
+  if (resident) configureAvGodconst();
   // rc44 (RESIDENT-UX): av-display's /village in Telegram's command menu (past the 60-slot cap otherwise).
   configureVillageMenu();
   // Opt-in and off the core path: a failure here is counted, never fatal.
