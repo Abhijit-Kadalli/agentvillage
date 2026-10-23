@@ -377,11 +377,12 @@ function main(): void {
   if (resident) configureIndexLinks();
   configureAvDisplay();
   if (resident) configureAvVote();
-  if (resident) configureAvGodconst();
   // rc44 (RESIDENT-UX): av-display's /village in Telegram's command menu (past the 60-slot cap otherwise).
   configureVillageMenu();
   // Suggestion rating cards (plugins/av-rate): enabled, and allowed to hand the recorded rating to the agent.
   configureAvRate();
+  // GC-TELEGRAM-BALLOT (plugins/av-godconst): residents only; dark until the control plane writes its flag and key.
+  if (resident) configureAvGodconst();
   // Opt-in and off the core path: a failure here is counted, never fatal.
   safeInstallRecall(SOURCE_SKILLS);
   // D3: the memory provider (staged above with every plugin); a failure is logged, never fatal.

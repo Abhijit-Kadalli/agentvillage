@@ -78,12 +78,12 @@ test("an unusable shape is left alone with a warning", () => {
   }
 });
 
-test("install.ts runs the step right after configureAvVote, for a resident only", () => {
+test("install.ts runs the step right after configureAvRate (after rc44's menu step), for a resident only", () => {
   const text = readFileSync(join(import.meta.dir, "..", "install.ts"), "utf8");
   const main = text.slice(text.indexOf("function main(): void {"));
   const body = main.slice(0, main.indexOf("\n}\n"));
   expect(body.match(/^.*configureAvGodconst.*$/gm)).toEqual(["  if (resident) configureAvGodconst();"]);
-  expect(body).toMatch(/^  if \(resident\) configureAvVote\(\);\n  if \(resident\) configureAvGodconst\(\);$/m);
+  expect(body).toMatch(/^  configureAvRate\(\);\n  \/\/ GC-TELEGRAM-BALLOT .*\n  if \(resident\) configureAvGodconst\(\);$/m);
 });
 
 test("the plugin directory exists where the installer stages plugins from", () => {
