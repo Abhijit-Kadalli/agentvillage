@@ -25,19 +25,20 @@ plugins/av-elicit/
 | `inject/<unix_ms>-<open\|next\|replan>.txt` | control plane | One notice. An optional first line `#trigger=<opener\|answer\|idle\|human_message\|replan>` is metadata: stripped before injection, read back for records. |
 | `inject/<file>.done` | this plugin | The gateway accepted the injection. A rename of the `.txt`, with mtime set to the accept time (the control plane reads it as `delivered_at` for `open`; it counts `.done` files as `nudges_sent`). |
 | `inject/<file>.skipped` | this plugin | Not injected: the `closed` marker was present, the file was older than 24 h (by its `unix_ms` prefix), or it was unusable (empty after the trigger line, over 32 KiB, not UTF-8, not a regular file). |
-| `closed` | control plane | Empty marker. While present nothing is injected, pending `.txt` files become `.skipped`, the probe stops and the tool refuses. |
+| `closed` | control plane | Empty marker. Pending `.txt` files staged (mtime) at or before it become `.skipped`; the window whose newest `*-open.done` is not later than the marker is closed (the probe stops, the tool refuses). A `.txt` staged after the marker belongs to a new window and is handled normally. |
 | `probe.json` | this plugin | `{"human_messages_since": <unix_ms>, "count": n, "last_human_at": <unix_ms>\|null}` (0600). |
 | `records/<unix_ms>-<record_id>.json` | the tool | One record per call (0600, dir 0700), written by temp file and rename. The control plane forwards and renames them. |
 
 ## The inject pass (every 5 s)
 
 1. No `.txt`: nothing to do.
-2. `closed` present: every `.txt` becomes `.skipped`.
+2. `closed` present: every `.txt` whose mtime is at or before the marker's becomes `.skipped`.
 3. Any `.txt` staged more than 24 h ago becomes `.skipped` (quiet hours and the ballot hold included).
 4. 22:00 to 08:00 IST: hold (the file stays `.txt`).
 5. `$HERMES_HOME/av-events/godconst/page-open` exists (av-godconst's empty marker while a sent ballot card
    page still has unrated cards): hold, exactly as in quiet hours. Nothing is consumed or skipped for this
-   reason; only step 3's 24 h age cap skips a held file.
+   reason; only step 3's 24 h age cap skips a held file. av-godconst refreshes the marker's mtime on every
+   page it sends; a marker older than 12 h is stale, no longer holds, and logs `stale_ballot_page` once.
 6. No session key (`AV_ELICIT_SESSION_KEY`, else `agent:main:telegram:dm:<TELEGRAM_HOME_CHANNEL>`): wait.
 7. No row in `state.db` `sessions` with `source='telegram'` and that `session_key`: wait (the gateway can
    inject only into a session it can look up; one exists after the human's first message to the bot).
@@ -46,9 +47,10 @@ plugins/av-elicit/
 
 ## The probe (every 60 s)
 
-While any `.txt` or `.done` exists, an `open` notice has been injected (`*-open.done`) and no `closed`
-marker exists: count the `user`-role messages in `source='telegram'` sessions with `timestamp` at or after
-the earliest `*-open.done` mtime, excluding rows whose content starts with `[Agent Village notice` (our own
+While any `.txt` or `.done` exists and a window is open (the newest `*-open.done` is later than any
+`closed` marker): count the `user`-role messages in the resident's home DM (session rows with
+`source='telegram'`, `chat_type='dm'` and the home session key, so a rotated session counts and groups and
+other chats never do) with `timestamp` at or after the newest `*-open.done` mtime, excluding rows whose content starts with `[Agent Village notice` (our own
 injected notices), and write `probe.json`. `state.db` is opened read-only (`mode=ro`); an unreadable store
 writes nothing. The control plane may still run its own probe when the file is more than 5 minutes stale.
 

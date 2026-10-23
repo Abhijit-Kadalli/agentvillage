@@ -55,6 +55,8 @@ PROBE_INTERVAL_S = 60.0
 AGE_CAP_S = 24 * 3600
 #: IST has no daylight saving: a fixed offset needs no tz database on the box.
 IST = timezone(timedelta(hours=5, minutes=30))
+#: av-godconst's page-open marker older than this no longer holds injection.
+BALLOT_PAGE_STALE_S = 12 * 3600
 QUIET_START_HOUR = 22
 QUIET_END_HOUR = 8
 
@@ -124,6 +126,8 @@ _REGISTERED = False
 _LAST_PROBE = 0.0
 _LAST_CODE: Optional[str] = None
 _RECORD_LOCK = threading.Lock()
+#: The mtime of the stale page-open marker already logged (one line per stale marker).
+_STALE_BALLOT_LOGGED: Optional[float] = None
 
 # --------------------------------------------------------------------------- env, paths, logging
 
@@ -182,8 +186,21 @@ def ballot_page_marker(home: Optional[str] = None) -> str:
     return os.path.join(home or hermes_home(), "av-events", "godconst", "page-open")
 
 
-def ballot_page_open(home: Optional[str] = None) -> bool:
-    return os.path.lexists(ballot_page_marker(home))
+def ballot_page_open(home: Optional[str] = None, now: Optional[float] = None) -> bool:
+    """True while the marker exists and was refreshed in the last 12 h (av-godconst touches it on every page
+    it sends). An older marker is stale: it no longer holds, and ``stale_ballot_page`` is logged once."""
+    global _STALE_BALLOT_LOGGED
+    try:
+        mtime = os.lstat(ballot_page_marker(home)).st_mtime
+    except OSError:
+        return False
+    stamp = time.time() if now is None else now
+    if stamp - mtime > BALLOT_PAGE_STALE_S:
+        if _STALE_BALLOT_LOGGED != mtime:
+            _STALE_BALLOT_LOGGED = mtime
+            _log("stale_ballot_page", logging.WARNING, age_h=int((stamp - mtime) // 3600))
+        return False
+    return True
 
 
 def state_db(home: Optional[str] = None) -> str:
@@ -337,6 +354,14 @@ def is_closed(home: Optional[str] = None) -> bool:
     return os.path.lexists(closed_path(home))
 
 
+def closed_time(home: Optional[str] = None) -> Optional[float]:
+    """The ``closed`` marker's mtime, or None without one."""
+    try:
+        return os.lstat(closed_path(home)).st_mtime
+    except OSError:
+        return None
+
+
 def open_done_times(home: Optional[str] = None) -> list:
     """Accept times (mtime, seconds) of every ``*-open.done``, oldest first."""
     directory = inject_dir(home)
@@ -352,9 +377,22 @@ def open_done_times(home: Optional[str] = None) -> list:
     return sorted(times)
 
 
+def window_start(home: Optional[str] = None) -> Optional[float]:
+    """The current window's T0: the newest ``*-open.done`` accept time, when it is later than any ``closed``
+    marker (a marker at or after it closed that window). None when no window is open."""
+    times = open_done_times(home)
+    if not times:
+        return None
+    newest = times[-1]
+    closed = closed_time(home)
+    if closed is not None and closed >= newest:
+        return None
+    return newest
+
+
 def window_open(home: Optional[str] = None) -> bool:
-    """A window is open while an ``open`` notice has been injected and no ``closed`` marker exists."""
-    return not is_closed(home) and bool(open_done_times(home))
+    """A window is open from the newest injected ``open`` notice until a ``closed`` marker newer than it."""
+    return window_start(home) is not None
 
 
 def last_injected(home: Optional[str] = None) -> Optional[str]:
@@ -413,14 +451,18 @@ def dm_session_exists(key: str, home: Optional[str] = None) -> bool:
 
 
 def human_messages_since(since_s: float, home: Optional[str] = None) -> Optional[tuple]:
-    """``(count, last_ms_or_None)`` of human user-role messages in Telegram sessions at or after ``since_s``,
-    notice-prefixed rows excluded; None when state.db cannot be read."""
+    """``(count, last_ms_or_None)`` of human user-role messages in the resident's home DM (every session row
+    under the home session key with ``chat_type='dm'``) at or after ``since_s``, notice-prefixed rows
+    excluded; None without a home key or when state.db cannot be read."""
+    key = session_key(home)
+    if not key:
+        return None
     rows = _sqlite_rows(
         state_db(home),
         "SELECT COUNT(*), MAX(m.timestamp) FROM messages m JOIN sessions s ON s.id = m.session_id "
-        "WHERE s.source = 'telegram' AND m.role = 'user' AND m.timestamp >= ? "
-        "AND (m.content IS NULL OR substr(m.content, 1, ?) <> ?)",
-        (float(since_s), len(NOTICE_PREFIX), NOTICE_PREFIX),
+        "WHERE s.source = 'telegram' AND s.chat_type = 'dm' AND s.session_key = ? AND m.role = 'user' "
+        "AND m.timestamp >= ? AND (m.content IS NULL OR substr(m.content, 1, ?) <> ?)",
+        (key, float(since_s), len(NOTICE_PREFIX), NOTICE_PREFIX),
     )
     if not rows:
         return None
@@ -456,10 +498,27 @@ def inject_pass(ctx: Any = None, home: Optional[str] = None, now: Optional[float
     pending = _listing(directory, ".txt")
     if not pending:
         return "idle"
-    if is_closed(home):
-        skipped = sum(1 for n in pending if _rename_now(os.path.join(directory, n), ".skipped"))
-        _log("skipped_closed", skipped=skipped)
-        return "skipped_closed"
+    closed = closed_time(home)
+    if closed is not None:
+        # The marker skips what was staged at or before it (box mtimes on both sides); a file staged after
+        # it belongs to a new window and goes through the normal checks.
+        later = []
+        skipped = 0
+        for name in pending:
+            path = os.path.join(directory, name)
+            try:
+                staged = os.lstat(path).st_mtime
+            except OSError:
+                continue
+            if staged <= closed:
+                skipped += 1 if _rename_now(path, ".skipped") else 0
+            else:
+                later.append(name)
+        if skipped:
+            _log("skipped_closed", skipped=skipped)
+        if not later:
+            return "skipped_closed"
+        pending = later
     fresh = []
     aged = 0
     for name in pending:
@@ -476,7 +535,7 @@ def inject_pass(ctx: Any = None, home: Optional[str] = None, now: Optional[float
     if in_quiet_hours(stamp):
         _log_once("held_quiet_hours", pending=len(fresh))
         return "held_quiet_hours"
-    if ballot_page_open(home):
+    if ballot_page_open(home, stamp):
         # A ballot card page is open with unrated cards: hold, as in quiet hours (only the age cap skips).
         _log_once("held_ballot_page", pending=len(fresh))
         return "held_ballot_page"
@@ -524,12 +583,9 @@ def inject_pass(ctx: Any = None, home: Optional[str] = None, now: Optional[float
 
 def probe_payload(home: Optional[str] = None) -> Optional[dict]:
     """``probe.json``'s body (contract 3b), or None when no window is open or state.db is unreadable."""
-    if is_closed(home):
+    since = window_start(home)
+    if since is None:
         return None
-    times = open_done_times(home)
-    if not times:
-        return None
-    since = times[0]
     counted = human_messages_since(since, home)
     if counted is None:
         return None
@@ -772,7 +828,7 @@ __all__ = [
     "AGE_CAP_S", "FORMS", "ballot_page_open", "ballot_page_marker", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
     "build_record", "closed_path", "confirmation", "current_trigger", "dm_session_exists", "elicitation_record_tool",
     "human_messages_since", "in_quiet_hours", "inject_dir", "inject_pass", "is_closed", "last_injected",
-    "open_done_times", "parse_stage_name", "probe_pass", "probe_path", "probe_payload", "record_elicitation",
+    "open_done_times", "closed_time", "window_start", "parse_stage_name", "probe_pass", "probe_path", "probe_payload", "record_elicitation",
     "records_dir", "register", "register_record_tool", "run_once", "session_key", "split_trigger",
     "telegram_dm_session", "trigger_for", "validate_record", "window_open",
 ]

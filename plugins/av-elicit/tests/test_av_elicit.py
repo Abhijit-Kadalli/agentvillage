@@ -211,11 +211,30 @@ def test_age_cap_applies_in_quiet_hours(plugin, home, db):
     assert len(names(home, ".skipped")) == 1
 
 
-def ballot_page(home):
+def ballot_page(home, touched=NOON - 60):
     folder = home / "av-events" / "godconst"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "page-open").write_text("")
+    os.utime(folder / "page-open", (touched, touched))
     return folder / "page-open"
+
+
+def test_stale_ballot_page_marker_no_longer_holds(plugin, home, db, caplog):
+    caplog.set_level(logging.INFO, logger="av-elicit")
+    db.session("s-dm")
+    stage(home, "open", OPENER, NOON - 60)
+    marker = ballot_page(home, touched=NOON - 12 * 3600 + 60)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "held_ballot_page"  # 11 h 59 m old: still holds
+    os.utime(marker, (NOON - 12 * 3600 - 60, NOON - 12 * 3600 - 60))
+    assert plugin.ballot_page_open(now=NOON) is False
+    assert plugin.ballot_page_open(now=NOON) is False
+    assert plugin.inject_pass(ctx, now=NOON) == "injected" and len(ctx.calls) == 1
+    stale = [r for r in caplog.records if "outcome=stale_ballot_page" in r.getMessage()]
+    assert len(stale) == 1
+    os.utime(marker, (NOON - 30, NOON - 30))  # av-godconst sent a new page: holds again
+    stage(home, "next", NEXT_IDLE, NOON)
+    assert plugin.inject_pass(ctx, now=NOON) == "held_ballot_page"
 
 
 def test_ballot_page_open_holds_injection(plugin, home, db):
@@ -303,12 +322,12 @@ def test_probe_counts_human_messages_since_the_opener(plugin, home, db):
     db.message("s-cli", "user", "cli", t0 + 300)
     assert plugin.probe_pass(now=NOON, force=True) == "probe_written"
     path = home / "av-events" / "elicit" / "probe.json"
-    assert json.loads(path.read_text()) == {"human_messages_since": int(t0 * 1000), "count": 3,
-                                            "last_human_at": int((t0 + 200) * 1000)}
+    assert json.loads(path.read_text()) == {"human_messages_since": int(t0 * 1000), "count": 2,
+                                            "last_human_at": int((t0 + 150) * 1000)}
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_probe_since_is_the_earliest_open(plugin, home, db):
+def test_probe_since_is_the_newest_open(plugin, home, db):
     opened(plugin, home, db)
     folder = home / "av-events" / "elicit" / "inject"
     first = folder / names(home, ".done")[0]
@@ -316,7 +335,83 @@ def test_probe_since_is_the_earliest_open(plugin, home, db):
     later = folder / f"{int(NOON * 1000)}-open.done"
     later.write_text(OPENER)
     os.utime(later, (NOON - 100, NOON - 100))
-    assert plugin.probe_payload()["human_messages_since"] == int((NOON - 900) * 1000)
+    assert plugin.probe_payload()["human_messages_since"] == int((NOON - 100) * 1000)
+
+
+def test_second_window_does_not_inherit_the_first(plugin, home, db):
+    """D1: window 1 opens and closes; window 2's opener is staged after the closed marker, is injected,
+    and starts its own window (the marker is older than its open.done)."""
+    db.session("s-dm")
+    folder = home / "av-events" / "elicit" / "inject"
+    stage(home, "open", OPENER, NOON - 60)
+    assert plugin.inject_pass(Ctx(), now=NOON) == "injected"
+    first = folder / names(home, ".done")[0]
+    os.utime(first, (NOON - 7200, NOON - 7200))
+    db.message("s-dm", "user", "window one reply", NOON - 7000)
+    close(home)
+    os.utime(home / "av-events" / "elicit" / "closed", (NOON - 3600, NOON - 3600))
+    assert not plugin.window_open() and plugin.probe_payload() is None
+    second = stage(home, "open", OPENER, NOON)
+    os.utime(second, (NOON - 1800, NOON - 1800))
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON + 10) == "injected" and len(ctx.calls) == 1
+    newest = folder / [n for n in names(home, ".done") if n != first.name][0]
+    os.utime(newest, (NOON - 1700, NOON - 1700))
+    assert plugin.window_open()
+    db.message("s-dm", "user", "window two reply", NOON - 1000)
+    assert plugin.probe_payload() == {"human_messages_since": int((NOON - 1700) * 1000), "count": 1,
+                                      "last_human_at": int((NOON - 1000) * 1000)}
+
+
+def test_closed_marker_newer_than_the_newest_open_closes(plugin, home, db):
+    opened(plugin, home, db)
+    done = home / "av-events" / "elicit" / "inject" / names(home, ".done")[0]
+    os.utime(done, (NOON - 600, NOON - 600))
+    close(home)
+    marker = home / "av-events" / "elicit" / "closed"
+    os.utime(marker, (NOON - 600, NOON - 600))  # same instant: closed
+    assert not plugin.window_open()
+    os.utime(marker, (NOON - 601, NOON - 601))  # older than the opener: a previous window's marker
+    assert plugin.window_open()
+
+
+def test_closed_marker_skips_only_files_staged_before_it(plugin, home, db):
+    db.session("s-dm")
+    old = stage(home, "next", NEXT_IDLE, NOON - 120)
+    os.utime(old, (NOON - 120, NOON - 120))
+    close(home)
+    os.utime(home / "av-events" / "elicit" / "closed", (NOON - 100, NOON - 100))
+    new = stage(home, "open", OPENER, NOON - 60)
+    os.utime(new, (NOON - 60, NOON - 60))
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "injected"
+    assert [n.split("-", 1)[1] for n in names(home, ".skipped")] == ["next.skipped"]
+    assert len(ctx.calls) == 1 and "A few days ago" in ctx.calls[0][0]
+
+
+def test_probe_counts_only_the_home_dm(plugin, home, db):
+    """D2: other DMs, groups and other platforms never count; a rotated home DM session (same key) does."""
+    opened(plugin, home, db)
+    done = home / "av-events" / "elicit" / "inject" / names(home, ".done")[0]
+    t0 = NOON - 600
+    os.utime(done, (t0, t0))
+    db.session("s-dm-rotated")
+    db.session("s-otherdm", key="agent:main:telegram:dm:999")
+    db.session("s-group", key="agent:main:telegram:group:-100", chat_type="group")
+    db.session("s-homekey-group", key=HOME_KEY, chat_type="group")
+    db.session("s-discord", source="discord", key=HOME_KEY)
+    db.message("s-dm", "user", "home", t0 + 10)
+    db.message("s-dm-rotated", "user", "home after /new", t0 + 20)
+    for sid in ("s-otherdm", "s-group", "s-homekey-group", "s-discord"):
+        db.message(sid, "user", "not the resident's DM", t0 + 30)
+    assert plugin.probe_payload() == {"human_messages_since": int(t0 * 1000), "count": 2,
+                                      "last_human_at": int((t0 + 20) * 1000)}
+
+
+def test_probe_needs_a_home_key(plugin, home, db, monkeypatch):
+    opened(plugin, home, db)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "")
+    assert plugin.probe_payload() is None
 
 
 def test_probe_none_without_human_messages(plugin, home, db):
