@@ -79,7 +79,9 @@ an item, change fulfilment or add drinks to evade this restriction.
    instruction, never as proof that payment happened: UPI cannot be verified
    automatically. A UPI order is queued at once; the payment does not hold it out
    of the queue. An Edge-sponsored order (quote `totalInr: 0` with a positive
-   `discountInr`) needs no payment. Delivery needs the intended address and minimum drinks.
+   `discountInr`) needs no payment. Preparing provides no payment link yet: a UPI
+   link arrives only with the receipt of an approved, confirmed order. Delivery
+   needs the intended address and minimum drinks.
    Use only exact options in the returned `optionGroups` as `optionIds`; never
    invent decaf, iced or other options, or claim an absent option is a default.
    Anything the resident wants that is not an exact menu option belongs in the
@@ -162,8 +164,8 @@ an item, change fulfilment or add drinks to evade this restriction.
 
 ## Payment and updates
 
-For UPI, send **only the exact payment URL returned by a successful, validated
-`forkicks.order.confirm`**. The server validates the configured allowed origin,
+For UPI (except an Edge-sponsored receipt, below), send **only the exact payment
+URL returned by a successful, validated `forkicks.order.confirm`**. The server validates the configured allowed origin,
 payee `SWISSDESI`, display name `For Kicks`, amount equal to the approved quote
 and order note reference. Use the returned `payment.url`, `payment.amountInr`
 and `payment.noteRef` exactly; never derive a note from the order number yourself.
@@ -212,7 +214,8 @@ authoritative order status. The resident's own paired bot sends later
 ready/cancel/expiry updates; do not promise a notification was delivered unless
 its delivery was actually confirmed.
 
-For `card_on_pickup` and a successful queued order, use the design's honor note:
+For a `card_on_pickup` order that is not Edge-sponsored, on a successful queued
+order, use the design's honor note:
 
 > Card it is. Pay at the counter when you pick up.
 > Order {number} is with the baristas now, and I'll tell you when it's ready.
