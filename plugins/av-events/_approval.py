@@ -15,7 +15,8 @@ intention: `_intent_approval` does that.
   withdrawn / `not-registered`, 3 expired, 6 still pending, 7 void. Never
   `--withdraw-on-timeout` (core refuses it beside `--timeout 0`);
 - `start <task> --action <key> --payload-json <the proposed bytes> --json`;
-- `withdraw <task> --reason <r> --json`.
+- `withdraw <task> --action <key> --reason <r> --json` (core refuses a withdraw without
+  `--action`, and takes only the reasons `timeout | cancelled | superseded`).
 
 **Configuration.** `AV_APPROVAL_ENABLED` (`1|true|yes|on`) and
 `AV_APPROVAL_URL` (`http://127.0.0.1:<port>`, `http://localhost:<port>`,
@@ -490,8 +491,13 @@ def start(task: str, key: str, payload_json: str) -> Answer:
                                                     "--json": True})
 
 
-def withdraw(task: str, reason: str) -> Answer:
-    return call("withdraw", positionals=[task], flags={"--reason": reason, "--json": True})
+def withdraw(task: str, reason: str, key: Optional[str] = None) -> Answer:
+    # Core withdraws by action key (0.4.7 commandWithdraw: no `--action` is a usage error, exit 2) and takes a closed
+    # reason (timeout | cancelled | superseded). Callers that know the key pass it; without it the call changes nothing.
+    flags: dict[str, Any] = {"--reason": reason, "--json": True}
+    if key is not None:
+        flags["--action"] = key
+    return call("withdraw", positionals=[task], flags=flags)
 
 
 # ---- The poller -----------------------------------------------------------
