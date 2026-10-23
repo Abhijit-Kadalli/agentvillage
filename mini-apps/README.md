@@ -100,6 +100,46 @@ Use Dizko as the starting bundle for another **public read-only** service:
    separately. Request review before publication/deployment. No production
    changes follow merely from building the bundle.
 
+**The review bot (v0, advisory).** A pull request that touches `mini-apps/**`
+or `skills/**` runs `.github/workflows/mini-apps-review.yml`, the deterministic
+half of the PR-review bot. It runs `bun scripts/mini-apps-review.ts --base <sha>
+--head <sha> --author <login>` and writes a JSON verdict (`PASS`, `FAIL` or
+`NEEDS_HUMAN`) to the job summary and to an artifact. Run the same line
+locally before you open the pull request. A pull request that stays inside one
+app's `mini-apps/<id>/` and `skills/<id>/` is judged in the wider of that
+app's base, base-tip and head `visibility` lane (lowering an app out of
+`everyone` takes the human read). Anything else is core and goes to the human
+gate, including a new app, listing a new id in `catalog.json`, any baseline
+skill (`gold-stars` among them), and an app whose baseUrl host or op target is
+another app's. Removing a needs-card op always takes the human read. CI runs
+the bot from the base commit's tree with the pull request as data only (git
+objects, never checked out or executed). It also reads the base branch's
+current tip as data, so a needs-card op that main gained after the fork still
+counts. The bot checks:
+
+- the shared validator;
+- the skill hash and the version bump;
+- secret shapes in the added lines;
+- `data.context`;
+- the needs-card classes;
+- P0-5's conformance suite (the tool's copy, on the head's bytes);
+- the one-step visibility rule.
+
+In Phase 0 it is not a required check and it posts no comment. A `FAIL`
+turns the job red (exit 1); `NEEDS_HUMAN` exits 0 and stays green.
+
+It must stay non-required until the gate itself changes. Two things stand in
+the way:
+
+- A pull request that edits the workflow file still runs its own copy.
+- A pull request can add a workflow of its own with the same workflow, job
+  and artifact names. A check required by name is then satisfied by a forgery,
+  or by a green `NEEDS_HUMAN`.
+
+Real gating needs a ruleset-required workflow pinned to the base
+(`pull_request_target` alone is not enough). The verdict must be read from that
+run's JSON artifact by run id, never from a check's name or colour.
+
 The manifest is the review artifact. The **CP catalog is authoritative** for
 what may be installed. The app server retrieves it and enforces the exact
 installed app/version/tool/schema before making a remote call. This is not
