@@ -89,7 +89,7 @@ Required fields are marked **req**.
 | `description` **req** | 1 to 2000 characters. |
 | `homepage` **req** | An `https://` URL. It is shown as a link. The platform never fetches it. |
 | `owner` | `github`: one login or up to 8. `org`: optional name. Not required by the validator. |
-| `credit` | `role` (`app` or `product`), `attendeeId` (a UUID), `name`. It names a reviewed attribution. Leave it out unless Edge City gives you the values. |
+| `credit` | `role` (`app` or `product`), `attendeeId` (a UUID), `name`. It names a reviewed attribution. Leave it out unless Edge City gives you the values. On a pushed manifest the credit names you: residents see "Built by \<your Rolodex name>", linked to your Rolodex entry. Send credit.name as "the developer" (any other value is refused: credit_name_not_allowed); the name shown comes from the Rolodex, never from the manifest. |
 | `visibility` **req** | `sandbox`, `admins` or `everyone`. |
 | `staff` | Only the Gold Stars app may set `true`. Anyone else is refused. `"staff": true` is install tier 1, core (section 9). |
 | `listed` | `false` hides the app from discovery: the grid, search, counts, staff lists and offers. A tenant the app's audience admits (the cohort, and for a `sandbox` or `admins` app the allowlist) can still open its direct link, install it and use it; nobody else can. Absent means listed. The schema's own description of this field is older and wrong on this point. Honouring the field is not fully built (section 5). |
