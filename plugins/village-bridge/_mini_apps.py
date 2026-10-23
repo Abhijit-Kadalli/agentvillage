@@ -39,7 +39,7 @@ FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks
 ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")
 ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
-                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", *ZZZ_READ_OPERATIONS})
+                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
                               "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
@@ -47,8 +47,17 @@ APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mi
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
 # list in this order. Its operations name their app; a caller never supplies an appId for them.
 ZZZBOT = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}
-ZZZ_OPERATIONS = frozenset(ZZZBOT["operations"])
+# zzz.pairs is an app-side feature-gated read which borrows the existing
+# list_rooms install permission; it is deliberately absent from the CP catalog.
+ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs"))
 SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}
+# ov#441 S1 (lead RULING CLAIMS L16692, reaffirmed L16696): managed private-pair participation is gated ONLY by a
+# separate cp catalog/allowlist entry, projected in `apps` beside zzzbot and granted per tenant at activation (the
+# Mosaic restricted-entry pattern). Id `zzz-bridge`: cp and app validate app ids with ^[a-z0-9][a-z0-9-]{0,39}$,
+# so the ruling's `zzz_bridge` is spelled with a hyphen (the app half, app#500, reads the same id). It carries no
+# skill and no operation, so it grants no tool by itself; an entry of any other shape refuses the whole file.
+ZZZ_BRIDGE_ID = "zzz-bridge"
+ZZZ_BRIDGE = {"version": "1.0.0", "skills": [], "operations": []}
 # NEW-03 (rc44, P-013; context's design NEW-03-APP-NAMESPACES.md section 2, CLAIMS L8997): every operations
 # list this overlay accepts for a non-Gold-Stars app, each by exact equality (newest first): the reviewed
 # public read alone, or the read plus that app's own context namespace read and write. Order fixed, no
@@ -148,7 +157,7 @@ def _card_entry_ok(app) -> bool:
 # skipped and logged once (its id only), and every other app of the file stays installed, as the installer's checkApp
 # refuses per app (ov#455). What stays WHOLE-FILE is the structure: the doc shape, version 1, an app that is not an
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
-REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), "slopfolio": (SLOPFOLIO,)}
+REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,), "slopfolio": (SLOPFOLIO,)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")
 _REFUSED_LOGGED = set()
@@ -223,6 +232,13 @@ def projection(home: Path):
 def installed(home: Path, app_id: str, operation: str) -> bool:
     apps = projection(home)
     return apps is not None and any(app["id"] == app_id and operation in app["operations"] for app in apps)
+
+
+def zzz_participation(home: Path) -> bool:
+    """Managed participation needs both exact reviewed entries in the current projection."""
+    apps = projection(home)
+    return (apps is not None and any(app["id"] == "zzzbot" for app in apps)
+            and any(app["id"] == ZZZ_BRIDGE_ID for app in apps))
 
 
 def gate_verified() -> None:

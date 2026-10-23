@@ -5,7 +5,10 @@
  * (§6.2) reads this JSON and posts the PR comment later; this script posts nothing.
  *
  *   bun scripts/mini-apps-review.ts --base <rev> --head <rev> [--base-tip <rev>] [--author <login>]
- *       [--repo <dir>] [--out <file.json>] [--summary <file.md>] [--conformance-dir <dir>]
+ *       [--repo <dir>] [--out <file.json>] [--summary <file.md>] [--conformance-dir <dir>] [--pr <n>] [--base-ref <branch>]
+ *
+ * The JSON names what it judged: head, and (ov#477 fold 1) pr, base_ref and base_sha (--base as a commit), so the
+ * mini-apps automerge Action can bind a verdict to one pull request into main.
  *
  * It reads `git diff --raw --no-renames base...head` (the --name-status list plus the file modes), the
  * files at the merge base and at head, and judges the pull request. The base branch's current tip
@@ -120,6 +123,8 @@ const LANE_FILES: Readonly<Record<string, readonly string[]>> = Object.freeze({
 const APP_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REV = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._\/^~-]{0,199}$/;
+const PR_NUMBER = /^[1-9][0-9]{0,9}$/;
+const BRANCH = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 const MAX_PER_CODE = 10;
 /** The version-bump rule is reported, not enforced, in Phase 0 (release, L14465 (c); S2 open). */
 export const BUMP_SEVERITY: "M" | "S" | "N" = "N";
@@ -129,7 +134,15 @@ export type Finding = { code: string; severity: Severity; file?: string; line?: 
 export type Lane = "sandbox" | "admins" | "everyone" | "core";
 export type Verdict = "PASS" | "FAIL" | "NEEDS_HUMAN";
 export type Report = {
-  bot: string; version: string; manifest: string | null; head: string; verdict: Verdict; lane: Lane;
+  bot: string; version: string; manifest: string | null; head: string;
+  /**
+   * ov#477 fold 1 (review-b M1): the pull request and the base this verdict judged, so a reader can bind it to
+   * one pull request into one base. Set by the CLI (main): pr from --pr, base_ref from --base-ref, base_sha =
+   * --base resolved to its commit (in CI the event's pull_request.base.sha, the commit the tool tree is checked
+   * out at). Null when not given; an error report carries nulls.
+   */
+  pr?: number | null; base_ref?: string | null; base_sha?: string | null;
+  verdict: Verdict; lane: Lane;
   findings: Finding[]; checked: string[]; not_run: { check: string; reason: string }[];
 };
 export type Change = { status: string; path: string; oldMode: string; newMode: string };
@@ -983,11 +996,17 @@ export function review(opts: { repo: string; base: string; head: string; baseTip
 
 /** The fail-closed report: the bot could not judge, so it never says PASS. */
 export function errorReport(message: string, head = ""): Report {
-  return {
+  return bindReport({
     bot: BOT, version: BOT_VERSION, manifest: null, head, verdict: "FAIL", lane: "core",
     findings: [{ code: "bot_error", severity: "M", text: message.slice(0, 500) }], checked: [],
     not_run: CHECKED.map(check => ({ check, reason: "the bot could not run" })),
-  };
+  }, { pr: null, base_ref: null, base_sha: null });
+}
+
+/** The report with pr, base_ref and base_sha set, right after head (ov#477 fold 1). */
+export function bindReport(r: Report, b: { pr: number | null; base_ref: string | null; base_sha: string | null }): Report {
+  const { bot, version, manifest, head, pr: _p, base_ref: _r, base_sha: _s, ...rest } = r;
+  return { bot, version, manifest, head, pr: b.pr, base_ref: b.base_ref, base_sha: b.base_sha, ...rest };
 }
 
 const cell = (s: unknown) => String(s ?? "").replace(/[|`\n\r]/g, " ").slice(0, 300);
@@ -1007,14 +1026,16 @@ export function summary(r: Report): string {
 }
 
 function parseArgs(argv: string[]): Record<string, string> {
-  const known = new Set(["--base", "--head", "--base-tip", "--author", "--repo", "--out", "--summary", "--conformance-dir"]);
+  const known = new Set(["--base", "--head", "--base-tip", "--author", "--repo", "--out", "--summary", "--conformance-dir", "--pr", "--base-ref"]);
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 2) {
     if (!known.has(argv[i]) || argv[i + 1] === undefined) throw new BotError(`usage: unknown or empty option ${JSON.stringify(argv[i]).slice(0, 40)}`);
     out[argv[i].slice(2)] = argv[i + 1];
   }
-  if (!out.base || !out.head) throw new BotError("usage: --base <rev> --head <rev> [--base-tip <rev>] [--author <login>] [--repo <dir>] [--out <file>] [--summary <file>] [--conformance-dir <dir>]");
+  if (!out.base || !out.head) throw new BotError("usage: --base <rev> --head <rev> [--base-tip <rev>] [--author <login>] [--repo <dir>] [--out <file>] [--summary <file>] [--conformance-dir <dir>] [--pr <n>] [--base-ref <branch>]");
   if (out.author && !LOGIN.test(out.author) && !/^[A-Za-z0-9-]{1,39}\[bot\]$/.test(out.author)) throw new BotError("usage: --author is not a GitHub login");
+  if (out.pr !== undefined && !PR_NUMBER.test(out.pr)) throw new BotError("usage: --pr is not a pull request number");
+  if (out["base-ref"] !== undefined && !BRANCH.test(out["base-ref"])) throw new BotError("usage: --base-ref is not a branch name");
   return out;
 }
 
@@ -1026,7 +1047,11 @@ export function main(argv: string[], io: { stdout?: (s: string) => void; stderr?
   let report: Report, code = 0;
   try {
     args = parseArgs(argv);
-    report = review({ repo: args.repo ?? process.cwd(), base: args.base, head: args.head, baseTip: args["base-tip"], author: args.author ?? "", validatorRoot: io.validatorRoot, validator: io.validator, conformanceDir: args["conformance-dir"] });
+    const repo = args.repo ?? process.cwd();
+    report = review({ repo, base: args.base, head: args.head, baseTip: args["base-tip"], author: args.author ?? "", validatorRoot: io.validatorRoot, validator: io.validator, conformanceDir: args["conformance-dir"] });
+    // ov#477 fold 1: what this verdict is FOR. base_sha is --base as a commit (review() already resolved it).
+    const baseSha = git(repo, ["rev-parse", "--verify", `${args.base}^{commit}`])!.toString("utf8").trim();
+    report = bindReport(report, { pr: args.pr !== undefined ? Number(args.pr) : null, base_ref: args["base-ref"] ?? null, base_sha: baseSha });
   } catch (e) {
     const message = e instanceof BotError ? e.message : `bot_crashed: ${(e as Error)?.stack ?? String(e)}`;
     report = errorReport(message);
