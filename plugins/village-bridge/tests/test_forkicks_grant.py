@@ -9,7 +9,7 @@ import sys
 import time
 import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 fixture = sys.modules.get('village_bridge_test_fixture')
 if fixture is None:
@@ -280,7 +280,9 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.ask(expires='2020-01-01T00:00:00+05:30', shape='flat', confirm=False)
         self.daemon.state = 'granted'
         self.run_pass()
-        self.daemon.wait.assert_called_once_with(TASK)  # ov#465 N1: read first (not spent: the expired line)
+        # ov#465 N1: read first (not spent: the expired line); approval L20892: read again inside the close's lock
+        # hold before `expired` is written. Same outcome: no start, no confirm, the expired line once.
+        self.assertEqual(self.daemon.wait.call_args_list, [call(TASK)] * 2)
         self.daemon.start.assert_not_called()
         self.assertEqual(self.confirms(), [])
         self.assertEqual(self.sent, [('42', "Your For Kicks order wasn't placed: the approval or the price quote expired.")])
@@ -416,7 +418,9 @@ class ForKicksOnGrantTest(unittest.TestCase):
         self.ask(expires='2020-01-01T00:00:00+05:30', confirm=False)
         self.daemon.state = 'granted'
         self.run_pass()
-        self.daemon.wait.assert_called_once_with(TASK)  # ov#465 N1: read first (not spent: the expired line)
+        # ov#465 N1: read first (not spent: the expired line); approval L20892: read again inside the close's lock
+        # hold before `expired` is written. Same outcome: no start, no confirm, the expired line once.
+        self.assertEqual(self.daemon.wait.call_args_list, [call(TASK)] * 2)
         self.daemon.start.assert_not_called()
         self.assertEqual(self.daemon.propose.call_count, 1)
         self.assertEqual(self.confirms(), [])

@@ -877,7 +877,7 @@ class SupersedeTest(unittest.TestCase):
         self.daemon.start.side_effect = real_start
         self.assertEqual(self.daemon.tasks[self.task(draft)]['state'], 'started')
         self.assertEqual(json.loads((self.home / 'forkicks-drafts' / (draft + '.await')).read_text())['phase'], 'awaiting')
-        self.assertEqual(self.confirms_sent(), [])
+        self.assertNotIn(draft, self.confirms_sent())  # this draft: no confirm (another draft's may precede it)
 
     def phase_of(self, draft):
         marker = self.home / 'forkicks-drafts' / (draft + '.await')
