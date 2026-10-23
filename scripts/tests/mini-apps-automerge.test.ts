@@ -297,6 +297,52 @@ describe("decide: each single condition false => no merge", () => {
   });
 });
 
+describe("review-b L21179: never the bot check's colour, always its verdict JSON for this sha", () => {
+  test("green check + NEEDS_HUMAN verdict => no merge (NEEDS_HUMAN exits 0, so the run and job are green)", () => {
+    const d = decideFor(fixture((f) => { report(f).verdict = "NEEDS_HUMAN"; report(f).lane = "core"; report(f).findings.push({ code: "gate_changed", severity: "S", text: "x" }); }));
+    expect(cond(d, "review_run_green")).toBe(true);
+    expect(d.merge).toBe(false);
+    expect(cond(d, "review_verdict_pass")).toBe(false);
+    expect(cond(d, "review_lane_mini_app")).toBe(false);
+  });
+  test("green check + PASS but class core => no merge", () => {
+    const d = decideFor(fixture((f) => { report(f).lane = "core"; }));
+    expect(cond(d, "review_run_green")).toBe(true);
+    expect(cond(d, "review_verdict_pass")).toBe(true);
+    onlyFalse(d, "review_lane_mini_app");
+  });
+  test("a PASS verdict for an older sha => no merge", () => {
+    onlyFalse(decideFor(fixture((f) => { report(f).head = OLD; f[RARTS].artifacts[0].workflow_run.head_sha = OLD; })), "review_verdict_pass", "review_lane_mini_app");
+  });
+  test("a missing or unparseable verdict => no merge", () => {
+    onlyFalse(decideFor(fixture((f) => { delete f._artifact_json["12514640863"]; })), "review_verdict_pass", "review_lane_mini_app");
+    onlyFalse(decideFor(fixture((f) => { f._artifact_json["12514640863"] = "null"; })), "review_verdict_pass", "review_lane_mini_app");
+    onlyFalse(decideFor(fixture((f) => { delete report(f).verdict; })), "review_verdict_pass");
+  });
+  test("a forged PASS from a PR-added workflow (same display name, same artifact name, newer run) is never read", () => {
+    const calls = newCalls();
+    const f = fixture((f) => {
+      report(f).verdict = "NEEDS_HUMAN";
+      const forged = { ...structuredClone(f[RRUNS].workflow_runs[0]), id: 39983200000, run_number: 99, path: ".github/workflows/fake-review.yml", workflow_id: 777 };
+      f[RRUNS].workflow_runs.unshift(forged);
+      f[P("actions/runs/39983200000/jobs?filter=latest&per_page=100")] = { total_count: 1, jobs: [{ ...f[RJOBS].jobs[0], run_id: 39983200000 }] };
+      f[P("actions/runs/39983200000/artifacts?per_page=100")] = { total_count: 1, artifacts: [{ ...f[RARTS].artifacts[0], id: 55, workflow_run: { id: 39983200000, head_sha: H } }] };
+      f._artifact_json["55"] = { ...report(f), verdict: "PASS" };
+    });
+    const d = A.decide(A.gather(fakeIo(f, calls), REPO, 901, "1"));
+    expect(d.merge).toBe(false);
+    expect(cond(d, "review_verdict_pass")).toBe(false);
+    expect(calls.artifact).toEqual([12514640863]);
+    expect(calls.get.some((g) => g.includes("39983200000"))).toBe(false);
+  });
+  test("an artifact listed under the real run but made by another run is refused", () => {
+    onlyFalse(decideFor(fixture((f) => { f[RARTS].artifacts[0].workflow_run.id = 39983200000; })), "review_verdict_pass", "review_lane_mini_app");
+  });
+  test("a run of the bot workflow in another repository (a fork's own Actions) does not count", () => {
+    onlyFalse(decideFor(fixture((f) => { f[RRUNS].workflow_runs[0].repository.full_name = "someone-outside/agentvillage"; })), "review_run_green", "review_verdict_pass", "review_lane_mini_app");
+  });
+});
+
 describe("sweep: the switch, the re-read and the merge call", () => {
   test("switch off => 'disabled', exit 0, and not one API call", () => {
     for (const v of [undefined, "", "0"]) {
