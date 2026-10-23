@@ -462,9 +462,15 @@ test("kismet: a public read-only entry, staged and removed like dizko's read-onl
   const kismet = REVIEWED_MINI_APPS.find((x) => x.id === "kismet")!;
   expect([kismet.id, kismet.version, [...kismet.skills], [...kismet.operations]]).toEqual(["kismet", "1.0.0", ["kismet"], ["mini-app.read"]]);
   expect(EDGE_SKILL_NAMES).not.toContain("kismet");
-  // The rename leaves no alias: the old id is neither reviewed nor stageable.
+  // The rename leaves no alias: the old id is neither reviewed nor stageable. Not being reviewed, it is a generic
+  // candidate, and with no cp offer for it the installer refuses it alone (offer_missing) and stages nothing.
   expect(REVIEWED_MINI_APPS.some((x) => (x.id as string) === "agent-dates")).toBe(false);
-  expect(() => validateProjection({ version: 1, apps: [{ ...kismet, id: "agent-dates", skills: ["agent-dates"] }] })).toThrow("mini_apps_unreviewed_bundle");
+  const oldId = { version: 1, apps: [{ ...kismet, id: "agent-dates", skills: ["agent-dates"] }] };
+  expect(() => validateProjection(oldId)).toThrow("offer_missing");
+  const oldBox = installedBox();
+  const oldReceipt = reconcileMiniApps(oldId, oldBox);
+  expect([oldReceipt.refused, oldReceipt.apps, oldReceipt.files]).toEqual([[{ id: "agent-dates", code: "offer_missing" }], [], []]);
+  expect(existsSync(join(oldBox, "skills", "agent-dates"))).toBe(false);
   expect(existsSync(join(REPO, "skills", "agent-dates"))).toBe(false);
   expect(existsSync(join(REPO, "mini-apps", "agent-dates"))).toBe(false);
   // the manifest and skill agree with the entry, and the manifest asks for nothing beyond the public read
