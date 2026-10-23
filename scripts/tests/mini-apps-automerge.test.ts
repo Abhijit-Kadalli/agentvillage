@@ -26,6 +26,9 @@ const RARTS = P("actions/runs/39983043256/artifacts?per_page=100");
 const CWF = P("actions/workflows/test.yml");
 const CRUNS = P(`actions/workflows/389000001/runs?head_sha=${H}&event=pull_request&per_page=100`);
 const CJOBS = P("actions/runs/39983043342/jobs?filter=latest&per_page=100");
+const BASE = "a4974244dcd156149fe53cd47f30ceae76876a3f";
+const HEADPULLS = P("pulls?state=all&head=someone-outside%3Ahello-board&per_page=100");
+const COMPARE = P(`compare/${BASE}...main?per_page=1`);
 
 type Fix = Record<string, any>;
 const fixture = (mut?: (f: Fix) => void): Fix => {
@@ -126,9 +129,11 @@ describe("decide: the untouched fixture merges", () => {
   test("a same-repository pull request whose runs list it merges too", () => {
     const d = decideFor(fixture((f) => {
       f[PR].head.repo.full_name = REPO;
+      f[PR].head.label = "Edge-City:hello-board";
+      f[P("pulls?state=all&head=Edge-City%3Ahello-board&per_page=100")] = [{ number: 901, state: "open" }];
       for (const k of [RRUNS, CRUNS]) {
         f[k].workflow_runs[0].head_repository.full_name = REPO;
-        f[k].workflow_runs[0].pull_requests = [{ number: 901 }];
+        f[k].workflow_runs[0].pull_requests = [{ number: 901, base: { ref: "main", sha: BASE } }];
       }
     }));
     expect(d.merge).toBe(true);
@@ -347,6 +352,105 @@ describe("review-b L21179: never the bot check's colour, always its verdict JSON
   });
   test("a run of the bot workflow in another repository (a fork's own Actions) does not count", () => {
     onlyFalse(decideFor(fixture((f) => { f[RRUNS].workflow_runs[0].repository.full_name = "someone-outside/agentvillage"; })), "review_run_green", "review_verdict_pass", "review_lane_mini_app");
+  });
+});
+
+describe("Fold 1, review-b M1 (ov#477): the verdict is bound to THIS pull request and base main", () => {
+  test("correct pr + base_ref main + base_sha on main => merge", () => {
+    const d = decideFor(fixture());
+    expect([d.merge, report(fixture()).pr, report(fixture()).base_ref, report(fixture()).base_sha]).toEqual([true, 901, "main", BASE]);
+  });
+  test("route A: the same fork branch in two PRs, the verdict and CI from the OTHER PR (against branch X) => no merge", () => {
+    const d = decideFor(fixture((f) => {
+      report(f).pr = 902; report(f).base_ref = "release-x"; report(f).base_sha = "b".repeat(40);
+      f[P(`compare/${"b".repeat(40)}...main?per_page=1`)] = { status: "diverged", ahead_by: 2, behind_by: 5 };
+      f[HEADPULLS] = [{ number: 902, state: "open", base: { ref: "release-x" } }, { number: 901, state: "open", base: { ref: "main" } }];
+    }));
+    expect(d.merge).toBe(false);
+    expect([cond(d, "review_verdict_pass"), cond(d, "ci_green")]).toEqual([false, false]);
+  });
+  test("route A, one binding at a time: the JSON names another PR; another PR (even a closed one) used this head; the head list is unreadable", () => {
+    onlyFalse(decideFor(fixture((f) => { report(f).pr = 902; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { f[HEADPULLS].push({ number: 902, state: "open" }); })), "ci_green");
+    onlyFalse(decideFor(fixture((f) => { f[HEADPULLS].unshift({ number: 850, state: "closed" }); })), "ci_green");
+    onlyFalse(decideFor(fixture((f) => { f[HEADPULLS] = [{ number: 902, state: "open" }]; })), "ci_green");
+    onlyFalse(decideFor(fixture((f) => { delete f[HEADPULLS]; })), "ci_green");
+  });
+  test("route B: the PR was opened against X and its base edited to main after the run => no merge", () => {
+    onlyFalse(decideFor(fixture((f) => {
+      report(f).base_ref = "release-x"; report(f).base_sha = "c".repeat(40);
+      f[P(`compare/${"c".repeat(40)}...main?per_page=1`)] = { status: "diverged", ahead_by: 4, behind_by: 9 };
+    })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { report(f).base_ref = "release-x"; })), "review_verdict_pass");
+  });
+  test("base_sha not on main (diverged, behind), the compare unreadable, or the sha malformed => no merge", () => {
+    for (const status of ["diverged", "behind", undefined]) {
+      onlyFalse(decideFor(fixture((f) => { f[COMPARE].status = status; })), "review_verdict_pass");
+    }
+    onlyFalse(decideFor(fixture((f) => { delete f[COMPARE]; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { report(f).base_sha = "a4974244"; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { report(f).base_sha = BASE.toUpperCase(); })), "review_verdict_pass");
+  });
+  test("a JSON without the binding fields (every bot run made before this lands) => no merge", () => {
+    onlyFalse(decideFor(fixture((f) => { delete report(f).pr; delete report(f).base_ref; delete report(f).base_sha; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { delete report(f).pr; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { report(f).pr = "901"; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { report(f).pr = null; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { delete report(f).base_ref; })), "review_verdict_pass");
+    onlyFalse(decideFor(fixture((f) => { report(f).base_sha = null; })), "review_verdict_pass");
+  });
+  test("a same-repository run whose own pull_requests entry says another base => no merge", () => {
+    const sameRepo = (base: unknown) => fixture((f) => {
+      f[PR].head.repo.full_name = REPO;
+      f[PR].head.label = "Edge-City:hello-board";
+      f[P("pulls?state=all&head=Edge-City%3Ahello-board&per_page=100")] = [{ number: 901, state: "open" }];
+      for (const k of [RRUNS, CRUNS]) {
+        f[k].workflow_runs[0].head_repository.full_name = REPO;
+        f[k].workflow_runs[0].pull_requests = [{ number: 901, base }];
+      }
+    });
+    expect(decideFor(sameRepo({ ref: "main", sha: BASE })).merge).toBe(true);
+    onlyFalse(decideFor(sameRepo({ ref: "release-x", sha: BASE })), "review_verdict_pass");
+    onlyFalse(decideFor(sameRepo({ ref: "main", sha: "d".repeat(40) })), "review_verdict_pass");
+  });
+});
+
+/** A second passing labeled pull request (#902, its own head, runs and artifact), added to a fixture. */
+function withSecondPr(f: Fix): Fix {
+  const H2 = "6a1c2b7a9d4e5f60718293a4b5c6d7e8f0000002";
+  let text = JSON.stringify(f).split(H).join(H2).split("hello-board").join("hello-board-two");
+  for (const [a, b] of [["39983043256", "39983043261"], ["39983043342", "39983043343"], ["12514640863", "12514640864"]]) text = text.split(a).join(b);
+  text = text.replace(/(?<![0-9])901(?![0-9])/g, "902");
+  const g = JSON.parse(text);
+  const out = { ...g, ...f };
+  out._artifact_json = { ...f._artifact_json, ...g._artifact_json };
+  const issues = P("issues?state=open&labels=mini-app%3Aautomerge&per_page=100");
+  out[issues] = [...f[issues], ...g[issues].filter((i: any) => i.number === 902)];
+  return out;
+}
+
+describe("Fold 1, review-b S1 (ov#477): one merge attempt per run", () => {
+  test("two passing labeled pull requests => exactly one merge attempt (the lowest number)", () => {
+    const f = withSecondPr(fixture());
+    expect(decideFor(f).merge).toBe(true);
+    expect(A.decide(A.gather(fakeIo(f, newCalls()), REPO, 902, "1")).merge).toBe(true);
+    const calls = newCalls();
+    expect(A.sweep(fakeIo(f, calls), REPO, { MINI_APPS_AUTOMERGE: "1" })).toBe(0);
+    expect(calls.merge).toEqual([[REPO, 901, H]]);
+    expect(calls.get.some((g) => g.includes("/902"))).toBe(false);
+  });
+  test("a refused first merge still ends the run: no second attempt", () => {
+    const calls = newCalls();
+    const io = fakeIo(withSecondPr(fixture()), calls, () => { throw new Error("HTTP 409"); });
+    expect(A.sweep(io, REPO, { MINI_APPS_AUTOMERGE: "1" })).toBe(1);
+    expect(calls.merge.length).toBe(1);
+  });
+  test("a first PR that does not pass does not use up the run: the next passing one merges", () => {
+    const f = withSecondPr(fixture());
+    report(f).verdict = "NEEDS_HUMAN"; // #901's report only; #902's (artifact 12514640864) still says PASS
+    const calls = newCalls();
+    A.sweep(fakeIo(f, calls), REPO, { MINI_APPS_AUTOMERGE: "1" });
+    expect(calls.merge).toEqual([[REPO, 902, "6a1c2b7a9d4e5f60718293a4b5c6d7e8f0000002"]]);
   });
 });
 
