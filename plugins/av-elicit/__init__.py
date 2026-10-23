@@ -177,6 +177,11 @@ def closed_path(home: Optional[str] = None) -> str:
     return os.path.join(elicit_dir(home), "closed")
 
 
+def last_answer_path(home: Optional[str] = None) -> str:
+    """This plugin's own note of when the tool last wrote an ``answer`` record (contract 3c v3 trigger rule)."""
+    return os.path.join(elicit_dir(home), "last_answer.json")
+
+
 def probe_path(home: Optional[str] = None) -> str:
     return os.path.join(elicit_dir(home), "probe.json")
 
@@ -417,6 +422,38 @@ def current_trigger(home: Optional[str] = None) -> Optional[str]:
     text, _ = _read_regular(path, INJECT_MAX_BYTES)
     first = split_trigger(text)[0] if text is not None else None
     return trigger_for(os.path.basename(path), first)
+
+
+def last_answer_time(home: Optional[str] = None) -> Optional[float]:
+    """Seconds since the epoch of the last ``answer`` record the tool wrote, or None."""
+    raw, _ = _read_regular(last_answer_path(home), 4096)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw).get("at_ms")
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value / 1000.0
+
+
+def question_trigger(home: Optional[str] = None) -> Optional[str]:
+    """The trigger of a question recorded now (contract 3c v3). The agent asks questions 2..n in the same
+    reply that records the answer, with no file injected: a question after an ``answer`` record, with no
+    inject file accepted since that answer, is ``answer``. Otherwise the last accepted file's trigger (so
+    only the window's first question is ``opener``)."""
+    answered = last_answer_time(home)
+    path = last_injected(home)
+    if answered is not None:
+        try:
+            accepted = os.stat(path).st_mtime if path else None
+        except OSError:
+            accepted = None
+        start = window_start(home)
+        if (accepted is None or answered > accepted) and (start is None or answered > start):
+            return "answer"
+    return current_trigger(home)
 
 
 # --------------------------------------------------------------------------- state.db (read-only)
@@ -718,7 +755,8 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
         raise Refused("no_window", "No ODIN constitution conversation is open; nothing was recorded.")
     fields = validate_record(args)
     stamp = time.time() if now is None else now
-    record = build_record(fields, current_trigger(home), stamp)
+    trigger = question_trigger(home) if fields["kind"] == "question" else None
+    record = build_record(fields, trigger, stamp)
     directory = records_dir(home)
     with _RECORD_LOCK:
         if len(_listing(directory, ".json")) >= RECORDS_MAX:
@@ -728,6 +766,11 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
             write_private_json(path, record)
         except OSError as exc:
             raise Refused("write_failed", "Could not record that right now; try once more.") from exc
+        if record["kind"] == "answer":
+            try:
+                write_private_json(last_answer_path(home), {"at_ms": int(stamp * 1000)})
+            except OSError as exc:  # the record is written; only the next question's trigger may be off
+                _log("last_answer_write_failed", logging.WARNING, error=type(exc).__name__)
     _log("recorded", kind=record["kind"], question_no=record["question_no"], statements=len(record["statement_ids"]))
     return confirmation(record)
 
@@ -826,7 +869,7 @@ def register(ctx: Any) -> None:
 
 __all__ = [
     "AGE_CAP_S", "FORMS", "ballot_page_open", "ballot_page_marker", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
-    "build_record", "closed_path", "confirmation", "current_trigger", "dm_session_exists", "elicitation_record_tool",
+    "build_record", "closed_path", "confirmation", "current_trigger", "question_trigger", "last_answer_time", "dm_session_exists", "elicitation_record_tool",
     "human_messages_since", "in_quiet_hours", "inject_dir", "inject_pass", "is_closed", "last_injected",
     "open_done_times", "closed_time", "window_start", "parse_stage_name", "probe_pass", "probe_path", "probe_payload", "record_elicitation",
     "records_dir", "register", "register_record_tool", "run_once", "session_key", "split_trigger",

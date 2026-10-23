@@ -27,6 +27,7 @@ plugins/av-elicit/
 | `inject/<file>.skipped` | this plugin | Not injected: the `closed` marker was present, the file was older than 24 h (by its `unix_ms` prefix), or it was unusable (empty after the trigger line, over 32 KiB, not UTF-8, not a regular file). |
 | `closed` | control plane | Empty marker. Pending `.txt` files staged (mtime) at or before it become `.skipped`; the window whose newest `*-open.done` is not later than the marker is closed (the probe stops, the tool refuses). A `.txt` staged after the marker belongs to a new window and is handled normally. |
 | `probe.json` | this plugin | `{"human_messages_since": <unix_ms>, "count": n, "last_human_at": <unix_ms>\|null}` (0600). |
+| `last_answer.json` | the tool | `{"at_ms": n}` (0600): when the last `answer` record was written, for the next question's trigger. |
 | `records/<unix_ms>-<record_id>.json` | the tool | One record per call (0600, dir 0700), written by temp file and rename. The control plane forwards and renames them. |
 
 ## The inject pass (every 5 s)
@@ -61,9 +62,13 @@ integer from 1), `category` (a category slug), `form` (question: `open` | `trade
 `other`), `text` (required for question and answer, at most 4000 characters), `takeaway` (answer, at most
 2000), `statement_ids` (answer, a list of ids such as `s004`).
 
-The record adds `record_id` (uuid4), `recorded_at` (ISO, UTC) and `trigger`: for a question, the trigger of
-the notice injected last (its `#trigger=` line, else `open` -> `opener`, `next` -> `answer`, `replan` ->
-`replan`), never the agent's. Fields that do not belong to the kind are written as `null` (`[]` for
+The record adds `record_id` (uuid4), `recorded_at` (ISO, UTC) and `trigger` (question only, never the
+agent's; contract 3c v3). A question recorded after an `answer` record, with no inject file accepted since
+that answer, is `answer`: the agent asks questions 2..n in the same reply that records the answer, with no
+file injected. Otherwise it is the trigger of the notice accepted last (its `#trigger=` line, else `open` ->
+`opener`, `next` -> `answer`, `replan` -> `replan`), so only the window's first question is `opener`. The
+time of the last answer is kept in `last_answer.json` (`{"at_ms": n}`, 0600); an answer from an earlier
+window (before the current `*-open.done`) never counts. Fields that do not belong to the kind are written as `null` (`[]` for
 `statement_ids`); a question without a `form` is `other`.
 
 It refuses (returns `{"error": "..."}`, never raises) outside a Telegram DM session (the calling

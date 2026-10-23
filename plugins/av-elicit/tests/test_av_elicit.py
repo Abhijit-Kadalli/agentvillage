@@ -527,6 +527,76 @@ def test_trigger_follows_the_last_injected_file_never_the_agent(plugin, home, db
     assert json.loads(records(home)[-1].read_text())["trigger"] == "idle"
 
 
+def q(plugin, n, now):
+    plugin.record_elicitation({"kind": "question", "question_no": n, "text": f"q{n}"}, "s-dm", now=now)
+    return json.loads(records(home_of(plugin))[-1].read_text())
+
+
+def a(plugin, n, now):
+    plugin.record_elicitation({"kind": "answer", "question_no": n, "text": f"a{n}"}, "s-dm", now=now)
+
+
+def home_of(plugin):
+    from pathlib import Path
+    return Path(plugin.hermes_home())
+
+
+def opened_at(plugin, home, db, accepted):
+    opened(plugin, home, db)
+    done = home / "av-events" / "elicit" / "inject" / names(home, ".done")[0]
+    os.utime(done, (accepted, accepted))
+
+
+def test_v3_follow_up_question_in_the_answer_reply_is_answer(plugin, home, db):
+    """3c v3: question 1 is opener; questions asked in the reply that records an answer, with no file
+    injected since, are answer."""
+    opened_at(plugin, home, db, NOON - 600)
+    assert q(plugin, 1, NOON - 500)["trigger"] == "opener"
+    a(plugin, 1, NOON - 400)
+    assert q(plugin, 2, NOON - 399)["trigger"] == "answer"
+    a(plugin, 2, NOON - 300)
+    assert q(plugin, 3, NOON - 299)["trigger"] == "answer"
+    answers = [json.loads(p.read_text()) for p in records(home) if json.loads(p.read_text())["kind"] == "answer"]
+    assert all(r["trigger"] is None for r in answers)
+
+
+def test_v3_second_question_without_an_answer_keeps_the_file_trigger(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    assert q(plugin, 1, NOON - 500)["trigger"] == "opener"
+    assert q(plugin, 2, NOON - 400)["trigger"] == "opener"
+
+
+def test_v3_a_file_accepted_after_the_answer_wins(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    q(plugin, 1, NOON - 500)
+    a(plugin, 1, NOON - 400)
+    stage(home, "next", NEXT_IDLE, NOON - 300)
+    assert plugin.inject_pass(Ctx(), now=NOON - 290) == "injected"
+    nxt = home / "av-events" / "elicit" / "inject" / [n for n in names(home, ".done") if "-next" in n][0]
+    os.utime(nxt, (NOON - 290, NOON - 290))
+    assert q(plugin, 2, NOON - 280)["trigger"] == "idle"
+    a(plugin, 2, NOON - 200)
+    assert q(plugin, 3, NOON - 199)["trigger"] == "answer"
+
+
+def test_v3_an_answer_from_a_previous_window_does_not_carry_over(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    (home / "av-events" / "elicit" / "last_answer.json").write_text(json.dumps({"at_ms": int((NOON - 7200) * 1000)}))
+    os.chmod(home / "av-events" / "elicit" / "last_answer.json", 0o600)
+    assert q(plugin, 1, NOON - 500)["trigger"] == "opener"
+
+
+def test_v3_unreadable_last_answer_falls_back_to_the_file(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    (home / "av-events" / "elicit").mkdir(parents=True, exist_ok=True)
+    (home / "av-events" / "elicit" / "last_answer.json").write_text("not json")
+    assert q(plugin, 1, NOON - 500)["trigger"] == "opener"
+    a(plugin, 1, NOON - 400)
+    body = json.loads((home / "av-events" / "elicit" / "last_answer.json").read_text())
+    assert body == {"at_ms": int((NOON - 400) * 1000)}
+    assert stat.S_IMODE((home / "av-events" / "elicit" / "last_answer.json").stat().st_mode) == 0o600
+
+
 def test_answer_and_stop_records(plugin, home, db):
     opened(plugin, home, db)
     line = plugin.elicitation_record_tool({"kind": "answer", "question_no": 1, "category": "privacy_and_consent",
