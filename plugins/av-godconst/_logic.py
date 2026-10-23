@@ -30,9 +30,10 @@ PAGE_SIZE = 2 * PAIRS_PER_PAGE
 LABELS = {1: "Strongly oppose inclusion", 2: "Oppose inclusion", 3: "Neutral", 4: "Support inclusion", 5: "Strongly support inclusion"}
 CHECK = "✅ "
 IST = timezone(timedelta(hours=5, minutes=30))
-#: The first card of a ballot goes out only in village daytime (B7's opener window); later pages follow taps.
-FIRST_SEND_FROM = (8, 0)
-FIRST_SEND_UNTIL = (21, 30)
+#: Village daytime (B7's opener window): a ballot's first card and every send a pass (a tick) makes go out only inside
+#: it; the reply to the resident's own tap goes at once (ov#483 N2).
+SEND_FROM = (8, 0)
+SEND_UNTIL = (21, 30)
 
 STATES = ("open", "submitted", "closed", "no_pool", "not_participant")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
@@ -190,10 +191,10 @@ def epoch_from_iso(value: Any) -> Optional[float]:
     return None if stamp.tzinfo is None else stamp.timestamp()
 
 
-def in_first_send_window(now: float) -> bool:
+def in_send_window(now: float) -> bool:
     local = datetime.fromtimestamp(now, tz=IST)
     minutes = local.hour * 60 + local.minute
-    return FIRST_SEND_FROM[0] * 60 + FIRST_SEND_FROM[1] <= minutes < FIRST_SEND_UNTIL[0] * 60 + FIRST_SEND_UNTIL[1]
+    return SEND_FROM[0] * 60 + SEND_FROM[1] <= minutes < SEND_UNTIL[0] * 60 + SEND_UNTIL[1]
 
 
 def ist_label(epoch: float) -> str:

@@ -8,7 +8,7 @@ is a revision; "rate as many as you can" (unrated = no opinion).
 
 **The data path.** The box never reaches the app and holds no app credential. It calls its control plane with its
 own ballot key (``CONTROL_PLANE_URL`` pinned to ``CP_HOSTS``, ``Authorization: Bearer $AV_GODCONST_BALLOT_KEY``, a
-per-tenant credential custody keeps from every agent-run child; the ask-village wire otherwise): ``POST /tenants/<own tenant>/godconst/ballot`` (read) and ``.../ballot/rate`` (one tap). The control
+per-tenant credential custody keeps from every agent-run child; the ask-village wire otherwise): ``POST /tenants/<own tenant>/godconst/ballot`` (read), ``.../ballot/rate`` (one tap) and ``.../ballot/submit`` (Submit), one path per op (``OP_PATHS``). The control
 plane authenticates the key against this tenant, checks its switches and research consent, and forwards with the
 GODCONST bridge key and the authenticated tenant id; the app maps that tenant to its one resident and applies every
 GODCONST rule (cohort, take-part consent, pool phase, order, ballot) on every call. So every send follows a fresh read
@@ -85,6 +85,11 @@ CP_HOSTS = frozenset({"control-plane-production-606c.up.railway.app"})
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 READ_PATH = "/tenants/{tenant}/godconst/ballot"
 RATE_PATH = "/tenants/{tenant}/godconst/ballot/rate"
+SUBMIT_PATH = "/tenants/{tenant}/godconst/ballot/submit"
+#: The control plane routes by PATH (index.js: ``.../ballot`` is the read, ``.../ballot/rate`` and ``.../ballot/submit``
+#: their ops) and holds each op to its exact body (godconst-ballot.js parseBody). One path per op; an op with no path
+#: raises in cp_call and never falls back to another route (ov#483 M1: Submit went to /rate and got 400 body_invalid).
+OP_PATHS = {"read": READ_PATH, "rate": RATE_PATH, "submit": SUBMIT_PATH}
 HTTP_TIMEOUT_S = 12.0
 RESPONSE_MAX_BYTES = 2 * 1024 * 1024
 
@@ -423,13 +428,18 @@ class Reply:
 
 
 def cp_call(op: str, body: dict, home: Optional[str] = None) -> Reply:
-    """One POST to the control plane (blocking; called through asyncio.to_thread). Never raises."""
+    """One POST to the control plane (blocking; called through asyncio.to_thread) to the op's own path (``OP_PATHS``).
+    Never raises for the network or the answer; an op with no path raises ValueError (a programming error) before
+    anything is read or sent."""
+    path = OP_PATHS.get(op) if isinstance(op, str) else None
+    if path is None:
+        raise ValueError("av-godconst: no control-plane route for this op")
     origin = cp_origin(env(URL_ENV, home))
     key = env(CREDENTIAL_ENV, home)
     tenant = tenant_id(home)
     if origin is None or not key or tenant is None:
         return Reply(None, None, "not_configured")
-    url = origin + (READ_PATH if op == "read" else RATE_PATH).format(tenant=tenant)
+    url = origin + path.format(tenant=tenant)
     request = urllib.request.Request(url, data=json.dumps(body, separators=(",", ":")).encode("utf-8"), method="POST",
                                      headers={"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {key}"})
     try:
@@ -558,9 +568,10 @@ async def _send_page(bot: Any, chat: str, session: dict, view: dict, page: int, 
 
 
 async def sync(bot: Any, adapter: Any, view: dict, make_button: Callable, make_markup: Callable,
-               home: Optional[str] = None, now: Optional[float] = None) -> dict:
+               home: Optional[str] = None, now: Optional[float] = None, tick: bool = True) -> dict:
     """Apply a fresh read to this box's cards: start, advance, re-mark, end, or settle. Returns code -> count; never
-    raises. The caller has checked the switch; texts and values in `view` are used here and never written."""
+    raises. The caller has checked the switch; texts and values in `view` are used here and never written. `tick`:
+    a pass drives it (every send waits for village daytime); False for the reply to the resident's own tap."""
     codes: dict = {}
     stamp = time.time() if now is None else now
 
@@ -569,7 +580,7 @@ async def sync(bot: Any, adapter: Any, view: dict, make_button: Callable, make_m
 
     try:
         async with _send_lock():
-            await _sync_locked(bot, adapter, view, make_button, make_markup, home, stamp, count)
+            await _sync_locked(bot, adapter, view, make_button, make_markup, home, stamp, count, tick)
     except Exception:  # noqa: BLE001
         logger.warning("av-godconst: tenant=%s outcome=sync_error", tenant_id8())
         count("sync_error")
@@ -579,13 +590,15 @@ async def sync(bot: Any, adapter: Any, view: dict, make_button: Callable, make_m
 
 
 async def _sync_locked(bot: Any, adapter: Any, view: dict, make_button: Callable, make_markup: Callable,
-                       home: Optional[str], now: float, count: Callable) -> None:
+                       home: Optional[str], now: float, count: Callable, tick: bool = True) -> None:
     with _LEDGER_LOCK:
         ledger, why = load_ledger(home)
     if why not in (None, "missing"):
         count(f"ledger_{why}")
         return
     session = ledger.get("session")
+    # What this pass loaded: each write-back merges into the ledger as it is then (S1, `_store`).
+    base = {"nonce": session.get("nonce"), "status": session.get("status")} if isinstance(session, dict) else {"nonce": None, "status": None}
     state = view["state"]
     pool = view.get("pool")
     same_pool = session is not None and pool is not None and session["pool_sha256"] == pool["sha256"]
@@ -615,7 +628,7 @@ async def _sync_locked(bot: Any, adapter: Any, view: dict, make_button: Callable
         if closes is not None and now >= closes:
             count("window_over")
             return
-        if not L.in_first_send_window(now):
+        if not L.in_send_window(now):  # a new ballot's first card: daytime, tick or tap
             count("waiting_daytime")
             return
         session = new_session(view, now)
@@ -626,7 +639,7 @@ async def _sync_locked(bot: Any, adapter: Any, view: dict, make_button: Callable
         if len(rated) == len(session["order"]):
             session["status"] = "done"
             count("all_rated_on_web")
-            _store(ledger, home, now)
+            _store(ledger, home, now, base)
             return
         header = await _send(bot, chat, L.header_text(len(session["order"]), closes),
                              make_markup(L.control_rows(session["nonce"], make_button, stopped=False)))
@@ -634,7 +647,7 @@ async def _sync_locked(bot: Any, adapter: Any, view: dict, make_button: Callable
             count("send_failed")
             return  # nothing kept: the next pass starts again
         session["header_message_id"] = header
-        _store(ledger, home, now)
+        _store(ledger, home, now, base)
         count("started")
         _log("order", rule=session["order_rule"], n=len(session["order"]))
     if session["order"] != [s["id"] for s in view["statements"]]:
@@ -644,25 +657,73 @@ async def _sync_locked(bot: Any, adapter: Any, view: dict, make_button: Callable
     rated = L.rated_positions(session["order"], view["ratings"])
     session["rated"] = sorted(rated)
     await _remark(bot, chat, session, view, make_button, make_markup, count)
-    if session["status"] != ACTIVE:
-        _store(ledger, home, now)
+    # The re-marks awaited: a tap may have stopped, resumed or ended the session meanwhile; the merge takes it in.
+    if not _store(ledger, home, now, base) or session["status"] != ACTIVE:
         return
-    await _advance(bot, chat, session, view, rated, closes, now, home, make_button, make_markup, count)
-    _store(ledger, home, now)
+    await _advance(bot, chat, session, view, rated, closes, now, home, make_button, make_markup, count, tick)
+    _store(ledger, home, now, base)
 
 
-def _store(ledger: dict, home: Optional[str], now: Optional[float] = None) -> None:
+def _store(ledger: dict, home: Optional[str], now: Optional[float], base: dict) -> bool:
+    """The pass's write-back (ov#483 S1). The pass holds its copy of the ledger across awaits (sends, edits) while a tap
+    can Stop, Resume, submit or end the session (those write under ``_LEDGER_LOCK`` only), and pass_once's endings run
+    outside the send lock. So a session the pass loaded is never written back whole: the ledger is re-read under the
+    lock and only the pass's own fields are merged into it (the cards it sent with their message ids, the page, the
+    final line, its send failures, the rated positions). The status is the pass's (its own ``done`` /
+    ``undeliverable``) only while the ledger's is still the one the pass loaded, so a Stop or Resume made meanwhile
+    stands, and a session ended or replaced meanwhile is never brought back (nor its page-open marker). Smaller than
+    taking the send lock in every other writer (Stop/Resume, Submit, each refusal, the tap's window close, the tap's
+    rated positions, pass_once's endings): one place, and no tap waits behind a pass's sends. A session this pass
+    started is written whole (no tap can know its nonce before this write).
+    True when the pass's session is still the ledger's; the pass's `session` then holds the merged copy."""
+    session = ledger.get("session")
+    stamp = time.time() if now is None else now
     with _LEDGER_LOCK:
-        save_ledger(ledger, home)
-    set_page_open(page_is_open(ledger.get("session"), time.time() if now is None else now), home)
+        if not isinstance(session, dict) or session.get("nonce") != base["nonce"]:
+            save_ledger(ledger, home)
+            current: Optional[dict] = session
+        else:
+            disk, why = load_ledger(home)
+            current = disk.get("session") if why is None else None
+            if isinstance(current, dict) and current.get("nonce") == session["nonce"]:
+                if current.get("status") == base["status"]:
+                    current["status"] = session["status"]
+                current["cards"] = {**(current.get("cards") or {}), **session["cards"]}
+                current["page"] = max(int(current.get("page", -1)), int(session["page"]))
+                current["final_sent"] = bool(current.get("final_sent")) or bool(session["final_sent"])
+                current["send_failures"] = int(session.get("send_failures", 0))
+                current["rated"] = sorted(set(current.get("rated") or []) | set(session["rated"]))
+                save_ledger(disk, home)
+                session.update(current)
+                current = session
+            else:
+                _log("store_skipped", code="session_changed" if why is None else f"ledger_{why}")
+                current = None
+    set_page_open(page_is_open(current, stamp), home)
+    if current is None:
+        return False
+    base["nonce"], base["status"] = current["nonce"], current["status"]
+    return True
 
 
 async def _advance(bot: Any, chat: str, session: dict, view: dict, rated: set, closes: Optional[float], now: float, home: Optional[str],
-                   make_button: Callable, make_markup: Callable, count: Callable) -> None:
+                   make_button: Callable, make_markup: Callable, count: Callable, tick: bool = True) -> None:
+    # ov#483 N2: a send a pass makes (a tick) goes only in village daytime, 08:00-21:30 IST, like the first card: the
+    # next pair after a pair finished on the web page, a failed card's retry, the final line, the cards after a Resume.
+    # The reply to the resident's own tap (`tick` False: the next pair, or the final line, after they rated this pair)
+    # is not a tick send: they are at the phone right now, so it goes at once at any hour.
+    def held() -> bool:
+        if tick and not L.in_send_window(now):
+            count("waiting_daytime")
+            return True
+        return False
+
     n = len(session["order"])
     page = int(session["page"])
     # The current page first: a card of it that never went out (a failed send) goes now.
     if page >= 0 and L.to_send(page, n, rated, session["cards"].keys()):
+        if held():
+            return
         if not await _send_page(bot, chat, session, view, page, rated, home, make_button, make_markup, count):
             _send_failed(session, count)
             return
@@ -671,6 +732,8 @@ async def _advance(bot: Any, chat: str, session: dict, view: dict, rated: set, c
     nxt = L.next_page(page, n, rated)
     if nxt is None:
         if not session["final_sent"]:
+            if held():
+                return
             text = L.done_text(n) if len(rated) == n else L.end_text(len(rated), n)
             if await _send(bot, chat, text, make_markup(L.submit_rows(session["nonce"], make_button))) is None:
                 _send_failed(session, count)
@@ -681,6 +744,8 @@ async def _advance(bot: Any, chat: str, session: dict, view: dict, rated: set, c
         return
     if closes is not None and now >= closes:
         count("window_over")
+        return
+    if held():
         return
     if await _send_page(bot, chat, session, view, nxt, rated, home, make_button, make_markup, count):
         session["send_failures"] = 0
@@ -897,7 +962,8 @@ def make_handler(adapter: Any = None, *, make_button: Callable, make_markup: Cal
                 if view is not None:
                     bot = _bot_of(query, message)
                     if bot is not None:
-                        await sync(bot, adapter, view, make_button, make_markup, home, clock())
+                        # The reply to this tap (not a tick send): immediate at any hour (N2).
+                        await sync(bot, adapter, view, make_button, make_markup, home, clock(), tick=False)
                 else:
                     _log("advance_read_failed", code=follow.code)
         except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
