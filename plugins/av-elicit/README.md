@@ -27,6 +27,7 @@ plugins/av-elicit/
 | `inject/<file>.skipped` | this plugin | Not injected: the `closed` marker was present, the file was older than 24 h (by its `unix_ms` prefix), or it was unusable (empty after the trigger line, over 32 KiB, not UTF-8, not a regular file). |
 | `closed` | control plane | Empty marker. Pending `.txt` files staged (mtime) at or before it become `.skipped`; the window whose newest `*-open.done` is not later than the marker is closed (the probe stops, the tool refuses). A `.txt` staged after the marker belongs to a new window and is handled normally. |
 | `probe.json` | this plugin | `{"human_messages_since": <unix_ms>, "count": n, "last_human_at": <unix_ms>\|null}` (0600). |
+| `window.json` | the tool | `{"window_ms": <newest open.done, ms>, "questions": n}` (0600): questions recorded in the current window, for `question_no`. A `window_ms` other than the current window's counts as 0, so a new window starts again at 1. |
 | `last_answer.json` | the tool | `{"at_ms": n}` (0600): when the last `answer` record was written, for the next question's trigger. |
 | `records/<unix_ms>-<record_id>.json` | the tool | One record per call (0600, dir 0700), written by temp file and rename. The control plane forwards and renames them. |
 
@@ -61,6 +62,13 @@ Schema (what the agent sees): `kind` (required: `question` | `answer` | `stop`),
 integer from 1), `category` (a category slug), `form` (question: `open` | `trade_off` | `direct_rating` |
 `other`), `text` (required for question and answer, at most 4000 characters), `takeaway` (answer, at most
 2000), `statement_ids` (answer, a list of ids such as `s004`).
+
+`question_no` is assigned by the tool, never taken from the agent (contract 3c amended: an agent numbers
+from its whole DM history, so its opener can come out as 8). A question is 1 + the questions recorded in the
+current window (from `window.json`), so the opener is always 1. An answer or a stop is the window's latest
+question, unless the agent names an earlier question of the same window (1..latest); before any question it
+is 1. The agent's own number is kept as `agent_question_no`, for analysis; the confirmation line names the
+stored number.
 
 The record adds `record_id` (uuid4), `recorded_at` (ISO, UTC) and `trigger` (question only, never the
 agent's; contract 3c v3). A question recorded after an `answer` record, with no inject file accepted since

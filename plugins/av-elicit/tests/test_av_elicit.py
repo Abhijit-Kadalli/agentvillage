@@ -503,8 +503,8 @@ def test_question_record_file(plugin, home, db):
     assert line == "Recorded question 1 (privacy_and_consent)."
     [path] = records(home)
     body = json.loads(path.read_text())
-    assert set(body) == {"record_id", "kind", "question_no", "category", "form", "trigger", "text", "takeaway",
-                         "statement_ids", "recorded_at"}
+    assert set(body) == {"record_id", "kind", "question_no", "agent_question_no", "category", "form", "trigger",
+                         "text", "takeaway", "statement_ids", "recorded_at"}
     assert body["trigger"] == "opener" and body["form"] == "open" and body["text"] == "What matters most?"
     assert uuid.UUID(body["record_id"]).version == 4
     ms, rid = path.stem.split("-", 1)
@@ -595,6 +595,66 @@ def test_v3_unreadable_last_answer_falls_back_to_the_file(plugin, home, db):
     body = json.loads((home / "av-events" / "elicit" / "last_answer.json").read_text())
     assert body == {"at_ms": int((NOON - 400) * 1000)}
     assert stat.S_IMODE((home / "av-events" / "elicit" / "last_answer.json").stat().st_mode) == 0o600
+
+
+def rec(plugin, home, kind, n, now, **extra):
+    args = {"kind": kind, "question_no": n, **({"text": f"{kind} {n}"} if kind != "stop" else {}), **extra}
+    plugin.record_elicitation(args, "s-dm", now=now)
+    return json.loads(records(home)[-1].read_text())
+
+
+def test_agent_number_8_still_stores_1(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    body = rec(plugin, home, "question", 8, NOON - 500)
+    assert body["question_no"] == 1 and body["agent_question_no"] == 8 and body["trigger"] == "opener"
+    body = rec(plugin, home, "answer", 8, NOON - 400)
+    assert body["question_no"] == 1 and body["agent_question_no"] == 8
+    body = rec(plugin, home, "question", 9, NOON - 399)
+    assert body["question_no"] == 2 and body["agent_question_no"] == 9 and body["trigger"] == "answer"
+    state = home / "av-events" / "elicit" / "window.json"
+    assert json.loads(state.read_text())["questions"] == 2
+    assert stat.S_IMODE(state.stat().st_mode) == 0o600
+
+
+def test_answer_to_an_earlier_question_of_the_window(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    for n, t in ((1, 500), (2, 450), (3, 400)):
+        rec(plugin, home, "question", n + 10, NOON - t)
+    assert rec(plugin, home, "answer", 2, NOON - 300)["question_no"] == 2   # names question 2 of this window
+    assert rec(plugin, home, "answer", 13, NOON - 290)["question_no"] == 3  # not a number of this window: latest
+    assert rec(plugin, home, "answer", 4, NOON - 280)["question_no"] == 3   # not asked yet: latest
+    assert rec(plugin, home, "stop", 1, NOON - 270)["question_no"] == 1
+    assert rec(plugin, home, "question", 1, NOON - 260)["question_no"] == 4
+
+
+def test_answer_before_any_question_is_1(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    assert rec(plugin, home, "answer", 5, NOON - 500)["question_no"] == 1
+    assert rec(plugin, home, "question", 5, NOON - 400)["question_no"] == 1
+
+
+def test_second_window_starts_at_1(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    folder = home / "av-events" / "elicit" / "inject"
+    first = names(home, ".done")[0]
+    rec(plugin, home, "question", 1, NOON - 7100)
+    rec(plugin, home, "question", 2, NOON - 7000)
+    close(home)
+    os.utime(home / "av-events" / "elicit" / "closed", (NOON - 3600, NOON - 3600))
+    second = stage(home, "open", OPENER, NOON)
+    os.utime(second, (NOON - 1800, NOON - 1800))
+    assert plugin.inject_pass(Ctx(), now=NOON + 10) == "injected"
+    newest = folder / [n for n in names(home, ".done") if n != first][0]
+    os.utime(newest, (NOON - 1700, NOON - 1700))
+    body = rec(plugin, home, "question", 3, NOON - 1600)
+    assert body["question_no"] == 1 and body["agent_question_no"] == 3 and body["trigger"] == "opener"
+
+
+def test_unreadable_window_state_counts_from_0(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    (home / "av-events" / "elicit" / "window.json").write_text("{bad")
+    assert plugin.window_questions(int((NOON - 600) * 1000)) == 0
+    assert rec(plugin, home, "question", 4, NOON - 500)["question_no"] == 1
 
 
 def test_answer_and_stop_records(plugin, home, db):

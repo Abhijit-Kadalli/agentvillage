@@ -99,8 +99,9 @@ TOOL_SCHEMA: dict = {
             "kind": {"type": "string", "enum": list(KINDS),
                      "description": "question (you asked), answer (they answered) or stop (they said not now or stop)."},
             "question_no": {"type": "integer", "minimum": 1,
-                            "description": "The question's number in this conversation, 1 for the first; an answer "
-                                           "or a stop uses the number of the question it answers."},
+                            "description": "Your number for the question in this conversation, 1 for the first; an "
+                                           "answer or a stop uses the number of the question it answers. The tool "
+                                           "numbers questions itself and tells you the number it stored."},
             "category": {"type": "string",
                          "description": "The category id the question or answer is about (e.g. privacy_and_consent)."},
             "form": {"type": "string", "enum": list(FORMS),
@@ -180,6 +181,11 @@ def closed_path(home: Optional[str] = None) -> str:
 def last_answer_path(home: Optional[str] = None) -> str:
     """This plugin's own note of when the tool last wrote an ``answer`` record (contract 3c v3 trigger rule)."""
     return os.path.join(elicit_dir(home), "last_answer.json")
+
+
+def window_state_path(home: Optional[str] = None) -> str:
+    """This plugin's per-window question count (contract 3c amended): ``{"window_ms": n, "questions": n}``."""
+    return os.path.join(elicit_dir(home), "window.json")
 
 
 def probe_path(home: Optional[str] = None) -> str:
@@ -436,6 +442,33 @@ def last_answer_time(home: Optional[str] = None) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value / 1000.0
+
+
+def window_questions(window_ms: int, home: Optional[str] = None) -> int:
+    """Question records written in the window starting at ``window_ms`` (0 for a new window, a missing or
+    unreadable state file, or one left by an earlier window)."""
+    raw, _ = _read_regular(window_state_path(home), 4096)
+    if raw is None:
+        return 0
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return 0
+    if not isinstance(body, dict) or body.get("window_ms") != window_ms:
+        return 0
+    count = body.get("questions")
+    return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
+
+
+def assign_question_no(kind: str, agent_no: int, asked: int) -> int:
+    """The stored ``question_no``, never the agent's own count (it numbers from its whole DM history): a
+    question is ``asked + 1``; an answer or a stop is the window's latest question, unless the agent names an
+    earlier question of this window (1..asked). Before any question, an answer or stop is 1."""
+    if kind == "question":
+        return asked + 1
+    if 1 <= agent_no <= asked:
+        return agent_no
+    return max(asked, 1)
 
 
 def question_trigger(home: Optional[str] = None) -> Optional[str]:
@@ -727,6 +760,7 @@ def build_record(fields: dict, trigger: Optional[str], now: Optional[float] = No
         "record_id": record_id or str(uuid.uuid4()),
         "kind": fields["kind"],
         "question_no": fields["question_no"],
+        "agent_question_no": fields.get("agent_question_no", fields["question_no"]),
         "category": fields["category"],
         "form": fields["form"],
         "trigger": trigger if fields["kind"] == "question" else None,
@@ -755,23 +789,36 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
         raise Refused("no_window", "No ODIN constitution conversation is open; nothing was recorded.")
     fields = validate_record(args)
     stamp = time.time() if now is None else now
-    trigger = question_trigger(home) if fields["kind"] == "question" else None
-    record = build_record(fields, trigger, stamp)
     directory = records_dir(home)
     with _RECORD_LOCK:
         if len(_listing(directory, ".json")) >= RECORDS_MAX:
             raise Refused("records_full", "This conversation already holds the most records allowed.")
+        start = window_start(home)
+        if start is None:
+            raise Refused("no_window", "No ODIN constitution conversation is open; nothing was recorded.")
+        window_ms = int(round(start * 1000))
+        asked = window_questions(window_ms, home)
+        fields["agent_question_no"] = fields["question_no"]
+        fields["question_no"] = assign_question_no(fields["kind"], fields["question_no"], asked)
+        trigger = question_trigger(home) if fields["kind"] == "question" else None
+        record = build_record(fields, trigger, stamp)
         path = os.path.join(directory, f"{int(stamp * 1000)}-{record['record_id']}.json")
         try:
             write_private_json(path, record)
         except OSError as exc:
             raise Refused("write_failed", "Could not record that right now; try once more.") from exc
+        if record["kind"] == "question":
+            try:
+                write_private_json(window_state_path(home), {"window_ms": window_ms, "questions": asked + 1})
+            except OSError as exc:  # the record is written; the next question may repeat this number
+                _log("window_state_write_failed", logging.WARNING, error=type(exc).__name__)
         if record["kind"] == "answer":
             try:
                 write_private_json(last_answer_path(home), {"at_ms": int(stamp * 1000)})
             except OSError as exc:  # the record is written; only the next question's trigger may be off
                 _log("last_answer_write_failed", logging.WARNING, error=type(exc).__name__)
-    _log("recorded", kind=record["kind"], question_no=record["question_no"], statements=len(record["statement_ids"]))
+    _log("recorded", kind=record["kind"], question_no=record["question_no"],
+         agent_question_no=record["agent_question_no"], statements=len(record["statement_ids"]))
     return confirmation(record)
 
 
@@ -869,7 +916,7 @@ def register(ctx: Any) -> None:
 
 __all__ = [
     "AGE_CAP_S", "FORMS", "ballot_page_open", "ballot_page_marker", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
-    "build_record", "closed_path", "confirmation", "current_trigger", "question_trigger", "last_answer_time", "dm_session_exists", "elicitation_record_tool",
+    "build_record", "closed_path", "confirmation", "current_trigger", "assign_question_no", "window_questions", "question_trigger", "last_answer_time", "dm_session_exists", "elicitation_record_tool",
     "human_messages_since", "in_quiet_hours", "inject_dir", "inject_pass", "is_closed", "last_injected",
     "open_done_times", "closed_time", "window_start", "parse_stage_name", "probe_pass", "probe_path", "probe_payload", "record_elicitation",
     "records_dir", "register", "register_record_tool", "run_once", "session_key", "split_trigger",
