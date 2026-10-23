@@ -106,12 +106,23 @@ test("installed ZZZ projection owns one script-only Hermes job; revocation remov
   mkdirSync(join(home, "zzzbot"));
   writeFileSync(join(home, "zzzbot", "managed-pairs.json"), "{}");
   writeFileSync(join(home, "zzzbot", "managed-pairs.lock"), "");
+  // The no_agent runner's whole-turn lock is managed state too.
+  writeFileSync(join(home, "zzzbot", "managed-run.lock"), "", { mode: 0o600 });
   expect(stage(alone).status).toBe(0);
   expect(jobs()).toHaveLength(0);
   expect(existsSync(join(home, "scripts", ZZZ_JOB_SCRIPT))).toBe(false);
   expect(existsSync(join(home, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
   expect(existsSync(join(home, "zzzbot"))).toBe(false);
   expect(existsSync(join(home, "skills", "zzzbot", "SKILL.md"))).toBe(true);
+});
+
+test("N7: the whole-turn lock alone marks managed state and revocation removes it", () => {
+  const { home, stage, jobs } = fakeBox();
+  mkdirSync(join(home, "zzzbot"));
+  writeFileSync(join(home, "zzzbot", "managed-run.lock"), "", { mode: 0o600 });
+  expect(zzzMarkerOnDisk(home)).toBe(true);
+  expect(stage(alone).status).toBe(0);
+  expectOff(home, jobs);
 });
 
 test("S1 (b): zzzbot without zzz-bridge, and zzz-bridge without zzzbot, schedule nothing; no flag or env turns it on", () => {
@@ -171,12 +182,13 @@ function snapshot(root: string): Record<string, string> {
 const FAILED = `${JSON.stringify({ error: "mini_apps_reconcile_failed" })}\n`;
 /** Exactly the paths a fail-closed teardown may remove: the job's shim, managed files, and cursor state. */
 const ZZZ_OWNED = [`scripts/${ZZZ_JOB_SCRIPT}`, `skills/zzzbot/scripts/${ZZZ_JOB_SCRIPT}`, "skills/zzzbot/prompts/participate.md",
-  "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock", "zzzbot/.managed-123"];
+  "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock", "zzzbot/managed-run.lock", "zzzbot/.managed-123"];
 /** Managed cursor state as the poll leaves it, beside a resident's own file in the same folder. */
 function seedState(home: string) {
   mkdirSync(join(home, "zzzbot"), { recursive: true });
   writeFileSync(join(home, "zzzbot", "managed-pairs.json"), "{}");
   writeFileSync(join(home, "zzzbot", "managed-pairs.lock"), "");
+  writeFileSync(join(home, "zzzbot", "managed-run.lock"), "");
   writeFileSync(join(home, "zzzbot", ".managed-123"), "{}");
 }
 
@@ -777,7 +789,7 @@ test("S4-r: a box that was on keeps the earlier N2 tolerance in its teardown (st
 
 /** Every marker path (S4-r), and what the installer or the plugin ever writes there. */
 const MARKER_PATHS = [`scripts/${ZZZ_JOB_SCRIPT}`, `skills/zzzbot/scripts/${ZZZ_JOB_SCRIPT}`, "skills/zzzbot/prompts/participate.md",
-  "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock"];
+  "zzzbot/managed-pairs.json", "zzzbot/managed-pairs.lock", "zzzbot/managed-run.lock"];
 const INSTALLER_MARKERS = MARKER_PATHS.slice(0, 3);
 const ownBytes = (path: string) => path.endsWith(ZZZ_JOB_SCRIPT) ? SHIPPED_RUNNER : path.endsWith("participate.md") ? SHIPPED_PROMPT : Buffer.from("{}");
 /** S5 (review-b recheck L17481 m1-m4, m7): the non-regular objects an agent could plant at a marker path. */

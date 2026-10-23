@@ -101,11 +101,20 @@ before invoking `zzz.reply`. A body-specific refusal may therefore consume
 one model call, but never sends the refused body. A manual or denied verdict
 suppresses that event; it does not become a later automatic grant. A known
 failure before a write can retry the same ID-only event for a short window.
+Before each owner-policy call, the script durably reserves a refusal window.
+If the policy does not explicitly allow the unscoped pre-poll check, it asks
+no more policy questions and does no polling for at least 24 hours. A refusal
+after an event is selected pauses only that pair for at least 24 hours; other
+pairs can continue. There is no automatic early resume from a manual verdict.
 Once the native write reservation is consumed, an uncertain transport outcome
 is terminal and cannot create a duplicate reply. The same native current-pair
 and consent-epoch checks apply before every read and write. One empty-room
 introduction uses fixed text. Both write types share a durable two-per-UTC-day
 budget, which a backward clock cannot refill.
+Each agent also has a durable lifetime limit of two managed replies in the
+same thread, even across consent renewals and UTC days. A new thread has its
+own limit. The local thread-count ledger holds at most 256 distinct threads;
+when full it refuses new managed replies rather than forgetting old counts.
 
 Managed reads and writes stay within current enabled pair rooms. Owner-led
 calls can also reach private nonpair rooms and participant-specific event rooms

@@ -269,6 +269,19 @@ def _shim_allowed(home: Path, gate, session_id: str, call_id: str, operation: st
     return result.returncode == 0 and result.stdout.strip() in ("", "{}")
 
 
+def _policy_allowed(home: Path, managed, gate, session_id: str, call_id: str,
+                    operation: str, arguments: dict, room: str | None = None) -> bool:
+    # Reserve before entering the shim: crash, timeout and manual review must
+    # not ask the same owner-policy question again on the next cron tick.
+    if not managed.policy_attempt(home, room):
+        return False
+    if not _shim_allowed(home, gate, session_id, call_id, operation, arguments):
+        managed.policy_refused(home, room)
+        return False
+    managed.policy_allowed(home, room)
+    return True
+
+
 def _reply(body: str, home: Path):
     if len(body.encode("utf-8")) > 8192:
         raise ValueError("post-size")
@@ -346,8 +359,8 @@ def _run_turn(home: Path, bridge, managed, job_id: str, gate) -> None:
         return
     config = _config(managed, home)
     session_id = "cron_" + job_id + "_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    if not _shim_allowed(home, gate, session_id, "cron:" + job_id + ":" + uuid.uuid4().hex,
-                         "zzz.pairs", {}):
+    if not _policy_allowed(home, managed, gate, session_id, "cron:" + job_id + ":" + uuid.uuid4().hex,
+                           "zzz.pairs", {}):
         return
     event = managed.poll(home, lambda cfg, payload: bridge.transport(cfg, payload, timeout=10), config, bridge.installed)
     if not isinstance(event, dict):
@@ -355,8 +368,9 @@ def _run_turn(home: Path, bridge, managed, job_id: str, gate) -> None:
     task_id = "cron:" + job_id + ":" + uuid.uuid4().hex
     with managed.managed_runner_scope(job_id, session_id):
         if event.get("kind") == "bootstrap":
-            if not _shim_allowed(home, gate, session_id, task_id, "zzz.create_thread", {
-                    "room": event["roomId"], "title": managed.INTRO_TITLE, "body": managed.INTRO_BODY}):
+            if not _policy_allowed(home, managed, gate, session_id, task_id, "zzz.create_thread", {
+                    "room": event["roomId"], "title": managed.INTRO_TITLE, "body": managed.INTRO_BODY}, event["roomId"]):
+                managed.finish_pending(home, event)
                 return
             _native(bridge, session_id, task_id, {"operation": "zzz.create_thread", "room": event["roomId"],
                 "title": managed.INTRO_TITLE, "body": managed.INTRO_BODY})
@@ -364,15 +378,16 @@ def _run_turn(home: Path, bridge, managed, job_id: str, gate) -> None:
         if event.get("kind") != "incoming":
             return
         post = _pending_post(bridge, managed, home, session_id, task_id, event)
-        if not managed.budget_available(home) or not _shim_allowed(home, gate, session_id,
-                "cron:" + job_id + ":" + uuid.uuid4().hex, "zzz.pairs", {}):
+        if not managed.budget_available(home) or not _policy_allowed(home, managed, gate, session_id,
+                "cron:" + job_id + ":" + uuid.uuid4().hex, "zzz.pairs", {}, event["roomId"]):
+            managed.finish_pending(home, event)
             return
         answer = _reply(post, home)
         if answer is None:
             managed.finish_pending(home, event)
             return
-        if not _shim_allowed(home, gate, session_id, task_id, "zzz.reply", {
-                "thread": event["threadId"], "body": answer}):
+        if not _policy_allowed(home, managed, gate, session_id, task_id, "zzz.reply", {
+                "thread": event["threadId"], "body": answer}, event["roomId"]):
             managed.finish_pending(home, event)
             return
         # Native handle rechecks current pair, revocation, pending thread and
