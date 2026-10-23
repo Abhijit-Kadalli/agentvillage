@@ -862,7 +862,8 @@ class SupersedeTest(unittest.TestCase):
 
     # ---- FK-NEXT-TRAIN: N6 (approval L20892 + release N-a), N10, N13 (review-a ov#468) --------------------------
 
-    RAN_OUT_LINE = "Nothing was ordered: the quote ran out before your agent could confirm. Ask again for a fresh quote."
+    UNCONFIRMED_LINE = ("Your For Kicks order couldn't be confirmed from here: the app isn't connected to your agent. "
+                        "Ask For Kicks whether it went through.")
 
     def lose_the_pass_start_answer(self, draft):
         """The pass's own start is spent at core but its answer is lost: the marker stays awaiting, nothing confirmed."""
@@ -981,7 +982,8 @@ class SupersedeTest(unittest.TestCase):
 
         def spent_then_d2(waited, key):
             out = real_spent(waited, key)
-            grant.set_latest(self.home, D2)
+            # set_latest's write without its lock: a regression that read this inside a drafts_lock hold fails, never hangs
+            grant._replace(self.home / 'forkicks-drafts' / grant.LATEST, {'draftId': D2})
             return out
 
         self.transport.side_effect = self.merchant_past(expires)
@@ -1083,18 +1085,93 @@ class SupersedeTest(unittest.TestCase):
         self.daemon.start.assert_not_called()
         self.assertEqual(self.app.orders, {})
 
-    def test_n13_a_late_spent_grant_with_for_kicks_uninstalled_sends_one_line(self):
-        # Review-a ov#468 Q4: P5, then For Kicks is uninstalled before the quote lapses. No confirm can go out.
+    def test_n13_a_late_spent_grant_while_for_kicks_reads_not_installed_waits_and_then_gets_the_merchants_answer(self):
+        # Release ov#472 S1 (b): P5, then the apps file is unreadable (installed() False for every app) when the quote
+        # lapses. No confirm can go out, and an order may exist: no line, the marker stays. Once it reads installed
+        # again, the late confirm goes out and the merchant answers: one true line.
         self.prepare(D1)
         self.daemon.tap(D1)
         self.lose_the_pass_start_answer(D1)
         expires = self.lapse_soon(D1)
-        with patch('time.time', lambda: expires + 1), patch.object(bridge, 'installed', return_value=False):
+        apps = self.home / 'mini-apps.json'
+        good = apps.read_text()
+        self.transport.side_effect = self.merchant_past(expires)
+        with patch('time.time', lambda: expires + 1):
+            apps.write_text('{not json')
             self.run_pass(); self.run_pass()
-        self.assertEqual(self.sent, [('42', self.RAN_OUT_LINE)])
-        self.assertEqual(self.confirms_sent(), [])
+            self.assertEqual((self.sent, self.confirms_sent()), ([], []))
+            self.assertEqual(self.phase_of(D1), 'awaiting')
+            self.assertIsNone(self.tombstone_of(D1))
+            apps.write_text(good)
+            self.run_pass(); self.run_pass()
+        self.assertEqual(self.confirms_sent(), [D1])
+        self.assertEqual(self.sent, [('42', self.REFUSED_LINE)])
         self.assertEqual(self.phase_of(D1), 'gone')
         self.assertEqual(self.app.orders, {})
+
+    def test_n13_not_installed_through_the_ttl_ends_with_one_line_that_claims_nothing_about_the_order(self):
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        self.lose_the_pass_start_answer(D1)
+        expires = self.lapse_soon(D1)
+        with patch.object(bridge, 'installed', return_value=False):
+            with patch('time.time', lambda: expires + 1):
+                self.run_pass()
+            self.assertEqual((self.sent, self.phase_of(D1)), ([], 'awaiting'))
+            with patch('time.time', lambda: expires + grant.TTL_S):
+                self.run_pass(); self.run_pass()
+        self.assertEqual(self.sent, [('42', self.UNCONFIRMED_LINE)])
+        self.assertEqual(self.sent[0][1], "Your For Kicks order couldn't be confirmed from here: the app isn't connected to "
+                                          "your agent. Ask For Kicks whether it went through.")
+        self.assertEqual(grant.UNCONFIRMED_NOT_INSTALLED_LINE, self.sent[0][1])
+        self.assertFalse(any('Nothing was ordered' in text for _, text in self.sent))
+        self.assertEqual(self.confirms_sent(), [])
+        self.assertEqual(self.phase_of(D1), 'gone')
+
+    # ---- release ov#472 S2: an unreadable wait inside the close's lock hold closes nothing (approval L20892) ---------
+
+    def unreadable_on_second_read(self):
+        """The first wait read answers; the next one (the close's, inside its lock hold) raises."""
+        real_wait = self.daemon.wait.side_effect
+        calls = []
+
+        def wait(task):
+            calls.append(task)
+            if len(calls) == 2:
+                raise TimeoutError('approval daemon unreachable')
+            return real_wait(task)
+
+        self.daemon.wait.side_effect = wait
+        return calls
+
+    def pass_close_with_an_unreadable_wait(self, state, past):
+        self.prepare(D1)
+        self.daemon.tap(D1, state)
+        expires = self.lapse_soon(D1)
+        calls = self.unreadable_on_second_read()
+        with patch('time.time', lambda: expires + 1 if past else expires - 30):
+            self.run_pass()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.phase_of(D1), 'awaiting')  # approval_unavailable: the next pass reads it again
+        self.assertIsNone(self.tombstone_of(D1))
+        self.assertEqual((self.timeouts(), self.sent, self.confirms_sent()), ([], [], []))
+
+    def test_s2_the_pass_quote_expiry_close_with_an_unreadable_wait_closes_nothing_and_says_nothing(self):
+        self.pass_close_with_an_unreadable_wait('granted', past=True)  # _expired_awaiting's close
+
+    def test_s2_the_pass_expired_wait_close_with_an_unreadable_wait_closes_nothing_and_says_nothing(self):
+        self.pass_close_with_an_unreadable_wait('expired', past=False)  # the wait-answered-expired close
+
+    def test_s2_the_agents_close_with_an_unreadable_wait_gets_approval_unavailable_and_no_tombstone(self):
+        self.prepare(D1, expires=PAST)
+        self.daemon.tap(D1)
+        calls = self.unreadable_on_second_read()
+        response = self.confirm(D1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(response, {'error': 'approval_unavailable', 'instruction': mini.ORDER_APPROVAL_UNAVAILABLE})
+        self.assertIsNone(self.tombstone_of(D1))
+        self.assertEqual((self.timeouts(), self.confirms_sent()), ([], []))
+        self.daemon.start.assert_not_called()
 
     def test_n13_a_spent_grant_past_the_ttl_gets_the_merchants_answer_as_one_line(self):
         # Review-a ov#468 N13 (TTL-spent): the pass's own start is spent with its answer lost, and the pass does not
