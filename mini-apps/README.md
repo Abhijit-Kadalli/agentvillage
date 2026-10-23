@@ -93,7 +93,9 @@ Use Dizko as the starting bundle for another **public read-only** service:
    `{code, detail}` error bodies; for an MCP service an error fixture may
    instead be the MCP error answer itself, an `isError: true` result with a
    `content` array or a JSON-RPC error with an integer `code` and a string
-   `message`). Exit 0 passed, 1 failed, 2 refused. Live-
+   `message`, and such a file counts as an error fixture whatever its name;
+   a `{code, ...}` it carries must still be exactly `{code, detail}` with a
+   closed code). Exit 0 passed, 1 failed, 2 refused. Live-
    service checks come in Phase 1 and show as not run. The summary always goes
    to stdout; conformance.json is written only with `--out`, never by default,
    and `--out` is refused anywhere inside the repo or the tool's root, so point

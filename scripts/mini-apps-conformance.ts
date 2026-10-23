@@ -884,10 +884,16 @@ export function toolErrorProblems(result: Record<string, any>): string[] {
   const out: string[] = [];
   if (result.isError !== true) out.push("isError is not true");
   if (!Array.isArray(result.content)) out.push("isError without a content array");
-  else result.content.slice(0, MAX_NOTE_ITEMS).forEach((item: unknown, i: number) => {
-    if (!isObject(item) || typeof item.type !== "string") out.push(`content/${i} has no string type`);
-    else if (item.type === "text" && typeof item.text !== "string") out.push(`content/${i} is text without a string text`);
-  });
+  else {
+    // Every item is checked (review-b S1 on ov#474); only the notes are capped.
+    const items: string[] = [];
+    result.content.forEach((item: unknown, i: number) => {
+      if (!isObject(item) || typeof item.type !== "string") items.push(`content/${i} has no string type`);
+      else if (item.type === "text" && typeof item.text !== "string") items.push(`content/${i} is text without a string text`);
+    });
+    out.push(...items.slice(0, MAX_NOTE_ITEMS));
+    if (items.length > MAX_NOTE_ITEMS) out.push(`and ${items.length - MAX_NOTE_ITEMS} more content item problem(s)`);
+  }
   if (own(result, "structuredContent") && !isObject(result.structuredContent)) out.push("structuredContent is not an object");
   return out;
 }
