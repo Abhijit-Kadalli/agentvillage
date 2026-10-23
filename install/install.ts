@@ -369,7 +369,7 @@ function main(): void {
   configureDashboardAuth();
   configureAvEvents();
   configureAvApproval();
-  // ODIN-PROFILE: the village bridge, av-vote, av-godconst, the Index plugin, its crons and EdgeOS are the resident's.
+  // ODIN-PROFILE: the village bridge, av-vote, the Index plugin, its crons and EdgeOS are the resident's.
   if (resident) configureVillageBridge();
   else for (const name of unlistPlugins(RESIDENT_ONLY_PLUGINS)) console.log(`→ removed plugin ${name} from plugins.enabled (profile odin)`);
   for (const name of unlistPlugins(NOT_STAGED_PLUGINS)) console.log(`→ removed plugin ${name} from plugins.enabled (not staged: OV-300 M1)`);
