@@ -27,7 +27,7 @@ plugins/av-elicit/
 | `inject/<file>.skipped` | this plugin | Not injected: the `closed` marker was present, the file was older than 24 h (by its `unix_ms` prefix), or it was unusable (empty after the trigger line, over 32 KiB, not UTF-8, not a regular file). |
 | `closed` | control plane | Empty marker. Pending `.txt` files staged (mtime) at or before it become `.skipped`; the window whose newest `*-open.done` is not later than the marker is closed (the probe stops, the tool refuses). A `.txt` staged after the marker belongs to a new window and is handled normally. |
 | `probe.json` | this plugin | `{"human_messages_since": <unix_ms>, "count": n, "last_human_at": <unix_ms>\|null}` (0600). |
-| `window.json` | the tool | `{"window_ms": <newest open.done, ms>, "questions": n}` (0600): questions recorded in the current window, for `question_no`. A `window_ms` other than the current window's counts as 0, so a new window starts again at 1. |
+| `window.json` | the tool | `{"window_ms": <the open file name's unix_ms>, "questions": n, "closed_at_ms", "close_reason", "stopped"}` (0600): questions recorded in the current window, for `question_no`. A `window_ms` other than the current window's counts as 0, so a new window starts again at 1. |
 | `last_answer.json` | the tool | `{"at_ms": n}` (0600): when the last `answer` record was written, for the next question's trigger. |
 | `records/<unix_ms>-<record_id>.json` | the tool | One record per call (0600, dir 0700), written by temp file and rename. The control plane forwards and renames them. |
 
@@ -111,3 +111,32 @@ files the plugin does nothing but list one empty directory every 5 s.
 ```
 python3 -m pytest plugins/av-elicit/tests
 ```
+
+## Hardening (overlay review, contract §9)
+
+- **Gateway only.** The inject/probe thread runs only in the gateway process (`gateway run|start` in argv, or
+  `_HERMES_GATEWAY=1`). In the TUI `inject_message` would hand the notice to the local operator. The tool is
+  registered everywhere. Each registration gets its own stop event; an old thread is stopped and joined first.
+- **Claim before injecting.** `.txt` is renamed `.sending` first; a file that cannot be claimed is never injected.
+  Accepted: `.sending` -> `.done` (mtime stamped). Refused or raised: back to `.txt`. A `.sending` older than 60 s
+  (a process died mid-injection) becomes `.skipped`, since a second opener is worse than a missing one.
+- **Only real notices.** Only `<ms>-(open|next|replan).txt` whose text (BOM and `#trigger=` line removed) starts with
+  `[Agent Village notice` is injected; anything else becomes `.skipped` (code `invalid_inject`).
+- **Never mid-reply.** Injection holds while a turn is running (an unexpired `session_turn_leases` row in state.db,
+  or a `gateway_state.json` under 10 minutes old with `active_agents > 0`). `open` and `#trigger=idle` notices also
+  hold while the human wrote in the home DM in the last 5 minutes; `#trigger=answer` notices wait only for the turn.
+- **Window id.** `window_ms` is the unix_ms prefix of the open file's name: in every record, in `window.json`, and
+  for matching the `closed` marker. The `.done` accept time is only T0 (probe.json's `human_messages_since`). When
+  the mtime cannot be stamped, the accept time goes to `accepted.json` (`{"<file>.done": unix_ms}`) and is used instead.
+- **Closure kept in state.** `closed` is `{"reason": "...", "window_ms": n}` from the control plane (an empty or
+  unreadable legacy marker is reason `unknown` and applies to the window accepted at or before its mtime). The first
+  time a marker for the current window is seen, its close time (the marker's mtime, never later than now) and
+  reason are written into `window.json`. Deleting or re-touching the marker then never reopens the window or extends
+  the 24 h late period. After closure, pending files staged before it, and anything but a new `open`, are skipped.
+- **Late records.** `withdrawn` refuses every record, late ones included; a recorded `stop` (flag in `window.json`)
+  refuses late records for that window.
+- **Numbering.** `question_no` = max(`window.json` count, a recount of this window's question records in `records/`
+  with any suffix: `.json`, `.sent`, `.refused-...`) + 1.
+- **DM check.** `elicitation_record` fails closed when no home session key is configured.
+
+`window.json` is now `{"window_ms", "questions", "closed_at_ms", "close_reason", "stopped"}`.

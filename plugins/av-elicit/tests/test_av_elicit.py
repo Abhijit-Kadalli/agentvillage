@@ -274,10 +274,10 @@ def test_closed_marker_skips_everything_pending(plugin, home, db):
 def test_empty_or_bad_files_are_skipped(plugin, home, db):
     db.session("s-dm")
     stage(home, "next", "#trigger=idle\n", NOON - 60)
-    assert plugin.inject_pass(Ctx(), now=NOON) == "skipped_unusable"
+    assert plugin.inject_pass(Ctx(), now=NOON) == "skipped_invalid"
     path = stage(home, "next", "x", NOON - 30)
     path.write_bytes(b"\xff\xfe bad")
-    assert plugin.inject_pass(Ctx(), now=NOON) == "skipped_unusable"
+    assert plugin.inject_pass(Ctx(), now=NOON) == "skipped_invalid"
     assert len(names(home, ".skipped")) == 2
 
 
@@ -289,7 +289,7 @@ def test_symlinked_file_is_not_followed(plugin, home, db, tmp_path):
     folder.mkdir(parents=True)
     (folder / f"{int((NOON - 60) * 1000)}-open.txt").symlink_to(outside)
     ctx = Ctx()
-    assert plugin.inject_pass(ctx, now=NOON) == "skipped_unusable"
+    assert plugin.inject_pass(ctx, now=NOON) == "skipped_invalid"
     assert ctx.calls == []
 
 
@@ -370,9 +370,14 @@ def test_closed_marker_newer_than_the_newest_open_closes(plugin, home, db):
     close(home)
     marker = home / "av-events" / "elicit" / "closed"
     os.utime(marker, (NOON - 600, NOON - 600))  # same instant: closed
-    assert not plugin.window_open()
-    os.utime(marker, (NOON - 601, NOON - 601))  # older than the opener: a previous window's marker
-    assert plugin.window_open()
+    assert not plugin.window_open(now=NOON)
+    # M1: once seen, the closure is kept in window.json; re-touching or deleting the marker never reopens.
+    os.utime(marker, (NOON - 601, NOON - 601))
+    assert not plugin.window_open(now=NOON)
+    marker.unlink()
+    assert not plugin.window_open(now=NOON)
+    state = json.loads((home / "av-events" / "elicit" / "window.json").read_text())
+    assert state["closed_at_ms"] == int((NOON - 600) * 1000) and state["close_reason"] == "unknown"
 
 
 def test_closed_marker_skips_only_files_staged_before_it(plugin, home, db):
@@ -503,7 +508,7 @@ def test_question_record_file(plugin, home, db):
     assert line == "Recorded question 1 (privacy_and_consent)."
     [path] = records(home)
     body = json.loads(path.read_text())
-    assert set(body) == {"record_id", "kind", "question_no", "agent_question_no", "category", "form", "trigger",
+    assert set(body) == {"record_id", "window_ms", "kind", "question_no", "agent_question_no", "category", "form", "trigger",
                          "text", "takeaway", "statement_ids", "late", "text_long", "recorded_at"}
     assert body["late"] is False and body["text_long"] is False
     assert body["trigger"] == "opener" and body["form"] == "open" and body["text"] == "What matters most?"
@@ -789,7 +794,8 @@ def test_records_cap(plugin, home, db, monkeypatch):
 
 
 def test_register_tool_schema_and_unload(plugin, home, monkeypatch):
-    monkeypatch.setattr(plugin, "_loop", lambda: None)
+    monkeypatch.setattr(plugin, "_loop", lambda stop: None)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
     ctx = Ctx()
     plugin.register(ctx)
     plugin.register(ctx)  # idempotent
@@ -808,7 +814,7 @@ def test_register_tool_schema_and_unload(plugin, home, monkeypatch):
 
 
 def test_register_without_register_tool_still_runs(plugin, monkeypatch):
-    monkeypatch.setattr(plugin, "_loop", lambda: None)
+    monkeypatch.setattr(plugin, "_loop", lambda stop: None)
 
     class Bare:
         pass
@@ -818,7 +824,7 @@ def test_register_without_register_tool_still_runs(plugin, monkeypatch):
 
 
 def test_register_tool_failure_is_contained(plugin, monkeypatch):
-    monkeypatch.setattr(plugin, "_loop", lambda: None)
+    monkeypatch.setattr(plugin, "_loop", lambda stop: None)
 
     class Bad(Ctx):
         def register_tool(self, **kwargs):
@@ -836,3 +842,195 @@ def test_manifest_matches(plugin):
     assert manifest["name"] == "av-elicit" and manifest["kind"] == "backend"
     assert manifest["provides_tools"] == ["elicitation_record"]
     assert "allow_gateway_injection" in manifest["description"]
+
+
+# --------------------------------------------------------------------------- review fixes (H1, H2, M1-M5, L1-L3)
+
+
+def test_h1_loop_only_in_the_gateway(plugin, monkeypatch):
+    monkeypatch.setattr(plugin, "_loop", lambda stop: None)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr(plugin.sys, "argv", ["hermes", "chat"])
+    assert plugin.start_loop() is False
+    assert plugin.gateway_process(["hermes", "gateway", "run"]) and plugin.gateway_process(["hermes", "gateway"])
+    assert not plugin.gateway_process(["hermes", "gateway", "status"])
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    assert plugin.start_loop() is True
+
+
+def test_l1_each_registration_gets_its_own_stop_event(plugin, monkeypatch):
+    monkeypatch.setattr(plugin, "_loop", lambda stop: None)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    plugin.start_loop()
+    first = plugin._STOP
+    plugin.start_loop()
+    assert first.is_set() and plugin._STOP is not first and not plugin._STOP.is_set()
+
+
+def test_h2_claims_before_injecting_and_unclaims_on_refusal(plugin, home, db):
+    db.session("s-dm")
+    stage(home, "open", OPENER, NOON - 60)
+    seen = []
+
+    class Peek(Ctx):
+        def inject_message(self, content, role="user", *, session_key=None):
+            seen.append((names(home, ".txt"), names(home, ".sending")))
+            return False
+
+    assert plugin.inject_pass(Peek(), now=NOON) == "inject_refused"
+    assert seen[0][0] == [] and len(seen[0][1]) == 1  # claimed while injecting
+    assert len(names(home, ".txt")) == 1 and names(home, ".sending") == []  # back to .txt
+
+
+def test_h2_no_injection_when_the_claim_fails(plugin, home, db, monkeypatch):
+    db.session("s-dm")
+    stage(home, "open", OPENER, NOON - 60)
+    real = os.rename
+
+    def refuse(src, dst):
+        if str(dst).endswith(".sending"):
+            raise OSError("busy")
+        return real(src, dst)
+
+    monkeypatch.setattr(plugin.os, "rename", refuse)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "claim_failed"
+    assert ctx.calls == []
+
+
+def test_m5_invalid_names_and_texts_are_skipped(plugin, home, db):
+    db.session("s-dm")
+    stage(home, "nudge", "[Agent Village notice x", NOON - 90)
+    stage(home, "open", "#trigger=opener\nhello, not a notice", NOON - 60)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "skipped_invalid"
+    assert ctx.calls == [] and len(names(home, ".skipped")) == 2
+    stage(home, "open", "﻿#trigger=opener\n" + OPENER.split("\n", 1)[1], NOON - 30)
+    assert plugin.inject_pass(ctx, now=NOON) == "injected"
+    assert ctx.calls[0][0].startswith(plugin.NOTICE_PREFIX)
+
+
+def test_m4_holds_while_the_human_wrote_recently_or_a_turn_runs(plugin, home, db):
+    import sqlite3
+    db.session("s-dm")
+    stage(home, "open", OPENER, NOON - 60)
+    db.message("s-dm", "user", "hi", NOON - 120)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "held_human_recent"
+    con = sqlite3.connect(home / "state.db")
+    con.execute("CREATE TABLE session_turn_leases (conversation_id TEXT PRIMARY KEY, holder TEXT, acquired_at REAL, expires_at REAL)")
+    con.execute("INSERT INTO session_turn_leases VALUES ('c', 'h', ?, ?)", (NOON + 200, NOON + 400))
+    con.commit()
+    con.close()
+    assert plugin.inject_pass(ctx, now=NOON + 301) == "held_turn_active"
+    assert plugin.inject_pass(ctx, now=NOON + 401) == "injected"
+
+
+def write_marker(home, body, when):
+    (home / "av-events" / "elicit").mkdir(parents=True, exist_ok=True)
+    path = home / "av-events" / "elicit" / "closed"
+    path.write_text(json.dumps(body) if body is not None else "")
+    os.utime(path, (when, when))
+
+
+def test_m2_withdrawn_refuses_late_records(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    rec(plugin, home, "question", 1, NOON - 7100)
+    write_marker(home, {"reason": "withdrawn", "window_ms": WIN}, NOON - 3600)
+    with pytest.raises(plugin.Refused) as info:
+        plugin.record_elicitation({"kind": "answer", "question_no": 1, "text": "a"}, "s-dm", now=NOON)
+    assert info.value.code == "withdrawn"
+
+
+def test_m2_late_records_stop_after_a_stop(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    rec(plugin, home, "question", 1, NOON - 7100)
+    rec(plugin, home, "stop", 1, NOON - 7000)
+    write_marker(home, {"reason": "stopped", "window_ms": WIN}, NOON - 3600)
+    with pytest.raises(plugin.Refused) as info:
+        plugin.record_elicitation({"kind": "answer", "question_no": 1, "text": "a"}, "s-dm", now=NOON)
+    assert info.value.code == "stopped"
+
+
+def test_m2_marker_for_another_window_does_not_close_this_one(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    write_marker(home, {"reason": "manual", "window_ms": WIN - 1}, NOON - 60)
+    assert plugin.window_open(now=NOON)
+    body = rec(plugin, home, "question", 1, NOON - 30)
+    assert body["window_ms"] == WIN  # the open file's name, not its accept time
+    assert json.loads((home / "av-events" / "elicit" / "window.json").read_text())["window_ms"] == WIN
+    write_marker(home, {"reason": "manual", "window_ms": WIN}, NOON - 20)
+    assert not plugin.window_open(now=NOON)
+
+
+def test_m1_late_period_runs_from_first_sight(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    write_marker(home, {"reason": "manual"}, NOON - 3600)
+    assert not plugin.window_open(now=NOON)
+    os.utime(home / "av-events" / "elicit" / "closed", (NOON + 20 * 3600, NOON + 20 * 3600))
+    with pytest.raises(plugin.Refused):
+        plugin.record_elicitation({"kind": "stop", "question_no": 1}, "s-dm", now=NOON - 3600 + 24 * 3600 + 5)
+
+
+def test_m3_recount_covers_renamed_records(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    rec(plugin, home, "question", 1, NOON - 500)
+    rec(plugin, home, "question", 2, NOON - 400)
+    for path in records(home):
+        path.rename(str(path) + ".sent")
+    (home / "av-events" / "elicit" / "window.json").unlink()
+    assert rec(plugin, home, "question", 1, NOON - 300)["question_no"] == 3
+
+
+def test_l2_no_home_key_fails_closed(plugin, home, db, monkeypatch):
+    db.session("s-dm")
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "")
+    assert plugin.telegram_dm_session("s-dm") is False
+
+
+def test_l3_accept_time_sidecar_when_utime_fails(plugin, home, db, monkeypatch):
+    db.session("s-dm")
+    stage(home, "open", OPENER, NOON - 60)
+
+    def no_utime(*_a, **_k):
+        raise OSError("ro")
+
+    monkeypatch.setattr(plugin.os, "utime", no_utime)
+    assert plugin.inject_pass(Ctx(), now=NOON) == "injected"
+    assert plugin.current_window_ms() == WIN
+    assert plugin.window_start(now=NOON) == NOON  # T0 from the sidecar, not the staging mtime
+
+
+WIN = int((NOON - 60) * 1000)
+NEXT_ANSWER = NEXT_IDLE.replace("#trigger=idle", "#trigger=answer")
+
+
+def test_s9_human_hold_is_for_open_and_idle_only(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 3600)
+    db.message("s-dm", "user", "typing away", NOON - 60)
+    stage(home, "next", NEXT_IDLE, NOON - 30)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "held_human_recent"
+    (home / "av-events" / "elicit" / "inject" / names(home, ".txt")[0]).unlink()
+    stage(home, "next", NEXT_ANSWER, NOON - 20)
+    assert plugin.inject_pass(ctx, now=NOON) == "injected"  # an answer notice is exempt
+
+
+def test_s9_answer_notice_still_waits_for_a_turn(plugin, home, db):
+    import sqlite3
+    opened_at(plugin, home, db, NOON - 3600)
+    stage(home, "next", NEXT_ANSWER, NOON - 20)
+    con = sqlite3.connect(home / "state.db")
+    con.execute("CREATE TABLE session_turn_leases (conversation_id TEXT PRIMARY KEY, holder TEXT, acquired_at REAL, expires_at REAL)")
+    con.execute("INSERT INTO session_turn_leases VALUES ('c', 'h', ?, ?)", (NOON - 10, NOON + 100))
+    con.commit()
+    con.close()
+    assert plugin.inject_pass(Ctx(), now=NOON) == "held_turn_active"
+
+
+def test_s9_legacy_marker_matches_by_accept_time(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    write_marker(home, None, NOON - 601)  # before this window was accepted: an earlier window's
+    assert plugin.window_open(now=NOON)
+    write_marker(home, None, NOON - 500)
+    assert not plugin.window_open(now=NOON)
