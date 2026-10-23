@@ -383,8 +383,9 @@ function main(): void {
   configureAvRate();
   // Opt-in and off the core path: a failure here is counted, never fatal.
   safeInstallRecall(SOURCE_SKILLS);
-  // GC-ELICIT (av_elicit.ts): opt-in on AV_ELICIT_ENABLED, set per tenant by the control plane; unset changes nothing; never fatal.
-  safeConfigureAvElicit();
+  // GC-ELICIT (av_elicit.ts): opt-in on AV_ELICIT_ENABLED, set per tenant by the control plane; unset changes nothing;
+  // never fatal. Resident only: an ODIN box is no voter (av-elicit is in RESIDENT_ONLY_PLUGINS, unlisted above).
+  if (resident) safeConfigureAvElicit();
   // D3: the memory provider (staged above with every plugin); a failure is logged, never fatal.
   safeConfigureVillageMemory();
 

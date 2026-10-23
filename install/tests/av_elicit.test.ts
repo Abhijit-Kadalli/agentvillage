@@ -4,6 +4,7 @@
  * (plugins.entries.av-elicit.allow_gateway_injection: true) and raises memory.memory_char_limit to
  * 8000; unset changes nothing; off unlists it.
  */
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import YAML from "yaml";
 
 import { AV_ELICIT_ENV, AV_ELICIT_PLUGIN, configureAvElicit, ELICIT_MEMORY_CHAR_LIMIT, safeConfigureAvElicit } from "../av_elicit";
 import { EDGE_SKILL_NAMES, RETIRED_SKILL_DIRS } from "../paths";
+import { RESIDENT_ONLY_PLUGINS } from "../profile";
 
 const ORIGINAL_HOME = process.env.HERMES_HOME;
 const ORIGINAL_FLAG = process.env[AV_ELICIT_ENV];
@@ -194,21 +196,40 @@ test("the safe wrapper never throws", () => {
   }
 });
 
-test("install.ts runs the step once, after av-vote, the /village menu and recall, before the memory provider", () => {
+test("install.ts runs the step once, resident only, after av-vote, the /village menu and recall, before the memory provider", () => {
   const text = readFileSync(join(import.meta.dir, "..", "install.ts"), "utf8");
   const main = text.slice(text.indexOf("function main(): void {"));
   const body = main.slice(0, main.indexOf("\n}\n"));
-  expect(body.match(/^.*AvElicit.*$/gm)).toEqual(["  safeConfigureAvElicit();"]);
+  expect(body.match(/^.*AvElicit.*$/gm)).toEqual(["  if (resident) safeConfigureAvElicit();"]);
   const at = (s: string) => body.indexOf(s);
   expect(at("if (resident) configureAvVote();")).toBeGreaterThan(-1);
   expect(at("if (resident) configureAvVote();")).toBeLessThan(at("  configureVillageMenu();"));
   expect(at("  configureVillageMenu();")).toBeLessThan(at("  safeInstallRecall(SOURCE_SKILLS);"));
-  expect(at("  safeInstallRecall(SOURCE_SKILLS);")).toBeLessThan(at("  safeConfigureAvElicit();"));
+  expect(at("  safeInstallRecall(SOURCE_SKILLS);")).toBeLessThan(at("  if (resident) safeConfigureAvElicit();"));
   // Before the memory provider step, which keeps every other memory key (the cap set here included).
-  expect(at("  safeConfigureAvElicit();")).toBeLessThan(at("  safeConfigureVillageMemory();"));
+  expect(at("  if (resident) safeConfigureAvElicit();")).toBeLessThan(at("  safeConfigureVillageMemory();"));
 });
 
 test("the control plane's brief skill is never copied over or removed by the installer", () => {
   expect(EDGE_SKILL_NAMES as readonly string[]).not.toContain("constitution-elicitation");
   expect(RETIRED_SKILL_DIRS as readonly string[]).not.toContain("constitution-elicitation");
 });
+
+test("ODIN never gets av-elicit: it is resident-only, and a full odin install with the flag on unlists it", () => {
+  expect(RESIDENT_ONLY_PLUGINS).toContain(AV_ELICIT_PLUGIN);
+  // The control plane wrote the flag (and an earlier install listed the plugin) on what is now an ODIN box.
+  writeFileSync(join(home, ".env"), "AV_PROFILE=odin\nAV_ELICIT_ENABLED=1\n");
+  write({ plugins: { enabled: ["av-events", "av-elicit"] }, memory: { memory_char_limit: 2200 } });
+  const env: Record<string, string | undefined> = { ...process.env, HERMES_HOME: home };
+  delete env.AV_PROFILE;
+  delete env.AV_ELICIT_ENABLED;
+  delete env.INDEX_API_KEY;
+  const run = spawnSync("bun", [join(import.meta.dir, "..", "install.ts"), "--no-restart"], { env, encoding: "utf8", timeout: 30000 });
+  expect(run.status).toBe(0);
+  expect(run.stdout).toContain("→ removed plugin av-elicit from plugins.enabled (profile odin)");
+  expect(run.stdout).not.toContain("enabled plugin av-elicit");
+  const config = read();
+  expect(config.plugins.enabled).not.toContain(AV_ELICIT_PLUGIN);
+  expect(config.plugins.entries?.[AV_ELICIT_PLUGIN]).toBeUndefined();
+  expect(config.memory.memory_char_limit).toBe(2200);
+}, 40000);
