@@ -142,7 +142,9 @@ describe("decide: the untouched fixture merges", () => {
 
 describe("decide: each single condition false => no merge", () => {
   test("kill switch unset, empty, 0, true, ' 1' => switch_on false", () => {
-    for (const v of [undefined, "", "0", "true", " 1", "1 ", "yes"]) onlyFalse(decideFor(fixture(), v), "switch_on");
+    // Unset: gather() directly, since decideFor's default would turn undefined into "1".
+    onlyFalse(A.decide(A.gather(fakeIo(fixture(), newCalls()), REPO, 901, undefined)), "switch_on");
+    for (const v of ["", "0", "true", " 1", "1 ", "yes"]) onlyFalse(decideFor(fixture(), v), "switch_on");
   });
   test("closed, or already merged", () => {
     onlyFalse(decideFor(fixture((f) => { f[PR].state = "closed"; })), "pr_open");
@@ -337,6 +339,11 @@ describe("review-b L21179: never the bot check's colour, always its verdict JSON
   });
   test("an artifact listed under the real run but made by another run is refused", () => {
     onlyFalse(decideFor(fixture((f) => { f[RARTS].artifacts[0].workflow_run.id = 39983200000; })), "review_verdict_pass", "review_lane_mini_app");
+    // decide() itself refuses it too, even when a PASS report was read (gather and decide each check).
+    const facts = A.gather(fakeIo(fixture(), newCalls()), REPO, 901, "1");
+    (facts.review.artifacts as any[])[0].workflow_run.id = 39983200000;
+    expect(facts.review.report).not.toBeNull();
+    onlyFalse(A.decide(facts), "review_verdict_pass", "review_lane_mini_app");
   });
   test("a run of the bot workflow in another repository (a fork's own Actions) does not count", () => {
     onlyFalse(decideFor(fixture((f) => { f[RRUNS].workflow_runs[0].repository.full_name = "someone-outside/agentvillage"; })), "review_run_green", "review_verdict_pass", "review_lane_mini_app");
