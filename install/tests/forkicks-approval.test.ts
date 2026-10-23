@@ -55,7 +55,8 @@ test("For Kicks skill says UPI is paid now by the returned link, confirmation sh
   expect(skill).toContain("A returned UPI\nreceipt is **not already paid**: never claim payment was verified");
   expect(skill).toContain("paid **now** through the returned link");
   expect(skill).toContain("card paid at the counter (`card_on_pickup`)");
-  expect(skill).toContain("Edge covers your first drink. This order is Edge-sponsored; no payment is needed.");
+  expect(skill).toContain("Edge covers your first order. This order is Edge-sponsored; no payment is needed.");
+  expect(skill).not.toContain("first drink");
   expect(skill).not.toContain("They'll check it at pickup");
   expect(skill).not.toContain("pay-at-pickup honor rules");
   expect(skill).toContain('`payment.label` (**“Test payment, no money moved”**)');

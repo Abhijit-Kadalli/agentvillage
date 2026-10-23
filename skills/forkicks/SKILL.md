@@ -183,7 +183,7 @@ the queue; no money moved.
 
 For an Edge-sponsored receipt (`totalInr: 0`, `payment.amountInr: 0`,
 `payment.label: "Edge-sponsored · ₹0"`, no `payment.url`), say exactly
-**“Edge covers your first drink. This order is Edge-sponsored; no payment is needed.”**
+**“Edge covers your first order. This order is Edge-sponsored; no payment is needed.”**
 Never ask for a payment, construct a link or call such an order paid; it is covered.
 
 For a real UPI receipt with `paymentStatus: "upi_at_pickup"`,
