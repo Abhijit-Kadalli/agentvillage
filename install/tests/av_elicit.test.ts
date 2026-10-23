@@ -194,7 +194,7 @@ test("the safe wrapper never throws", () => {
   }
 });
 
-test("install.ts runs the step once, after av-vote and the /village menu, before recall", () => {
+test("install.ts runs the step once, after av-vote, the /village menu and recall, before the memory provider", () => {
   const text = readFileSync(join(import.meta.dir, "..", "install.ts"), "utf8");
   const main = text.slice(text.indexOf("function main(): void {"));
   const body = main.slice(0, main.indexOf("\n}\n"));
@@ -202,8 +202,8 @@ test("install.ts runs the step once, after av-vote and the /village menu, before
   const at = (s: string) => body.indexOf(s);
   expect(at("if (resident) configureAvVote();")).toBeGreaterThan(-1);
   expect(at("if (resident) configureAvVote();")).toBeLessThan(at("  configureVillageMenu();"));
-  expect(at("  configureVillageMenu();")).toBeLessThan(at("  safeConfigureAvElicit();"));
-  expect(at("  safeConfigureAvElicit();")).toBeLessThan(at("  safeInstallRecall(SOURCE_SKILLS);"));
+  expect(at("  configureVillageMenu();")).toBeLessThan(at("  safeInstallRecall(SOURCE_SKILLS);"));
+  expect(at("  safeInstallRecall(SOURCE_SKILLS);")).toBeLessThan(at("  safeConfigureAvElicit();"));
   // Before the memory provider step, which keeps every other memory key (the cap set here included).
   expect(at("  safeConfigureAvElicit();")).toBeLessThan(at("  safeConfigureVillageMemory();"));
 });
