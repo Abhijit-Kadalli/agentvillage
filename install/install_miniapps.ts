@@ -88,9 +88,10 @@ function regular(path: string): void {
  *      skill by either and refuses an ambiguous name (review-a RA34 S1);
  *   4. operations must be EXACTLY one of GENERIC_OPERATIONS_ACCEPTED (the bridge's APP_OPERATIONS_ACCEPTED, the
  *      same lists in the same order; the cp has no other operations gate before this one):
- *      `operations_not_generic`;
- *   5. keys exactly id, operations, skills, version; skills exactly [id]; a plain x.y.z version (the bridge's rule):
- *      `bundle_invalid` for that app alone (a pre-release such as 1.0.0-beta.1 included);
+ *      `operations_not_generic`. A card app's entry (cp#352, context L19898) carries `approval` (cardKey below):
+ *      its operations are then [one accepted list or none, prepare, card], and a malformed key is the same code;
+ *   5. keys exactly id, operations, skills, version (and an optional `approval`); skills exactly [id]; a plain x.y.z
+ *      version (the bridge's rule): `bundle_invalid` for that app alone (a pre-release such as 1.0.0-beta.1 included);
  *   6. its SKILL.md comes ONLY from the cp's offer (MINI_APPS_SKILLS + a well-formed MINI_APPS_SKILLS_OFFER),
  *      never from a checkout copy: no offer or no entry for it `offer_missing`; a bundle over the box's caps
  *      `budget`; any other bad bundle or entry (keys, strict base64, at most SKILL_MAX_BYTES, UTF-8)
@@ -122,7 +123,38 @@ export const GENERIC_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 export const REFUSAL_CODES = ["offer_missing", "bundle_invalid", "sha_mismatch", "operations_not_generic", "shadows_reviewed", "budget"] as const;
 export type RefusalCode = typeof REFUSAL_CODES[number];
-export type GenericApp = { id: string; version: string; operations: string[]; skills: string[] };
+/**
+ * The generic approval card's projection key (Phase 1 item 6; cp#352, context L19898 / L20468): a GENERIC card app's
+ * entry carries, after its four keys, `approval: { prepare, card, fields: { item, total, when, shared }, bind:
+ * [[requestPath, previewPath], ...] }`, the cp's catalog.boxEntry output. The rule is the cp's boxRefusal (RA42 M1 /
+ * RA43, the ONE box-shape rule) and the bridge's `_card_entry_ok` (plugins/village-bridge/_mini_apps.py): prepare and
+ * card each match CARD_OPERATION, start with `<id>.` and differ; fields exactly the four, each a string of 1..200 code
+ * points; bind at most 32 pairs of such strings. The paths themselves are the card engine's to check when used
+ * (_mini_app_card.card_fields: a declaration it refuses never proposes). Closed AND in the cp's key order, so the entry
+ * staged is the cp's bytes and projectionSha256 matches; anything else refuses the app alone `operations_not_generic`
+ * (the cp's own code for an entry outside the box shape). Stricter than the bridge on one point: `{prepare, card}`
+ * without the declaration, which the cp never projects.
+ */
+export const CARD_FIELDS = ["item", "total", "when", "shared"] as const;
+const CARD_KEYS = ["prepare", "card", "fields", "bind"] as const;
+const CARD_OPERATION = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){1,3}$/;
+const CARD_BIND_MAX = 32;
+export type CardKey = { prepare: string; card: string; fields: Record<typeof CARD_FIELDS[number], string>; bind: [string, string][] };
+// Python's len() counts code points (the bridge's `0 < len(v) <= 200`), so [...v] here.
+const cardText = (value: unknown): value is string => typeof value === "string" && value.length > 0 && [...value].length <= 200;
+const inOrder = (value: unknown, keys: readonly string[]) => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).join(",") === keys.join(",");
+/** App `id`'s `approval` value as the key it stages (equal to the input, byte for byte), or null when it is refused. */
+export function cardKey(value: unknown, id: string): CardKey | null {
+  if (!inOrder(value, CARD_KEYS)) return null;
+  const { prepare, card, fields, bind } = value as Record<string, unknown>;
+  if (typeof prepare !== "string" || typeof card !== "string" || prepare === card ||
+      ![prepare, card].every(op => CARD_OPERATION.test(op) && op.split(".")[0] === id)) return null;
+  if (!inOrder(fields, CARD_FIELDS) || !CARD_FIELDS.every(field => cardText((fields as Record<string, unknown>)[field]))) return null;
+  if (!Array.isArray(bind) || bind.length > CARD_BIND_MAX || !bind.every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(cardText))) return null;
+  const shown = fields as Record<typeof CARD_FIELDS[number], string>;
+  return { prepare, card, fields: { item: shown.item, total: shown.total, when: shown.when, shared: shown.shared }, bind: bind.map(([request, preview]) => [request, preview]) };
+}
+export type GenericApp = { id: string; version: string; operations: string[]; skills: string[]; approval?: CardKey };
 type StagedApp = ReviewedApp | GenericApp;
 type Projection = { version: 1; apps: StagedApp[] };
 type Staged = { app: StagedApp; generic?: Buffer };
@@ -301,15 +333,20 @@ function checkApp(app: Record<string, unknown> & { id: string }, served: ReturnT
     return { app: reviewed };
   }
   if (shadows(app.id)) return { code: "shadows_reviewed" };
-  const operations = GENERIC_OPERATIONS_ACCEPTED.find(ops => same(app.operations, ops));
+  // cp#352: a card app's ops are [an accepted list or none, prepare, card] (the bridge's `[*ops, prepare, card]`).
+  const card = Object.hasOwn(app, "approval") ? cardKey(app.approval, app.id) : undefined;
+  if (card === null) return { code: "operations_not_generic" };
+  const lists = card ? [...GENERIC_OPERATIONS_ACCEPTED, []].map(ops => [...ops, card.prepare, card.card]) : GENERIC_OPERATIONS_ACCEPTED;
+  const operations = lists.find(ops => same(app.operations, ops));
   if (!operations) return { code: "operations_not_generic" };
   // Rule 5 refuses this app alone (context L19825 / RA36 M2: a cp-valid pre-release version must never fail Gold Stars).
-  if (Object.keys(app).sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) return { code: "bundle_invalid" };
+  if (Object.keys(app).filter(key => key !== "approval").sort().join(",") !== "id,operations,skills,version" || typeof app.version !== "string" || !SEMVER.test(app.version) || !same(app.skills, [app.id])) return { code: "bundle_invalid" };
   const bytes = offered(served, app.id);
   if (typeof bytes === "string") return { code: bytes };
   // RA34 S1: Hermes also finds a skill by its frontmatter name, so the offered SKILL.md must answer to exactly its id.
   if (!namesItself(bytes.toString("utf8"), app.id)) return { code: "bundle_invalid" };
-  return { app: { id: app.id, version: app.version, operations: [...operations], skills: [app.id] }, generic: bytes };
+  // The key goes last, as the cp emits it, so mini-apps.json and projectionSha256 are the cp's bytes (cp#352 boxEntry).
+  return { app: { id: app.id, version: app.version, operations: [...operations], skills: [app.id], ...(card ? { approval: card } : {}) }, generic: bytes };
 }
 function resolveApps(value: unknown, served: ReturnType<typeof parseSkillDelivery>, shadows: (id: string) => boolean): { projection: Projection; staged: Staged[]; refused: { id: string; code: RefusalCode }[]; intentEmpty: boolean } {
   if (!value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "apps,version" || !("version" in value) || value.version !== 1 || !("apps" in value) || !Array.isArray(value.apps)) throw new Error("mini_apps_invalid_projection");
