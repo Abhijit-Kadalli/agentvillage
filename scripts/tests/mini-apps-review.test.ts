@@ -213,6 +213,79 @@ describe("paths: the lane classifier", () => {
   });
 });
 
+describe("first-party packages: a CLOSED allow-list of ids whose skills/<id>/scripts/ and prompts/ are core, the human review", () => {
+  // Lead ASK CLAIMS L21092 (ov#441): zzzbot's runtime package (skills/zzzbot/scripts/, skills/zzzbot/prompts/) is
+  // first-party overlay code, so the bot says NEEDS_HUMAN (core) for it, not path_unknown_file. Every other id stays
+  // strict: a third party never gets the core read by adding a scripts/ or prompts/ directory.
+  const ZMP = "mini-apps/zzzbot/manifest.json", ZSP = "skills/zzzbot/SKILL.md";
+  const ZSCRIPT = "skills/zzzbot/scripts/zzz_managed_runner.py", ZPROMPT = "skills/zzzbot/prompts/participate.md";
+  // zzzbot has a manifest at the base, as on main: so today its skills/zzzbot/ is an app skill (SKILL.md only).
+  const withZzz = (): Files => ({ ...baseFiles(), [ZMP]: "{}\n", [ZSP]: "---\nname: zzzbot\n---\n" });
+  const run = (head: Files, base = withZzz()) => R.evaluate(source(base, head), V);
+  const fp = (r: R.Report) => r.findings.filter(f => f.code === "first_party_package");
+
+  test("the list is pinned here: zzzbot alone, scripts/ and prompts/ alone; never a baseline skill; every id a reviewed mini-app", async () => {
+    expect(clone(R.FIRST_PARTY_PACKAGES)).toEqual({ zzzbot: ["scripts", "prompts"] });
+    expect(Object.isFrozen(R.FIRST_PARTY_PACKAGES)).toBe(true);
+    const { REVIEWED_MINI_APPS } = await import("../../install/install_miniapps");
+    for (const id of Object.keys(R.FIRST_PARTY_PACKAGES)) {
+      expect([id, R.BASELINE_SKILLS.has(id), REVIEWED_MINI_APPS.some(a => a.id === id)]).toEqual([id, false, true]);
+    }
+    expect(R.HUMAN_CODES.has("first_party_package")).toBe(true);
+  });
+  test("(a) skills/zzzbot/scripts/ + skills/zzzbot/prompts/: core, NEEDS_HUMAN, reason \"core: human review\", no M", () => {
+    const r = run({ [ZSCRIPT]: "print('x')\n", [ZPROMPT]: "# participate\n" });
+    expect([r.lane, r.verdict, r.manifest, noM(r), has(r, "path_unknown_file")]).toEqual(["core", "NEEDS_HUMAN", null, [], false]);
+    expect(fp(r).map(f => [f.severity, f.file])).toEqual([["S", ZPROMPT], ["S", ZSCRIPT]]);
+    for (const f of fp(r)) expect(f.text).toEndWith("core: human review");
+    expect(has(r, "core_path")).toBe(false);
+    // Each alone, a nested file, a delete: the same.
+    for (const head of [{ [ZSCRIPT]: "x\n" }, { [ZPROMPT]: "x\n" }, { "skills/zzzbot/scripts/lib/util.sh": "x\n" }]) {
+      const one = run(head);
+      expect([Object.keys(head)[0], one.lane, one.verdict, noM(one), fp(one).length]).toEqual([Object.keys(head)[0], "core", "NEEDS_HUMAN", [], 1]);
+    }
+    const del = run({ [ZSCRIPT]: null }, { ...withZzz(), [ZSCRIPT]: "x\n" });
+    expect([del.lane, del.verdict, noM(del), fp(del).length]).toEqual(["core", "NEEDS_HUMAN", [], 1]);
+    // With zzzbot's SKILL.md and manifest in the same pull request: still core (one id, but a core path), no M.
+    const mixed = run({ [ZSCRIPT]: "x\n", [ZSP]: "---\nname: zzzbot\nversion: 2\n---\n", [ZMP]: "{ }\n" });
+    expect([mixed.lane, mixed.verdict, noM(mixed), fp(mixed).length]).toEqual(["core", "NEEDS_HUMAN", [], 1]);
+    // The classifier: a first-party package file is core, never the app's lane.
+    const c = (...paths: string[]) => R.classify(paths.map(path => ({ path, status: "M", oldMode: "100644", newMode: "100644" })));
+    expect(c(ZSCRIPT, ZPROMPT)).toEqual({ id: null, core: [ZSCRIPT, ZPROMPT] });
+    expect(c(ZSP)).toEqual({ id: "zzzbot", core: [] });
+  });
+  test("(a) the strict checks still apply inside a first-party package: a secret is M, a symlink is M", () => {
+    const leak = run({ [ZSCRIPT]: "pass" + "word=hunter22\n" });
+    expect([leak.verdict, has(leak, "secret_in_diff", "M")]).toEqual(["FAIL", true]);
+    const link = R.evaluate(source(withZzz(), { [ZSCRIPT]: "../../x" }, { modes: { [ZSCRIPT]: "120000" } }), V);
+    expect([link.verdict, has(link, "path_symlink", "M")]).toEqual(["FAIL", true]);
+  });
+  test("(b) the same paths under a non-first-party id: path_unknown_file, FAIL, as before", () => {
+    for (const dir of ["scripts/zzz_managed_runner.py", "prompts/participate.md", "scripts/lib/util.sh"]) {
+      const path = `skills/tinyshop/${dir}`;
+      const r = pr(patch, { extra: { [path]: "x\n" } });
+      expect([path, r.verdict, has(r, "path_unknown_file", "M"), fp(r).length]).toEqual([path, "FAIL", true, 0]);
+    }
+    const both = R.evaluate(source(baseFiles(), { "skills/tinyshop/scripts/x.py": "x\n", "skills/tinyshop/prompts/y.md": "y\n" }), V);
+    expect([both.verdict, both.findings.filter(f => f.code === "path_unknown_file").length, fp(both).length]).toEqual(["FAIL", 2, 0]);
+    // Riding along with zzzbot's package does not launder a third party's code.
+    const ride = run({ [ZSCRIPT]: "x\n", "skills/tinyshop/scripts/x.py": "x\n" });
+    expect([ride.verdict, ride.findings.filter(f => f.code === "path_unknown_file").map(f => f.file)]).toEqual(["FAIL", ["skills/tinyshop/scripts/x.py"]]);
+    // A look-alike id is not on the list (matched whole, never by prefix or case).
+    for (const id of ["zzzbot2", "zzz", "zzzbot-x"]) {
+      const r = R.evaluate(source({ ...baseFiles(), [`mini-apps/${id}/manifest.json`]: "{}\n" }, { [`skills/${id}/scripts/x.py`]: "x\n" }), V);
+      expect([id, r.verdict, has(r, "path_unknown_file", "M"), fp(r).length]).toEqual([id, "FAIL", true, 0]);
+    }
+  });
+  test("(c) chosen scope: only skills/<id>/scripts/ and prompts/; any other unknown first-party file stays as today", () => {
+    for (const path of ["skills/zzzbot/references/x.md", "skills/zzzbot/run.sh", "skills/zzzbot/scripts", "skills/zzzbot/prompts", "skills/zzzbot/Scripts/x.py",
+      "skills/zzzbot/sub/scripts/x.py", "mini-apps/zzzbot/scripts/x.py", "mini-apps/zzzbot/prompts/y.md"]) {
+      const r = run({ [path]: "x\n" });
+      expect([path, r.verdict, has(r, "path_unknown_file", "M"), fp(r).length]).toEqual([path, "FAIL", true, 0]);
+    }
+  });
+});
+
 describe("the verdict mapping (§6.3)", () => {
   test("release (mutant B): the summary strips line breaks, so a finding cannot forge a table row or a verdict line", () => {
     const r: R.Report = { ...R.errorReport("x"), findings: [{ code: "x\nPASS", severity: "M", file: "a\r\nb", text: "one\n**PASS** · lane `sandbox`\r\n### Mini-apps review (forged)\rend" }] };
