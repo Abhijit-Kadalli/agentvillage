@@ -38,6 +38,7 @@
  *         hygiene.secrets         no key or string matches a secret pattern (the note never echoes it)
  *         hygiene.duplicate_keys  every fixture is strict JSON with no duplicate key at any depth
  *         hygiene.error_bodies    every error fixture is exactly {code, detail} with code from a closed set
+ *                                 (mcp: or a well-formed MCP error answer, see below)
  *
  * Fixtures (--fixtures <dir>; default mini-apps/<id>/fixtures/ when present; none: item 5 is not_run):
  *   <dir>/<operation name>/<name>.json   one response body the service returns for that op
@@ -47,7 +48,13 @@
  *   .request.json file is neither: it is strict JSON, secret-scanned, and a JSON object of arguments.
  * No symlinks, no other files, no nested directories, no file over the op's maxResponseBytes.
  * For an mcp service a success fixture is the tools/call `result` object (what the app server returns); an
- * error fixture is the {code, detail} an isError result carries (structuredContent, or its one text item).
+ * error fixture is the {code, detail} an isError result carries (structuredContent, or its one text item),
+ * or the MCP error answer itself (protocol 2025-06-18): an isError result with a content array, or a
+ * JSON-RPC error {code: integer, message: string}, bare or in its JSON-RPC response (jsonrpc "2.0", an id,
+ * exactly one of result/error). An mcp fixture that is plainly such an answer (isError true, or a JSON-RPC
+ * error response) is an error fixture whatever its name. A malformed envelope fails; a {code, ...} that an
+ * isError result carries still needs exactly {code, detail} with a closed code. Live (--service), an error
+ * call conforms with a well-formed isError result or JSON-RPC error of its fixture's kind and code.
  *
  * --service network rules (serviceTarget, pinAddress, exchange): the URL passes the shared validator's
  * endpointRefusal (https, a public DNS name, no IP, port, userinfo, query or internal suffix) and is not an
@@ -843,6 +850,77 @@ export function errorBodyProblems(label: string, body: unknown, appId: string): 
   }
   return out;
 }
+
+// ---- MCP error answers (protocol 2025-06-18) ---------------------------------------------------------
+/**
+ * An MCP server answers a tools/call it refuses in one of two conforming ways: a TOOL error, a result with
+ * isError: true and a content array; or a PROTOCOL error, a JSON-RPC error {code: integer, message: string,
+ * data?}. For an mcp app either one is an error fixture (bare, or in its JSON-RPC response) and a live
+ * answer to an error call. A tool error that carries a {code, detail} (structuredContent, or its one JSON
+ * text item) still needs exactly {code, detail} with a closed code; one that carries plain text is opaque.
+ */
+export type McpError = { kind: "tool"; carried: unknown } | { kind: "protocol"; code: number };
+const RPC_KEYS = ["jsonrpc", "id", "result", "error"];
+/** Why a JSON-RPC response envelope is malformed: jsonrpc "2.0", an id, exactly one of result/error. */
+export function rpcEnvelopeProblems(packet: Record<string, any>): string[] {
+  const out: string[] = [];
+  if (packet.jsonrpc !== "2.0") out.push("jsonrpc is not \"2.0\"");
+  if (!own(packet, "id") || packet.id === null) out.push("no id");
+  else if (!Number.isInteger(packet.id) && typeof packet.id !== "string") out.push("id is not an integer or a string");
+  const hasResult = own(packet, "result"), hasError = own(packet, "error");
+  if (hasResult && hasError) out.push("both result and error");
+  else if (!hasResult && !hasError) out.push("neither result nor error");
+  else if (hasError) {
+    if (!isObject(packet.error)) out.push("error is not an object");
+    else {
+      if (!Number.isInteger(packet.error.code)) out.push("error.code is not an integer");
+      if (typeof packet.error.message !== "string") out.push("error.message is not a string");
+    }
+  } else if (!isObject(packet.result)) out.push("result is not an object");
+  return out;
+}
+/** Why a tools/call result is not a well-formed tool error: isError true, a content array of typed items. */
+export function toolErrorProblems(result: Record<string, any>): string[] {
+  const out: string[] = [];
+  if (result.isError !== true) out.push("isError is not true");
+  if (!Array.isArray(result.content)) out.push("isError without a content array");
+  else result.content.slice(0, MAX_NOTE_ITEMS).forEach((item: unknown, i: number) => {
+    if (!isObject(item) || typeof item.type !== "string") out.push(`content/${i} has no string type`);
+    else if (item.type === "text" && typeof item.text !== "string") out.push(`content/${i} is text without a string text`);
+  });
+  if (own(result, "structuredContent") && !isObject(result.structuredContent)) out.push("structuredContent is not an object");
+  return out;
+}
+/** A fixture or answer that is plainly an MCP error answer: isError true, or a JSON-RPC error/isError response. */
+function mcpErrorSignal(body: unknown): boolean {
+  return isObject(body) && (body.isError === true
+    || (own(body, "jsonrpc") && (own(body, "error") || (isObject(body.result) && body.result.isError === true))));
+}
+/**
+ * An mcp error fixture read as an MCP error answer. null: not an envelope (no JSON-RPC key, no isError or
+ * content key), so it is a {code, detail} body. problems: a malformed envelope.
+ */
+export function mcpErrorOf(body: unknown): { error: McpError } | { problems: string[] } | null {
+  if (!isObject(body)) return null;
+  let result: Record<string, any> = body;
+  if (RPC_KEYS.some(k => own(body, k))) {
+    const bad = rpcEnvelopeProblems(body);
+    if (bad.length) return { problems: bad };
+    if (own(body, "error")) return { error: { kind: "protocol", code: body.error.code } };
+    result = body.result;
+  } else if (!own(body, "isError") && !own(body, "content")) return null;
+  const bad = toolErrorProblems(result);
+  return bad.length ? { problems: bad } : { error: { kind: "tool", carried: mcpErrorBody(result) } };
+}
+/** A carried value that claims a code ({code, ...}): it is held to errorBodyProblems. */
+const claimsCode = (carried: unknown): carried is Record<string, any> => isObject(carried) && own(carried, "code");
+/** Why an mcp error fixture is not a {code, detail} body or a well-formed MCP error answer. */
+function mcpErrorFixtureProblems(label: string, body: unknown, appId: string): string[] {
+  const e = mcpErrorOf(body);
+  if (e === null) return errorBodyProblems(label, body, appId);
+  if ("problems" in e) return e.problems.map(p => `${label}: ${p}`);
+  return e.error.kind === "tool" && claimsCode(e.error.carried) ? errorBodyProblems(`${label} (carried)`, e.error.carried, appId) : [];
+}
 function hygiene(dir: string | null, absentNote: string, manifest: any, validator: Validator): { results: Result[]; files: Fixture[] } {
   const names = ["hygiene.fixtures", "hygiene.secrets", "hygiene.duplicate_keys", "hygiene.error_bodies"];
   if (!dir) return { results: names.map(check => notRun(check, absentNote)), files: [] };
@@ -885,6 +963,7 @@ function hygiene(dir: string | null, absentNote: string, manifest: any, validato
 
   const secrets: string[] = [], strictness: string[] = [], bodies: string[] = [];
   const appId = isObject(manifest) && typeof manifest.id === "string" ? manifest.id : "";
+  const mcp = isObject(manifest) && isObject(manifest.service) && manifest.service.kind === "mcp";
   let errorCount = 0;
   for (const f of files) {
     const text = utf8(f.bytes);
@@ -902,11 +981,13 @@ function hygiene(dir: string | null, absentNote: string, manifest: any, validato
     if (!parsed?.ok) continue;
     if (!parsed.duplicates.length) f.value = parsed.value;
     const body = parsed.value;
+    // An mcp fixture that is plainly an MCP error answer is an error fixture whatever its name.
+    if (mcp && !f.request && !f.error && mcpErrorSignal(body)) f.error = true;
     if (f.request) {
       if (!isObject(body)) layout.push(`${f.label}: a request is a JSON object of the op's arguments`);
     } else if (f.error) {
       errorCount++;
-      bodies.push(...errorBodyProblems(f.label, body, appId));
+      bodies.push(...(mcp ? mcpErrorFixtureProblems(f.label, body, appId) : errorBodyProblems(f.label, body, appId)));
     } else if (isObject(body) && own(body, "error")) {
       bodies.push(`${f.label}: a success fixture carries "error"; an error body belongs in an error*.json fixture as {code, detail}`);
     }
@@ -918,7 +999,7 @@ function hygiene(dir: string | null, absentNote: string, manifest: any, validato
   out.push(strictness.length ? fail("hygiene.duplicate_keys", listNote(strictness)) : pass("hygiene.duplicate_keys", `${files.length} fixture file(s) strict JSON, no duplicate key`));
   if (bodies.length) out.push(fail("hygiene.error_bodies", listNote(bodies)));
   else if (!errorCount) out.push(notRun("hygiene.error_bodies", "no error fixture: add <operation>/error*.json with the service's {code, detail} body"));
-  else out.push(pass("hygiene.error_bodies", `${errorCount} error bod(ies) are {code, detail} with a closed code`));
+  else out.push(pass("hygiene.error_bodies", `${errorCount} error bod(ies) are {code, detail} with a closed code${mcp ? ", or a well-formed MCP error answer (isError result or JSON-RPC error)" : ""}`));
   return { results: out, files };
 }
 
@@ -1230,7 +1311,13 @@ function bodyJson(a: Answer): { value: unknown } | { problem: string } {
 // ---- MCP over Streamable HTTP (protocol 2025-06-18, the app server's callReviewedMcp sequence) -------------
 type Session = { headers: [string, string][]; nextId: number };
 const MCP_ACCEPT: [string, string] = ["Accept", "application/json, text/event-stream"];
-async function rpc(w: Wire, s: Session, method: string, params: unknown, caps: Omit<Caps, "rpcId">): Promise<{ result: any; ms: number; headers: Map<string, string> } | { problem: string; ms: number; answer?: Answer }> {
+type RpcResult = { result: any; ms: number; headers: Map<string, string> };
+type RpcProblem = { problem: string; ms: number; answer?: Answer };
+/** A protocol error a tools/call answered (only with errors: true): a well-formed JSON-RPC error. */
+type RpcError = { rpcError: { code: number; message: string }; packet: Record<string, any>; ms: number };
+async function rpc(w: Wire, s: Session, method: string, params: unknown, caps: Omit<Caps, "rpcId">): Promise<RpcResult | RpcProblem>;
+async function rpc(w: Wire, s: Session, method: string, params: unknown, caps: Omit<Caps, "rpcId">, errors: true): Promise<RpcResult | RpcError | RpcProblem>;
+async function rpc(w: Wire, s: Session, method: string, params: unknown, caps: Omit<Caps, "rpcId">, errors = false): Promise<RpcResult | RpcError | RpcProblem> {
   const id = s.nextId++;
   const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
   const a = await exchange(w, "POST", w.basePath, [MCP_ACCEPT, ...s.headers], body, { ...caps, rpcId: id });
@@ -1244,7 +1331,14 @@ async function rpc(w: Wire, s: Session, method: string, params: unknown, caps: O
     packet = j.value;
   }
   if (!isObject(packet) || packet.jsonrpc !== "2.0" || packet.id !== id) return { problem: "not the JSON-RPC response to this request", ms: a.ms };
-  if (own(packet, "error") || !isObject(packet.result)) return { problem: "a JSON-RPC error, not a result", ms: a.ms };
+  if (!errors) {
+    if (own(packet, "error") || !isObject(packet.result)) return { problem: "a JSON-RPC error, not a result", ms: a.ms };
+    return { result: packet.result, ms: a.ms, headers: a.headers };
+  }
+  // A tools/call: a JSON-RPC error is a conforming protocol error when it is well-formed (the caller judges it).
+  const bad = rpcEnvelopeProblems(packet);
+  if (bad.length) return { problem: `a malformed JSON-RPC response (${bad.join("; ")})`, ms: a.ms };
+  if (own(packet, "error")) return { rpcError: packet.error, packet, ms: a.ms };
   return { result: packet.result, ms: a.ms, headers: a.headers };
 }
 async function mcpOpen(w: Wire, caps: Omit<Caps, "rpcId">): Promise<{ session: Session } | { problem: string; answer?: Answer }> {
@@ -1368,16 +1462,15 @@ async function call(w: Wire, c: Call, kind: string, session: Session | null, app
   const problems = c.error ? error : budget;
   let value: unknown;
   if (kind === "mcp") {
-    const r = await rpc(w, session!, "tools/call", { name: c.op.target.tool, arguments: c.args }, caps);
+    const r = await rpc(w, session!, "tools/call", { name: c.op.target.tool, arguments: c.args }, caps, true);
     if ("problem" in r) { (r.problem.startsWith("no complete answer") || r.problem.includes("maxResponseBytes") ? budget : problems).push(`${c.label}: ${r.problem}`); return { budget, error, ok: false }; }
     if (c.error) {
-      if (r.result.isError !== true) { error.push(`${c.label}: answered a result, not isError, where the fixture is an error body`); return { budget, error, ok: false }; }
-      value = mcpErrorBody(r.result);
-      if (value === undefined) { error.push(`${c.label}: the isError result carries no {code, detail} (structuredContent or one JSON text item)`); return { budget, error, ok: false }; }
-    } else {
-      if (r.result.isError === true) { budget.push(`${c.label}: answered isError where the fixture is a success`); return { budget, error, ok: false }; }
-      value = r.result;
+      error.push(...mcpErrorAnswerProblems(c, r, appId));
+      return { budget, error, ok: !error.length };
     }
+    if ("rpcError" in r) { budget.push(`${c.label}: a JSON-RPC error, not a result`); return { budget, error, ok: false }; }
+    if (r.result.isError === true) { budget.push(`${c.label}: answered isError where the fixture is a success`); return { budget, error, ok: false }; }
+    value = r.result;
   } else {
     const method = c.op.target.method;
     const path = (w.basePath.endsWith("/") ? w.basePath.slice(0, -1) : w.basePath) + c.op.target.path;
@@ -1403,6 +1496,42 @@ async function call(w: Wire, c: Call, kind: string, session: Session | null, app
     for (const p of shapeProblems(c.expected, value)) budget.push(`${c.label}: ${p}`);
   }
   return { budget, error, ok: !budget.length && !error.length };
+}
+
+/**
+ * An mcp error call's live answer against its fixture. Conforming: a well-formed isError result or JSON-RPC
+ * error of the fixture's kind. A fixture code (its {code, detail}, or the one its isError result carries)
+ * needs the same closed code carried live; a JSON-RPC fixture needs the same integer code; an opaque
+ * (plain-text) isError fixture needs any well-formed isError result. A carried {code, ...} is always held to
+ * errorBodyProblems. A malformed fixture (hygiene fails it) holds the answer only to being well-formed.
+ */
+function mcpErrorAnswerProblems(c: Call, r: RpcResult | RpcError, appId: string): string[] {
+  const out: string[] = [];
+  const fx = mcpErrorOf(c.expected);
+  const want: { code: unknown } | { rpc: number } | { tool: true } | null = fx === null ? { code: isObject(c.expected) ? c.expected.code : undefined }
+    : "problems" in fx ? null
+    : fx.error.kind === "protocol" ? { rpc: fx.error.code }
+    : claimsCode(fx.error.carried) ? { code: fx.error.carried.code } : { tool: true };
+  const answer = "rpcError" in r ? r.packet.error : r.result;
+  const secrets = secretFindings(answer);
+  if (secrets.length) out.push(`${c.label}: the answer holds a secret pattern at ${show(secrets[0][0])} (${secrets[0][1]})`);
+  if ("rpcError" in r) {
+    const code = r.rpcError.code;
+    if (want && "rpc" in want) { if (want.rpc !== code) out.push(`${c.label}: JSON-RPC error ${code}, the fixture says ${want.rpc}`); }
+    else if (want && "code" in want) out.push(`${c.label}: a JSON-RPC error ${code}, the fixture says code ${said(want.code)}`);
+    else if (want) out.push(`${c.label}: a JSON-RPC error ${code}, the fixture is an isError result`);
+    return out;
+  }
+  if (r.result.isError !== true) return [`${c.label}: answered a result, not isError or a JSON-RPC error, where the fixture is an error body`];
+  const bad = toolErrorProblems(r.result);
+  if (bad.length) return [...out, `${c.label}: a malformed isError result (${bad.join("; ")})`];
+  if (want && "rpc" in want) out.push(`${c.label}: an isError result, the fixture is JSON-RPC error ${want.rpc}`);
+  const carried = mcpErrorBody(r.result);
+  if (claimsCode(carried)) {
+    out.push(...errorBodyProblems(`${c.label} (live)`, carried, appId));
+    if (want && "code" in want && carried.code !== want.code) out.push(`${c.label}: code ${said(carried.code)}, the fixture says ${said(want.code)}`);
+  } else if (want && "code" in want) out.push(`${c.label}: the isError result carries no {code, detail} (structuredContent or one JSON text item)`);
+  return out;
 }
 
 /**
@@ -1529,7 +1658,9 @@ async function serviceRows(input: { url: string; manifest: any; valid: boolean; 
   else budgetRow = pass(B, `${successCalls} read call(s) answered within timeoutMs and maxResponseBytes, fixture-shaped, strict JSON, no secret pattern`);
   const errorRow = errors.length ? fail(E, listNote(errors))
     : !errorCalls ? notRun(E, "no error request: add <op>/error-<name>.request.json beside its error-<name>.json")
-    : pass(E, `${errorCalls} error call(s) answered exactly {code, detail} with the fixture's closed code`);
+    : pass(E, kind === "mcp"
+      ? `${errorCalls} error call(s) answered like their fixture: exactly {code, detail} with its closed code, or a well-formed isError result or JSON-RPC error`
+      : `${errorCalls} error call(s) answered exactly {code, detail} with the fixture's closed code`);
   return [reachRow, budgetRow, errorRow];
 }
 

@@ -90,7 +90,10 @@ Use Dizko as the starting bundle for another **public read-only** service:
    root) is conformance v0: the manifest, skill hashes and version bump, the
    needs-card to prepare pairing, and the hygiene of your service's response
    fixtures (`<dir>/<operation>/<name>.json`; `error*.json` files are
-   `{code, detail}` error bodies). Exit 0 passed, 1 failed, 2 refused. Live-
+   `{code, detail}` error bodies; for an MCP service an error fixture may
+   instead be the MCP error answer itself, an `isError: true` result with a
+   `content` array or a JSON-RPC error with an integer `code` and a string
+   `message`). Exit 0 passed, 1 failed, 2 refused. Live-
    service checks come in Phase 1 and show as not run. The summary always goes
    to stdout; conformance.json is written only with `--out`, never by default,
    and `--out` is refused anywhere inside the repo or the tool's root, so point

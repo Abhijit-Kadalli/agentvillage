@@ -1734,7 +1734,7 @@ describe("v1 checks against a stub sandbox", () => {
           expect([sse, v1Rows(r)]).toEqual([sse, { "service.reachability": true, "service.budgets": true, "service.error_bodies": true, "approval.fake_cp": null }]);
           expect(row(r, "service.reachability").note).toContain("initialize answers 2025-06-18; tools/list holds every target.tool (3 tool(s))");
           expect(row(r, "service.budgets").note).toStartWith("advisory (v1): 1 read call(s) answered within timeoutMs and maxResponseBytes");
-          expect(row(r, "service.error_bodies").note).toStartWith("advisory (v1): 1 error call(s) answered exactly {code, detail}");
+          expect(row(r, "service.error_bodies").note).toStartWith("advisory (v1): 1 error call(s) answered like their fixture: exactly {code, detail} with its closed code");
           expect(row(r, "approval.fake_cp").note).toContain("Not checkable without a card");
           expect(r.passed).toBe(true);
         } finally { cleanup(c); }
@@ -1783,7 +1783,7 @@ describe("v1 checks against a stub sandbox", () => {
     expect(shapeProblems({ a: null, b: [{ c: 1 }] }, { a: "anything", b: [], z: 1 })).toEqual([]);
   });
 
-  test("live error bodies: an extra key, an open code, another code than the fixture's, a 5xx, a 2xx, or (mcp) a JSON-RPC error each fail service.error_bodies", async () => {
+  test("live error bodies: an extra key, an open code, another code than the fixture's, a 5xx, a 2xx, or (mcp) a JSON-RPC error where the fixture says a code each fail service.error_bodies", async () => {
     const bad: [number, unknown, string][] = [
       [404, { code: "not_found", detail: "x", trace: "y" }, "keys are code, detail, trace, not exactly code, detail"],
       [400, { code: "boom", detail: "x" }, "code boom is not in the closed set for acme"],
@@ -1808,7 +1808,8 @@ describe("v1 checks against a stub sandbox", () => {
       const c = v1Catalog("mcp");
       try {
         const r = await runV1(c, s);
-        expect(row(r, "service.error_bodies").note).toContain("a JSON-RPC error, not a result");
+        // A JSON-RPC error is a conforming MCP error answer, but not where the fixture says a closed code.
+        expect(row(r, "service.error_bodies").note).toContain("a JSON-RPC error -32000, the fixture says code not_found");
       } finally { cleanup(c); }
     });
   });
@@ -2082,7 +2083,7 @@ describe("fold 2 (review-b on ov#438): a hostile sandbox never crashes the run; 
       return mcpServer()(req, res);
     }, "service.reachability", 'q is "string" here, {"toString":1} in the tool'],
     ["error call code {toString:1}", mcpServer({ lookup: (args, res, id) => args.q === "missing"
-      ? raw(res, `{"jsonrpc":"2.0","id":${id},"result":{"isError":true,"structuredContent":{"code":{"toString":1},"detail":"x"}}}`)
+      ? raw(res, `{"jsonrpc":"2.0","id":${id},"result":{"isError":true,"content":[],"structuredContent":{"code":{"toString":1},"detail":"x"}}}`)
       : raw(res, `{"jsonrpc":"2.0","id":${id},"result":{"content":[{"type":"text","text":"Two things."}],"structuredContent":{"items":[{"name":"a","rank":1}]}}}`) }),
       "service.error_bodies", 'code {"toString":1}, the fixture says not_found'],
     ["toString and valueOf both null (protocolVersion)", mcpServer({ init: res => { raw(res, '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":{"toString":null,"valueOf":null}}}'); return true; } }),
@@ -2165,6 +2166,141 @@ describe("fold 2 (review-b on ov#438): a hostile sandbox never crashes the run; 
         expect(r.passed).toBe(true);
       } finally { cleanup(c); }
       expect(s.seen.length).toBeLessThanOrEqual(4);
+    });
+  });
+});
+
+// MCP error envelopes (protocol 2025-06-18): a tool error is a result with isError: true and a content
+// array; a protocol error is a JSON-RPC error {code: integer, message: string}. Both are a conforming answer
+// to a tools/call, as an error fixture and live. Reported against conformance v0 (ov#422) on MCP apps whose
+// fixtures carry the envelope the server returns; the repro below is reconstructed (no recorded CI run).
+describe("MCP error envelopes: a well-formed one conforms, a malformed one does not", () => {
+  const TOOL_TEXT = { isError: true, content: [{ type: "text", text: "Invalid arguments for lookup: q must be a string." }] };
+  const TOOL_CODED = { isError: true, content: [{ type: "text", text: "No such item." }], structuredContent: { code: "not_found", detail: "No such item." } };
+  const RPC_PARAMS = { jsonrpc: "2.0", id: 3, error: { code: -32602, message: "Invalid params: q must be a string" } };
+  test("v0: an error fixture that is a tool error (bare or in its JSON-RPC response) or a JSON-RPC error passes hygiene.error_bodies", () => {
+    const good: [string, unknown][] = [
+      ["a bare isError result, plain text", TOOL_TEXT],
+      ["a bare isError result carrying a closed {code, detail}", TOOL_CODED],
+      ["an isError result in its JSON-RPC response", { jsonrpc: "2.0", id: 3, result: TOOL_TEXT }],
+      ["a JSON-RPC error (-32602)", RPC_PARAMS],
+      ["a JSON-RPC error with data and a string id", { jsonrpc: "2.0", id: "req-3", error: { code: -32000, message: "Server error", data: { retry: false } } }],
+    ];
+    for (const [why, body] of good) {
+      withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/error-envelope.json": JSON.stringify(body) } }, c => {
+        const r = run(c);
+        expect([why, row(r, "hygiene.error_bodies").pass, row(r, "hygiene.error_bodies").note]).toEqual([why, true, expect.stringContaining("2 error bod(ies)")]);
+        expect([why, r.passed]).toEqual([why, true]);
+      });
+    }
+  });
+  test("v0: a fixture not named error* that IS an MCP error answer (a tool-refusal.json with isError) counts as an error body", () => {
+    withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/tool-refusal.json": JSON.stringify(TOOL_TEXT) } }, c => {
+      const r = run(c);
+      expect(row(r, "hygiene.fixtures").note).toBe("3 fixture file(s), 2 error bod(ies)");
+      expect(row(r, "hygiene.error_bodies").pass).toBe(true);
+    });
+    withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/tool-refusal.json": JSON.stringify({ isError: true }) } }, c => {
+      const r = row(run(c), "hygiene.error_bodies");
+      expect([r.pass, r.note]).toEqual([false, expect.stringContaining("acme.lookup/tool-refusal.json: isError without a content array")]);
+    });
+    // Not an MCP signal: a plain {"error": ...} in a success fixture still fails as before.
+    withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/ok-but.json": JSON.stringify({ error: "zzz_invalid" }) } }, c => {
+      expect(row(run(c), "hygiene.error_bodies").note).toContain("a success fixture carries \"error\"");
+    });
+  });
+  test("v0: a malformed envelope is still rejected (id, result and error, code, message, content, the closed code)", () => {
+    const bad: [string, unknown, string][] = [
+      ["no id", { jsonrpc: "2.0", error: { code: -32602, message: "x" } }, "no id"],
+      ["a null id", { jsonrpc: "2.0", id: null, error: { code: -32602, message: "x" } }, "no id"],
+      ["no jsonrpc", { id: 3, result: TOOL_TEXT }, "jsonrpc is not \"2.0\""],
+      ["result without jsonrpc or id", { result: TOOL_TEXT }, "no id"],
+      ["both result and error", { jsonrpc: "2.0", id: 3, result: TOOL_TEXT, error: { code: -32602, message: "x" } }, "both result and error"],
+      ["a fractional code", { jsonrpc: "2.0", id: 3, error: { code: -32602.5, message: "x" } }, "error.code is not an integer"],
+      ["a string code", { jsonrpc: "2.0", id: 3, error: { code: "-32602", message: "x" } }, "error.code is not an integer"],
+      ["a non-string message", { jsonrpc: "2.0", id: 3, error: { code: -32602, message: 7 } }, "error.message is not a string"],
+      ["isError without content", { isError: true }, "isError without a content array"],
+      ["isError with content not an array", { isError: true, content: { type: "text", text: "x" } }, "isError without a content array"],
+      ["a content item without a type", { isError: true, content: [{ text: "x" }] }, "content/0 has no string type"],
+      ["a text item without text", { isError: true, content: [{ type: "text" }] }, "content/0 is text without a string text"],
+      ["isError the string \"true\"", { isError: "true", content: [] }, "isError is not true"],
+      ["a result that is not an error", { jsonrpc: "2.0", id: 3, result: { content: [] } }, "isError is not true"],
+      ["a carried open code", { isError: true, content: [], structuredContent: { code: "boom", detail: "x" } }, "code boom is not in the closed set for acme"],
+    ];
+    for (const [why, body, want] of bad) {
+      withCatalog({ fixtures: { ...GOOD_FIXTURES, "acme.lookup/error-x.json": JSON.stringify(body) } }, c => {
+        const r = row(run(c), "hygiene.error_bodies");
+        expect([why, r.pass, r.note]).toEqual([why, false, expect.stringContaining(want)]);
+      });
+    }
+  });
+  test("v0: an https-json app gets no envelope rule: its error fixture is still exactly {code, detail}", () => {
+    withCatalog({ manifest: httpsJsonAcme(), fixtures: { ...GOOD_FIXTURES, "acme.lookup/error-x.json": JSON.stringify(TOOL_TEXT) } }, c => {
+      const r = row(run(c), "hygiene.error_bodies");
+      expect([r.pass, r.note]).toEqual([false, expect.stringContaining("keys are content, isError, not exactly code, detail")]);
+    });
+  });
+
+  /** The lookup error call answered by `packet` (its id filled in), as JSON or over an event stream. */
+  const answering = (sse: boolean, packet: (id: number) => unknown) => mcpServer({
+    lookup: (args, res, id) => {
+      const body = args.q === "missing" ? packet(id) : { jsonrpc: "2.0", id, result: { content: [], structuredContent: { items: [{ name: "a", rank: 1 }] } } };
+      if (!sse) return json(res, 200, body);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
+    },
+  });
+  const withError = (fixture: unknown) => v1Catalog("mcp", acme(), files => { files["acme.lookup/error-not-found.json"] = JSON.stringify(fixture); });
+  test("v1: a JSON-RPC error or an isError result answers an error call (JSON and event stream), matched to its fixture", async () => {
+    const good: [string, unknown, (id: number) => unknown][] = [
+      ["JSON-RPC -32602, fixture the same error", RPC_PARAMS, id => ({ ...RPC_PARAMS, id, error: { code: -32602, message: "Invalid params (live wording)" } })],
+      ["isError plain text, fixture a bare tool error", TOOL_TEXT, id => ({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: "not found" }] } })],
+      ["isError plain text, fixture the wrapped tool error", { jsonrpc: "2.0", id: 9, result: TOOL_TEXT }, id => ({ jsonrpc: "2.0", id, result: TOOL_TEXT })],
+      ["isError carrying {code, detail}, fixture {code, detail}", { code: "not_found", detail: "No such item." }, id => ({ jsonrpc: "2.0", id, result: TOOL_CODED })],
+    ];
+    for (const sse of [false, true]) {
+      for (const [why, fixture, packet] of good) {
+        await withStub(answering(sse, packet), async s => {
+          const c = withError(fixture);
+          try {
+            const r = await runV1(c, s);
+            invariants(r);
+            expect([sse, why, v1Rows(r), row(r, "service.error_bodies").note]).toEqual([sse, why,
+              { "service.reachability": true, "service.budgets": true, "service.error_bodies": true, "approval.fake_cp": null }, expect.stringContaining("1 error call(s)")]);
+          } finally { cleanup(c); }
+        });
+      }
+    }
+  });
+  test("v1: a malformed or mismatched live error answer still fails service.error_bodies; a success call answered by an error still fails budgets", async () => {
+    const bad: [string, unknown, (id: number) => unknown, string][] = [
+      ["both result and error", RPC_PARAMS, id => ({ jsonrpc: "2.0", id, result: TOOL_TEXT, error: { code: -32602, message: "x" } }), "both result and error"],
+      ["a fractional code", RPC_PARAMS, id => ({ jsonrpc: "2.0", id, error: { code: 1.5, message: "x" } }), "error.code is not an integer"],
+      ["a non-string message", RPC_PARAMS, id => ({ jsonrpc: "2.0", id, error: { code: -32602, message: null } }), "error.message is not a string"],
+      ["no id", RPC_PARAMS, () => ({ jsonrpc: "2.0", error: { code: -32602, message: "x" } }), "not the JSON-RPC response to this request"],
+      ["isError without content", TOOL_TEXT, id => ({ jsonrpc: "2.0", id, result: { isError: true } }), "isError without a content array"],
+      ["another JSON-RPC code than the fixture's", RPC_PARAMS, id => ({ jsonrpc: "2.0", id, error: { code: -32601, message: "x" } }), "JSON-RPC error -32601, the fixture says -32602"],
+      ["a JSON-RPC error where the fixture is a tool error", TOOL_TEXT, id => ({ jsonrpc: "2.0", id, error: { code: -32602, message: "x" } }), "a JSON-RPC error -32602, the fixture is an isError result"],
+      ["a JSON-RPC error where the fixture is {code, detail}", { code: "not_found", detail: "x" }, id => ({ jsonrpc: "2.0", id, error: { code: -32000, message: "nope" } }), "a JSON-RPC error -32000, the fixture says code not_found"],
+      ["an isError result where the fixture is a JSON-RPC error", RPC_PARAMS, id => ({ jsonrpc: "2.0", id, result: TOOL_TEXT }), "an isError result, the fixture is JSON-RPC error -32602"],
+      ["plain text where the fixture is {code, detail}", { code: "not_found", detail: "x" }, id => ({ jsonrpc: "2.0", id, result: TOOL_TEXT }), "the isError result carries no {code, detail}"],
+      ["a success where the fixture is an error", TOOL_TEXT, id => ({ jsonrpc: "2.0", id, result: { content: [] } }), "answered a result, not isError or a JSON-RPC error, where the fixture is an error"],
+    ];
+    for (const [why, fixture, packet, want] of bad) {
+      await withStub(answering(false, packet), async s => {
+        const c = withError(fixture);
+        try {
+          const r = row(await runV1(c, s), "service.error_bodies");
+          expect([why, r.pass, r.note]).toEqual([why, false, expect.stringContaining(want)]);
+        } finally { cleanup(c); }
+      });
+    }
+    await withStub(mcpServer({ lookup: (args, res, id) => json(res, 200, { jsonrpc: "2.0", id, error: { code: -32602, message: "x" } }) }), async s => {
+      const c = v1Catalog("mcp");
+      try {
+        const r = await runV1(c, s);
+        expect([row(r, "service.budgets").pass, row(r, "service.budgets").note]).toEqual([false, expect.stringContaining("acme.lookup/ok.request.json: a JSON-RPC error, not a result")]);
+      } finally { cleanup(c); }
     });
   });
 });
