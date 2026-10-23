@@ -66,7 +66,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 
-import { installProfileIdentity, resolveProfile } from "./profile";
+import { installProfileIdentity, resolveProfile, RESIDENT_ONLY_PLUGINS } from "./profile";
 import { installIndex } from "./install_index";
 import { type IndexPluginFailure, type IndexPluginNote, indexPluginFailedLine, installIndexPlugin, recordIndexPluginStatus, setIndexPluginEnabled } from "./install_index_plugin";
 import { installEdgeos } from "./install_edgeos";
@@ -269,6 +269,7 @@ function copySkillFiles(): void {
  * install: it is recorded in the status file and returned for the one stdout line.
  */
 function installIndexHermesPlugin(): IndexPluginFailure | null {
+  if (resolveProfile() !== "resident") return null; // ODIN has no Index plugin
   let failed: IndexPluginFailure | null;
   let note: IndexPluginNote | undefined;
   try {
@@ -337,6 +338,7 @@ function main(): void {
   console.log("===================");
   console.log("");
 
+  const resident = resolveProfile() === "resident";
   removeLegacyWorkspaceEdge();
   removeRetiredFiles();
   copySoulFile();
@@ -366,11 +368,13 @@ function main(): void {
   configureDashboardAuth();
   configureAvEvents();
   configureAvApproval();
-  configureVillageBridge();
+  // ODIN-PROFILE: the village bridge, av-vote, the Index plugin, its crons and EdgeOS are the resident's.
+  if (resident) configureVillageBridge();
+  else for (const name of unlistPlugins(RESIDENT_ONLY_PLUGINS)) console.log(`→ removed plugin ${name} from plugins.enabled (profile odin)`);
   for (const name of unlistPlugins(NOT_STAGED_PLUGINS)) console.log(`→ removed plugin ${name} from plugins.enabled (not staged: OV-300 M1)`);
-  configureIndexLinks();
+  if (resident) configureIndexLinks();
   configureAvDisplay();
-  configureAvVote();
+  if (resident) configureAvVote();
   // rc44 (RESIDENT-UX): av-display's /village in Telegram's command menu (past the 60-slot cap otherwise).
   configureVillageMenu();
   // Opt-in and off the core path: a failure here is counted, never fatal.
@@ -383,7 +387,9 @@ function main(): void {
   // steps (B1-fix2 R1). They are recorded in the status file, written on
   // every run, and reported in one line at the end.
   let cronFailures: string[] = [];
-  if (process.argv.includes("--skip-index")) {
+  if (!resident) {
+    console.log("→ index network: not installed (profile odin)");
+  } else if (process.argv.includes("--skip-index")) {
     console.log("→ index network: unconfigured (--skip-index); bundled skills remain installed");
   } else {
     cronFailures = installIndex();
@@ -403,7 +409,7 @@ function main(): void {
   } catch {
     console.warn("  warning: could not record the model_allow step in av-events/install-status.json");
   }
-  installEdgeos();
+  if (resident) installEdgeos();
   restoreWelcomeState(welcomeState);
 
   // Opt-in (DATA-43), and the one step that is not fail-open: with

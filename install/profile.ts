@@ -7,20 +7,34 @@
  *     "## Village constitution" section of SOUL.md from `$HERMES_HOME/constitution.md`
  *     (the operator places that file; no constitution text lives in this repo).
  *
- * Files only: no tool, plugin, network or database access. See docs/odin-profile.md.
+ * See docs/odin-profile.md for what ODIN does and does not get.
  */
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { dotenvFileValue } from "./config";
+
 export type Profile = "resident" | "odin";
+
+/** Plugins only the resident's agent runs; an ODIN box does not list them in `plugins.enabled`. */
+export const RESIDENT_ONLY_PLUGINS = ["village-bridge", "av-vote", "index-links", "index-network"];
 
 export const CONSTITUTION_FILE = "constitution.md";
 export const CONSTITUTION_PLACEHOLDER = "{{CONSTITUTION}}";
 export const NO_CONSTITUTION_LINE = "(no constitution adopted yet)";
 
-/** Resolve `AV_PROFILE`. Unset or blank is `resident`; any other unknown value throws. */
-export function resolveProfile(env: Record<string, string | undefined> = process.env): Profile {
-  const raw = env.AV_PROFILE?.trim().toLowerCase();
+export const PROFILE_ENV = "AV_PROFILE";
+
+/**
+ * Resolve `AV_PROFILE`: the process environment first, else `$HERMES_HOME/.env` (the control plane
+ * writes it there, as it does `AV_MORALMOD_ARM`, so a provisioned box keeps its profile across
+ * update, reset and roll). Unset or blank is `resident`; any other unknown value throws.
+ */
+export function resolveProfile(
+  env: Record<string, string | undefined> = process.env,
+  fromDotenv: (name: string) => string | undefined = dotenvFileValue,
+): Profile {
+  const raw = (env[PROFILE_ENV] ?? fromDotenv(PROFILE_ENV))?.trim().toLowerCase();
   if (!raw || raw === "resident") return "resident";
   if (raw === "odin") return "odin";
   throw new Error(`AV_PROFILE must be "resident" or "odin"`);
@@ -36,7 +50,8 @@ export function renderOdinSoul(template: string, home: string): string {
   const path = join(home, CONSTITUTION_FILE);
   let body = NO_CONSTITUTION_LINE;
   if (existsSync(path)) {
-    const text = readFileSync(path, "utf8").trim();
+    // The app's soul export opens with its own "## Village constitution" heading; the template has one.
+    const text = readFileSync(path, "utf8").trim().replace(/^## Village constitution[ \t]*(?:\r?\n|$)\s*/i, "");
     if (text) body = text;
   }
   // A function replacer keeps `$` sequences in the constitution literal.
