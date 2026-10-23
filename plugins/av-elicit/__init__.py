@@ -890,6 +890,10 @@ def inject_pass(ctx: Any = None, home: Optional[str] = None, now: Optional[float
     except OSError:
         _log_once("claim_failed", logging.WARNING)
         return "claim_failed"
+    try:
+        os.utime(claimed, None)  # the 60 s orphan rule runs from the claim, not from staging
+    except OSError:
+        pass
     raw, code = _read_regular(claimed, INJECT_MAX_BYTES)
     text = inject_text(raw) if raw is not None else None
     if text is None or not text.strip():

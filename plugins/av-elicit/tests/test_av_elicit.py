@@ -1034,3 +1034,19 @@ def test_s9_legacy_marker_matches_by_accept_time(plugin, home, db):
     assert plugin.window_open(now=NOON)
     write_marker(home, None, NOON - 500)
     assert not plugin.window_open(now=NOON)
+
+
+def test_h2_claim_stamps_the_sending_mtime(plugin, home, db):
+    db.session("s-dm")
+    path = stage(home, "open", OPENER, NOON - 60)
+    os.utime(path, (1_000_000, 1_000_000))
+    seen = []
+
+    class Peek(Ctx):
+        def inject_message(self, content, role="user", *, session_key=None):
+            folder = home / "av-events" / "elicit" / "inject"
+            seen.append((folder / names(home, ".sending")[0]).stat().st_mtime)
+            return False
+
+    plugin.inject_pass(Peek(), now=NOON)
+    assert seen and seen[0] > 1_000_000 + 3600

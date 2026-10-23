@@ -1076,6 +1076,25 @@ describe("git and the CLI", () => {
       rmSync(out); rmSync(md);
     } finally { rmSync(g.dir, { recursive: true, force: true }); }
   });
+  test("ov#477 fold 1 (review-b M1): --pr and --base-ref go into the JSON with base_sha (--base resolved); absent => null; malformed => exit 2", () => {
+    const g = gitRepo();
+    try {
+      const base = g.commit(baseFiles(), "base");
+      g.run("checkout", "-q", "-b", "pr");
+      const m = manifest(); m.version = "1.0.1"; m.description = "Reworded.";
+      const head = g.commit({ [MP]: json(m) }, "pr");
+      const bound = cli(["--base", "main", "--head", head, "--repo", g.dir, "--pr", "12", "--base-ref", "main"]);
+      expect([bound.code, bound.report.pr, bound.report.base_ref, bound.report.base_sha]).toEqual([0, 12, "main", base]);
+      const keys = Object.keys(bound.report);
+      expect(keys.slice(0, 7)).toEqual(["bot", "version", "manifest", "head", "pr", "base_ref", "base_sha"]);
+      const bare = cli(["--base", base, "--head", head, "--repo", g.dir]);
+      expect([bare.code, bare.report.pr, bare.report.base_ref, bare.report.base_sha]).toEqual([0, null, null, base]);
+      for (const [flag, value] of [["--pr", "0"], ["--pr", "12x"], ["--pr", "-1"], ["--pr", "1e3"], ["--pr", "012"], ["--base-ref", "a..b"], ["--base-ref", "-x"], ["--base-ref", "main\nx"]]) {
+        const bad = cli(["--base", base, "--head", head, "--repo", g.dir, flag, value]);
+        expect([flag, value, bad.code, bad.report.verdict, bad.report.pr, bad.report.base_ref, bad.report.base_sha]).toEqual([flag, value, 2, "FAIL", null, null, null]);
+      }
+    } finally { rmSync(g.dir, { recursive: true, force: true }); }
+  });
   test("review-b N-e (mutant k12) and N-d, real git: main moves the manifest after the fork; the bump is judged against the MERGE base, and the base tip's card op still counts", () => {
     const g = gitRepo();
     try {
@@ -1371,7 +1390,10 @@ describe("the workflow", () => {
     expect(fetch.run).toContain('git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"');
     // review-b N-d: the base branch's tip, as data too.
     expect(fetch.run).toContain('git -C tool fetch --no-tags --no-recurse-submodules --quiet origin "+refs/heads/${BASE_REF}:refs/remotes/base/tip"');
-    expect(review.env).toEqual({ BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_AUTHOR: "${{ github.event.pull_request.user.login }}" });
+    expect(review.env).toEqual({ BASE_SHA: "${{ github.event.pull_request.base.sha }}", HEAD_SHA: "${{ github.event.pull_request.head.sha }}", PR_AUTHOR: "${{ github.event.pull_request.user.login }}",
+      PR_NUMBER: "${{ github.event.pull_request.number }}", BASE_REF: "${{ github.event.pull_request.base.ref }}" });
+    // ov#477 fold 1 (review-b M1): the JSON names the pull request and the base it judged, from the same event.
+    expect(review.run).toContain('--pr "$PR_NUMBER" --base-ref "$BASE_REF"');
     // review-b N-a: by explicit path (no package.json script can shadow it) and with no cwd tsconfig.json.
     expect(review.run).toStartWith("bun --config=/dev/null --no-env-file --no-install --tsconfig-override=/dev/null ./tool/scripts/mini-apps-review.ts --repo tool \\\n");
     expect(review.run).toContain('--base "$BASE_SHA" --head "$HEAD_SHA" --base-tip refs/remotes/base/tip');
@@ -1434,6 +1456,8 @@ describe("the workflow", () => {
       }
       const honest = JSON.parse(readFileSync(join(temp, "mini-apps-review.json"), "utf8")) as R.Report;
       expect([honest.verdict, honest.lane, honest.head]).toEqual(["NEEDS_HUMAN", "core", head]);
+      // ov#477 fold 1: bound to the pull request and the base the tool checked out (the same event sha).
+      expect([honest.pr, honest.base_ref, honest.base_sha]).toEqual([7, "main", base]);
       expect(honest.findings.filter(f => f.code === "core_path").map(f => f.file).sort()).toEqual(["bunfig.toml", "docs/notes.ts"]);
       expect(readFileSync(join(temp, "mini-apps-review.md"), "utf8")).toContain("**NEEDS_HUMAN** · lane `core`");
       // The tool tree is still the base, untouched: nothing of the pull request was checked out into it.
