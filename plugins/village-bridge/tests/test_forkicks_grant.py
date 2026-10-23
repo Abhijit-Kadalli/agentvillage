@@ -459,7 +459,8 @@ class ForKicksOnGrantTest(unittest.TestCase):
         for draft in drafts[3:]:
             os.unlink(self.home / 'forkicks-drafts' / (draft + '.await'))
         self.run_pass()
-        self.assertEqual(self.daemon.wait.call_count, 2)  # ov#465 N1: each awaiting marker's wait is read first
+        # ov#465 N1: each awaiting marker's wait is read first; approval L20892: and again inside the close's lock hold.
+        self.assertEqual(self.daemon.wait.call_count, 4)
         self.assertEqual(sorted(e['code'] for e in self.events), ['ttl', 'ttl', 'uncertain_ttl'])
         # Each unanswered card is told once; the lost-confirm one is not told (its order may exist).
         self.assertEqual(len(self.sent), 2)
