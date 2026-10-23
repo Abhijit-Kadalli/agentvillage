@@ -93,7 +93,7 @@ import { type LockOptions, LockStuck, LockTimeout, releaseHeldLocks, withStateLo
 import { writeStateFile } from "./state-file";
 import { followUp } from "./summarize-negotiations";
 import { backfillAnnounced, clearStage, dueSubjects, intentionLink, listAcceptedConnections, outcomeQuestion, readAskedIds, recordAttempt, stageFor, writeStage } from "./outcome-ask";
-import { dueRatingSubjects, noteAccepted, ratingCardsOn, ratingStageFor, readRatedIds, recordStaged, textAskOn, writeRatingStage } from "./rating-cards";
+import { CARDS_PER_EVENING, canonicalId, cardBudget, carriedStages, dueRatingSubjects, eveningJobState, noteAccepted, ratingCardsOn, ratingStageFor, readRatedIds, recordStaged, textAskOn, writeRatingStage } from "./rating-cards";
 import { type Delivery, deliveryFor, inWindow, isTeamTenant, minuteOfDay, prunePreviewFiles, readJobSettings } from "./job-settings";
 import { DEFAULT_NAME, agentName, readProfile } from "../../agent-profile/scripts/profile";
 
@@ -1070,12 +1070,18 @@ async function outcomeAskDecision(run: Run): Promise<Decision | { fallback: stri
  * The suggestion rating cards (rating-cards.ts; data docs/design/suggestion-rating.md): on the
  * installer's evening job, with AV_RATE_CARDS on, every connection Index lists accepted that the
  * av-rate plugin has not asked about is staged for a card pair, oldest first seen first, at most
- * CARDS_PER_EVENING tonight. Staged and recorded here, under the state lock, whatever the model
- * turn does next: the cards are the plugin's, not the model's. A code for the run log, or null
- * when the cards are off. Never throws.
+ * tonight's budget (rating-cards.ts cardBudget: the 3/day ceiling less the other agent jobs' day
+ * marks, less what this date already staged). Staged and recorded here, under the state lock,
+ * whatever the model turn does next: the cards are the plugin's, not the model's. Nothing is
+ * staged for a team tenant, or while the resident has the evening job stopped (rating-cards.ts
+ * eveningJobState). A code for the run log, or null when the cards are off. Never throws.
  */
 async function stageRatingCards(run: Run): Promise<string | null> {
   if (run.action !== "evening" || run.preview || !ratingCardsOn(run.home)) return null;
+  if (isTeamTenant(run.home)) return "rating-cards-team-tenant";
+  const jobState = eveningJobState(run.home);
+  if (jobState === "stopped") return "rating-cards-job-stopped";
+  if (jobState === "unreadable") return "rating-cards-jobs-unreadable";
   let state: Record<string, unknown>;
   try {
     state = readState(run.stateFile);
@@ -1092,9 +1098,16 @@ async function stageRatingCards(run: Run): Promise<string | null> {
   } catch {
     return "rating-cards-index-unavailable";
   }
-  const listed = new Map(accepted.flatMap((card) => (card.opportunityId && card.status === "accepted" ? [[card.opportunityId, card] as const] : [])));
+  const listed = new Map(accepted.flatMap((card) => {
+    const id = card.status === "accepted" ? canonicalId(card.opportunityId) : null;
+    return id ? [[id, card] as const] : [];
+  }));
   state = noteAccepted(state, [...listed.keys()], asked, run.date);
-  const due = dueRatingSubjects(state, [...listed.keys()], asked, run.date);
+  // Stages an earlier evening left on disk (deferred by quiet hours or a failed send) go out with
+  // tonight's: they count against the ceiling and are never staged twice.
+  const carried = carriedStages(run.home, run.date);
+  const budget = Math.max(0, cardBudget(state, run.date) - carried.size);
+  const due = dueRatingSubjects(state, [...listed.keys()], new Set([...asked, ...carried]), run.date, budget);
   const w = new Withheld();
   const agentName = agentNameFor(run.home);
   const staged: string[] = [];
@@ -1122,8 +1135,10 @@ async function stageRatingCards(run: Run): Promise<string | null> {
   } catch {
     return "rating-cards-state";
   }
-  // A run-log code (reasonCode keeps letters, digits, `:`, `_` and `-`): `rating-cards:<staged>[:withheld:<n>]`.
-  return `rating-cards:${staged.length}${withheld ? `:withheld:${withheld}` : ""}`;
+  // A run-log code (reasonCode keeps letters, digits, `:`, `_` and `-`):
+  // `rating-cards:<staged>[:withheld:<n>][:budget:<n>]`, the budget named only when the other jobs' marks cut it.
+  const budgetNote = budget < CARDS_PER_EVENING ? `:budget:${budget}` : "";
+  return `rating-cards:${staged.length}${withheld ? `:withheld:${withheld}` : ""}${budgetNote}`;
 }
 
 async function eveningAction(run: Run): Promise<Decision> {

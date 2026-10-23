@@ -19,19 +19,35 @@
  * was first listed accepted by an evening run (the staleness and ordering clock); `staged` =
  * opportunity id -> the date it was last staged (never twice on one date).
  *
- * The cap counts card pairs only: the trigger keeps no count of the day's other proactive
- * deliveries (each job has a day mark, not a budget), so the agreed 3/day ceiling is applied to
- * the cards alone here and read fleet-wide on the data side.
+ * **The shared day budget** (wave 1, resident controls). The agreed ceiling is three proactive
+ * messages per resident per day, all jobs together. The trigger has no delivery ledger, only the
+ * once-a-day marks the other agent jobs write to `heartbeat-state.json` `proactiveRuns` when they
+ * wake the model (brief, drop-midday, drop-evening, negotiation; the hourly pending alert writes
+ * none, DAY_MARK_EXEMPT, so it is not counted). A mark says the model was woken, not that it
+ * delivered: a run the model answered `[SILENT]` still carries a mark. The budget counts every mark
+ * as a delivery (conservative, never over the ceiling): `cardBudget` = 3 minus the marks dated
+ * today, and the evening stages at most that many card pairs. The data side reads the real count
+ * (`marts.proactive_messages_per_resident_day`, rule `proactive_ceiling_v2`).
+ *
+ * **The resident's controls.** The cards go out under the "Evening questions" job: when the
+ * resident has stopped that job (Hermes's job record, `cron/jobs.json`, read exactly as
+ * `storedJobEnabled` reads it: `enabled: false`, `state: "paused"` or a `paused_at`), the trigger
+ * stages nothing (`eveningJobState`), and the plugin sends nothing (its own mirror of the same
+ * read). A team tenant (`AV_TEAM_TENANT=1`, job-settings.ts isTeamTenant) stages nothing. Quiet
+ * hours are the plugin's: the trigger runs when the evening job fires (its own window, if the
+ * resident set one, gates the whole run in proactive.ts), the plugin defers a send that would fall
+ * outside the resident's evening window or, with none set, outside 08:00 to 22:00 village time.
  *
  * `--stage-test`: writes one stage file by hand, no Index call, for a developer testing the plugin
  * with their own bot (plugins/av-rate/README.md "Local test with your own bot").
  */
 
-import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { BriefOpportunity } from "./build-daily-brief-context";
 import { villageDate } from "./build-daily-brief-context";
+import { HERMES_JOB_ID_RE, MESSAGE_LABELS, installedJobsPath, readJobsStore, storedJobEnabled } from "./message-labels";
 import { envOrDotenv } from "./proactive-text";
 
 /** The on-switch, read like every other AV_* variable: the environment, else `$HERMES_HOME/.env`. */
@@ -39,8 +55,16 @@ export const CARDS_SWITCH = "AV_RATE_CARDS";
 /** The old text ask's switch (default off): proactive.ts `outcomeAskDecision` runs only with it on. */
 export const TEXT_ASK_SWITCH = "AV_OUTCOME_TEXT_ASK";
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
-/** Card pairs staged per evening at most (the agreed proactive ceiling, applied to the cards alone). */
+/** The agreed proactive ceiling per resident per day, all jobs together; the most card pairs one evening can stage. */
 export const CARDS_PER_EVENING = 3;
+/** The agent jobs whose day marks (`proactiveRuns`) count against the budget; the evening itself marks after staging. */
+export const BUDGET_ACTIONS = ["brief", "drop-midday", "drop-evening", "negotiation"] as const;
+/** proactive.ts RUNS_KEY, restated so this module does not import the trigger. */
+const RUNS_KEY = "proactiveRuns";
+/** `installed_jobs.json` over this is unreadable (pause-job.ts MAX_INSTALLED_IDS_BYTES). */
+const MAX_INSTALLED_IDS_BYTES = 1024 * 1024;
+/** The installer's name for the evening job (message-labels.ts). */
+export const EVENING_JOB_NAMES: readonly string[] = MESSAGE_LABELS["Evening questions"];
 /** An acceptance first seen more than this many village days ago and still unasked is no longer due. */
 export const STALE_DAYS = 3;
 export const RATING_STATE_KEY = "ratingCards";
@@ -87,6 +111,18 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+const UUID_SHAPE = /^[0-9a-fA-F-]{36}$/;
+
+/**
+ * An opportunity id as the plugin and the data side key it: a UUID-shaped id lower-cased (the
+ * plugin's `valid_stage` and the marts lower-case on join), any other id as given. Null unless it
+ * can be an envelope id.
+ */
+export function canonicalId(id: unknown): string | null {
+  if (typeof id !== "string" || !ENVELOPE_ID.test(id)) return null;
+  return UUID_SHAPE.test(id) ? id.toLowerCase() : id;
+}
+
 function dayNumber(date: string): number | null {
   if (!DATE.test(date)) return null;
   const ms = Date.parse(`${date}T00:00:00Z`);
@@ -116,7 +152,10 @@ export function readRatedIds(home: string): Set<string> | null {
     const data = JSON.parse(readFileSync(path, "utf8"));
     const cards = data && typeof data === "object" && !Array.isArray(data) && data.v === 1 ? data.cards : undefined;
     if (!cards || typeof cards !== "object" || Array.isArray(cards)) return null;
-    return new Set(Object.keys(cards));
+    // The plugin's id-only tombstones for cards it evicted from the ledger: still asked.
+    const evicted: unknown = data.evicted;
+    const ids = [...Object.keys(cards), ...(Array.isArray(evicted) ? evicted.filter((id): id is string => typeof id === "string") : [])];
+    return new Set(ids.flatMap((id) => (canonicalId(id) ? [canonicalId(id)!] : [])));
   } catch {
     return null;
   }
@@ -129,47 +168,115 @@ export function ratingState(state: Record<string, unknown>): { firstSeen: Record
   return { firstSeen: dates(raw.firstSeen), staged: dates(raw.staged) };
 }
 
-/**
- * The state with every listed accepted id first seen (`date` for the new ones), and entries for
- * ids the plugin has asked about dropped. Pure.
- */
-export function noteAccepted(state: Record<string, unknown>, acceptedIds: readonly string[], asked: Set<string>, date: string): Record<string, unknown> {
-  const current = ratingState(state);
-  const firstSeen: Record<string, string> = {};
-  for (const [id, on] of Object.entries(current.firstSeen)) if (!asked.has(id)) firstSeen[id] = on;
-  for (const id of acceptedIds) if (!asked.has(id) && !(id in firstSeen) && ENVELOPE_ID.test(id)) firstSeen[id] = date;
-  const staged: Record<string, string> = {};
-  for (const [id, on] of Object.entries(current.staged)) if (!asked.has(id) && id in firstSeen) staged[id] = on;
-  return { ...state, [RATING_STATE_KEY]: { ...asRecord(state[RATING_STATE_KEY]), firstSeen, staged } };
+/** The canonical ids of `ids` (ones that cannot be envelope ids dropped). */
+function canonicalIds(ids: readonly string[]): Set<string> {
+  return new Set(ids.flatMap((id) => (canonicalId(id) ? [canonicalId(id)!] : [])));
 }
 
 /**
- * Opportunity ids due a card pair on `date`, oldest first seen first, then by id, at most
- * CARDS_PER_EVENING: listed accepted now, not asked, not staged today, first seen within
- * STALE_DAYS. The state must already carry tonight's `noteAccepted`.
+ * The state with every listed accepted id first seen (`date` for the new ones), pruned to the ids
+ * Index lists accepted now, and entries for ids the plugin has asked about dropped. Ids are
+ * canonical (`canonicalId`). Pure.
  */
-export function dueRatingSubjects(state: Record<string, unknown>, acceptedIds: readonly string[], asked: Set<string>, date: string): string[] {
+export function noteAccepted(state: Record<string, unknown>, acceptedIds: readonly string[], asked: Set<string>, date: string): Record<string, unknown> {
+  const current = ratingState(state);
+  const listed = canonicalIds(acceptedIds);
+  const firstSeen: Record<string, string> = {};
+  for (const [raw, on] of Object.entries(current.firstSeen)) {
+    const id = canonicalId(raw);
+    if (id && listed.has(id) && !asked.has(id) && !(id in firstSeen)) firstSeen[id] = on;
+  }
+  for (const id of listed) if (!asked.has(id) && !(id in firstSeen)) firstSeen[id] = date;
+  const staged: Record<string, string> = {};
+  for (const [raw, on] of Object.entries(current.staged)) {
+    const id = canonicalId(raw);
+    if (id && !asked.has(id) && id in firstSeen) staged[id] = on;
+  }
+  return { ...state, [RATING_STATE_KEY]: { ...asRecord(state[RATING_STATE_KEY]), firstSeen, staged } };
+}
+
+/** The ids staged on `date` so far (a second evening run on one date counts them against the cap). */
+export function stagedOn(state: Record<string, unknown>, date: string): Set<string> {
+  return new Set(Object.entries(ratingState(state).staged).flatMap(([id, on]) => (on === date && canonicalId(id) ? [canonicalId(id)!] : [])));
+}
+
+/**
+ * The card pairs the evening may still stage on `date` under the shared ceiling: CARDS_PER_EVENING
+ * minus the day marks dated `date` of the other agent jobs (BUDGET_ACTIONS), never below zero. A
+ * mark is counted whether or not the model delivered (the header says why).
+ */
+export function cardBudget(state: Record<string, unknown>, date: string): number {
+  const runs = asRecord(state[RUNS_KEY]);
+  const marks = BUDGET_ACTIONS.filter((action) => runs[action] === date).length;
+  return Math.max(0, CARDS_PER_EVENING - marks);
+}
+
+export type EveningJobState = "running" | "stopped" | "absent" | "unreadable";
+
+/**
+ * Whether Hermes will fire the installer's evening job: `stopped` when a job named as the evening
+ * job, with an id `installed_jobs.json` lists, is paused or disabled (message-labels.ts
+ * storedJobEnabled, Hermes's own rule); `running` when such a job is enabled; `absent` when no
+ * installed evening job is in the store (a box before install, a developer's home); `unreadable`
+ * when the store cannot be read. Only `running` and `absent` stage.
+ */
+export function eveningJobState(home: string): EveningJobState {
+  const store = readJobsStore(home);
+  if ("unreadable" in store) return "unreadable";
+  let installed: Set<string>;
+  try {
+    const path = installedJobsPath(home);
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size > MAX_INSTALLED_IDS_BYTES) return "unreadable";
+    const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const ids = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { ids?: unknown }).ids : undefined;
+    installed = new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string" && HERMES_JOB_ID_RE.test(id)) : []);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") installed = new Set();
+    else return "unreadable";
+  }
+  let seen = false;
+  for (const entry of store.jobs) {
+    const job = asRecord(entry);
+    if (typeof job.name !== "string" || !EVENING_JOB_NAMES.includes(job.name)) continue;
+    if (typeof job.id !== "string" || !HERMES_JOB_ID_RE.test(job.id) || !installed.has(job.id)) continue;
+    seen = true;
+    if (!storedJobEnabled(job)) return "stopped";
+  }
+  return seen ? "running" : "absent";
+}
+
+/**
+ * Opportunity ids due a card pair on `date`, oldest first seen first, then by id, at most `limit`
+ * (CARDS_PER_EVENING, or tonight's `cardBudget`): listed accepted now, not asked, not staged today,
+ * first seen within STALE_DAYS. The state must already carry tonight's `noteAccepted`.
+ */
+export function dueRatingSubjects(state: Record<string, unknown>, acceptedIds: readonly string[], asked: Set<string>, date: string, limit = CARDS_PER_EVENING): string[] {
   const today = dayNumber(date);
-  if (today === null) return [];
+  // One rule for the cap, whatever the run: tonight's budget less what this date already staged
+  // (a second evening run on one date, a re-run after a crash) never exceeds CARDS_PER_EVENING.
+  const room = Math.min(limit, CARDS_PER_EVENING) - stagedOn(state, date).size;
+  if (today === null || room <= 0) return [];
   const { firstSeen, staged } = ratingState(state);
-  const listed = new Set(acceptedIds);
+  const listed = canonicalIds(acceptedIds);
   return Object.entries(firstSeen)
-    .flatMap(([id, on]) => {
+    .flatMap(([raw, on]) => {
+      const id = canonicalId(raw);
       const day = dayNumber(on);
-      if (day === null || !listed.has(id) || asked.has(id) || staged[id] === date) return [];
+      if (!id || day === null || !listed.has(id) || asked.has(id) || staged[id] === date) return [];
       if (today - day > STALE_DAYS) return [];
       return [[id, on] as const];
     })
     .sort((a, b) => (a[1] === b[1] ? (a[0] < b[0] ? -1 : 1) : a[1] < b[1] ? -1 : 1))
     .map(([id]) => id)
-    .slice(0, CARDS_PER_EVENING);
+    .slice(0, room);
 }
 
-/** The state with `ids` recorded as staged on `date`. */
+/** The state with `ids` (canonical) recorded as staged on `date`. */
 export function recordStaged(state: Record<string, unknown>, ids: readonly string[], date: string): Record<string, unknown> {
   const current = ratingState(state);
   const staged = { ...current.staged };
-  for (const id of ids) staged[id] = date;
+  for (const id of canonicalIds(ids)) staged[id] = date;
   return { ...state, [RATING_STATE_KEY]: { ...asRecord(state[RATING_STATE_KEY]), firstSeen: current.firstSeen, staged } };
 }
 
@@ -183,8 +290,8 @@ export function ratingStageFor(
   date: string,
   now: Date,
 ): RatingStage | null {
-  const id = card.opportunityId;
-  if (!id || !ENVELOPE_ID.test(id)) return null;
+  const id = canonicalId(card.opportunityId);
+  if (!id) return null;
   const intentIds = Array.isArray(card.matchedIntentIds) ? Array.from(new Set(card.matchedIntentIds)) : [];
   const intention = intentIds.length === 1 && typeof intentIds[0] === "string" && ENVELOPE_ID.test(intentIds[0]) ? intentIds[0] : null;
   const name = cleaned.name.trim().slice(0, NAME_MAX);
@@ -200,6 +307,36 @@ export function ratingStageFor(
     staged_at: now.toISOString(),
     date,
   };
+}
+
+/**
+ * Stages still waiting on disk from an earlier date (the plugin deferred them for quiet hours or a
+ * failed send): their opportunity ids. They go out alongside tonight's, so tonight's budget is cut
+ * by their count and their ids are never staged again. A file that cannot be read is counted too
+ * (conservative: a card that may go out counts against the ceiling). Never throws.
+ */
+export function carriedStages(home: string, date: string): Set<string> {
+  const carried = new Set<string>();
+  let names: string[];
+  try {
+    names = readdirSync(ratingStageDir(home));
+  } catch {
+    return carried;
+  }
+  for (const name of names) {
+    if (!/^stage-.+\.json$/.test(name)) continue;
+    let stage: Record<string, unknown> = {};
+    try {
+      stage = asRecord(JSON.parse(readFileSync(join(ratingStageDir(home), name), "utf8")));
+    } catch {
+      carried.add(`unreadable:${name}`);
+      continue;
+    }
+    if (stage.date === date) continue;
+    const id = typeof stage.opportunity_id === "string" ? canonicalId(stage.opportunity_id) : null;
+    carried.add(id ?? `unreadable:${name}`);
+  }
+  return carried;
 }
 
 export function ratingStagePath(home: string, opportunityId: string): string {
@@ -223,10 +360,13 @@ function argValue(args: string[], name: string): string | undefined {
 }
 
 /**
- * `--stage-test --opportunity <id> [--name Maya] [--headline "..."] [--agent Edge]`: one stage file,
- * no Index call, no state change. For a developer's own bot. Returns the lines to print.
+ * `--stage-test --opportunity <id> [--name Maya] [--headline "..."] [--agent Edge] [--home <dir>]`:
+ * one stage file, no Index call, no state change. For a developer's own bot. The home is `--home`,
+ * else `HERMES_HOME`; never the working directory (a stage written into a checkout is never picked
+ * up and would hold a name in a world-readable tree). Returns the lines to print.
  */
-export function stageTest(args: string[], home: string, now = new Date()): string[] {
+export function stageTest(args: string[], home: string | undefined, now = new Date()): string[] {
+  if (!home) return ["stage-test: set HERMES_HOME or pass --home <dir>"];
   const id = argValue(args, "--opportunity");
   if (!id || !ENVELOPE_ID.test(id)) return ["stage-test: --opportunity <id> is required (letters, digits, . _ : -)"];
   const stage = ratingStageFor(
@@ -243,9 +383,9 @@ export function stageTest(args: string[], home: string, now = new Date()): strin
 if (import.meta.main) {
   const args = process.argv.slice(2);
   if (args.includes("--stage-test")) {
-    const home = process.env.HERMES_HOME?.trim() || process.cwd();
+    const home = argValue(args, "--home")?.trim() || process.env.HERMES_HOME?.trim() || undefined;
     for (const line of stageTest(args, home)) console.log(line);
   } else {
-    console.log("usage: bun skills/index-network/scripts/rating-cards.ts --stage-test --opportunity <id> [--name <name>] [--headline <text>] [--agent <name>]");
+    console.log("usage: bun skills/index-network/scripts/rating-cards.ts --stage-test --opportunity <id> [--name <name>] [--headline <text>] [--agent <name>] [--home <dir>]");
   }
 }

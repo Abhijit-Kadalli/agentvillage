@@ -11,9 +11,14 @@ import { join } from "node:path";
 import type { BriefOpportunity } from "../build-daily-brief-context";
 import { type ProactiveOptions, runProactive } from "../proactive";
 import {
+  BUDGET_ACTIONS,
   CARDS_PER_EVENING,
   STALE_DAYS,
+  canonicalId,
+  cardBudget,
+  carriedStages,
   dueRatingSubjects,
+  eveningJobState,
   noteAccepted,
   ratedLedgerPath,
   ratingStageDir,
@@ -21,6 +26,7 @@ import {
   readRatedIds,
   recordStaged,
   stageTest,
+  stagedOn,
 } from "../rating-cards";
 
 /** 19:00 IST on 2026-10-21. */
@@ -33,7 +39,7 @@ const OPP4 = "3b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
 const THIRD_PARTY = "THIRD PARTY WORDS";
 
 let home: string;
-const ENV = ["AV_RATE_CARDS", "AV_OUTCOME_TEXT_ASK", "AV_EVENTS_TOKEN", "AV_HOOKS_DISABLED", "AV_EVENTS_ENABLED"] as const;
+const ENV = ["AV_RATE_CARDS", "AV_OUTCOME_TEXT_ASK", "AV_EVENTS_TOKEN", "AV_HOOKS_DISABLED", "AV_EVENTS_ENABLED", "AV_TEAM_TENANT"] as const;
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -45,6 +51,7 @@ beforeEach(() => {
   process.env.AV_EVENTS_TOKEN = "test-token";
   delete process.env.AV_HOOKS_DISABLED;
   delete process.env.AV_EVENTS_ENABLED;
+  delete process.env.AV_TEAM_TENANT;
 });
 
 afterEach(() => {
@@ -184,6 +191,125 @@ describe("the evening run stages a card pair for every newly accepted connection
     const out = JSON.parse(result.lines.slice(0, -1).join("\n"));
     expect(out.outcomeQuestion).toBe("Did you and Arjun Mehta meet? Reply met, not useful, or missed.");
     expect(runLog().at(-1).detail).toBe("outcome-ask_rating-cards:1");
+  });
+});
+
+/** Hermes's job store and the installer's ids, as a box holds them. */
+function writeJobs(enabled: boolean, extra: Record<string, unknown> = {}, installed = true): void {
+  mkdirSync(join(home, "cron"), { recursive: true });
+  const ours = { id: "abcdef012345", name: "Edge — evening questions", enabled, ...extra };
+  const theirs = { id: "0123456789ab", name: "Edge — evening questions", enabled: false };
+  writeFileSync(join(home, "cron", "jobs.json"), JSON.stringify({ jobs: [ours, theirs] }));
+  mkdirSync(join(home, "av-events"), { recursive: true, mode: 0o700 });
+  const ids = join(home, "av-events", "installed_jobs.json");
+  if (installed) writeFileSync(ids, JSON.stringify({ ids: ["abcdef012345"] }));
+  else rmSync(ids, { force: true });
+}
+
+describe("wave 1: the resident's controls and the shared day budget", () => {
+  test("the other jobs' day marks cut tonight's budget; a mark counts whether or not the model delivered", async () => {
+    writeState({ proactiveRuns: { brief: DATE, "drop-midday": DATE, negotiation: "2026-10-20" } });
+    expect(BUDGET_ACTIONS).toEqual(["brief", "drop-midday", "drop-evening", "negotiation"]);
+    expect(cardBudget(state(), DATE)).toBe(1);
+    const all = [accepted("A One", OPP), accepted("B Two", OPP2), accepted("C Three", OPP3)];
+    await runProactive("evening", options({ accepted: async () => all }));
+    expect(stages().map((s) => s.opportunity_id)).toEqual([OPP]);
+    expect(runLog().at(-1).detail).toBe("outcome-ask-text-off_rating-cards:1:budget:1");
+    // Three marks: nothing tonight, the subjects stay due.
+    writeState({ proactiveRuns: { brief: DATE, "drop-midday": DATE, "drop-evening": DATE }, ratingCards: {} });
+    rmSync(ratingStageDir(home), { recursive: true, force: true });
+    await runProactive("evening", options({ accepted: async () => all }));
+    expect(stages()).toEqual([]);
+    expect(runLog().at(-1).detail).toBe("outcome-ask-text-off_rating-cards:0:budget:0");
+    expect(cardBudget({ proactiveRuns: { pending: DATE } }, DATE)).toBe(3); // the hourly alert has no mark and is not counted
+  });
+
+  test("one rule for the cap: a second evening run on one date stages only what the budget still allows", () => {
+    const all = [OPP, OPP2, OPP3, OPP4];
+    let s = noteAccepted({}, all, new Set(), DATE);
+    const first = dueRatingSubjects(s, all, new Set(), DATE);
+    expect(first.length).toBe(3);
+    s = recordStaged(s, first, DATE);
+    expect(stagedOn(s, DATE).size).toBe(3);
+    // The same evening again (a re-run after a crash, a forced run): nothing more tonight.
+    expect(dueRatingSubjects(s, all, new Set(), DATE)).toEqual([]);
+    // With one staged so far and a budget of two, one more.
+    const partial = recordStaged(noteAccepted({}, all, new Set(), DATE), [OPP], DATE);
+    expect(dueRatingSubjects(partial, all, new Set(), DATE, 2)).toEqual([OPP2]);
+    // Tomorrow the cap resets; the three staged and unasked are due again.
+    expect(dueRatingSubjects(s, all, new Set(), "2026-10-22").length).toBe(3);
+  });
+
+  test("a stage an earlier evening left unsent counts against tonight's cap and is not staged again", async () => {
+    mkdirSync(ratingStageDir(home), { recursive: true, mode: 0o700 });
+    writeFileSync(join(ratingStageDir(home), "stage-carried.json"), JSON.stringify({ v: 1, opportunity_id: OPP4, date: "2026-10-20" }));
+    expect([...carriedStages(home, DATE)]).toEqual([OPP4]);
+    expect(carriedStages(home, "2026-10-20").size).toBe(0);
+    const all = [accepted("A One", OPP), accepted("B Two", OPP2), accepted("C Three", OPP3), accepted("D Four", OPP4)];
+    await runProactive("evening", options({ accepted: async () => all }));
+    const fresh = stages().filter((s) => s.date === DATE).map((s) => s.opportunity_id);
+    expect(fresh).toEqual([OPP, OPP2]);
+    expect(fresh).not.toContain(OPP4);
+  });
+
+  test("a stopped evening job stages nothing; running or absent stages", async () => {
+    writeJobs(false);
+    expect(eveningJobState(home)).toBe("stopped");
+    await runProactive("evening", options());
+    expect(stages()).toEqual([]);
+    expect(runLog().at(-1).detail).toBe("outcome-ask-text-off_rating-cards-job-stopped");
+    for (const extra of [{ state: "paused" }, { paused_at: "2026-10-21T00:00:00Z" }]) {
+      writeJobs(true, extra);
+      expect(eveningJobState(home)).toBe("stopped");
+    }
+    writeJobs(true);
+    expect(eveningJobState(home)).toBe("running");
+    writeJobs(false, {}, false); // the disabled job is not installed by us: the resident's own
+    expect(eveningJobState(home)).toBe("absent");
+    writeFileSync(join(home, "cron", "jobs.json"), "{not json");
+    expect(eveningJobState(home)).toBe("unreadable");
+    writeState({});
+    await runProactive("evening", options());
+    expect(runLog().at(-1).detail).toBe("outcome-ask-text-off_rating-cards-jobs-unreadable");
+  });
+
+  test("a team tenant stages nothing on a real run", async () => {
+    process.env.AV_TEAM_TENANT = "1";
+    await runProactive("evening", options());
+    expect(stages()).toEqual([]);
+    expect(runLog().at(-1).detail).toBe("outcome-ask-text-off_rating-cards-team-tenant");
+  });
+
+  test("ids are canonical across the trigger and the plugin: a mixed-case UUID is one subject", async () => {
+    expect(canonicalId(OPP.toUpperCase())).toBe(OPP);
+    expect(canonicalId("opp:Mixed-Case.id")).toBe("opp:Mixed-Case.id");
+    expect(canonicalId("has space")).toBeNull();
+    markRated(OPP.toUpperCase());
+    expect(readRatedIds(home)).toEqual(new Set([OPP]));
+    await runProactive("evening", options({ accepted: async () => [accepted("Arjun Mehta", OPP.toUpperCase())] }));
+    expect(stages()).toEqual([]);
+    const s = noteAccepted({ ratingCards: { firstSeen: { [OPP2.toUpperCase()]: "2026-10-20" }, staged: {} } }, [OPP2], new Set(), DATE);
+    expect(s.ratingCards).toEqual({ firstSeen: { [OPP2]: "2026-10-20" }, staged: {} });
+    expect(ratingStageFor({ opportunityId: OPP3.toUpperCase() }, { name: "Maya", headline: null, agentName: "Edge" }, DATE, EVENING)!.opportunity_id).toBe(OPP3);
+  });
+
+  test("the plugin's eviction tombstones still read as asked", () => {
+    mkdirSync(join(home, "av-events", "proactive"), { recursive: true, mode: 0o700 });
+    writeFileSync(ratedLedgerPath(home), JSON.stringify({ v: 1, cards: { [OPP]: { nonce: "n".repeat(22) } }, evicted: [OPP2, "has space"] }), { mode: 0o600 });
+    expect(readRatedIds(home)).toEqual(new Set([OPP, OPP2]));
+  });
+
+  test("firstSeen is pruned to what Index lists accepted now", () => {
+    const s = noteAccepted({ ratingCards: { firstSeen: { [OPP]: "2026-10-20", [OPP2]: "2026-10-20" }, staged: { [OPP]: "2026-10-20" } } }, [OPP2], new Set(), DATE);
+    expect(s.ratingCards).toEqual({ firstSeen: { [OPP2]: "2026-10-20" }, staged: {} });
+  });
+
+  test("--stage-test needs a home and never uses the working directory", () => {
+    expect(stageTest(["--stage-test", "--opportunity", OPP], undefined, EVENING)[0]).toContain("HERMES_HOME");
+    expect(stages()).toEqual([]);
+    const lines = stageTest(["--stage-test", "--opportunity", OPP.toUpperCase(), "--home", home], home, EVENING);
+    expect(lines[0]).toContain("wrote");
+    expect(stages()[0].opportunity_id).toBe(OPP);
   });
 });
 
