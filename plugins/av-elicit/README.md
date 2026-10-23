@@ -33,12 +33,15 @@ plugins/av-elicit/
 
 1. No `.txt`: nothing to do.
 2. `closed` present: every `.txt` becomes `.skipped`.
-3. Any `.txt` staged more than 24 h ago becomes `.skipped` (quiet hours included).
+3. Any `.txt` staged more than 24 h ago becomes `.skipped` (quiet hours and the ballot hold included).
 4. 22:00 to 08:00 IST: hold (the file stays `.txt`).
-5. No session key (`AV_ELICIT_SESSION_KEY`, else `agent:main:telegram:dm:<TELEGRAM_HOME_CHANNEL>`): wait.
-6. No row in `state.db` `sessions` with `source='telegram'` and that `session_key`: wait (the gateway can
+5. `$HERMES_HOME/av-events/godconst/page-open` exists (av-godconst's empty marker while a sent ballot card
+   page still has unrated cards): hold, exactly as in quiet hours. Nothing is consumed or skipped for this
+   reason; only step 3's 24 h age cap skips a held file.
+6. No session key (`AV_ELICIT_SESSION_KEY`, else `agent:main:telegram:dm:<TELEGRAM_HOME_CHANNEL>`): wait.
+7. No row in `state.db` `sessions` with `source='telegram'` and that `session_key`: wait (the gateway can
    inject only into a session it can look up; one exists after the human's first message to the bot).
-7. Inject the oldest file only (one per pass) through `ctx.inject_message(text, session_key=...)`. Accepted:
+8. Inject the oldest file only (one per pass) through `ctx.inject_message(text, session_key=...)`. Accepted:
    rename `.done`. Refused (flag off, no live gateway) or raised: the file stays and is retried next pass.
 
 ## The probe (every 60 s)

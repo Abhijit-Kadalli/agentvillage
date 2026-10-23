@@ -211,6 +211,37 @@ def test_age_cap_applies_in_quiet_hours(plugin, home, db):
     assert len(names(home, ".skipped")) == 1
 
 
+def ballot_page(home):
+    folder = home / "av-events" / "godconst"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "page-open").write_text("")
+    return folder / "page-open"
+
+
+def test_ballot_page_open_holds_injection(plugin, home, db):
+    db.session("s-dm")
+    stage(home, "open", OPENER, NOON - 60)
+    marker = ballot_page(home)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "held_ballot_page"
+    assert plugin.inject_pass(ctx, now=NOON + 3600) == "held_ballot_page"
+    assert ctx.calls == [] and len(names(home, ".txt")) == 1 and names(home, ".skipped") == []
+    marker.unlink()
+    assert plugin.inject_pass(ctx, now=NOON + 3600) == "injected"
+    assert len(ctx.calls) == 1
+
+
+def test_ballot_page_hold_still_honours_the_age_cap(plugin, home, db):
+    db.session("s-dm")
+    stage(home, "next", NEXT_IDLE, NOON - 25 * 3600)
+    stage(home, "open", OPENER, NOON - 60)
+    ballot_page(home)
+    ctx = Ctx()
+    assert plugin.inject_pass(ctx, now=NOON) == "held_ballot_page"
+    assert [n.split("-", 1)[1] for n in names(home, ".skipped")] == ["next.skipped"]
+    assert [n.split("-", 1)[1] for n in names(home, ".txt")] == ["open.txt"] and ctx.calls == []
+
+
 def test_closed_marker_skips_everything_pending(plugin, home, db):
     db.session("s-dm")
     stage(home, "open", OPENER, NOON - 120)

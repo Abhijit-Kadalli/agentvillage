@@ -17,7 +17,8 @@ The inject loop injects one file per pass, oldest first, as a user-role turn int
 (``agent:main:telegram:dm:<TELEGRAM_HOME_CHANNEL>``, or ``AV_ELICIT_SESSION_KEY``) through
 ``ctx.inject_message``. Hermes refuses unless ``plugins.entries.av-elicit.allow_gateway_injection: true`` and
 the session exists, so the loop waits until ``state.db`` has a Telegram session under that key. Nothing is
-injected between 22:00 and 08:00 IST (the file is held).
+injected between 22:00 and 08:00 IST, nor while av-godconst's ``av-events/godconst/page-open`` marker
+exists (a sent ballot card page still has unrated cards); the file is held, and only the 24 h age cap skips it.
 
 Fail-open: no hooks, one daemon thread, one tool; every failure is a log code, never an exception into the
 gateway. Logs carry codes and counts only, never a message's text. Python 3.9+, standard library only.
@@ -174,6 +175,15 @@ def closed_path(home: Optional[str] = None) -> str:
 
 def probe_path(home: Optional[str] = None) -> str:
     return os.path.join(elicit_dir(home), "probe.json")
+
+
+def ballot_page_marker(home: Optional[str] = None) -> str:
+    """av-godconst's empty marker, present while a sent ballot card page still has unrated cards."""
+    return os.path.join(home or hermes_home(), "av-events", "godconst", "page-open")
+
+
+def ballot_page_open(home: Optional[str] = None) -> bool:
+    return os.path.lexists(ballot_page_marker(home))
 
 
 def state_db(home: Optional[str] = None) -> str:
@@ -437,8 +447,9 @@ def telegram_dm_session(session_id: Any, home: Optional[str] = None) -> bool:
 
 
 def inject_pass(ctx: Any = None, home: Optional[str] = None, now: Optional[float] = None) -> str:
-    """One pass: skip everything pending when closed, skip files past the age cap, else inject the oldest
-    file (at most one per pass). Returns an outcome code."""
+    """One pass: skip everything pending when closed, skip files past the age cap, hold in quiet hours and
+    while av-godconst's ballot page is open, else inject the oldest file (at most one per pass). Returns an
+    outcome code."""
     global _LAST_CODE
     stamp = time.time() if now is None else now
     directory = inject_dir(home)
@@ -465,6 +476,10 @@ def inject_pass(ctx: Any = None, home: Optional[str] = None, now: Optional[float
     if in_quiet_hours(stamp):
         _log_once("held_quiet_hours", pending=len(fresh))
         return "held_quiet_hours"
+    if ballot_page_open(home):
+        # A ballot card page is open with unrated cards: hold, as in quiet hours (only the age cap skips).
+        _log_once("held_ballot_page", pending=len(fresh))
+        return "held_ballot_page"
     key = session_key(home)
     if not key:
         _log_once("no_session_key", logging.WARNING)
@@ -754,7 +769,7 @@ def register(ctx: Any) -> None:
 
 
 __all__ = [
-    "AGE_CAP_S", "FORMS", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
+    "AGE_CAP_S", "FORMS", "ballot_page_open", "ballot_page_marker", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
     "build_record", "closed_path", "confirmation", "current_trigger", "dm_session_exists", "elicitation_record_tool",
     "human_messages_since", "in_quiet_hours", "inject_dir", "inject_pass", "is_closed", "last_injected",
     "open_done_times", "parse_stage_name", "probe_pass", "probe_path", "probe_payload", "record_elicitation",
