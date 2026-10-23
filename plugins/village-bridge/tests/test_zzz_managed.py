@@ -104,6 +104,116 @@ class ManagedPairsTest(unittest.TestCase):
         with managed.locked_state(self.home) as state:
             self.assertEqual((state["day"], state["replies"]), ("2099-01-01", 0))
 
+    def test_two_reply_thread_lifetime_survives_day_and_reconsent(self):
+        now = managed.datetime.now(managed.timezone.utc).timestamp()
+        for number in (1, 2):
+            with managed.locked_state(self.home) as state:
+                state["day"] = ""
+                state["replies"] = 0
+                state["pending"] = {"kind": "incoming", "roomId": "room_a", "threadId": "thread_a",
+                                    "requestId": self.pair["requestId"],
+                                    "consentEpoch": self.pair["consentEpoch"], "at": now}
+            self.assertTrue(managed.reserve_reply(self.home, self.transport, {}, "thread_a"), number)
+            self.pair = {**self.pair, "consentEpoch": self.pair["consentEpoch"] + 1}
+        with managed.locked_state(self.home) as state:
+            state["day"] = ""
+            state["replies"] = 0
+            state["pending"] = {"kind": "incoming", "roomId": "room_a", "threadId": "thread_a",
+                                "requestId": self.pair["requestId"],
+                                "consentEpoch": self.pair["consentEpoch"], "at": now}
+        self.assertFalse(managed.reserve_reply(self.home, self.transport, {}, "thread_a"))
+        with managed.locked_state(self.home) as state:
+            self.assertEqual(state["threadReplies"][managed._thread_key("room_a", "thread_a")], 2)
+            state["pending"] = {"kind": "incoming", "roomId": "room_a", "threadId": "thread_new",
+                                "requestId": self.pair["requestId"],
+                                "consentEpoch": self.pair["consentEpoch"], "at": now}
+        self.assertTrue(managed.reserve_reply(self.home, self.transport, {}, "thread_new"))
+
+    def test_thread_ledger_bound_and_malformed_count_fail_closed(self):
+        now = managed.datetime.now(managed.timezone.utc).timestamp()
+        keys = {managed._thread_key("room_a", f"thread_{number}"): 1
+                for number in range(managed.THREAD_LIMIT)}
+        def pending(thread):
+            return {"kind": "incoming", "roomId": "room_a", "threadId": thread,
+                    "requestId": "req_a", "consentEpoch": 1, "at": now}
+        with managed.locked_state(self.home) as state:
+            state["threadReplies"] = keys.copy()
+            state["pending"] = pending("thread_0")
+        self.assertTrue(managed.reserve_reply(self.home, self.transport, {}, "thread_0"))
+        with managed.locked_state(self.home) as state:
+            state["day"], state["replies"] = "", 0
+            state["pending"] = pending("thread_new")
+        self.assertFalse(managed.reserve_reply(self.home, self.transport, {}, "thread_new"))
+        with managed.locked_state(self.home) as state:
+            self.assertEqual(len(state["threadReplies"]), managed.THREAD_LIMIT)
+            self.assertEqual(state["threadReplies"][managed._thread_key("room_a", "thread_0")], 2)
+            state["threadReplies"][managed._thread_key("room_a", "thread_1")] = -1
+            state["pending"] = pending("thread_2")
+        self.assertFalse(managed.budget_available(self.home))
+        self.assertFalse(managed.reserve_reply(self.home, self.transport, {}, "thread_2"))
+
+    def test_policy_pause_global_and_pair_scopes(self):
+        self.assertTrue(managed.policy_attempt(self.home))
+        self.assertFalse(managed.policy_attempt(self.home))
+        self.assertFalse(managed.budget_available(self.home))
+        self.assertIsNone(managed.poll(self.home, lambda *_: self.fail("global pause polled"), {}, mini.installed))
+        managed.policy_allowed(self.home)
+        self.assertTrue(managed.budget_available(self.home))
+        self.assertTrue(managed.policy_attempt(self.home, "room_a"))
+        self.assertFalse(managed.policy_attempt(self.home, "room_a"))
+        self.assertTrue(managed.budget_available(self.home))
+        with managed.locked_state(self.home) as state:
+            self.assertGreater(state["policyPauseRooms"]["room_a"], managed.datetime.now(managed.timezone.utc).timestamp() + 86390)
+        # A different pair is still eligible for its own exact event gate.
+        self.assertTrue(managed.policy_attempt(self.home, "room_b"))
+        managed.policy_allowed(self.home, "room_b")
+        self.assertFalse(managed.policy_attempt(self.home, "room_a"))
+        with managed.locked_state(self.home) as state:
+            state["policyPauseRooms"]["room_a"] = 0
+        self.assertTrue(managed.policy_attempt(self.home, "room_a"))
+
+    def test_exhausted_thread_advances_cursor_without_reading_body(self):
+        self.items = [{"cursor": "2", "kind": "post.created", "threadId": "thread_a", "postId": "post_b"}]
+        with managed.locked_state(self.home) as state:
+            state["rooms"] = {"room_a": {"requestId": "req_a", "consentEpoch": 1,
+                                         "cursor": "1", "baseline": False}}
+            state["threadReplies"] = {managed._thread_key("room_a", "thread_a"): 2}
+        calls = []
+        def observed(config, payload):
+            calls.append(payload["operation"])
+            return self.transport(config, payload)
+        self.assertIsNone(managed.poll(self.home, observed, {}, mini.installed))
+        self.assertNotIn("zzz.read_thread", calls)
+        with managed.locked_state(self.home) as state:
+            self.assertEqual(state["rooms"]["room_a"]["cursor"], "2")
+            state["retryAt"] = 0
+        self.items.append({"cursor": "3", "kind": "post.created", "threadId": "thread_new", "postId": "post_c"})
+        self.assertEqual(managed.poll(self.home, observed, {}, mini.installed),
+                         {"kind": "incoming", "roomId": "room_a", "threadId": "thread_new", "postId": "post_c"})
+
+    def test_pair_policy_pause_does_not_halt_other_pair_poll(self):
+        other = {"roomId": "room_b", "requestId": "req_b", "consentEpoch": 1,
+                 "status": "agent_messaging_enabled"}
+        with managed.locked_state(self.home) as state:
+            state["rooms"] = {room: {"requestId": request, "consentEpoch": 1,
+                                      "cursor": "1", "baseline": False}
+                              for room, request in (("room_a", "req_a"), ("room_b", "req_b"))}
+        self.assertTrue(managed.policy_attempt(self.home, "room_a"))
+        calls = []
+        def transport(_config, payload):
+            calls.append((payload["operation"], payload.get("room")))
+            if payload["operation"] == "zzz.pairs":
+                return {"kind": "zzz.pairs", "pairs": [self.pair, other]}
+            if payload["operation"] == "zzz.changes":
+                return {"kind": "zzz.changes", "items": [{"cursor": "2", "kind": "post.created",
+                        "threadId": "thread_b", "postId": "post_b"}], "nextCursor": None}
+            if payload["operation"] == "zzz.read_thread":
+                return {"kind": "zzz.thread", "posts": [{"id": "post_b", "isOwn": False}]}
+            self.fail(payload["operation"])
+        self.assertEqual(managed.poll(self.home, transport, {}, mini.installed),
+                         {"kind": "incoming", "roomId": "room_b", "threadId": "thread_b", "postId": "post_b"})
+        self.assertNotIn(("zzz.changes", "room_a"), calls)
+
     def assert_off(self, label):
         """Nothing runs: no poll, no bootstrap, no reply or read reservation, no network, no state dir."""
         # Recorded, not raised: the reservations swallow a transport error, which would hide the attempt.

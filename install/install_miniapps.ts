@@ -80,12 +80,13 @@ export function zzzParticipation(projection: { apps: readonly { id: string }[] }
  * it creates the job; every teardown removes the shim only after the job is gone (and a revocation removes the files
  * and state after that), so the installer never leaves a managed job without a marker. With the gate off and no
  * marker, the stage is main's stage: no jobs.json parse, no scripts/ walk, no Hermes call, nothing written. The
- * plugin creates the cursor lock before any other state file, so the two fixed state names cover its state.
+ * plugin creates the cursor lock before any other state file; the whole-turn
+ * runner also creates managed-run.lock. All three names cover its state.
  */
 /**
  * S5 + N12 (review-b recheck L17481, lead RULING, nonav OWNER CALL pick (a)): a marker counts only when its final lstat
  * is a REGULAR file (never a symlink, directory, FIFO or dangling link), and an installer-written marker (the two
- * shims, participate.md) only when its bytes are a version this installer shipped (zzzShippedFile). The plugin's two
+ * shims, participate.md) only when its bytes are a version this installer shipped (zzzShippedFile). The plugin's three
  * state files cannot be byte-matched (their content is per box): they count as regular files in a real zzzbot/ folder.
  * Revocation still removes the job while ANY genuine marker remains (one shipped file, or the plugin's state alone with
  * every installer file edited). Documented residual (review-b S4-r (b)): a job record with NO genuine marker left (every
@@ -99,7 +100,8 @@ const ZZZ_MARKERS: readonly { parts: readonly string[]; kind: ZzzShippedKind | n
   { parts: ["scripts", ZZZ_SHIM], kind: "runner" },
   { parts: ["skills", "zzzbot", "scripts", ZZZ_SHIM], kind: "runner" },
   { parts: ["skills", "zzzbot", "prompts", "participate.md"], kind: "prompt" },
-  { parts: ["zzzbot", "managed-pairs.json"], kind: null }, { parts: ["zzzbot", "managed-pairs.lock"], kind: null }];
+  { parts: ["zzzbot", "managed-pairs.json"], kind: null }, { parts: ["zzzbot", "managed-pairs.lock"], kind: null },
+  { parts: ["zzzbot", "managed-run.lock"], kind: null }];
 /**
  * Every marker path, never through a symlinked or non-directory parent: `ours` when one counts, and `notOurs`, the
  * relative names of the objects at a marker path that do not (left in place; they trigger nothing). No parse, and a
@@ -487,7 +489,8 @@ function removeZzzManagedState(home: string): void {
     if (!(error instanceof Error && "code" in error && error.code === "ENOTEMPTY")) throw error;
   }
 }
-const zzzStateName = (name: string) => name === "managed-pairs.json" || name === "managed-pairs.lock" || /^\.managed-[0-9]+$/.test(name);
+const zzzStateName = (name: string) => name === "managed-pairs.json" || name === "managed-pairs.lock" ||
+  name === "managed-run.lock" || /^\.managed-[0-9]+$/.test(name);
 /** N12: removes only the installer's own managed files (a shipped version's bytes); anything else by their names stays. */
 function removeZzzManagedFiles(home: string): void {
   for (const relative of ZZZ_MANAGED_FILES)

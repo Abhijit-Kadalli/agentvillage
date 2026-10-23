@@ -97,7 +97,7 @@ class ManagedRunnerTest(unittest.TestCase):
                   patch.object(runner, "_config", return_value={}),
                   patch.object(runner, "_approval_gate", return_value=object()),
                   patch.object(runner, "_runner_turn", side_effect=lambda _home: self.accepted_turn()),
-                  patch.object(runner, "_shim_allowed", return_value=True),
+                  patch.object(runner, "_policy_allowed", return_value=True),
                   patch.object(runner, "_pending_post", return_value="Can we meet at three?"),
                   patch.object(runner, "_native", side_effect=lambda *args: native.append(args[-1]) or {})):
                 runner.run(home)
@@ -187,7 +187,7 @@ class ManagedRunnerTest(unittest.TestCase):
               patch.object(runner, "_config", return_value={}),
               patch.object(runner, "_approval_gate", return_value=object()),
               patch.object(runner, "_runner_turn", side_effect=lambda _home: self.accepted_turn()),
-              patch.object(runner, "_shim_allowed", return_value=True),
+              patch.object(runner, "_policy_allowed", return_value=True),
               patch.object(runner, "_native", side_effect=lambda *args: calls.append(args[-1]) or {})):
             runner.run(SAFE_TEMP_PARENT)
         self.assertEqual(len(calls), 1)
@@ -299,6 +299,8 @@ class ManagedRunnerTest(unittest.TestCase):
                 envelope = json.loads(kwargs["input"])
                 requests.append(envelope)
                 operation = envelope["tool_input"]["operation"]
+                if policy_mode[0] == "crash":
+                    raise RuntimeError("owner policy hook failed")
                 if policy_mode[0] == "deny-all" or (policy_mode[0] == "deny-reply" and operation == "zzz.reply"):
                     return types.SimpleNamespace(returncode=2, stdout='{"action":"block"}', stderr="")
                 return types.SimpleNamespace(returncode=0, stdout="{}", stderr="")
@@ -332,6 +334,11 @@ class ManagedRunnerTest(unittest.TestCase):
                     state["replies"] = replies
                     state["retryAt"] = 0
                     state["pending"] = None
+                    # Each independent fixture scenario starts after the
+                    # previous refusal window has expired.
+                    state["policyPauseUntil"] = 0
+                    state["policyPauseRooms"] = {}
+                    state["threadReplies"] = {}
             execute()
             self.assertEqual(len(client.calls), 1)
             self.assertEqual(len(writes), 1)
@@ -352,6 +359,14 @@ class ManagedRunnerTest(unittest.TestCase):
                 self.assertTrue(acquired)
                 execute()
             self.assertEqual((len(transport_calls), len(requests), len(client.calls), len(writes)), before_overlap)
+            # The lifetime thread cap blocks a third inference even when the
+            # UTC-day budget is fresh and an incoming post is still visible.
+            ready_again()
+            with managed.locked_state(home) as state:
+                state["threadReplies"] = {managed._thread_key("room_a", "thread_a"): 2}
+            before_thread_cap = (len(client.calls), len(writes))
+            execute()
+            self.assertEqual((len(client.calls), len(writes)), before_thread_cap)
             # A third reply is stopped before cursor polling or another model call.
             ready_again(replies=2)
             before = (len(client.calls), len(requests), len(writes))
@@ -364,6 +379,21 @@ class ManagedRunnerTest(unittest.TestCase):
             self.assertEqual(len(client.calls), before[0])
             self.assertEqual(len(writes), before[2])
             self.assertEqual(requests[-1]["tool_input"]["operation"], "zzz.pairs")
+            # A manual or denied owner verdict is asked only once in the
+            # durable 24-hour window, even during idle cron ticks.
+            refused = (len(transport_calls), len(requests), len(client.calls), len(writes))
+            for _ in range(6):
+                execute()
+            self.assertEqual((len(transport_calls), len(requests), len(client.calls), len(writes)), refused)
+            with managed.locked_state(home) as state:
+                self.assertGreater(state["policyPauseUntil"], datetime.now(timezone.utc).timestamp() + 86390)
+            ready_again()
+            policy_mode[0] = "crash"
+            with self.assertRaises(RuntimeError):
+                execute()
+            crashed_calls = len(requests)
+            execute()
+            self.assertEqual(len(requests), crashed_calls)
             # An exact-body denial can cost one model call, then suppresses the
             # event without a write or a reusable approval identity.
             ready_again()
@@ -374,6 +404,8 @@ class ManagedRunnerTest(unittest.TestCase):
             with managed.locked_state(home) as state:
                 self.assertIsNone(state["pending"])
                 self.assertEqual(state["replies"], 0)
+                self.assertIn("room_a", state["policyPauseRooms"])
+                self.assertEqual(state.get("policyPauseUntil", 0), 0)
             # A valid silence response likewise consumes no write.
             ready_again()
             policy_mode[0] = "allow"

@@ -6,6 +6,7 @@ This file keeps only cursors, IDs and a short reply reservation; no post text.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -20,6 +21,8 @@ JOB_NAME = "Edge — zzz pairs"
 JOB_SCRIPT = "zzz_managed_runner.py"
 JOB_TOOLSETS = ["village", "no_mcp"]
 STATE_LIMIT = 65536
+THREAD_LIMIT = 256
+POLICY_PAUSE_SECONDS = 86400
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}\Z")
 CRON_SESSION = re.compile(r"cron_([0-9a-f]{12})_[0-9]{8}_[0-9]{6}\Z")
 CRON_TASK = re.compile(r"cron:([0-9a-f]{12}):[0-9a-f-]{8,80}\Z")
@@ -191,7 +194,86 @@ def _budget_open(state: dict) -> bool:
     if day < today:
         state["day"], state["replies"] = today, 0
     replies = state.get("replies")
-    return type(replies) is int and 0 <= replies < 2
+    return type(replies) is int and 0 <= replies < 2 and _thread_ledger_valid(state)
+
+
+def _thread_key(room: str, thread: str) -> str:
+    return hashlib.sha256(json.dumps([room, thread], separators=(",", ":")).encode()).hexdigest()
+
+
+def _thread_ledger_valid(state: dict) -> bool:
+    counts = state.get("threadReplies", {})
+    if not isinstance(counts, dict) or len(counts) > THREAD_LIMIT:
+        return False
+    return all(isinstance(key, str) and re.fullmatch(r"[0-9a-f]{64}", key)
+               and type(value) is int and value in (1, 2) for key, value in counts.items())
+
+
+def _thread_open(state: dict, room: str, thread: str) -> bool:
+    if not _thread_ledger_valid(state):
+        return False
+    counts = state.get("threadReplies", {})
+    key = _thread_key(room, thread)
+    return counts.get(key, 0) < 2 and (key in counts or len(counts) < THREAD_LIMIT)
+
+
+def _pause_open(state: dict, room: str | None = None) -> bool:
+    now = datetime.now(timezone.utc).timestamp()
+    global_until = state.get("policyPauseUntil", 0)
+    rooms = state.get("policyPauseRooms", {})
+    if (type(global_until) not in (int, float) or not 0 <= global_until < 10**12
+            or not isinstance(rooms, dict) or len(rooms) > 20
+            or any(not isinstance(key, str) or not ID.fullmatch(key)
+                   or type(value) not in (int, float) or not 0 <= value < 10**12
+                   for key, value in rooms.items())):
+        return False
+    return now >= global_until and (room is None or now >= rooms.get(room, 0))
+
+
+def policy_attempt(home: Path, room: str | None = None) -> bool:
+    """Reserve a 24-hour refusal window before entering the owner policy hook."""
+    if room is not None and (not isinstance(room, str) or not ID.fullmatch(room)):
+        return False
+    try:
+        with locked_state(home) as state:
+            if not _pause_open(state, room):
+                return False
+            until = datetime.now(timezone.utc).timestamp() + POLICY_PAUSE_SECONDS
+            if room is None:
+                state["policyPauseUntil"] = until
+            else:
+                pauses = state.setdefault("policyPauseRooms", {})
+                # Expired room refusals need no history. A full live set fails closed.
+                now = datetime.now(timezone.utc).timestamp()
+                for key in list(pauses):
+                    if pauses[key] <= now:
+                        del pauses[key]
+                if room not in pauses and len(pauses) >= 20:
+                    return False
+                pauses[room] = until
+            return True
+    except Exception:
+        return False
+
+
+def policy_allowed(home: Path, room: str | None = None) -> None:
+    """Only an explicit allow from the real shim clears a reserved pause."""
+    with locked_state(home) as state:
+        if room is None:
+            state["policyPauseUntil"] = 0
+        else:
+            state.setdefault("policyPauseRooms", {}).pop(room, None)
+
+
+def policy_refused(home: Path, room: str | None = None) -> None:
+    """Start the full pause after a returned non-allow, including hook latency."""
+    with locked_state(home) as state:
+        until = datetime.now(timezone.utc).timestamp() + POLICY_PAUSE_SECONDS
+        if room is None:
+            state["policyPauseUntil"] = max(state.get("policyPauseUntil", 0), until)
+        else:
+            pauses = state.setdefault("policyPauseRooms", {})
+            pauses[room] = max(pauses.get(room, 0), until)
 
 
 def budget_available(home: Path) -> bool:
@@ -200,7 +282,7 @@ def budget_available(home: Path) -> bool:
         return False
     try:
         with locked_state(home) as state:
-            return _budget_open(state)
+            return _budget_open(state) and _pause_open(state)
     except Exception:
         return False
 
@@ -212,10 +294,11 @@ def finish_pending(home: Path, event: dict) -> None:
         keys = ("kind", "roomId", "threadId", "postId")
         if isinstance(pending, dict) and all(pending.get(key) == event.get(key) for key in keys):
             state["pending"] = None
+            state["retryAt"] = 0
 
 
 def reserve_reply(home: Path, transport, config, thread: str) -> bool:
-    """One pending exact thread, current pair, two replies per UTC day max."""
+    """Reserve the exact pending reply against current pair, daily and thread caps."""
     if not isinstance(thread, str) or not ID.fullmatch(thread) or not participation_on(home):
         return False
     try:
@@ -228,6 +311,9 @@ def reserve_reply(home: Path, transport, config, thread: str) -> bool:
                     or pending.get("threadId") != thread):
                 return False
             room = pending.get("roomId")
+            if not _pause_open(state, room) or not _thread_open(state, room, thread):
+                state["pending"] = None
+                return False
             if pairs.get(room) != {"requestId": pending.get("requestId"), "consentEpoch": pending.get("consentEpoch")}:
                 state["pending"] = None
                 return False
@@ -236,6 +322,9 @@ def reserve_reply(home: Path, transport, config, thread: str) -> bool:
                 return False
             state["pending"] = None  # consume before network; uncertain writes are never repeated
             state["replies"] += 1
+            key = _thread_key(room, thread)
+            counts = state.setdefault("threadReplies", {})
+            counts[key] = counts.get(key, 0) + 1
             return True
     except Exception:
         return False
@@ -303,7 +392,7 @@ def poll(home: Path, transport, config, installed):
         return None
     with locked_state(home) as state:
         now = datetime.now(timezone.utc).timestamp()
-        if not _budget_open(state):
+        if not _budget_open(state) or not _pause_open(state):
             return None
         if state.get("retryAt", 0) > now:
             return None
@@ -323,7 +412,9 @@ def poll(home: Path, transport, config, installed):
                 state["pending"] = None
             elif isinstance(pending, dict):
                 age = now - pending.get("at", 0)
-                if 0 <= age <= 1800 and pending.get("kind") in ("incoming", "bootstrap"):
+                if (0 <= age <= 1800 and pending.get("kind") in ("incoming", "bootstrap")
+                        and _pause_open(state, pending.get("roomId"))
+                        and (pending.get("kind") == "bootstrap" or _thread_open(state, pending.get("roomId"), pending.get("threadId")))):
                     state["rooms"] = rooms
                     keys = ("kind", "roomId") if pending["kind"] == "bootstrap" else ("kind", "roomId", "threadId", "postId")
                     return {key: pending[key] for key in keys}
@@ -338,6 +429,8 @@ def poll(home: Path, transport, config, installed):
             selected = [all_pairs[(offset + i) % len(all_pairs)] for i in range(min(2, len(all_pairs)))] if all_pairs else []
             state["nextPair"] = (offset + len(selected)) % len(all_pairs) if all_pairs else 0
             for room, identity in selected:
+                if not _pause_open(state, room):
+                    continue
                 entry = rooms.get(room)
                 baseline = entry is None or entry.get("baseline") is True
                 first = entry is None
@@ -367,6 +460,8 @@ def poll(home: Path, transport, config, installed):
                         continue
                     post, thread = change.get("postId"), change.get("threadId")
                     if not isinstance(post, str) or not ID.fullmatch(post) or not isinstance(thread, str) or not ID.fullmatch(thread):
+                        continue
+                    if not _thread_open(state, room, thread):
                         continue
                     inspected += 1
                     # ZZZ read_thread's after cursor shares the room change
