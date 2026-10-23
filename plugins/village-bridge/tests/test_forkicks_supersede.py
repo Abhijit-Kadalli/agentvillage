@@ -1173,6 +1173,41 @@ class SupersedeTest(unittest.TestCase):
         self.assertEqual((self.timeouts(), self.confirms_sent()), ([], []))
         self.daemon.start.assert_not_called()
 
+    def test_s2_an_agent_start_racing_the_close_waits_for_its_one_lock_hold(self):
+        """Review-b ov#472 recheck of da6c1f56 (probe P3, mutant M1): the close's wait read and its `expired` write are
+        ONE drafts_lock hold. The agent's guarded_start, fired from another thread while the close reads the wait inside
+        that hold, waits for it and then reads `expired`: it never starts. With the lock released between the read and
+        the write, the start lands in the gap and `expired` is written over a started task."""
+        import threading
+        self.prepare(D1)
+        self.daemon.tap(D1)  # granted, never started
+        expires = self.lapse_soon(D1)
+        real_spent = grant._spent
+        reads, results, workers = [], [], []
+
+        def agent_start():
+            results.append(grant.guarded_start(self.home, D1, lambda: self.daemon.start(self.task(D1), PREFIX + D1, '')))
+
+        def spent(waited, key):
+            reads.append(True)
+            out = real_spent(waited, key)
+            if len(reads) == 2:  # the close's own read, inside its lock hold
+                worker = threading.Thread(target=agent_start)
+                workers.append(worker)
+                worker.start()
+                worker.join(0.3)
+            return out
+
+        self.addCleanup(lambda: [w.join(5) for w in workers])
+        with patch('time.time', lambda: expires + 1), patch.object(grant, '_spent', side_effect=spent):
+            self.run_pass()
+        workers[0].join(5)
+        self.assertFalse(workers[0].is_alive())
+        self.assertEqual(results, [('expired', None)])
+        self.daemon.start.assert_not_called()
+        self.assertEqual(self.tombstone_of(D1), {'code': 'expired'})
+        self.assertEqual(self.sent, [('42', self.EXPIRED_LINE)])
+
     def test_n13_a_spent_grant_past_the_ttl_gets_the_merchants_answer_as_one_line(self):
         # Review-a ov#468 N13 (TTL-spent): the pass's own start is spent with its answer lost, and the pass does not
         # run again for the TTL. One late confirm with the same draftId: the merchant refuses a new create past the
