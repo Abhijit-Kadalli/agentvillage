@@ -31,6 +31,7 @@ plugins/av-events/
   _cron.py         cron.run from the executions ledger and usage audit (flusher thread only)
   _outcome_ask.py  the evening outcome ask: outcome.asked and the resident's answer (DATA-42)
   _headline_flagged.py  opportunity.headline_flagged from the proactive trigger's hand-off files: ids and codes, no text (DATA-487)
+  _rating_cards.py  opportunity.rating_asked / rated / pre_planned from the av-rate plugin's hand-off files: the suggestion rating cards (data docs/design/suggestion-rating.md)
   _approvals_reminder.py  one Connect-approvals reminder per Telegram DM session while the welcome's button is unstarted (DATA-444)
   _clock.py        the Now line on every turn, cron runs and subagents included: `Now: <Wkd YYYY-MM-DD HH:MM> IST (<h:mm AM/PM>)` (CLOCK-1)
   _prompt_refresh.py  a long session's system prompt follows USER.md / MEMORY.md / AGENTS.md / skills: wraps Hermes's build_turn_context (F1)
@@ -45,7 +46,7 @@ plugins/av-events/
   _brief_items.py  read-only count of inferred intentions awaiting an answer, for the morning brief (DATA-222, DATA-314); never imported by the plugin
   tool_categories.json        frozen seed: tool name -> category (tool_categories_v3)
   edgeos_tool_allowlist.json  frozen seed: EdgeOS operations (edgeos_tool_allowlist_v1)
-  cron_job_names.json         frozen seed: the cron names cron.run may carry (cron_job_names_v3)
+  cron_job_names.json         frozen seed: the cron names cron.run may carry (cron_job_names_v4)
   outcome_question.json       the evening outcome ask's fixed question: sentence, normalise steps, question key rule, shared cases with keys and hashes (outcome_question_v5)
   tests/           pytest suite; drives a fake ctx, never imports Hermes
 ```
@@ -261,6 +262,9 @@ backlog can differ from `emitted_at` by minutes. Every `marts` time series is bu
 | `cron.run` | the cron tail, on the flusher thread | `job_id`, `job_name`, `execution_id`, `status`, `input_tokens`, `output_tokens`, `claimed_at`, `started_at`, `finished_at`, `delivery_outcome` — see "Cron capture" |
 | `outcome.asked` | the flusher, once Hermes's ledger shows the evening job's question delivered or queued | `message_hash` (the reply's keyed hash, = that turn's `message.out` `content_hash`; null in `metadata`), `window_days` (1), `asked_by` (`outcome_cron`), `intention_reason` (null, or `not_linked` \| `ambiguous` \| `not_recorded`; `not_recorded` today); envelope `outcome_id`, `opportunity_id`, `intention_id` (null today) — see "The evening outcome ask" |
 | `opportunity.headline_flagged` | the flusher, from the proactive trigger's hand-off files (`av-events/proactive/headline-flagged/`), one per Index headline the trigger's cleaner, scanner or shape check withheld or flagged | closed, every key required, no text: `opportunity_id` (the Index opportunity id, a UUID, either case: data's door admits UUID only), `counterpart_index_user_id` (the card's other party's Index user id, a UUID), `reason_code` (`cleaner_withheld` \| `scanner_flagged` \| `shape_withheld` \| `length_capped`; `length_capped` is reserved and not emitted: a cut headline was checked whole before the cut), `stage` (`cleaner` \| `scanner` \| `shape`), `headline_length` (int 0..2000); envelope `opportunity_id`, actor `system`; a record or file not exactly that shape is dropped and counted (`flag_dropped_<reason>` in the log line and the counters), every file is consumed once, nothing raises; the ids cannot be verified on the box (same user as the agent), so the event is agent-asserted (`_headline_flagged.py`, DATA-487) |
+| `opportunity.rating_asked` | the flusher, from the av-rate plugin's hand-off files (`av-events/proactive/rating-events/`), one per rating card sent (`plugins/av-rate`; data docs/design/suggestion-rating.md) | closed: `question_version` (`match_fit_5_v1`), `card` (`fit` \| `planned`), `message_hash` (the card text's keyed hash), `window_hours` (24); envelope `opportunity_id`, `intention_id` (null unless the stage named one); actor `system`; event id derived from (type, opportunity, card, revision); off with `rating_cards` in `AV_HOOKS_DISABLED` (`_rating_cards.py`) |
+| `opportunity.rated` | as above, one per tap on card 1 (a re-tap is a revision) | closed: `value` (1..5), `scale` (`match_fit_5_v1`), `channel` (`telegram_button`), `revision`, `rated_at`; `self_report`, actor `participant` |
+| `opportunity.pre_planned` | as above, one per tap on card 2 | closed: `value` (`yes` \| `no`), `channel`, `revision`, `answered_at`; `self_report`, actor `participant` |
 | `outcome.reported` | the flusher, for a resident's Telegram DM whose whole text is an answer to the one open ask, sent as their next message after it or as a reply to it | `value`, `matcher_version` (`outcome_reply_v2`), `intention_reason` (the ask's); `self_report`, actor `participant`, envelope `outcome_id`, `opportunity_id`, `intention_id` (the ask's), `in_reply_to_event_id` = the ask — see "The evening outcome ask" |
 | `profile.updated` | `on_session_finalize`, when a USER.md changed | `kind` ∈ `memory_profile`\|`landing_profile`, `user_md_hash`, plus `length` above `metadata` |
 | `llm.call` | `pre_api_request` + `post_api_request` | `model`, `provider`, the five token buckets, `latency_ms`, `finish_reason`, `tools_hash`, `system_prompt_hash`, plus lengths above `metadata` |
@@ -1684,16 +1688,19 @@ tenant the ask confirms and reads answers without waiting for a chat. It reads:
   execution's window (±2 s); otherwise both are null. The last 512 KiB is read, and only when there
   is something to report.
 - `$HERMES_HOME/cron/jobs.json`: `job_name`, **only when it is exactly one of the names the
-  installer creates**, from the frozen seed `cron_job_names.json` (`cron_job_names_v3`;
-  `install/tests/av_events_state.test.ts` fails if it drifts from `DIGEST_CRON_SPECS`). A prefix check
+  installer creates**, from the frozen seed `cron_job_names.json` (`cron_job_names_v4`;
+  `install/tests/av_events_state.test.ts` fails if it drifts from `DIGEST_CRON_SPECS` plus the ZZZ managed job). A prefix check
   is not enough: a participant can have the agent schedule a job named `Edge — …` too, and its name
   is then their words. Nor is an exact name (DATA-92): the participant can ask for a job named
   exactly `Edge — daily digest`, so the name is reported only when the job id is also one the
   installer recorded in `$HERMES_HOME/av-events/installed_jobs.json` (`{"ids": [...]}`, rewritten by
-  `install/install_index.ts` on every install and update with the ids of the crons it created or
-  manages). No record, no names: a tenant installed before the record existed reports `job_name:
-  null` until its next install. `cron.run` is on the ops allowlist and kept without research consent
+  `install/install_index.ts` and the ZZZ managed-job reconciler with the ids of the crons they
+  created or manage). The ZZZ id is retained only while its exact installed job shape remains
+  verified. No record, no names: a tenant installed before the record existed reports
+  `job_name: null` until its next install. `cron.run` is on the ops allowlist and kept without research consent
   (spec §2.2), so it carries nothing a participant wrote. Every other job has `job_name: null`.
+  The ZZZ job is a `no_agent` script: `cron.run` records Hermes execution status, not proof that a
+  pair post reached the app, and it supplies no generic AIAgent model/tool trajectory.
 - **A missing or stale record drops installer runs, not only their names.** The worker keeps a
   `cron.run` from a tenant without research consent only when it names an installer job; one with
   `job_name: null` is dropped as `cron_participant_job` (`agentvillage-data`
