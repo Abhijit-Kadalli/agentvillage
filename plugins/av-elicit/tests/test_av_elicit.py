@@ -504,7 +504,8 @@ def test_question_record_file(plugin, home, db):
     [path] = records(home)
     body = json.loads(path.read_text())
     assert set(body) == {"record_id", "kind", "question_no", "agent_question_no", "category", "form", "trigger",
-                         "text", "takeaway", "statement_ids", "recorded_at"}
+                         "text", "takeaway", "statement_ids", "late", "text_long", "recorded_at"}
+    assert body["late"] is False and body["text_long"] is False
     assert body["trigger"] == "opener" and body["form"] == "open" and body["text"] == "What matters most?"
     assert uuid.UUID(body["record_id"]).version == 4
     ms, rid = path.stem.split("-", 1)
@@ -655,6 +656,67 @@ def test_unreadable_window_state_counts_from_0(plugin, home, db):
     (home / "av-events" / "elicit" / "window.json").write_text("{bad")
     assert plugin.window_questions(int((NOON - 600) * 1000)) == 0
     assert rec(plugin, home, "question", 4, NOON - 500)["question_no"] == 1
+
+
+def closed_at(home, when):
+    close(home)
+    os.utime(home / "av-events" / "elicit" / "closed", (when, when))
+
+
+def test_late_answer_and_stop_go_to_the_closed_window(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    rec(plugin, home, "question", 1, NOON - 7100)
+    rec(plugin, home, "question", 2, NOON - 7000)
+    closed_at(home, NOON - 3600)
+    body = rec(plugin, home, "answer", 1, NOON)
+    assert body["late"] is True and body["question_no"] == 1 and body["trigger"] is None
+    body = rec(plugin, home, "stop", 9, NOON + 60)
+    assert body["late"] is True and body["question_no"] == 2
+    out = plugin.elicitation_record_tool({"kind": "question", "question_no": 3, "text": "q"}, session_id="s-dm")
+    assert "No ODIN" in json.loads(out)["error"]
+
+
+def test_late_answers_stop_after_24_hours(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    rec(plugin, home, "question", 1, NOON - 7100)
+    closed_at(home, NOON - 3600)
+    assert rec(plugin, home, "answer", 1, NOON - 3600 + 24 * 3600)["late"] is True  # exactly 24 h: kept
+    with pytest.raises(plugin.Refused) as info:
+        plugin.record_elicitation({"kind": "answer", "question_no": 1, "text": "a"}, "s-dm", now=NOON - 3600 + 24 * 3600 + 1)
+    assert info.value.code == "no_window"
+
+
+def test_late_needs_a_window_that_was_opened(plugin, home, db):
+    db.session("s-dm")
+    closed_at(home, NOON - 60)
+    with pytest.raises(plugin.Refused):
+        plugin.record_elicitation({"kind": "stop", "question_no": 1}, "s-dm", now=NOON)
+
+
+def test_late_answers_still_need_the_dm(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 7200)
+    closed_at(home, NOON - 3600)
+    db.session("s-group", key="agent:main:telegram:group:-100", chat_type="group")
+    with pytest.raises(plugin.Refused) as info:
+        plugin.record_elicitation({"kind": "answer", "question_no": 1, "text": "a"}, "s-group", now=NOON)
+    assert info.value.code == "not_dm"
+
+
+def test_long_question_text_is_kept_and_flagged(plugin, home, db):
+    opened_at(plugin, home, db, NOON - 600)
+    sixty = " ".join(["word"] * 60)
+    body = rec(plugin, home, "question", 1, NOON - 500, text=sixty)
+    assert body["text_long"] is False and body["text"] == sixty
+    long = " ".join(["word"] * 61) + "?"
+    body = rec(plugin, home, "question", 2, NOON - 400, text=long)
+    assert body["text_long"] is True and body["text"] == long
+    body = rec(plugin, home, "answer", 2, NOON - 300, text=long)
+    assert body["text_long"] is False  # only questions are checked
+
+
+def test_description_says_question_sentence_only(plugin):
+    assert "question sentence only" in plugin.TOOL_DESCRIPTION
+    assert "question sentence" in plugin.TOOL_SCHEMA["parameters"]["properties"]["text"]["description"]
 
 
 def test_answer_and_stop_records(plugin, home, db):

@@ -79,9 +79,17 @@ time of the last answer is kept in `last_answer.json` (`{"at_ms": n}`, 0600); an
 window (before the current `*-open.done`) never counts. Fields that do not belong to the kind are written as `null` (`[]` for
 `statement_ids`); a question without a `form` is `other`.
 
+Late answers (contract v4): for 24 h after a window's `closed` marker (its mtime), `answer` and `stop`
+records are still accepted and written to that window, numbered from its `window.json`, with `late: true`.
+A `question` after close is refused. Every record carries `late` (boolean).
+
+`text` for a question is the question sentence only, not the whole message (the description says so). A soft
+check: a question whose text is over 60 words is kept and flagged `text_long: true` (every record carries
+`text_long`; only questions can be true).
+
 It refuses (returns `{"error": "..."}`, never raises) outside a Telegram DM session (the calling
 `session_id`'s `state.db` row must be `source='telegram'`, `chat_type='dm'`, and the resident's own session
-key when one is configured), when no window is open, on invalid arguments, and past 200 records.
+key when one is configured), when no window is open (beyond the late-answer rule above), on invalid arguments, and past 200 records.
 Success returns one line, e.g. `Recorded question 2 (privacy_and_consent).`
 
 ## Configuration (set by the installer, `install/av_elicit.ts`)

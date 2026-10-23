@@ -67,6 +67,11 @@ QUESTION_NO_MAX = 100
 STATEMENT_IDS_MAX = 64
 #: Records a box may hold before the tool refuses (6 questions and their answers fit many times over).
 RECORDS_MAX = 200
+#: Answers and stops are still recorded this long after a window's ``closed`` marker (contract v4), as late.
+LATE_ANSWER_S = 24 * 3600
+#: A question text longer than this many words is kept and flagged ``text_long`` (it is likely the whole
+#: message, not the question sentence).
+QUESTION_WORDS_SOFT_MAX = 60
 
 DIR_MODE = 0o700
 FILE_MODE = 0o600
@@ -86,8 +91,10 @@ STAGE_NAME = re.compile(r"^(\d{10,16})-([a-z]+)$")
 TOOL_DESCRIPTION = (
     "Record one step of the ODIN constitution conversation with your human: a question you sent them "
     "(kind question), their answer (kind answer: their words, what you learned, the statement ids it "
-    "informed), or their 'not now' or 'stop' (kind stop). Call it every time you ask or they answer, and "
-    "only while that conversation is open; it works only in your Telegram DM with your human."
+    "informed), or their 'not now' or 'stop' (kind stop). Call it every time you ask or they answer. For a "
+    "question, text is the question sentence only, not your whole message (leave out the greeting and the "
+    "lead-in). Questions are recorded only while the conversation is open; an answer or stop that arrives "
+    "up to 24 hours after it closed is still recorded. It works only in your Telegram DM with your human."
 )
 
 TOOL_SCHEMA: dict = {
@@ -107,7 +114,8 @@ TOOL_SCHEMA: dict = {
             "form": {"type": "string", "enum": list(FORMS),
                      "description": "Question only: open, trade_off, direct_rating or other."},
             "text": {"type": "string",
-                     "description": "Required for question and answer: the question exactly as you sent it, or "
+                     "description": "Required for question and answer: for a question, the question sentence "
+                                    "only, exactly as you sent it (not the whole message); for an answer, "
                                     "their answer in their own words."},
             "takeaway": {"type": "string", "description": "Answer only: what you learned, in one or two sentences."},
             "statement_ids": {"type": "array", "items": {"type": "string"},
@@ -399,6 +407,17 @@ def window_start(home: Optional[str] = None) -> Optional[float]:
     if closed is not None and closed >= newest:
         return None
     return newest
+
+
+def late_window_start(home: Optional[str] = None, now: Optional[float] = None) -> Optional[float]:
+    """The start of the window closed last, while its ``closed`` marker is at most 24 h old (late answers
+    and stops still go to it); None otherwise, and None while a window is open."""
+    times = open_done_times(home)
+    closed = closed_time(home)
+    if not times or closed is None or closed < times[-1]:
+        return None
+    stamp = time.time() if now is None else now
+    return times[-1] if stamp - closed <= LATE_ANSWER_S else None
 
 
 def window_open(home: Optional[str] = None) -> bool:
@@ -767,6 +786,9 @@ def build_record(fields: dict, trigger: Optional[str], now: Optional[float] = No
         "text": fields["text"],
         "takeaway": fields["takeaway"],
         "statement_ids": fields["statement_ids"],
+        "late": bool(fields.get("late")),
+        "text_long": bool(fields["kind"] == "question" and fields["text"]
+                          and len(fields["text"].split()) > QUESTION_WORDS_SOFT_MAX),
         "recorded_at": now_iso(now),
     }
 
@@ -785,8 +807,6 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
     """Gate, validate and write one record. Returns the line the agent reads; raises Refused."""
     if not telegram_dm_session(session_id, home):
         raise Refused("not_dm", "elicitation_record works only in your Telegram DM with your human.")
-    if not window_open(home):
-        raise Refused("no_window", "No ODIN constitution conversation is open; nothing was recorded.")
     fields = validate_record(args)
     stamp = time.time() if now is None else now
     directory = records_dir(home)
@@ -794,6 +814,10 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
         if len(_listing(directory, ".json")) >= RECORDS_MAX:
             raise Refused("records_full", "This conversation already holds the most records allowed.")
         start = window_start(home)
+        fields["late"] = False
+        if start is None and fields["kind"] in ("answer", "stop"):
+            start = late_window_start(home, stamp)
+            fields["late"] = start is not None
         if start is None:
             raise Refused("no_window", "No ODIN constitution conversation is open; nothing was recorded.")
         window_ms = int(round(start * 1000))
@@ -817,7 +841,8 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
                 write_private_json(last_answer_path(home), {"at_ms": int(stamp * 1000)})
             except OSError as exc:  # the record is written; only the next question's trigger may be off
                 _log("last_answer_write_failed", logging.WARNING, error=type(exc).__name__)
-    _log("recorded", kind=record["kind"], question_no=record["question_no"],
+    _log("recorded", kind=record["kind"], question_no=record["question_no"], late=int(record["late"]),
+         text_long=int(record["text_long"]),
          agent_question_no=record["agent_question_no"], statements=len(record["statement_ids"]))
     return confirmation(record)
 
@@ -916,7 +941,7 @@ def register(ctx: Any) -> None:
 
 __all__ = [
     "AGE_CAP_S", "FORMS", "ballot_page_open", "ballot_page_marker", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
-    "build_record", "closed_path", "confirmation", "current_trigger", "assign_question_no", "window_questions", "question_trigger", "last_answer_time", "dm_session_exists", "elicitation_record_tool",
+    "build_record", "closed_path", "confirmation", "current_trigger", "late_window_start", "assign_question_no", "window_questions", "question_trigger", "last_answer_time", "dm_session_exists", "elicitation_record_tool",
     "human_messages_since", "in_quiet_hours", "inject_dir", "inject_pass", "is_closed", "last_injected",
     "open_done_times", "closed_time", "window_start", "parse_stage_name", "probe_pass", "probe_path", "probe_payload", "record_elicitation",
     "records_dir", "register", "register_record_tool", "run_once", "session_key", "split_trigger",
