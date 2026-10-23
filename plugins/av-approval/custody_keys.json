@@ -6,6 +6,10 @@
       "decision": "not_secret",
       "reason": "av-elicit (GC-ELICIT, the GODCONST follow-up questions): an optional override of the gateway session key the plugin injects the control plane's staged notices into (default agent:main:telegram:dm:<home chat id>), for a developer testing with their own bot. A session key is a routing label Hermes derives from the platform and chat id, not a credential; nothing authenticates with it."
     },
+    "AV_RATE_SESSION_KEY": {
+      "decision": "not_secret",
+      "reason": "av-rate (the suggestion rating cards): an optional override of the gateway session key the plugin injects the [Rating recorded] line into (default agent:main:telegram:dm:<home chat id>), for a developer testing with their own bot. A session key is a routing label Hermes derives from the platform and chat id, not a credential; nothing authenticates with it."
+    },
     "INDEX_API_KEY": {
       "decision": "strip",
       "reason": "Index writes are approval-gated (intent.publish.*, opportunity.accept); with the key agent code could call Index around the gate. The Index MCP client and record_intention run inside the gateway; the index-network scripts read $HERMES_HOME/.env (resolveIndexApiKey, envOrDotenv)."

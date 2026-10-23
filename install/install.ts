@@ -102,6 +102,7 @@ import {
 import { configureTelegramDisplay } from "./display_defaults";
 import { configureAvDisplay, configureVillageMenu } from "./av_display";
 import { configureAvVote } from "./av_vote";
+import { configureAvRate } from "./av_rate";
 import { copySkillBundles, removeRetiredSkillDirs } from "./skill_copy";
 import { hermesBin, hermesExecEnv, hermesRunner } from "./hermes_cli";
 import {
@@ -378,6 +379,8 @@ function main(): void {
   if (resident) configureAvVote();
   // rc44 (RESIDENT-UX): av-display's /village in Telegram's command menu (past the 60-slot cap otherwise).
   configureVillageMenu();
+  // Suggestion rating cards (plugins/av-rate): enabled, and allowed to hand the recorded rating to the agent.
+  configureAvRate();
   // Opt-in and off the core path: a failure here is counted, never fatal.
   safeInstallRecall(SOURCE_SKILLS);
   // GC-ELICIT (av_elicit.ts): opt-in on AV_ELICIT_ENABLED, set per tenant by the control plane; unset changes nothing; never fatal.
