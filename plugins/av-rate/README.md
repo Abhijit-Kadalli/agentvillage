@@ -18,11 +18,15 @@ Maya Rao, about Climate finance
 4  Good fit
 5  Great fit
 
-Private: only you and the research team see this. Maya Rao does not.
+Private: Maya Rao never sees your answer.
 
 (Evening questions message - you can ask me to stop or manage it)
 [ 1 ] [ 2 ] [ 3 ] [ 4 ] [ 5 ]
 ```
+
+The privacy line promises only what the plugin can keep whatever the resident's research consent
+(it cannot read consent): the counterpart never sees the answer. Where the answer goes beyond the
+agent's own records is the consent brief's to say.
 
 A tap answers "Recorded: Good fit", marks the button, and sends card 2:
 
@@ -31,10 +35,53 @@ Did you already plan this meetup?
 [ Yes ] [ No ]
 ```
 
-Taps are accepted for 24 h; a re-tap is a revision (last wins downstream). After card 2, or when the
-window closes with card 1 answered, the agent gets one line in the DM session:
+Each card takes taps for 24 h from its own send; a re-tap with another value is a revision (last
+wins downstream), the same value again answers "Already recorded" and records nothing. After card 2,
+or when both windows have closed with card 1 answered, the agent gets one line in the DM session:
 `[Rating recorded] Maya Rao: 4/5 match fit; already planned: no.` and the skill tells it to store
 it and reply with at most one short line.
+
+### The resident's controls
+
+The cards go out under the "Evening questions" job and its manage line, so the resident's word
+holds for them:
+
+| Control | Trigger (stages) | Plugin (sends) |
+|---|---|---|
+| **Stop / manage** the evening job (Hermes's job record `cron/jobs.json`: `enabled: false`, `state: "paused"` or a `paused_at` on the job named "Edge — evening questions" whose id `av-events/installed_jobs.json` lists; message-labels.ts `storedJobEnabled`) | stages nothing (`rating-cards-job-stopped`) | defers every stage to the next pick-up (`deferred_job_stopped`), never drops |
+| **Quiet hours**: the resident's evening window in `av-events/job-settings.json` (`jobs.evening.window` `HH:MM-HH:MM`, `tz`; job-settings.ts grammar), else 08:00 to 22:00 village time (`Asia/Kolkata`, the pending alert's default) | the evening job's own window gates the whole run (proactive.ts) | defers outside the window (`deferred_quiet_hours`); an invalid file or entry defers too (`deferred_settings_invalid`), never widens |
+| **Team tenant** (`AV_TEAM_TENANT=1`, job-settings.ts `isTeamTenant`) | stages nothing (`rating-cards-team-tenant`) | drops the stages (`stage_dropped_team_tenant`) |
+| **Stale stage** (older than 3 days, the trigger's STALE_DAYS) | — | drops it (`stage_dropped_stale`) |
+| **Unreadable job store** | stages nothing (`rating-cards-jobs-unreadable`) | defers (`deferred_jobs_unreadable`) |
+
+### The shared day budget
+
+The agreed ceiling is three proactive messages per resident per day, all jobs together. The
+trigger keeps no delivery ledger, only the once-a-day marks the other agent jobs write to
+`memory/heartbeat-state.json` `proactiveRuns` when they wake the model (brief, drop-midday,
+drop-evening, negotiation; the hourly pending alert has no day mark and is not counted). A mark
+says the model was woken, not that it delivered: a run the model answered `[SILENT]` still carries
+one. The rule counts every mark as a delivery (conservative, never over the ceiling):
+`cardBudget = 3 − marks dated today`, less what this date already staged (a second run on one date
+never exceeds the cap), and the evening stages at most that many card pairs
+(`rating-cards:<n>:budget:<b>` in the run log when the budget cut it). The data side reads the real
+count (`marts.proactive_messages_per_resident_day`, rule `proactive_ceiling_v2`).
+
+### Sending and the ledger (review round 1)
+
+- No lock is held across an `await`: every ledger change is one synchronous load-change-save, so a
+  tap during a send keeps its answer.
+- Write-ahead: the card is on the ledger before `send_message`; the message id is filled after;
+  the stage is unlinked last. A pending card found later with no message id (a crash between send
+  and save, or another process's) is kept as asked and never re-sent (`stage_resolved_pending`).
+- A failed send withdraws the reservation; after 3 failed attempts across pick-ups the stage is
+  dropped (`stage_dropped_send_failed`); a Telegram 429 waits its `retry_after`
+  (`send_rate_limited`, then `deferred_rate_limited`).
+- A tap must come from the card's own chat and message (card 1's or card 2's id); a tap with no
+  message is refused as not the owner's.
+- Evicted cards (over 500) leave id-only tombstones in `evicted`, so they stay asked.
+- The injected line is retried up to 3 times when Hermes refuses or errors (it returns one
+  boolean for "flag off", "no live gateway" and "scheduling failed"), then `inject_gave_up`.
 
 ## How it works
 
@@ -61,11 +108,11 @@ av-events key (`av-events/hash.key`), else this plugin's own `av-events/av-rate.
 ### Assumptions built in (the design note's open items, defaults taken)
 
 - Labels: Not a fit / Weak fit / OK fit / Good fit / Great fit, pinned as `match_fit_5_v1`.
-- Revision window 24 h; later taps answer "This question has closed." and record nothing.
-- An acceptance rolled over by the 3-per-evening cap expires unasked after 3 village days.
-- The cap counts card pairs only: the trigger keeps no count of the day's other proactive deliveries.
+- Each card's window is 24 h from its own send; later taps answer "This question has closed." and record nothing.
+- An acceptance rolled over by the cap expires unasked after 3 village days.
+- The cap is the shared day budget above (day marks counted as deliveries).
 - The agent acknowledges in at most one short line, or stays silent (`tools.md`).
-- The cards reuse the "Evening questions" stop/manage toggle and its manage line.
+- The cards reuse the "Evening questions" stop/manage toggle and its manage line, and honour it (above).
 - The counterpart's cleaned name and Index's cleaned headline appear on the card.
 - The old text ask stays in the tree behind `AV_OUTCOME_TEXT_ASK` (default off) for one release.
 - The cleaned name is kept on the ledger (a 0600 file in the home) for the injected line.
@@ -77,8 +124,9 @@ av-events key (`av-events/hash.key`), else this plugin's own `av-events/av-rate.
 | `AV_RATE_CARDS` | `1|true|yes|on` sends cards (process environment, else `$HERMES_HOME/.env`). Default off: stages are left in place, taps still answer. |
 | `AV_RATE_SESSION_KEY` | overrides the injection target (default `agent:main:telegram:dm:<home chat id>`) |
 | `AV_OUTCOME_TEXT_ASK` | av-events: the old text ask's arming, answers and pass (default off) |
-| `av-events/proactive/rating/stage-<id>.json` | the trigger's stage, consumed by the pick-up |
-| `av-events/proactive/rated.json` | the ledger: nonce, chat and message ids, times, both answers, the name |
+| `av-events/proactive/rating/stage-<id>.json` | the trigger's stage, consumed by the pick-up (deferred, not dropped, while the job is stopped or in quiet hours) |
+| `av-events/proactive/rated.json` | the ledger: nonce, chat and message ids, both windows, both answers, the name, injection attempts; `evicted` id tombstones |
+| `cron/jobs.json`, `av-events/installed_jobs.json`, `av-events/job-settings.json` | read for the resident's controls, exactly as the trigger reads them |
 | `av-events/proactive/rating-events/*.json` | hand-off records for av-events, consumed on its tick |
 
 Logs: `av-rate: tenant=<id8> outcome=<code> [k=v ...]`; never a name, token, user id or callback

@@ -153,10 +153,32 @@ def test_nonce_is_keyed_and_stable(plugin):
 def test_hash_key_prefers_av_events_key_then_makes_its_own(plugin, home):
     own = plugin.hash_key()
     assert own is not None and len(own) == 32
-    assert (home / "av-events" / "av-rate.key").exists()
+    key_file = home / "av-events" / "av-rate.key"
+    assert key_file.exists() and (key_file.stat().st_mode & 0o777) == 0o600
     assert plugin.hash_key() == own
     (home / "av-events" / "hash.key").write_text("ab" * 32 + "\n")
+    os.chmod(home / "av-events" / "hash.key", 0o600)
     assert plugin.hash_key() == bytes.fromhex("ab" * 32)
+
+
+def test_a_key_file_that_is_not_private_is_never_used(plugin, home):
+    """Review round 1: keys are read with the private-file checks (regular, this user, 0600)."""
+    (home / "av-events" / "hash.key").write_text("ab" * 32 + "\n")  # 0644 by default
+    own = plugin.hash_key()
+    assert own is not None and own != bytes.fromhex("ab" * 32)
+    os.chmod(home / "av-events" / "av-rate.key", 0o644)
+    # Both keys unusable: None this pass (the pick-up counts no_key), never a silent new key.
+    assert plugin.hash_key() is None
+
+
+def test_an_empty_or_partial_key_file_is_not_yet_not_dead(plugin, home):
+    """Review round 1: a reader that met a half-written key must not return None forever."""
+    key_file = home / "av-events" / "av-rate.key"
+    key_file.write_text("")
+    os.chmod(key_file, 0o600)
+    assert plugin.hash_key() is None
+    key_file.write_text("cd" * 32 + "\n")
+    assert plugin.hash_key() == bytes.fromhex("cd" * 32)
 
 
 # --------------------------------------------------------------------------- card text and keyboards
@@ -167,7 +189,8 @@ def test_card_one_text_labels_privacy_and_manage_line(plugin):
     assert text.startswith("How good a match was this suggestion from Edge?\nMaya &lt;Rao&gt;, about Climate &amp; finance\n")
     for value, label in plugin.LABELS.items():
         assert f"{value}  {label}" in text
-    assert "Private: only you and the research team see this. Maya &lt;Rao&gt; does not." in text
+    assert "Private: Maya &lt;Rao&gt; never sees your answer." in text
+    assert "research team" not in text
     assert text.endswith("\n\n" + plugin.MANAGE_LINE)
     assert "about" not in plugin.fit_text("Edge", "Maya", None).splitlines()[1]
 
@@ -311,6 +334,21 @@ def test_fit_tap_records_marks_sends_card_two_and_hands_the_event_over(plugin, h
     assert rated["at"] == plugin.now_iso(T0 + 60) and rated["message_hash"] is None
 
 
+def test_a_step_after_the_record_that_fails_never_answers_failed(plugin, home, on):
+    bot, nonce = tapped(plugin, home, on)
+    bot.fail = 1  # card 2's send raises after the fit tap is saved and answered
+    query = Query(plugin.fit_callback(3, nonce), bot)
+
+    async def broken_edit(**_):
+        raise RuntimeError("edit refused")
+
+    query.edit_message_reply_markup = broken_edit
+    run(handler(plugin, now=T0 + 60)(types.SimpleNamespace(callback_query=query)))
+    assert query.answers == ["Recorded: OK fit"]
+    assert plugin.FAILED not in query.answers
+    assert ledger(home)["cards"][OPP]["fit"]["value"] == 3
+
+
 def test_a_retap_is_a_revision_and_sends_no_second_card_two(plugin, home, on):
     bot, nonce = tapped(plugin, home, on)
     h = handler(plugin, now=T0 + 60)
@@ -328,7 +366,7 @@ def test_planned_tap_records_and_injects_the_line_once(plugin, home, on):
     h = handler(plugin, ctx=ctx, now=T0 + 60)
     run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
     assert ctx.calls == []
-    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
     assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: no.", f"agent:main:telegram:dm:{OWNER}")]
     card = ledger(home)["cards"][OPP]
     assert card["planned"] == {"value": "no", "revision": 1, "at": plugin.now_iso(T0 + 60)} and card["injected"] is True
@@ -336,7 +374,7 @@ def test_planned_tap_records_and_injects_the_line_once(plugin, home, on):
     assert planned == [{"event_type": "opportunity.pre_planned", "opportunity_id": OPP, "intention_id": None, "card": "planned", "revision": 1,
                         "value": "no", "at": plugin.now_iso(T0 + 60), "message_hash": None}]
     # A revision of card 2 does not inject again.
-    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot, message_id=102))))
     assert len(ctx.calls) == 1
 
 
@@ -347,7 +385,7 @@ def test_injection_refused_or_erroring_never_blocks_the_tap(plugin, home, on):
         bot, nonce = tapped(plugin, home, on)
         h = handler(plugin, ctx=ctx, now=T0 + 60)
         run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(1, nonce), bot))))
-        query = Query(plugin.planned_callback("y", nonce), bot)
+        query = Query(plugin.planned_callback("y", nonce), bot, message_id=102)
         run(h(types.SimpleNamespace(callback_query=query)))
         assert query.answers == ["Recorded: Yes"]
 
@@ -358,15 +396,23 @@ def test_session_key_override(plugin, monkeypatch):
     assert plugin.session_key_for("42") == "agent:prof:telegram:dm:42"
 
 
-def test_window_closes_after_24_hours_then_the_pickup_injects_card_one_alone(plugin, home, on):
+def test_each_card_has_its_own_24_hour_window_then_the_pickup_injects_card_one_alone(plugin, home, on):
+    """Review round 1, decision 2: card 2's window runs from card 2's own send."""
     ctx = Ctx()
     bot, nonce = tapped(plugin, home, on)
     run(handler(plugin, now=T0 + 60)(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(3, nonce), bot))))
-    late = Query(plugin.planned_callback("y", nonce), bot)
-    run(handler(plugin, now=T0 + 24 * 3600 + 1)(types.SimpleNamespace(callback_query=late)))
+    card = ledger(home)["cards"][OPP]
+    assert plugin.epoch_from_iso(card["closes_at_planned"]) == pytest.approx(T0 + 60 + 24 * 3600)
+    # Card 1 closed, card 2 still open: a planned tap is taken, a fit re-tap is not.
+    late_fit = Query(plugin.fit_callback(2, nonce), bot)
+    run(handler(plugin, now=T0 + 24 * 3600 + 1)(types.SimpleNamespace(callback_query=late_fit)))
+    assert late_fit.answers == ["This question has closed."]
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 24 * 3600 + 1) == {}  # card 2 still open: not injected yet
+    late = Query(plugin.planned_callback("y", nonce), bot, message_id=102)
+    run(handler(plugin, now=T0 + 60 + 24 * 3600 + 1)(types.SimpleNamespace(callback_query=late)))
     assert late.answers == ["This question has closed."]
     assert ledger(home)["cards"][OPP]["planned"] is None
-    assert pickup(plugin, bot, ctx=ctx, now=T0 + 24 * 3600 + 1) == {"injected": 1}
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 + 1) == {"injected": 1}
     assert ctx.calls == [("[Rating recorded] Maya Rao: 3/5 match fit; already planned: not answered.", f"agent:main:telegram:dm:{OWNER}")]
     # An unanswered card is never injected.
     stage(home, plugin, opp=OPP2)
@@ -422,3 +468,293 @@ def test_logs_carry_codes_only(plugin, home, on, caplog):
     text = caplog.text
     assert "Maya" not in text and nonce not in text and OWNER not in text and OPP not in text
     assert "outcome=recorded" in text and f"tenant={TENANT[:8]}" in text
+
+
+# --------------------------------------------------------------------------- review round 1: the ledger under concurrency
+
+
+class TappingBot(Bot):
+    """A bot whose send awaits a tap on another card first: the pick-up and a tap interleave across the await."""
+
+    def __init__(self, tap):
+        super().__init__()
+        self.tap = tap
+
+    async def send_message(self, **kwargs):
+        if self.tap is not None:
+            tap, self.tap = self.tap, None
+            await tap()
+        return await super().send_message(**kwargs)
+
+
+def test_a_tap_during_a_send_is_never_lost(plugin, home, on):
+    """BLOCKER: the old pass held an RLock across the await and saved a stale ledger over the tap."""
+    bot, nonce = tapped(plugin, home, on)  # card A sent (message 101)
+    stage(home, plugin, opp=OPP2)  # card B staged
+
+    async def tap_a():
+        await handler(plugin, now=T0 + 30)(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(5, nonce), bot)))
+
+    tapping = TappingBot(tap_a)
+    tapping._next = bot._next
+    assert pickup(plugin, tapping, now=T0 + 60) == {"sent": 1}
+    cards = ledger(home)["cards"]
+    assert cards[OPP]["fit"] == {"value": 5, "revision": 1, "at": plugin.now_iso(T0 + 30)}, "the tap survived the send"
+    assert cards[OPP2]["message_id"] is not None
+    # The next tap on A is a revision, not a first tap: no second card 2.
+    sent_before = len(bot.sent) + len(tapping.sent)
+    run(handler(plugin, now=T0 + 90)(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(2, nonce), bot))))
+    assert ledger(home)["cards"][OPP]["fit"]["revision"] == 2
+    assert len(bot.sent) + len(tapping.sent) == sent_before
+
+
+def test_a_card_is_written_ahead_of_its_send_and_never_sent_twice(plugin, home, on):
+    """A pending card (write-ahead) with no message id from another process is kept as asked, not re-sent."""
+    stage(home, plugin)
+    pending = {"v": 1, "cards": {OPP: {"nonce": "n" * 22, "intention_id": None, "name": "Maya Rao", "agent_name": "Edge", "chat_id": OWNER,
+                                      "message_id": None, "planned_message_id": None, "pending_since": plugin.now_iso(T0 - 30), "pid": 1,
+                                      "sent_at": None, "closes_at": None, "closes_at_planned": None, "fit": None, "planned": None, "injected": False}},
+               "evicted": []}
+    plugin.write_private(plugin.ledger_path(), pending)
+    bot = Bot()
+    assert pickup(plugin, bot) == {"stage_resolved_pending": 1}
+    assert not bot.sent
+    card = ledger(home)["cards"][OPP]
+    assert card["send_unknown"] is True and card["sent_at"] is not None and card["closes_at"] is not None
+    (record,) = records(home)
+    assert record["event_type"] == "opportunity.rating_asked"
+    # A send that fails withdraws the reservation so the next pass can try again.
+    stage(home, plugin, opp=OPP2)
+    failing = Bot(fail=1)
+    assert pickup(plugin, failing) == {"send_failed": 1}
+    assert OPP2 not in ledger(home)["cards"]
+    assert pickup(plugin, failing) == {"sent": 1}
+
+
+def test_evicted_cards_leave_tombstones_that_stay_asked(plugin, home, on, monkeypatch):
+    monkeypatch.setattr(plugin, "LEDGER_MAX_CARDS", 2)
+    ids = [f"{i}b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d" for i in range(4)]
+    for i, opp in enumerate(ids):
+        stage(home, plugin, opp=opp, staged_at=plugin.now_iso(T0 - 60 + i))
+        pickup(plugin, Bot(), now=T0 + i)
+    data = ledger(home)
+    assert set(data["cards"]) == set(ids[2:])
+    assert data["evicted"] == ids[:2]
+    stage(home, plugin, opp=ids[0])
+    assert pickup(plugin, Bot(), now=T0 + 10) == {"stage_dropped_already_asked": 1}
+
+
+def test_a_tap_with_no_message_or_on_another_message_is_refused(plugin, home, on):
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, now=T0 + 60)
+    no_message = types.SimpleNamespace(data=plugin.fit_callback(4, nonce), from_user=types.SimpleNamespace(id=int(OWNER)), message=None, answers=[])
+
+    async def answer(text=None, **_):
+        no_message.answers.append(text)
+
+    no_message.answer = answer
+    run(h(types.SimpleNamespace(callback_query=no_message)))
+    assert no_message.answers == ["This card is not yours"]
+    wrong = Query(plugin.fit_callback(4, nonce), bot, message_id=999)
+    run(h(types.SimpleNamespace(callback_query=wrong)))
+    assert wrong.answers == ["This card is no longer valid."]
+    planned_on_card_one = Query(plugin.planned_callback("y", nonce), bot, message_id=101)
+    run(h(types.SimpleNamespace(callback_query=planned_on_card_one)))
+    assert planned_on_card_one.answers == ["This card is no longer valid."]
+    assert ledger(home)["cards"][OPP]["fit"] is None
+
+
+def test_the_same_value_again_is_already_recorded_not_a_revision(plugin, home, on):
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
+    again = Query(plugin.fit_callback(4, nonce), bot)
+    run(h(types.SimpleNamespace(callback_query=again)))
+    assert again.answers == ["Already recorded: Good fit"]
+    assert ledger(home)["cards"][OPP]["fit"]["revision"] == 1
+    assert [r["revision"] for r in records(home) if r["event_type"] == "opportunity.rated"] == [1]
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
+    same = Query(plugin.planned_callback("n", nonce), bot, message_id=102)
+    run(h(types.SimpleNamespace(callback_query=same)))
+    assert same.answers == ["Already recorded: No"]
+    assert len([r for r in records(home) if r["event_type"] == "opportunity.pre_planned"]) == 1
+
+
+def test_a_mixed_case_uuid_is_one_card(plugin, home, on):
+    stage(home, plugin, opp=OPP.upper())
+    assert pickup(plugin, Bot()) == {"sent": 1}
+    assert list(ledger(home)["cards"]) == [OPP]
+    stage(home, plugin, opp=OPP)
+    assert pickup(plugin, Bot()) == {"stage_dropped_already_asked": 1}
+
+
+def test_injection_is_retried_up_to_the_cap_then_closed(plugin, home, on):
+    ctx = Ctx(accept=False)
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
+    assert ledger(home)["cards"][OPP]["inject_attempts"] == 1 and ledger(home)["cards"][OPP]["injected"] is False
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 120) == {"inject_refused": 1}
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 180) == {"inject_refused": 1}
+    card = ledger(home)["cards"][OPP]
+    assert card["injected"] is True and card["injected_code"] == "inject_gave_up" and card["inject_attempts"] == plugin.INJECT_ATTEMPTS_MAX
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 240) == {}
+    assert len(ctx.calls) == 3
+
+
+# --------------------------------------------------------------------------- wave 1: the resident's controls
+
+
+IST_2AM = T0 - 12 * 3600  # 2025-10-08T20:53Z = 02:23 Asia/Kolkata
+
+
+def test_quiet_hours_defer_the_stage_by_default(plugin, home, on):
+    path = stage(home, plugin, staged_at=plugin.now_iso(IST_2AM - 60))
+    bot = Bot()
+    assert pickup(plugin, bot, now=IST_2AM) == {"deferred_quiet_hours": 1}
+    assert path.exists() and not bot.sent
+    assert plugin.QUIET_DEFAULT_WINDOW == (8 * 60, 22 * 60)
+    assert pickup(plugin, bot, now=T0) == {"sent": 1}
+
+
+def write_settings(home, text):
+    folder = home / "av-events"
+    folder.mkdir(exist_ok=True)
+    (folder / "job-settings.json").write_text(text)
+
+
+def test_the_residents_evening_window_rules_the_send(plugin, home, on):
+    # 02:23 IST is inside a 01:00-03:00 window the resident set.
+    write_settings(home, json.dumps({"v": 1, "jobs": {"evening": {"window": "01:00-03:00"}}}))
+    stage(home, plugin, staged_at=plugin.now_iso(IST_2AM - 60))
+    assert pickup(plugin, Bot(), now=IST_2AM) == {"sent": 1}
+    # 14:23 IST is outside it.
+    stage(home, plugin, opp=OPP2)
+    assert pickup(plugin, Bot(), now=T0) == {"deferred_quiet_hours": 1}
+    # A zone of their own: 14:23 IST is 10:53 Europe/Berlin (CEST), outside 11:00-12:00 and inside 10:00-11:00.
+    write_settings(home, json.dumps({"v": 1, "jobs": {"evening": {"window": "11:00-12:00", "tz": "Europe/Berlin"}}}))
+    assert pickup(plugin, Bot(), now=T0) == {"deferred_quiet_hours": 1}
+    write_settings(home, json.dumps({"v": 1, "jobs": {"evening": {"window": "10:00-11:00", "tz": "Europe/Berlin"}}}))
+    assert pickup(plugin, Bot(), now=T0) == {"sent": 1}
+
+
+@pytest.mark.parametrize("text, code", [
+    ("{not json", "file-unreadable"),
+    ("[]", "file-not-object"),
+    (json.dumps({"v": 2, "jobs": {}}), "file-version"),
+    (json.dumps({"v": 1, "jobs": []}), "file-jobs"),
+    (json.dumps({"v": 1, "jobs": {"evening": "19:00-20:00"}}), "entry"),
+    (json.dumps({"v": 1, "jobs": {"evening": {"window": "7:00-20:00"}}}), "window"),
+    (json.dumps({"v": 1, "jobs": {"evening": {"window": "19:00-19:00"}}}), "window"),
+    (json.dumps({"v": 1, "jobs": {"evening": {"tz": "Etc/UTC"}}}), "tz"),
+    (json.dumps({"v": 1, "jobs": {"evening": {"tz": "US/Eastern"}}}), "tz"),
+])
+def test_invalid_settings_defer_never_widen(plugin, home, on, text, code):
+    """job-settings.ts: a value that fails its grammar is never used; the evening has no default window, so it holds."""
+    write_settings(home, text)
+    assert plugin.quiet_delivery()[2] == code
+    path = stage(home, plugin)
+    assert pickup(plugin, Bot(), now=T0) == {"deferred_settings_invalid": 1}
+    assert path.exists()
+
+
+def test_settings_without_an_evening_entry_use_the_default_quiet_hours(plugin, home):
+    write_settings(home, json.dumps({"v": 1, "jobs": {"brief": {"window": "06:00-09:00"}}, "adminSchedules": ["brief"]}))
+    assert plugin.quiet_delivery() == ((8 * 60, 22 * 60), "Asia/Kolkata", None)
+    write_settings(home, json.dumps({"v": 1}))
+    assert plugin.quiet_delivery() == ((8 * 60, 22 * 60), "Asia/Kolkata", None)
+    assert plugin.parse_window("23:00-01:00") == (23 * 60, 60) and plugin.in_window(0, (23 * 60, 60)) and not plugin.in_window(12 * 60, (23 * 60, 60))
+
+
+def write_jobs(home, enabled=True, installed=True, **extra):
+    (home / "cron").mkdir(exist_ok=True)
+    job = {"id": "abcdef012345", "name": "Edge — evening questions", "enabled": enabled, **extra}
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [job, {"id": "0123456789ab", "name": "Edge — evening questions", "enabled": False}]}))
+    if installed:
+        (home / "av-events" / "installed_jobs.json").write_text(json.dumps({"ids": ["abcdef012345"]}))
+
+
+def test_a_stopped_evening_job_defers_the_stage_until_resumed(plugin, home, on):
+    write_jobs(home, enabled=False)
+    assert plugin.evening_job_state() == "stopped"
+    path = stage(home, plugin)
+    bot = Bot()
+    assert pickup(plugin, bot, now=T0) == {"deferred_job_stopped": 1}
+    assert path.exists() and not bot.sent
+    write_jobs(home, enabled=True)
+    assert plugin.evening_job_state() == "running"
+    assert pickup(plugin, bot, now=T0) == {"sent": 1}
+
+
+@pytest.mark.parametrize("extra", [{"state": "paused"}, {"paused_at": "2026-10-21T00:00:00Z"}])
+def test_a_paused_job_is_stopped_too(plugin, home, extra):
+    write_jobs(home, enabled=True, **extra)
+    assert plugin.evening_job_state() == "stopped"
+
+
+def test_a_job_of_the_residents_own_with_our_name_is_not_ours(plugin, home):
+    # The disabled second job is not in installed_jobs.json: the resident's own, never read.
+    (home / "cron").mkdir(exist_ok=True)
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "0123456789ab", "name": "Edge — evening questions", "enabled": False}]}))
+    assert plugin.evening_job_state() == "absent"
+    (home / "cron" / "jobs.json").write_text("{not json")
+    assert plugin.evening_job_state() == "unreadable"
+
+
+def test_an_unreadable_job_store_defers(plugin, home, on):
+    (home / "cron").mkdir(exist_ok=True)
+    (home / "cron" / "jobs.json").write_text("{not json")
+    path = stage(home, plugin)
+    assert pickup(plugin, Bot(), now=T0) == {"deferred_jobs_unreadable": 1}
+    assert path.exists()
+
+
+def test_a_team_tenant_never_gets_a_card(plugin, home, on, monkeypatch):
+    monkeypatch.setenv("AV_TEAM_TENANT", "1")
+    path = stage(home, plugin)
+    bot = Bot()
+    assert pickup(plugin, bot, now=T0) == {"stage_dropped_team_tenant": 1}
+    assert not path.exists() and not bot.sent
+    monkeypatch.setenv("AV_TEAM_TENANT", '"1"')
+    assert plugin.team_tenant() is False
+    monkeypatch.delenv("AV_TEAM_TENANT")
+    (home / ".env").write_text("AV_TEAM_TENANT=0\nexport AV_TEAM_TENANT = 1 \n")
+    assert plugin.team_tenant() is True
+
+
+class RetryAfter(RuntimeError):
+    def __init__(self, seconds):
+        super().__init__("flood")
+        self.retry_after = seconds
+
+
+class RateLimitedBot(Bot):
+    def __init__(self, seconds):
+        super().__init__()
+        self.limit = seconds
+
+    async def send_message(self, **kwargs):
+        if self.limit is not None:
+            seconds, self.limit = self.limit, None
+            raise RetryAfter(seconds)
+        return await super().send_message(**kwargs)
+
+
+def test_a_rate_limit_waits_retry_after_before_the_next_attempt(plugin, home, on):
+    path = stage(home, plugin)
+    bot = RateLimitedBot(90)
+    assert pickup(plugin, bot, now=T0) == {"send_rate_limited": 1}
+    assert path.exists() and OPP not in ledger(home)["cards"]
+    assert pickup(plugin, bot, now=T0 + 60) == {"deferred_rate_limited": 1}
+    assert pickup(plugin, bot, now=T0 + 91) == {"sent": 1}
+    assert plugin._retry_after_of(RetryAfter(5)) == 5.0 and plugin._retry_after_of(RuntimeError("x")) is None
+
+
+def test_a_stage_three_days_old_is_dropped_not_sent(plugin, home, on):
+    assert plugin.STAGE_MAX_AGE_S == 3 * 24 * 3600
+    path = stage(home, plugin, staged_at=plugin.now_iso(T0 - plugin.STAGE_MAX_AGE_S - 1))
+    assert pickup(plugin, Bot(), now=T0) == {"stage_dropped_stale": 1}
+    assert not path.exists()
+    path = stage(home, plugin, staged_at=plugin.now_iso(T0 - plugin.STAGE_MAX_AGE_S + 60))
+    assert pickup(plugin, Bot(), now=T0) == {"sent": 1}

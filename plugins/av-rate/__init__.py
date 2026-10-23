@@ -21,22 +21,45 @@ the adapter before its own handlers, so a ``CallbackQueryHandler`` scoped to ``^
 ``avr:`` tap and nothing else; registered ``block=False`` (Hermes's Application processes one update
 at a time). The same factory starts the pick-up: PTB's job queue every ``PICKUP_INTERVAL_S`` when the
 ``job-queue`` extra is installed, else an asyncio task on the gateway loop. The pick-up sends the
-staged cards and closes the window on the old ones.
+staged cards and injects the lines that are due.
+
+**The resident's controls** (wave 1). The cards go out under the installer's "Edge — evening
+questions" job and its manage line. Before a send the pick-up checks, exactly as the trigger does:
+the job is not stopped (Hermes's job record ``cron/jobs.json``: a job named as the evening job
+whose id ``av-events/installed_jobs.json`` lists, ``enabled`` false, ``state`` ``paused`` or a
+``paused_at`` means stopped; message-labels.ts ``storedJobEnabled``), this is not a team tenant
+(``AV_TEAM_TENANT`` exactly ``1``; a team tenant's stages are dropped), and it is not quiet hours:
+the resident's evening window from ``av-events/job-settings.json`` (``jobs.evening.window``
+``HH:MM-HH:MM`` and ``tz``, job-settings.ts grammar) or, with none, 08:00 to 22:00 village time
+(``Asia/Kolkata``). A stopped job, quiet hours, an unreadable job store or invalid settings DEFER
+the stage to the next pick-up, never drop it; a stage older than ``STAGE_MAX_AGE_S`` (3 days) is
+dropped and counted.
 
 **callback_data** (under Telegram's 64 bytes): ``avr:f:<1-5>:<nonce>`` for card 1 and
 ``avr:p:<y|n>:<nonce>`` for card 2. ``<nonce>`` is the first 22 base64url characters of
 HMAC-SHA256(key, "avr|<opportunity_id>|match_fit_5_v1") under the tenant's av-events key
 (``av-events/hash.key``; this plugin's own ``av-events/av-rate.key`` when av-events has made none
 yet). The ledger maps a nonce back to its opportunity; a nonce not on file answers "no longer
-valid". The index/nonce are UX and routing only: the owner check is what authorises a tap.
+valid". The nonce is routing only: the owner check and the message binding authorise a tap.
 
 **A tap**: owner only (the box's own resident, in their private chat with the bot: the home
-channel's ids, ``TELEGRAM_HOME_CHANNEL``, or Hermes's approved pairings, exactly av-vote's rule);
-inside the 24 h window after the card went out, else "This question has closed." and no event; a
-re-tap is a revision (``revision`` 1, 2, ...; last wins downstream). Answers the tap with
-"Recorded: <label>", marks the chosen button, sends card 2 after card 1's first tap, and hands the
-event over. Double taps on one card while the first is being recorded are answered "Still
-recording..." and do nothing.
+channel's ids, ``TELEGRAM_HOME_CHANNEL``, or Hermes's approved pairings, exactly av-vote's rule),
+on a message the ledger knows (the tap's chat is the card's ``chat_id`` and its message id is
+card 1's or card 2's); card 1 inside the 24 h window after card 1 went out and card 2 inside its
+own 24 h window after card 2 went out, else "This question has closed." and no event; a re-tap
+with another value is a revision (``revision`` 1, 2, ...; last wins downstream), the same value
+again is answered "Already recorded" and records nothing. Answers the tap with "Recorded: <label>",
+marks the chosen button, sends card 2 after card 1's first tap, and hands the event over. Double
+taps on one card while the first is being recorded are answered "Still recording..." and do
+nothing.
+
+**Concurrency.** The pick-up and the taps run on the gateway's one event loop. No lock is ever
+held across an ``await``: every ledger change is one synchronous critical section (load, change,
+save under ``_LEDGER_LOCK``), so a tap during a send never loses its answer to a stale in-memory
+ledger. A card is written to the ledger BEFORE its message is sent (write-ahead: ``message_id``
+null, ``pending_since``), filled in after, and the stage file is unlinked last, so a crash between
+send and save never sends the card twice: a pending card found later is kept as asked, never
+re-sent (``stage_resolved_pending``).
 
 **Three sinks per tap.**
 1. The events, through av-events (``plugins/av-events/_rating_cards.py`` reads
@@ -44,14 +67,18 @@ recording..." and do nothing.
    ``opportunity.rating_asked@1`` / ``opportunity.rated@1`` / ``opportunity.pre_planned@1`` with ids
    derived from (type, opportunity, card, revision), so a re-send never doubles a row). This plugin
    never posts to the ingest API itself and never builds an envelope.
-2. The agent: after card 2 resolves (or when the window closes with only card 1 answered) one line is
-   injected into the resident's DM session through ``ctx.inject_message`` (gated by Hermes on
-   ``plugins.entries.av-rate.allow_gateway_injection: true``; refused or no gateway: a code, never a
-   blocked tap): ``[Rating recorded] <Name>: <value>/5 match fit; already planned: <yes|no|not
-   answered>.`` Hermes persists that turn as ``internal_notification`` (actor ``system`` on the data
-   side), so it reaches the agent's memory and the archive.
+2. The agent: after card 2 resolves (or when the windows close with only card 1 answered) one line
+   is injected into the resident's DM session through ``ctx.inject_message`` (gated by Hermes on
+   ``plugins.entries.av-rate.allow_gateway_injection: true``): ``[Rating recorded] <Name>: <value>/5
+   match fit; already planned: <yes|no|not answered>.`` Hermes persists that turn as
+   ``internal_notification`` (actor ``system`` on the data side). A refusal or an error is retried
+   on later pick-ups up to ``INJECT_ATTEMPTS_MAX`` times (Hermes's ``inject_message`` returns one
+   boolean for "flag off", "no live gateway" and "scheduling failed", so they cannot be told
+   apart), then the card is closed with ``inject_gave_up``.
 3. The ledger ``av-events/proactive/rated.json`` (ids, nonces, message ids, times, the two answers,
-   and the cleaned name for the injected line), which the trigger reads as "asked".
+   and the cleaned name for the injected line), which the trigger reads as "asked". Cards evicted
+   when the ledger is full leave an id-only tombstone in ``evicted``, so an evicted card stays
+   asked and is never staged again.
 
 **Switches.** Cards only with ``AV_RATE_CARDS`` on (``1|true|yes|on``, process environment then
 ``$HERMES_HOME/.env``); off, stages are left where they are and taps still answer. Logging: codes
@@ -84,6 +111,7 @@ import time
 import warnings
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +137,10 @@ PLANNED_VALUES = {"y": "yes", "n": "no"}
 CHECK = "✅ "
 #: DATA-373: every scheduled message ends with its manage line, this card too.
 MANAGE_LINE = "(Evening questions message - you can ask me to stop or manage it)"
-PRIVACY_LINE = "Private: only you and the research team see this. {name} does not."
+#: True whatever the resident's research consent: the plugin cannot know it, so it promises only
+#: what it can keep (the counterpart never sees the answer; where it goes beyond the agent's own
+#: records is the consent brief's to say, not this card's).
+PRIVACY_LINE = "Private: {name} never sees your answer."
 QUESTION_FIT = "How good a match was this suggestion from {agent}?"
 QUESTION_PLANNED = "Did you already plan this meetup?"
 
@@ -117,29 +148,54 @@ ON_SWITCH = "AV_RATE_CARDS"
 SESSION_KEY_ENV = "AV_RATE_SESSION_KEY"
 HOME_CHANNEL_ENV = "TELEGRAM_HOME_CHANNEL"
 TENANT_ENVS = ("AV_TENANT_ID", "TENANT_ID")
+#: job-settings.ts TEAM_TENANT_VAR: exactly `1` once trimmed, the process environment winning when set at all.
+TEAM_TENANT_VAR = "AV_TEAM_TENANT"
 TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 PICKUP_INTERVAL_S = 60.0
-#: A stage older than this when the pick-up sees it is dropped (and counted): the trigger
-#: stages again the next evening, since the subject is not on the ledger.
-STAGE_MAX_AGE_S = 6 * 3600
-#: A stage whose send keeps failing is dropped after this many passes.
+#: A stage older than this when the pick-up sees it is dropped (and counted): the trigger stages
+#: again the next evening if the subject is still due (rating-cards.ts STALE_DAYS, the same 3 days).
+STAGE_MAX_AGE_S = 3 * 24 * 3600
+#: A stage whose send keeps failing is dropped after this many attempts across pick-ups.
 SEND_ATTEMPTS_MAX = 3
+#: An injection that is refused or errors is retried on later pick-ups this many times in all.
+INJECT_ATTEMPTS_MAX = 3
+#: A pending (write-ahead) card with no message id after this long is kept as asked, never re-sent.
+PENDING_MAX_AGE_S = 10 * 60
 STAGE_MAX_BYTES = 4096
 LEDGER_MAX_BYTES = 512 * 1024
-#: Cards kept on the ledger at most; the oldest closed ones go first.
+#: Cards kept on the ledger at most; the oldest closed ones go first, leaving a tombstone.
 LEDGER_MAX_CARDS = 500
+#: Id-only tombstones kept at most (the oldest go first).
+EVICTED_MAX = 5000
 NAME_MAX = 80
 HEADLINE_MAX = 120
 AGENT_NAME_MAX = 40
 #: An envelope id (agentvillage-data src/envelope.ts ID_PATTERN).
 ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_UUID_SHAPE = re.compile(r"^[0-9a-fA-F-]{36}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _TELEGRAM_USER = re.compile(r"[1-9][0-9]{0,19}")
 #: answerCallbackQuery text is at most 200 characters.
 ANSWER_MAX = 200
 DIR_MODE = 0o700
 FILE_MODE = 0o600
+
+# The installer's evening job and the files the trigger reads (message-labels.ts, job-settings.ts).
+EVENING_JOB_NAMES = frozenset({"Edge — evening questions"})
+#: pause-job.ts MAX_INSTALLED_IDS_BYTES, message-labels.ts MAX_JOBS_STORE_BYTES, job-settings.ts MAX_SETTINGS_BYTES.
+INSTALLED_IDS_MAX_BYTES = 1024 * 1024
+JOBS_STORE_MAX_BYTES = 16 * 1024 * 1024
+SETTINGS_MAX_BYTES = 64 * 1024
+_JOB_ID = re.compile(r"^[0-9a-f]{12}$")
+#: job-settings.ts: `HH:MM-HH:MM`, start and end different.
+_WINDOW = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
+_ZONE_AREAS = frozenset({"Africa", "America", "Antarctica", "Arctic", "Asia", "Atlantic", "Australia", "Europe", "Indian", "Pacific"})
+_ZONE = re.compile(r"^([A-Z][A-Za-z]+)/[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z][A-Za-z0-9_+-]*)?$")
+DEFAULT_TZ = "Asia/Kolkata"
+#: Quiet hours when the resident set no evening window: deliver 08:00 to 22:00 village time (the
+#: pending alert's default, job-settings.ts DEFAULT_WINDOWS.pending).
+QUIET_DEFAULT_WINDOW = (8 * 60, 22 * 60)
 
 NOT_YOURS = "This card is not yours"
 BAD_BUTTON = "This button is not valid."
@@ -150,14 +206,18 @@ FAILED = "Could not record that. Try again."
 
 #: Outcome codes (the only thing logged besides the tenant's id8).
 RECORDED = "recorded"
+ALREADY = "already_recorded"
 
 # Cards whose tap is being recorded right now: (chat id, message id).
 _in_flight: set[tuple[str, str]] = set()
-_LEDGER_LOCK = threading.RLock()
+#: Held only inside synchronous critical sections (load, change, save); never across an await.
+_LEDGER_LOCK = threading.Lock()
 #: The plugin context Hermes handed `register`, for `inject_message`.
 _CTX: Any = None
-#: Stage files whose send failed, by name -> attempts.
+#: Stage files whose send failed, by name -> attempts (this process; a restart starts over).
 _SEND_FAILURES: dict[str, int] = {}
+#: Stage files Telegram rate-limited, by name -> the epoch not to try before.
+_RETRY_NOT_BEFORE: dict[str, float] = {}
 #: Hand-off files written by this process, in order: the name sorts the way they were written.
 _HANDOFF_SEQ = itertools.count(1)
 
@@ -194,6 +254,24 @@ def env(name: str, home: Optional[str] = None) -> str:
 
 def cards_on(home: Optional[str] = None) -> bool:
     return env(ON_SWITCH, home).lower() in TRUTHY
+
+
+def team_tenant(home: Optional[str] = None) -> bool:
+    """job-settings.ts isTeamTenant: `AV_TEAM_TENANT` exactly `1` trimmed; the process environment
+    wins when set at all (even empty); else the LAST assignment in `.env`, no quote stripping."""
+    raw = os.environ.get(TEAM_TENANT_VAR)
+    if raw is not None:
+        return raw.strip() == "1"
+    value: Optional[str] = None
+    try:
+        with open(os.path.join(home or hermes_home(), ".env"), encoding="utf-8") as handle:
+            for line in handle.read().split("\n"):
+                match = re.match(r"^\s*(?:export\s+)?AV_TEAM_TENANT\s*=(.*)$", line.rstrip("\r"))
+                if match:
+                    value = match.group(1)
+    except OSError:
+        return False
+    return value is not None and value.strip() == "1"
 
 
 def state_dir(home: Optional[str] = None) -> str:
@@ -258,8 +336,10 @@ def private_dir(path: str) -> bool:
     return stat.S_ISDIR(st.st_mode) and (uid is None or st.st_uid == uid) and not st.st_mode & 0o022
 
 
-def private_file(path: str, max_bytes: int) -> tuple[Any, Optional[str]]:
-    """`(data, None)`, or `(None, code)` (`_outcome_ask.private_file`'s codes)."""
+def _read_private_text(path: str, max_bytes: int) -> tuple[Optional[str], Optional[str]]:
+    """`(text, None)` for a regular, this-user, 0600-or-tighter file under `max_bytes` (opened
+    O_NOFOLLOW), else `(None, code)`: `missing`, `bad_dir`, `unreadable`, `not_regular`,
+    `foreign_owner`, `not_private`, `too_big`."""
     if not private_dir(os.path.dirname(path)):
         return None, "missing" if not os.path.lexists(path) else "bad_dir"
     try:
@@ -281,10 +361,21 @@ def private_file(path: str, max_bytes: int) -> tuple[Any, Optional[str]]:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(fd, encoding="utf-8") as handle:
             raw = handle.read(max_bytes + 1)
-        if len(raw) > max_bytes:
-            return None, "too_big"
-        return json.loads(raw), None
-    except (OSError, ValueError):
+    except OSError:
+        return None, "unreadable"
+    if len(raw) > max_bytes:
+        return None, "too_big"
+    return raw, None
+
+
+def private_file(path: str, max_bytes: int) -> tuple[Any, Optional[str]]:
+    """`(data, None)`, or `(None, code)` (`_outcome_ask.private_file`'s codes)."""
+    raw, why = _read_private_text(path, max_bytes)
+    if why is not None:
+        return None, why
+    try:
+        return json.loads(raw or ""), None
+    except ValueError:
         return None, "unreadable"
 
 
@@ -321,38 +412,194 @@ def _listing(path: str) -> list[str]:
         return []
 
 
+def _read_json_file(path: str, max_bytes: int) -> tuple[Any, Optional[str]]:
+    """A file the resident may write (Hermes's job store, the installer's ids, the settings): a
+    regular file under `max_bytes` that parses, else `(None, code)`: `missing`, `unreadable`."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unreadable"
+    if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+        return None, "unreadable"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle), None
+    except (OSError, ValueError):
+        return None, "unreadable"
+
+
+# --------------------------------------------------------------------------- the resident's controls
+
+
+def evening_job_state(home: Optional[str] = None) -> str:
+    """rating-cards.ts eveningJobState: `stopped` when a job named as the installer's evening job,
+    with an id `av-events/installed_jobs.json` lists, is paused or disabled (message-labels.ts
+    storedJobEnabled: `enabled` false, `state` "paused" or a `paused_at`); `running` when such a
+    job is enabled; `absent` when the store names no installed evening job (no file is no jobs,
+    as Hermes reads it); `unreadable` when either file cannot be read or has the wrong shape."""
+    root = home or hermes_home()
+    store, why = _read_json_file(os.path.join(root, "cron", "jobs.json"), JOBS_STORE_MAX_BYTES)
+    if why == "missing":
+        jobs: list = []
+    elif why is not None:
+        return "unreadable"
+    else:
+        if not isinstance(store, dict):
+            return "unreadable"
+        jobs = store.get("jobs", [])
+        if not isinstance(jobs, list):
+            return "unreadable"
+    ids_data, why = _read_json_file(os.path.join(root, "av-events", "installed_jobs.json"), INSTALLED_IDS_MAX_BYTES)
+    if why == "missing":
+        installed: frozenset = frozenset()
+    elif why is not None or not isinstance(ids_data, dict) or not isinstance(ids_data.get("ids"), list):
+        return "unreadable"
+    else:
+        installed = frozenset(i for i in ids_data["ids"] if isinstance(i, str) and _JOB_ID.match(i))
+    seen = False
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("name") not in EVENING_JOB_NAMES:
+            continue
+        job_id = job.get("id")
+        if not isinstance(job_id, str) or not _JOB_ID.match(job_id) or job_id not in installed:
+            continue
+        seen = True
+        if job.get("enabled") is False or job.get("state") == "paused" or job.get("paused_at"):
+            return "stopped"
+    return "running" if seen else "absent"
+
+
+def _valid_zone(name: Any) -> bool:
+    """job-settings.ts isValidTimeZone: `UTC`, or `Area/Location` in the ten areas the runtime knows."""
+    if not isinstance(name, str) or len(name) > 64:
+        return False
+    if name == "UTC":
+        return True
+    match = _ZONE.match(name)
+    if not match or match.group(1) not in _ZONE_AREAS:
+        return False
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return False
+    return True
+
+
+def parse_window(text: Any) -> Optional[tuple[int, int]]:
+    """job-settings.ts parseWindow: minutes since local midnight, start and end different."""
+    if not isinstance(text, str):
+        return None
+    match = _WINDOW.match(text)
+    if not match:
+        return None
+    start = int(match.group(1)) * 60 + int(match.group(2))
+    end = int(match.group(3)) * 60 + int(match.group(4))
+    return None if start == end else (start, end)
+
+
+def in_window(minute: int, window: tuple[int, int]) -> bool:
+    start, end = window
+    return (start <= minute < end) if start < end else (minute >= start or minute < end)
+
+
+def quiet_delivery(home: Optional[str] = None) -> tuple[Optional[tuple[int, int]], str, Optional[str]]:
+    """`(window, tz, invalid_code)` for the cards: the resident's evening entry in
+    `av-events/job-settings.json` (job-settings.ts readJobSettings and validateEntry, read the
+    same strict way), else the default quiet hours. An invalid file or entry is `(None, tz, code)`:
+    the trigger holds the evening run silent in that case, and the pick-up defers."""
+    path = os.path.join(home or hermes_home(), "av-events", "job-settings.json")
+    data, why = _read_json_file(path, SETTINGS_MAX_BYTES)
+    if why == "missing":
+        return QUIET_DEFAULT_WINDOW, DEFAULT_TZ, None
+    if why is not None:
+        return None, DEFAULT_TZ, "file-unreadable"
+    if not isinstance(data, dict):
+        return None, DEFAULT_TZ, "file-not-object"
+    if data.get("v") != 1:
+        return None, DEFAULT_TZ, "file-version"
+    jobs = data.get("jobs")
+    if jobs is None:
+        return QUIET_DEFAULT_WINDOW, DEFAULT_TZ, None
+    if not isinstance(jobs, dict):
+        return None, DEFAULT_TZ, "file-jobs"
+    if "evening" not in jobs:
+        return QUIET_DEFAULT_WINDOW, DEFAULT_TZ, None
+    entry = jobs["evening"]
+    if not isinstance(entry, dict):
+        return None, DEFAULT_TZ, "entry"
+    window: Optional[tuple[int, int]] = None
+    if "window" in entry:
+        window = parse_window(entry["window"])
+        if window is None:
+            return None, DEFAULT_TZ, "window"
+    tz = DEFAULT_TZ
+    if "tz" in entry:
+        if not _valid_zone(entry["tz"]):
+            return None, DEFAULT_TZ, "tz"
+        tz = entry["tz"]
+    return window or QUIET_DEFAULT_WINDOW, tz, None
+
+
+def minute_of_day(now: float, tz: str) -> int:
+    try:
+        local = datetime.fromtimestamp(now, tz=ZoneInfo(tz))
+    except (ZoneInfoNotFoundError, ValueError, OSError, OverflowError):
+        local = datetime.fromtimestamp(now, tz=ZoneInfo(DEFAULT_TZ))
+    return local.hour * 60 + local.minute
+
+
+def quiet_hours(now: float, home: Optional[str] = None) -> Optional[str]:
+    """None when a card may go out now; else the deferral code: `quiet_hours` (outside the
+    resident's evening window or the default 08:00 to 22:00) or `settings_invalid`."""
+    window, tz, invalid = quiet_delivery(home)
+    if invalid is not None or window is None:
+        return "settings_invalid"
+    return None if in_window(minute_of_day(now, tz), window) else "quiet_hours"
+
+
 # --------------------------------------------------------------------------- key, nonce, hashes
+
+
+def _read_key_file(path: str) -> Optional[bytes]:
+    """A key file read with the private-file checks (regular, this user, 0600, O_NOFOLLOW): the key,
+    or None when it is missing, not private, empty or not 64 hex yet."""
+    text, why = _read_private_text(path, 256)
+    if why is not None or text is None:
+        return None
+    text = text.strip()
+    return bytes.fromhex(text) if _HEX64.match(text) else None
 
 
 def hash_key(home: Optional[str] = None) -> Optional[bytes]:
     """The tenant's av-events key (`av-events/hash.key`, 64 hex), else this plugin's own
-    `av-events/av-rate.key` (made once, 0600). None only when neither can be read or made."""
+    `av-events/av-rate.key`, made once: written whole to a private temp file and linked into place,
+    so no reader ever sees an empty key file. None when neither can be read or made this pass (the
+    pick-up counts `no_key` and tries again); an existing file that is empty or not hex is "not
+    yet", never dead."""
     directory = state_dir(home)
     for name in ("hash.key", "av-rate.key"):
-        try:
-            with open(os.path.join(directory, name), "rb") as handle:
-                text = handle.read(256).decode("ascii", errors="replace").strip()
-        except OSError:
-            continue
-        if _HEX64.match(text):
-            return bytes.fromhex(text)
+        key = _read_key_file(os.path.join(directory, name))
+        if key is not None:
+            return key
+    path = os.path.join(directory, "av-rate.key")
     try:
         os.makedirs(directory, mode=DIR_MODE, exist_ok=True)
-        path = os.path.join(directory, "av-rate.key")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
+        tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), FILE_MODE)
         value = secrets.token_hex(32)
-        with os.fdopen(fd, "w", encoding="ascii") as handle:
-            handle.write(value + "\n")
-        return bytes.fromhex(value)
-    except FileExistsError:
         try:
-            with open(os.path.join(directory, "av-rate.key"), "rb") as handle:
-                text = handle.read(256).decode("ascii", errors="replace").strip()
-            return bytes.fromhex(text) if _HEX64.match(text) else None
-        except (OSError, ValueError):
-            return None
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(value + "\n")
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
+        finally:
+            _unlink(tmp)
     except OSError:
         return None
+    return _read_key_file(path)
 
 
 def make_nonce(key: bytes, opportunity_id: str) -> str:
@@ -466,23 +713,24 @@ def paired_on_box(user: str) -> bool:
 
 
 def is_owner_tap(adapter: Any, user: Optional[str], chat: Optional[str], chat_type: Optional[str]) -> bool:
-    """The tap is the resident's, in the resident's own DM with the bot."""
-    if user is None:
+    """The tap is the resident's, in the resident's own DM with the bot. A tap with no chat (no
+    message on the callback) is never the owner's: the card binding needs the message."""
+    if user is None or chat is None:
         return False
-    if chat is not None and chat != user:
+    if chat != user:
         return False
     if isinstance(chat_type, str) and chat_type and chat_type != "private":
         return False
     if user in owner_ids(adapter):
         return True
-    return chat is not None and paired_on_box(user)
+    return paired_on_box(user)
 
 
 # --------------------------------------------------------------------------- the ledger
 
 
 def empty_ledger() -> dict:
-    return {"v": 1, "cards": {}}
+    return {"v": 1, "cards": {}, "evicted": []}
 
 
 def load_ledger(home: Optional[str] = None) -> tuple[dict, Optional[str]]:
@@ -493,17 +741,41 @@ def load_ledger(home: Optional[str] = None) -> tuple[dict, Optional[str]]:
         return empty_ledger(), why
     if not isinstance(data, dict) or data.get("v") != 1 or not isinstance(data.get("cards"), dict):
         return empty_ledger(), "bad_shape"
+    evicted = data.get("evicted")
+    data["evicted"] = [i for i in evicted if isinstance(i, str)] if isinstance(evicted, list) else []
     return data, None
 
 
 def save_ledger(ledger: dict, home: Optional[str] = None) -> None:
+    """Write the ledger. Over LEDGER_MAX_CARDS the oldest closed cards are evicted, each leaving an
+    id-only tombstone in `evicted` (capped at EVICTED_MAX, oldest first), so an evicted card stays
+    "asked" for the trigger (rating-cards.ts readRatedIds reads both)."""
     cards = ledger["cards"]
+    evicted: list = ledger.setdefault("evicted", [])
     if len(cards) > LEDGER_MAX_CARDS:
-        # The oldest closed cards go first.
-        ordered = sorted(cards.items(), key=lambda item: str(item[1].get("sent_at", "")))
+        ordered = sorted(cards.items(), key=lambda item: str((item[1] or {}).get("sent_at") or (item[1] or {}).get("pending_since") or ""))
         for key, _ in ordered[: len(cards) - LEDGER_MAX_CARDS]:
             cards.pop(key, None)
+            if key not in evicted:
+                evicted.append(key)
+    if len(evicted) > EVICTED_MAX:
+        del evicted[: len(evicted) - EVICTED_MAX]
     write_private(ledger_path(home), ledger)
+
+
+def ledger_update(home: Optional[str], change: Callable[[dict], Any]) -> tuple[Any, Optional[str]]:
+    """One synchronous critical section: load the ledger, apply `change` (which returns a result,
+    or `(result, False)` to skip the save), save. `(result, None)`, or `(None, code)` when the
+    ledger cannot be trusted (then nothing is written over it). Never held across an await."""
+    with _LEDGER_LOCK:
+        ledger, why = load_ledger(home)
+        if why not in (None, "missing"):
+            return None, why
+        outcome = change(ledger)
+        if isinstance(outcome, tuple) and len(outcome) == 2 and outcome[1] is False:
+            return outcome[0], None
+        save_ledger(ledger, home)
+        return outcome, None
 
 
 def card_for_nonce(ledger: dict, nonce: str) -> Optional[tuple[str, dict]]:
@@ -514,8 +786,29 @@ def card_for_nonce(ledger: dict, nonce: str) -> Optional[tuple[str, dict]]:
 
 
 def is_closed(card: dict, now: float) -> bool:
+    """Card 1's window: 24 h from its send (a pending card with no send time is open)."""
     closes = epoch_from_iso(card.get("closes_at"))
+    return closes is not None and now > closes
+
+
+def planned_closed(card: dict, now: float) -> bool:
+    """Card 2's own window, 24 h from its own send; before card 2 is sent, card 1's window."""
+    if card.get("planned_message_id") is None:
+        return is_closed(card, now)
+    closes = epoch_from_iso(card.get("closes_at_planned"))
     return closes is None or now > closes
+
+
+def card_message_matches(card: dict, kind: str, message_id: Any) -> bool:
+    """The tap's message is the card's own: card 1's `message_id` or card 2's `planned_message_id`.
+    A card whose id for that kind is unknown (a pending card resolved after a crash) binds on this
+    first tap instead."""
+    stored = card.get("message_id") if kind == CARD_FIT else card.get("planned_message_id")
+    if stored is None:
+        # Card 1 with no id on file (a pending card resolved after a crash) binds now; a card 2
+        # that was never sent has no message a tap could come from.
+        return kind == CARD_FIT
+    return str(stored) == str(message_id)
 
 
 # --------------------------------------------------------------------------- the stage files
@@ -544,7 +837,7 @@ def valid_stage(data: Any) -> Optional[dict]:
     if epoch_from_iso(data["staged_at"]) is None or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(data["date"])):
         return None
     return {
-        "opportunity_id": opportunity.lower() if re.fullmatch(r"[0-9a-fA-F-]{36}", opportunity) else opportunity,
+        "opportunity_id": opportunity.lower() if _UUID_SHAPE.fullmatch(opportunity) else opportunity,
         "intention_id": intention,
         "name": name,
         "headline": headline,
@@ -607,7 +900,8 @@ def session_key_for(chat_id: str) -> str:
 
 def inject(card: dict, chat_id: str, ctx: Any = None) -> str:
     """One line into the resident's DM session. A code: `injected`, `inject_no_ctx`,
-    `inject_refused` (Hermes said no: the config flag, no live gateway) or `inject_error`."""
+    `inject_refused` (Hermes said no: the config flag, no live gateway, scheduling failed; one
+    boolean for all three) or `inject_error`."""
     context = ctx if ctx is not None else _CTX
     inject_fn = getattr(context, "inject_message", None)
     if not callable(inject_fn):
@@ -620,10 +914,26 @@ def inject(card: dict, chat_id: str, ctx: Any = None) -> str:
 
 
 def ready_to_inject(card: dict, now: float) -> bool:
-    """After card 2 resolves, or when the window closes with card 1 answered."""
+    """After card 2 resolves, or when both windows have closed with card 1 answered."""
     if card.get("injected") or not card.get("fit"):
         return False
-    return bool(card.get("planned")) or is_closed(card, now)
+    return bool(card.get("planned")) or (is_closed(card, now) and planned_closed(card, now))
+
+
+def _settle_injection(card: dict, code: str) -> bool:
+    """Record one injection attempt on the card. True when the card is now final (injected, no
+    context, or out of attempts)."""
+    if code == "injected" or code == "inject_no_ctx":
+        card["injected"] = True
+        card["injected_code"] = code
+        return True
+    attempts = int(card.get("inject_attempts") or 0) + 1
+    card["inject_attempts"] = attempts
+    if attempts >= INJECT_ATTEMPTS_MAX:
+        card["injected"] = True
+        card["injected_code"] = "inject_gave_up"
+        return True
+    return False
 
 
 # --------------------------------------------------------------------------- the pick-up
@@ -632,7 +942,7 @@ def ready_to_inject(card: dict, now: float) -> bool:
 async def pick_up(bot: Any, adapter: Any, make_button: Callable[[str, str], Any], make_markup: Callable[[list], Any],
                   home: Optional[str] = None, now: Optional[float] = None, ctx: Any = None) -> dict:
     """One pass: send the staged cards (AV_RATE_CARDS on), then inject the lines that are due.
-    Returns code -> count; never raises."""
+    Returns code -> count; never raises. No lock is held across an await."""
     codes: dict[str, int] = {}
     stamp = time.time() if now is None else now
 
@@ -641,14 +951,13 @@ async def pick_up(bot: Any, adapter: Any, make_button: Callable[[str, str], Any]
             codes[code] = codes.get(code, 0) + n
 
     try:
-        with _LEDGER_LOCK:
-            ledger, why = load_ledger(home)
-            if why not in (None, "missing"):
-                count(f"ledger_{why}")
-                return codes
-            if cards_on(home):
-                await _send_staged(bot, adapter, make_button, make_markup, ledger, home, stamp, count)
-            await _inject_due(ledger, home, stamp, count, ctx)
+        _, why = ledger_update(home, lambda ledger: (None, False))
+        if why is not None:
+            count(f"ledger_{why}")
+            return codes
+        if cards_on(home):
+            await _send_staged(bot, adapter, make_button, make_markup, home, stamp, count)
+        await _inject_due(home, stamp, count, ctx)
     except Exception:  # noqa: BLE001 - the pass never raises into the gateway
         logger.warning("av-rate: tenant=%s outcome=pickup_error", tenant_id8())
         count("pickup_error")
@@ -657,14 +966,49 @@ async def pick_up(bot: Any, adapter: Any, make_button: Callable[[str, str], Any]
     return codes
 
 
+def _retry_after_of(error: BaseException) -> Optional[float]:
+    """Telegram's 429: PTB raises `RetryAfter` with `retry_after` (seconds, or a timedelta on
+    newer builds). None for any other error."""
+    value = getattr(error, "retry_after", None)
+    if value is None:
+        return None
+    seconds = getattr(value, "total_seconds", None)
+    if callable(seconds):
+        value = seconds()
+    try:
+        wait = float(value)
+    except (TypeError, ValueError):
+        return None
+    return wait if wait >= 0 else None
+
+
 async def _send_staged(bot: Any, adapter: Any, make_button: Callable[[str, str], Any], make_markup: Callable[[list], Any],
-                       ledger: dict, home: Optional[str], now: float, count: Callable[..., None]) -> None:
+                       home: Optional[str], now: float, count: Callable[..., None]) -> None:
     folder = stage_dir(home)
     if os.path.lexists(folder) and not private_dir(folder):
         count("stage_folder_not_private")
         return
     names = _listing(folder)
     if not names:
+        return
+    # The resident's controls, exactly as the trigger reads them: a team tenant never gets a card
+    # (its stages are dropped); a stopped evening job or quiet hours defer the stages; an
+    # unreadable job store or invalid settings defer too (never a send the resident did not allow).
+    if team_tenant(home):
+        for name in names:
+            _unlink(os.path.join(folder, name))
+        count("stage_dropped_team_tenant", len(names))
+        return
+    job_state = evening_job_state(home)
+    if job_state == "stopped":
+        count("deferred_job_stopped", len(names))
+        return
+    if job_state == "unreadable":
+        count("deferred_jobs_unreadable", len(names))
+        return
+    quiet = quiet_hours(now, home)
+    if quiet is not None:
+        count(f"deferred_{quiet}", len(names))
         return
     chat = home_chat_id(adapter)
     if chat is None:
@@ -676,6 +1020,11 @@ async def _send_staged(bot: Any, adapter: Any, make_button: Callable[[str, str],
         return
     for name in names:
         path = os.path.join(folder, name)
+        not_before = _RETRY_NOT_BEFORE.get(name)
+        if not_before is not None and now < not_before:
+            count("deferred_rate_limited")
+            continue
+        _RETRY_NOT_BEFORE.pop(name, None)
         data, why = private_file(path, STAGE_MAX_BYTES)
         if why is not None:
             count(f"stage_dropped_{why}")
@@ -692,17 +1041,73 @@ async def _send_staged(bot: Any, adapter: Any, make_button: Callable[[str, str],
             _unlink(path)
             continue
         opportunity_id = stage["opportunity_id"]
-        if opportunity_id in ledger["cards"]:
+        nonce = make_nonce(key, opportunity_id)
+        text = fit_text(stage["agent_name"], stage["name"], stage["headline"])
+
+        # Write-ahead: the card is on the ledger before the message exists.
+        def reserve(ledger: dict) -> str:
+            existing = ledger["cards"].get(opportunity_id)
+            if opportunity_id in ledger["evicted"]:
+                return "already_asked"
+            if existing is not None:
+                if existing.get("message_id") is not None or existing.get("sent_at") is not None:
+                    return "already_asked"
+                # A pending card from an earlier pass that never got its message id: this process
+                # knows nothing about it, so it may have been sent. Never send it again.
+                pending_since = epoch_from_iso(existing.get("pending_since")) or 0.0
+                if now - pending_since > PENDING_MAX_AGE_S or existing.get("pid") != os.getpid():
+                    existing["sent_at"] = existing.get("sent_at") or now_iso(pending_since or now)
+                    existing["closes_at"] = existing.get("closes_at") or now_iso((pending_since or now) + WINDOW_S)
+                    existing["send_unknown"] = True
+                    return "resolve_pending"
+                return "in_progress"
+            ledger["cards"][opportunity_id] = {
+                "nonce": nonce,
+                "intention_id": stage["intention_id"],
+                "name": stage["name"],
+                "agent_name": stage["agent_name"],
+                "chat_id": chat,
+                "message_id": None,
+                "planned_message_id": None,
+                "pending_since": now_iso(now),
+                "pid": os.getpid(),
+                "sent_at": None,
+                "closes_at": None,
+                "closes_at_planned": None,
+                "fit": None,
+                "planned": None,
+                "injected": False,
+            }
+            return "reserved"
+
+        reserved, why = ledger_update(home, reserve)
+        if why is not None:
+            count(f"ledger_{why}")
+            return
+        if reserved == "already_asked":
             count("stage_dropped_already_asked")
             _unlink(path)
             continue
-        nonce = make_nonce(key, opportunity_id)
-        text = fit_text(stage["agent_name"], stage["name"], stage["headline"])
+        if reserved == "resolve_pending":
+            count("stage_resolved_pending")
+            _unlink(path)
+            hand_off(asked_record(opportunity_id, stage["intention_id"], CARD_FIT, keyed_hash(key, text), now_iso(now)), home, now)
+            continue
+        if reserved == "in_progress":
+            count("send_in_progress")
+            continue
         try:
             message = await bot.send_message(chat_id=int(chat), text=text, parse_mode="HTML",
                                              reply_markup=make_markup(fit_rows(nonce, make_button)),
                                              disable_web_page_preview=True)
-        except Exception:  # noqa: BLE001 - Telegram down, blocked bot, ...
+        except Exception as error:  # noqa: BLE001 - Telegram down, blocked bot, rate limit, ...
+            # The reservation is withdrawn so the next pass may try again (or drop the stage).
+            ledger_update(home, lambda ledger: _withdraw(ledger, opportunity_id))
+            wait = _retry_after_of(error)
+            if wait is not None:
+                _RETRY_NOT_BEFORE[name] = now + wait
+                count("send_rate_limited")
+                continue
             _SEND_FAILURES[name] = _SEND_FAILURES.get(name, 0) + 1
             if _SEND_FAILURES[name] >= SEND_ATTEMPTS_MAX:
                 _SEND_FAILURES.pop(name, None)
@@ -713,41 +1118,52 @@ async def _send_staged(bot: Any, adapter: Any, make_button: Callable[[str, str],
             continue
         _SEND_FAILURES.pop(name, None)
         sent_at = now_iso(now)
-        ledger["cards"][opportunity_id] = {
-            "nonce": nonce,
-            "intention_id": stage["intention_id"],
-            "name": stage["name"],
-            "agent_name": stage["agent_name"],
-            "chat_id": chat,
-            "message_id": getattr(message, "message_id", None),
-            "planned_message_id": None,
-            "sent_at": sent_at,
-            "closes_at": now_iso(now + WINDOW_S),
-            "fit": None,
-            "planned": None,
-            "injected": False,
-        }
-        save_ledger(ledger, home)
+        message_id = getattr(message, "message_id", None)
+
+        def fill(ledger: dict) -> None:
+            card = ledger["cards"].get(opportunity_id)
+            if card is None:
+                return
+            card["message_id"] = message_id
+            card["sent_at"] = sent_at
+            card["closes_at"] = now_iso(now + WINDOW_S)
+            card.pop("pid", None)
+
+        _, why = ledger_update(home, fill)
+        if why is not None:
+            count(f"ledger_{why}")
         _unlink(path)
         hand_off(asked_record(opportunity_id, stage["intention_id"], CARD_FIT, keyed_hash(key, text), sent_at), home, now)
         count("sent")
 
 
-async def _inject_due(ledger: dict, home: Optional[str], now: float, count: Callable[..., None], ctx: Any) -> None:
-    changed = False
-    for card in ledger["cards"].values():
-        if not isinstance(card, dict) or not ready_to_inject(card, now):
+def _withdraw(ledger: dict, opportunity_id: str) -> Any:
+    card = ledger["cards"].get(opportunity_id)
+    if card is not None and card.get("message_id") is None and card.get("sent_at") is None:
+        ledger["cards"].pop(opportunity_id, None)
+        return None
+    return None, False
+
+
+async def _inject_due(home: Optional[str], now: float, count: Callable[..., None], ctx: Any) -> None:
+    due, why = ledger_update(home, lambda ledger: ([key for key, card in ledger["cards"].items() if isinstance(card, dict) and ready_to_inject(card, now)], False))
+    if why is not None or not due:
+        return
+    for opportunity_id in due:
+        snapshot, why = ledger_update(home, lambda ledger: (dict(ledger["cards"].get(opportunity_id) or {}), False))
+        if why is not None or not snapshot or not ready_to_inject(snapshot, now):
             continue
-        code = await asyncio.to_thread(inject, card, str(card.get("chat_id", "")), ctx)
+        code = await asyncio.to_thread(inject, snapshot, str(snapshot.get("chat_id", "")), ctx)
         count(code)
-        if code in ("injected", "inject_refused", "inject_no_ctx"):
-            # Refused is final for this card: Hermes's flag is off or no gateway; a retry every
-            # minute would only log. An error is retried next pass.
-            card["injected"] = True
-            card["injected_code"] = code
-            changed = True
-    if changed:
-        save_ledger(ledger, home)
+
+        def settle(ledger: dict) -> Any:
+            card = ledger["cards"].get(opportunity_id)
+            if card is None or card.get("injected"):
+                return None, False
+            _settle_injection(card, code)
+            return None
+
+        ledger_update(home, settle)
 
 
 # --------------------------------------------------------------------------- the tap
@@ -796,20 +1212,26 @@ async def _answer(query: Any, text: str) -> None:
         logger.debug("av-rate: answerCallbackQuery failed", exc_info=True)
 
 
-def record_tap(ledger: dict, opportunity_id: str, card: str, choice: str, now: float, home: Optional[str] = None) -> tuple[str, str, int]:
-    """Record one tap on the ledger and hand its event over. `(label, value_text, revision)`.
-    The caller holds the ledger lock and has checked the window."""
+def record_tap(ledger: dict, opportunity_id: str, card: str, choice: str, now: float, home: Optional[str] = None) -> tuple[str, str, Optional[int]]:
+    """Record one tap on the ledger and hand its event over. `(label, value_text, revision)`;
+    `revision` None when the same value was already recorded (nothing changes, no event). The
+    caller holds the ledger lock and has checked the window and the message."""
     entry = ledger["cards"][opportunity_id]
     at = now_iso(now)
     if card == CARD_FIT:
         value = int(choice)
-        revision = int((entry.get("fit") or {}).get("revision", 0)) + 1
+        current = entry.get("fit") or {}
+        if current.get("value") == value:
+            return LABELS[value], str(value), None
+        revision = int(current.get("revision", 0)) + 1
         entry["fit"] = {"value": value, "revision": revision, "at": at}
-        label = LABELS[value]
         hand_off(rated_record(opportunity_id, entry.get("intention_id"), value, revision, at), home, now)
-        return label, str(value), revision
+        return LABELS[value], str(value), revision
     value_text = PLANNED_VALUES[choice]
-    revision = int((entry.get("planned") or {}).get("revision", 0)) + 1
+    current = entry.get("planned") or {}
+    if current.get("value") == value_text:
+        return PLANNED_LABELS[choice], value_text, None
+    revision = int(current.get("revision", 0)) + 1
     entry["planned"] = {"value": value_text, "revision": revision, "at": at}
     hand_off(planned_record(opportunity_id, entry.get("intention_id"), value_text, revision, at), home, now)
     return PLANNED_LABELS[choice], value_text, revision
@@ -825,6 +1247,7 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
         if query is None:
             return
         key: Optional[tuple[str, str]] = None
+        recorded = False
         try:
             data = getattr(query, "data", None)
             user = _positive_id(getattr(getattr(query, "from_user", None), "id", None))
@@ -834,7 +1257,8 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
             chat = None if raw_chat is None else str(raw_chat).strip()
             chat_type = getattr(chat_obj, "type", None)
             chat_type = getattr(chat_type, "value", chat_type)
-            if not is_owner_tap(adapter, user, chat, chat_type):
+            message_id = getattr(message, "message_id", None) if message is not None else None
+            if message is None or message_id is None or not is_owner_tap(adapter, user, chat, chat_type):
                 _log("not_owner")
                 await _answer(query, NOT_YOURS)
                 return
@@ -844,7 +1268,7 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                 await _answer(query, BAD_BUTTON)
                 return
             card_kind, choice, nonce = parsed
-            key = (str(chat), str(getattr(message, "message_id", ""))) if message is not None else ("-", nonce)
+            key = (str(chat), str(message_id))
             if key in _in_flight:
                 key = None
                 _log("in_flight")
@@ -852,51 +1276,93 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                 return
             _in_flight.add(key)
             now = clock()
-            with _LEDGER_LOCK:
-                ledger, why = load_ledger(home)
-                found = card_for_nonce(ledger, nonce) if why is None else None
+
+            # One synchronous critical section: find, bind, check the window, record, save.
+            def take(ledger: dict) -> tuple[str, Any]:
+                found = card_for_nonce(ledger, nonce)
                 if found is None:
-                    _log("unknown_nonce" if why is None else f"ledger_{why}")
-                    await _answer(query, INVALID)
-                    return
+                    return ("unknown_nonce", None), False
                 opportunity_id, entry = found
-                if is_closed(entry, now):
-                    _log("closed")
-                    await _answer(query, CLOSED)
-                    return
+                if str(entry.get("chat_id", "")) != str(chat) or not card_message_matches(entry, card_kind, message_id):
+                    return ("message_mismatch", None), False
+                closed = is_closed(entry, now) if card_kind == CARD_FIT else planned_closed(entry, now)
+                if closed:
+                    return ("closed", None), False
+                if card_kind == CARD_FIT and entry.get("message_id") is None:
+                    entry["message_id"] = message_id
                 first_fit = card_kind == CARD_FIT and not entry.get("fit")
                 label, _value, revision = record_tap(ledger, opportunity_id, card_kind, choice, now, home)
-                save_ledger(ledger, home)
+                if revision is None:
+                    return ("already", (opportunity_id, label, first_fit, None)), False
+                return ("recorded", (opportunity_id, label, first_fit, revision)), True
+
+            outcome, why = ledger_update(home, lambda ledger: _unwrap(take(ledger)))
+            if why is not None:
+                _log(f"ledger_{why}")
+                await _answer(query, INVALID)
+                return
+            code, detail = outcome
+            if code in ("unknown_nonce", "message_mismatch"):
+                _log(code)
+                await _answer(query, INVALID)
+                return
+            if code == "closed":
+                _log("closed")
+                await _answer(query, CLOSED)
+                return
+            opportunity_id, label, first_fit, revision = detail
+            if code == "already":
+                _log(ALREADY)
+                await _answer(query, f"Already recorded: {label}")
+                return
+            recorded = True
             _log(RECORDED, revision=revision)
             await _answer(query, f"Recorded: {label}")
+        except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
+            logger.warning("av-rate: tenant=%s outcome=handler_error", tenant_id8())
+            if not recorded:
+                await _answer(query, FAILED)
+            if key is not None:
+                _in_flight.discard(key)
+            return
+        # Recorded and answered. Each later step fails on its own; none ever answers FAILED.
+        try:
             rows = getattr(getattr(message, "reply_markup", None), "inline_keyboard", None)
             marked = mark_keyboard(rows, data, make_button)
             if marked is not None:
                 try:
                     await query.edit_message_reply_markup(reply_markup=make_markup(marked))
-                except Exception:  # noqa: BLE001 - recorded already; a stale card is cosmetic
+                except Exception:  # noqa: BLE001 - a stale card is cosmetic
                     _log("edit_failed")
             if first_fit and send_planned:
                 await _send_planned(query, message, nonce, opportunity_id, make_button, make_markup, home, now)
             if card_kind == CARD_PLANNED:
-                with _LEDGER_LOCK:
-                    ledger, why = load_ledger(home)
-                    entry = ledger["cards"].get(opportunity_id) if why is None else None
-                    if entry is not None and ready_to_inject(entry, now):
-                        code = await asyncio.to_thread(inject, entry, str(entry.get("chat_id", "")), ctx)
-                        _log(code)
-                        if code in ("injected", "inject_refused", "inject_no_ctx"):
-                            entry["injected"] = True
-                            entry["injected_code"] = code
-                            save_ledger(ledger, home)
-        except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
-            logger.warning("av-rate: tenant=%s outcome=handler_error", tenant_id8())
-            await _answer(query, FAILED)
+                snapshot, why = ledger_update(home, lambda ledger: (dict(ledger["cards"].get(opportunity_id) or {}), False))
+                if why is None and snapshot and ready_to_inject(snapshot, now):
+                    code = await asyncio.to_thread(inject, snapshot, str(snapshot.get("chat_id", "")), ctx)
+                    _log(code)
+
+                    def settle(ledger: dict) -> Any:
+                        card = ledger["cards"].get(opportunity_id)
+                        if card is None or card.get("injected"):
+                            return None, False
+                        _settle_injection(card, code)
+                        return None
+
+                    ledger_update(home, settle)
+        except Exception:  # noqa: BLE001
+            logger.warning("av-rate: tenant=%s outcome=after_record_error", tenant_id8())
         finally:
             if key is not None:
                 _in_flight.discard(key)
 
     return on_tap
+
+
+def _unwrap(result: tuple[Any, bool]) -> Any:
+    """`take`'s `(outcome, save)` into ledger_update's convention: `outcome` to save, `(outcome, False)` not to."""
+    outcome, save = result
+    return outcome if save else (outcome, False)
 
 
 async def _send_planned(query: Any, message: Any, nonce: str, opportunity_id: str, make_button: Callable[[str, str], Any],
@@ -913,16 +1379,23 @@ async def _send_planned(query: Any, message: Any, nonce: str, opportunity_id: st
     except Exception:  # noqa: BLE001
         _log("planned_send_failed")
         return
-    with _LEDGER_LOCK:
-        ledger, why = load_ledger(home)
-        entry = ledger["cards"].get(opportunity_id) if why is None else None
+    planned_id = getattr(sent, "message_id", None)
+
+    def note(ledger: dict) -> Any:
+        entry = ledger["cards"].get(opportunity_id)
         if entry is None:
-            return
-        entry["planned_message_id"] = getattr(sent, "message_id", None)
-        save_ledger(ledger, home)
+            return None, False
+        entry["planned_message_id"] = planned_id
+        entry["closes_at_planned"] = now_iso(now + WINDOW_S)
+        return entry.get("intention_id")
+
+    intention_id, why = ledger_update(home, note)
+    if why is not None:
+        _log(f"ledger_{why}")
+        return
     key = hash_key(home)
     if key is not None:
-        hand_off(asked_record(opportunity_id, entry.get("intention_id"), CARD_PLANNED, keyed_hash(key, planned_text()), now_iso(now)), home, now)
+        hand_off(asked_record(opportunity_id, intention_id, CARD_PLANNED, keyed_hash(key, planned_text()), now_iso(now)), home, now)
     _log("planned_sent")
 
 
@@ -988,9 +1461,11 @@ def register(ctx: Any) -> None:
 
 
 __all__ = [
-    "CALLBACK_DATA_MAX_BYTES", "CARD_FIT", "CARD_PLANNED", "CHANNEL", "LABELS", "MANAGE_LINE", "PRIVACY_LINE", "SCALE",
-    "WINDOW_HOURS", "asked_record", "cards_on", "fit_callback", "fit_rows", "fit_text", "hand_off", "hash_key",
-    "injected_line", "is_owner_tap", "ledger_path", "load_ledger", "make_handler", "make_nonce", "mark_keyboard",
-    "parse_callback", "pick_up", "planned_callback", "planned_record", "planned_rows", "planned_text", "rated_record",
-    "record_tap", "register", "session_key_for", "stage_dir", "events_dir", "valid_stage",
+    "CALLBACK_DATA_MAX_BYTES", "CARD_FIT", "CARD_PLANNED", "CHANNEL", "EVENING_JOB_NAMES", "INJECT_ATTEMPTS_MAX", "LABELS",
+    "MANAGE_LINE", "PRIVACY_LINE", "QUIET_DEFAULT_WINDOW", "SCALE", "STAGE_MAX_AGE_S", "WINDOW_HOURS", "asked_record",
+    "card_message_matches", "cards_on", "evening_job_state", "fit_callback", "fit_rows", "fit_text", "hand_off", "hash_key",
+    "in_window", "injected_line", "is_owner_tap", "ledger_path", "ledger_update", "load_ledger", "make_handler", "make_nonce",
+    "mark_keyboard", "parse_callback", "parse_window", "pick_up", "planned_callback", "planned_closed", "planned_record",
+    "planned_rows", "planned_text", "quiet_delivery", "quiet_hours", "rated_record", "ready_to_inject", "record_tap", "register",
+    "save_ledger", "session_key_for", "stage_dir", "events_dir", "team_tenant", "valid_stage",
 ]
