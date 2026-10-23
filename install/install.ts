@@ -6,6 +6,7 @@
  *
  *   - `SOUL.md` → `$HERMES_HOME/SOUL.md` (identity; overwrites generic Hermes soul)
  *   - `AGENTS.md`, `USER.md` → `$HERMES_HOME/`
+ *   - `AV_PROFILE=odin` installs `workspace/odin/{SOUL,AGENTS}.md` instead (`profile.ts`, docs/odin-profile.md)
  *   - Edge skill bundles → `$HERMES_HOME/skills/{index-network,edgeos,edge-india,edge-esmeralda,…}/`
  *     (`skill_copy.ts`; `edge-india/references` is replaced, not merged, so upstream deletions land)
  *   - retired skill bundles (`RETIRED_SKILL_DIRS`, e.g. `geo-esmeralda`) → removed from `$HERMES_HOME/skills/`
@@ -65,6 +66,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 
+import { installProfileIdentity, resolveProfile } from "./profile";
 import { installIndex } from "./install_index";
 import { type IndexPluginFailure, type IndexPluginNote, indexPluginFailedLine, installIndexPlugin, recordIndexPluginStatus, setIndexPluginEnabled } from "./install_index_plugin";
 import { installEdgeos } from "./install_edgeos";
@@ -148,12 +150,14 @@ function removeRetiredFiles(): void {
 }
 
 function copySoulFile(): void {
-  const sourceSoul = join(SOURCE_WORKSPACE, "SOUL.md");
-  const targetSoul = join(hermesHome(), "SOUL.md");
-  if (!existsSync(sourceSoul)) return;
-  if (process.argv.includes("--preserve-context") && existsSync(targetSoul)) return;
-  copyFileSync(sourceSoul, targetSoul);
-  console.log(`→ wrote SOUL.md to ${targetSoul}`);
+  const profile = resolveProfile();
+  const written = installProfileIdentity(
+    SOURCE_WORKSPACE,
+    hermesHome(),
+    profile,
+    process.argv.includes("--preserve-context"),
+  );
+  for (const name of written) console.log(`→ wrote ${name} to ${join(hermesHome(), name)} (profile ${profile})`);
 }
 
 function copyWorkspaceFiles(wipeUser: boolean): void {
@@ -166,6 +170,8 @@ function copyWorkspaceFiles(wipeUser: boolean): void {
   let preservedUserNotes = false;
   for (const entry of readdirSync(SOURCE_WORKSPACE)) {
     if (entry === "SOUL.md") continue;
+    // ODIN's AGENTS.md is written by copySoulFile; the resident AGENTS.md and USER.md are not his.
+    if (resolveProfile() === "odin" && (entry === "AGENTS.md" || entry === "USER.md")) continue;
 
     const sourcePath = join(SOURCE_WORKSPACE, entry);
     const targetPath = join(TARGET_HOME, entry);
