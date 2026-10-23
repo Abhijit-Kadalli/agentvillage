@@ -85,6 +85,24 @@ Use Dizko as the starting bundle for another **public read-only** service:
    every other kind has at least one op; and each file must be
    canonical JSON (`JSON.stringify(value, null, 2)` plus a newline, so no
    duplicate keys).
+   `bun run conformance -- mini-apps/<app-id>/manifest.json --fixtures <dir>
+   [--base origin/main] [--out "$TMPDIR/conformance.json"]` (run from the repo
+   root) is conformance v0: the manifest, skill hashes and version bump, the
+   needs-card to prepare pairing, and the hygiene of your service's response
+   fixtures (`<dir>/<operation>/<name>.json`; `error*.json` files are
+   `{code, detail}` error bodies). Exit 0 passed, 1 failed, 2 refused. Live-
+   service checks come in Phase 1 and show as not run. The summary always goes
+   to stdout; conformance.json is written only with `--out`, never by default,
+   and `--out` is refused anywhere inside the repo or the tool's root, so point
+   it at a temp dir (CI: `--out "$RUNNER_TEMP/conformance.json"`). Arguments
+   are checked before any file is touched, and a file already at `--out` must
+   be this manifest's own conformance.json (anything else is refused and left
+   alone). On any other refusal, only this manifest's conformance.json is
+   removed, so read the exit code, not the file. The file is self-attested
+   (anyone can write one by hand): never commit it, and CI must regenerate it
+   from the PR rather than trust a copy. With `--base`, a base manifest blob
+   missing from a partial clone refuses; use a full clone. The header of
+   `scripts/mini-apps-conformance.ts` documents every check.
    Exclude profile/account/private-data/purchase/write tools. A service calling
    itself read-only is not sufficient: reviewers must inspect its semantics.
 3. Submit the same reviewed definition to the control-plane catalog (Phase 0:
@@ -99,6 +117,46 @@ Use Dizko as the starting bundle for another **public read-only** service:
    verification in a temporary directory; integration verifies runtime loading
    separately. Request review before publication/deployment. No production
    changes follow merely from building the bundle.
+
+**The review bot (v0, advisory).** A pull request that touches `mini-apps/**`
+or `skills/**` runs `.github/workflows/mini-apps-review.yml`, the deterministic
+half of the PR-review bot. It runs `bun scripts/mini-apps-review.ts --base <sha>
+--head <sha> --author <login>` and writes a JSON verdict (`PASS`, `FAIL` or
+`NEEDS_HUMAN`) to the job summary and to an artifact. Run the same line
+locally before you open the pull request. A pull request that stays inside one
+app's `mini-apps/<id>/` and `skills/<id>/` is judged in the wider of that
+app's base, base-tip and head `visibility` lane (lowering an app out of
+`everyone` takes the human read). Anything else is core and goes to the human
+gate, including a new app, listing a new id in `catalog.json`, any baseline
+skill (`gold-stars` among them), and an app whose baseUrl host or op target is
+another app's. Removing a needs-card op always takes the human read. CI runs
+the bot from the base commit's tree with the pull request as data only (git
+objects, never checked out or executed). It also reads the base branch's
+current tip as data, so a needs-card op that main gained after the fork still
+counts. The bot checks:
+
+- the shared validator;
+- the skill hash and the version bump;
+- secret shapes in the added lines;
+- `data.context`;
+- the needs-card classes;
+- P0-5's conformance suite (the tool's copy, on the head's bytes);
+- the one-step visibility rule.
+
+In Phase 0 it is not a required check and it posts no comment. A `FAIL`
+turns the job red (exit 1); `NEEDS_HUMAN` exits 0 and stays green.
+
+It must stay non-required until the gate itself changes. Two things stand in
+the way:
+
+- A pull request that edits the workflow file still runs its own copy.
+- A pull request can add a workflow of its own with the same workflow, job
+  and artifact names. A check required by name is then satisfied by a forgery,
+  or by a green `NEEDS_HUMAN`.
+
+Real gating needs a ruleset-required workflow pinned to the base
+(`pull_request_target` alone is not enough). The verdict must be read from that
+run's JSON artifact by run id, never from a check's name or colour.
 
 The manifest is the review artifact. The **CP catalog is authoritative** for
 what may be installed. The app server retrieves it and enforces the exact
