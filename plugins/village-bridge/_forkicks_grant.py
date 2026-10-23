@@ -689,6 +689,11 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         closed = _expired_awaiting(home, draft_id, task, key, owner, marker_path, "quote_expired", False)
         if closed is not None:
             return closed
+        # Safe past the quote (push-time security review of ov#468 (2), review-a CLAIMS L20800): the merchant's
+        # createOrder (Edge-City/forkicks dd0b8918 lib/orders.ts:33-44) locks the idempotency key, returns the EXISTING
+        # order for it before any quote check, and answers a key with no order 409 "Quote expired" past expiresAt. So
+        # this confirm can only return an order already placed for this draftId, never create one. The app's
+        # confirmForKicks forwards it with idempotencyKey = draftId (agentvillage-app forkicks.ts ~:207-213).
         late = True
     elif phase == "awaiting":
         ap = approval_modules()  # approval_unavailable: the marker waits for the next pass
