@@ -383,8 +383,13 @@ describe("Fold 1, review-b M1 (ov#477): the verdict is bound to THIS pull reques
     })), "review_verdict_pass");
     onlyFalse(decideFor(fixture((f) => { report(f).base_ref = "release-x"; })), "review_verdict_pass");
     // The edit moves the pull request's base.sha to main's tip; the JSON still holds the sha the run checked out.
-    // (B-194: no compare is recorded for that new base, so base_fresh is false too.)
-    onlyFalse(decideFor(fixture((f) => { f[PR].base.sha = "e".repeat(40); })), "review_verdict_pass", "base_fresh");
+    // ov#479 round 2 (review-b S1): that new base IS main's tip (compare identical), so base_fresh holds and only
+    // the base_sha === base.sha binding refuses it.
+    onlyFalse(decideFor(fixture((f) => {
+      const tip = "e".repeat(40);
+      f[PR].base.sha = tip;
+      f[P(`compare/${tip}...main?per_page=1`)] = { status: "identical", ahead_by: 0, behind_by: 0, total_commits: 0, base_commit: { sha: tip }, merge_base_commit: { sha: tip } };
+    })), "review_verdict_pass");
   });
   test("base_sha not on main (diverged, behind), the compare unreadable, or the sha malformed => no merge", () => {
     // B-194: the same compare answers base_fresh, which fails closed on it too.
