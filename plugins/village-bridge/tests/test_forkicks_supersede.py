@@ -680,6 +680,36 @@ class SupersedeTest(unittest.TestCase):
         self.assertEqual((self.tombstone_of(D1), self.timeouts()), (None, []))
         self.daemon.start.assert_called_once()  # no second start: the spent grant's own task and bytes
 
+    def test_n9_a_late_confirm_after_the_agents_expired_close_sends_nothing(self):
+        # Review-a ov#468 N9 (Q5b): the pass's own start is spent with its answer lost; the agent then finds the quote
+        # gone, closes the draft (`expired`) and tells the owner nothing was ordered. With the merchant's clock behind
+        # the box's, a late confirm would still create an order: the tombstone stops it before the transport.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_start = self.daemon.start.side_effect
+
+        def lossy_start(task, key, held):
+            real_start(task, key, held)
+            raise TimeoutError('answer lost')
+
+        self.daemon.start.side_effect = lossy_start
+        self.run_pass()
+        self.daemon.start.side_effect = real_start
+        expires = self.lapse_soon(D1)
+        marker = self.home / 'forkicks-drafts' / (D1 + '.await')
+        real_spent = grant._spent
+
+        def spent_then_agent_closes(waited, key):  # the pass read the wait; the agent's close lands right after
+            out = real_spent(waited, key)
+            grant.close_expired(self.home, D1, self.task(D1))
+            return out
+
+        with patch('time.time', lambda: expires + 1), patch.object(grant, '_spent', side_effect=spent_then_agent_closes):
+            self.run_pass()  # the app (the merchant's clock behind) would still accept a create
+        self.assertEqual((self.confirms_sent(), self.app.orders, self.sent), ([], {}, []))
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.tombstone_of(D1), {'code': 'expired'})
+
     def test_n5_a_late_confirm_that_gets_no_answer_is_retried_with_the_same_draftid_never_a_second_line(self):
         self.prepare(D1)
         self.daemon.tap(D1)

@@ -754,12 +754,15 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         if phase == "started":
             return _not_placed(home, draft_id, task, owner, marker_path, "failed", "not_installed", "failed")
         return "not_installed"
-    if started_now:
+    if started_now or late:
         # Review-a ov#465 N2: the agent's confirm read `granted` before this start, then found the quote gone and
         # closed the draft (`expired`) and told the owner nothing was ordered: the spent grant is dropped, no confirm.
+        # Review-a ov#468 N9: the late confirm (N5) checks it too, so a merchant clock behind the box's never places
+        # an order after the agent's "nothing was ordered".
         if tombstone_code(home, draft_id) == EXPIRED:
             _drop(marker_path)
             return "refused_earlier"
+    if started_now:
         # Security review (2): a prepare that landed between this pass's start and its confirm still wins (the
         # spent grant places nothing). A start from an earlier pass is an order in flight and keeps its confirm.
         reason = newest_reason(home, draft_id)
