@@ -91,9 +91,11 @@ REASONS = {
     "failed": "For Kicks couldn't take it",
 }
 OUTCOMES = ("placed", "denied", "expired", "failed")
-# Review-a ov#468 N13 (product's words): a spent grant past the quote that the pass cannot confirm (For Kicks is no
-# longer installed). The one line that branch sends, where it used to send none.
-QUOTE_RAN_OUT_LINE = "Nothing was ordered: the quote ran out before your agent could confirm. Ask again for a fresh quote."
+# Review-a ov#468 N13 Q4, release ov#472 S1 (option (b), product's words): a spent grant the pass could not confirm by
+# the TTL because For Kicks read not installed on every pass (uninstalled, or the apps file unreadable). An order may
+# exist (an agent confirm in flight or with its answer lost), so the line claims nothing about it.
+UNCONFIRMED_NOT_INSTALLED_LINE = ("Your For Kicks order couldn't be confirmed from here: the app isn't connected to your "
+                                  "agent. Ask For Kicks whether it went through.")
 
 _EMIT = None
 _EMIT_CARD = None
@@ -801,8 +803,13 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         # A start is spent, but no confirm was ever sent: nothing was placed, and no re-quote is made.
         return _not_placed(home, draft_id, task, owner, marker_path, "expired", "quote_expired", "expired")
     if not installed(home, "forkicks", "forkicks.order.confirm"):
-        if late:  # review-a ov#468 N13 (Q4): no confirm can be sent; one line instead of none (product's words)
-            return _finish(home, draft_id, task, owner, marker_path, "expired", "not_installed", QUOTE_RAN_OUT_LINE)
+        if late:  # review-a ov#468 N13 (Q4), release S1 (b): no confirm can be sent, so the marker stays (awaiting) and
+            # a later pass that reads For Kicks installed sends the late confirm (the merchant answers). Only past the
+            # TTL: one line that claims nothing about the order.
+            if now - since > TTL_S:
+                return _finish(home, draft_id, task, owner, marker_path, "failed", "unconfirmed_not_installed",
+                               UNCONFIRMED_NOT_INSTALLED_LINE)
+            return "not_installed"
         if phase == "started":
             return _not_placed(home, draft_id, task, owner, marker_path, "failed", "not_installed", "failed")
         return "not_installed"
