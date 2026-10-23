@@ -39,6 +39,9 @@
  *     the managed MoralMod files (`moralmod_cleanup` when one could not be removed)
  *   - D3 memory provider: `memory.provider: village-memory` (`village_memory.ts`; never fatal)
  *   - opt-in recall skill + plugin when `AV_RECALL_ENABLED=1` (`install_recall.ts`)
+ *   - opt-in GODCONST follow-up plugin `av-elicit` when `AV_ELICIT_ENABLED=1` (`av_elicit.ts`): listed in
+ *     `plugins.enabled`, `plugins.entries.av-elicit.allow_gateway_injection: true`, and
+ *     `memory.memory_char_limit` raised to 8000 (a higher value kept); unset changes nothing; never fatal
  *   - opt-in approval.md gate when `AV_APPROVAL_ENABLED=1` (`install_approval.ts`):
  *     a failure there exits non-zero, because an opted-in tenant left ungated
  *     is the failure the gate exists to prevent
@@ -101,6 +104,7 @@ import {
 import { configureTelegramDisplay } from "./display_defaults";
 import { configureAvDisplay, configureVillageMenu } from "./av_display";
 import { configureAvVote } from "./av_vote";
+import { safeConfigureAvElicit } from "./av_elicit";
 import { copySkillBundles, removeRetiredSkillDirs } from "./skill_copy";
 import { hermesBin, hermesExecEnv, hermesRunner } from "./hermes_cli";
 import {
@@ -377,6 +381,8 @@ function main(): void {
   if (resident) configureAvVote();
   // rc44 (RESIDENT-UX): av-display's /village in Telegram's command menu (past the 60-slot cap otherwise).
   configureVillageMenu();
+  // GC-ELICIT: opt-in (AV_ELICIT_ENABLED, set per tenant by the control plane); never fatal.
+  safeConfigureAvElicit();
   // Opt-in and off the core path: a failure here is counted, never fatal.
   safeInstallRecall(SOURCE_SKILLS);
   // D3: the memory provider (staged above with every plugin); a failure is logged, never fatal.
