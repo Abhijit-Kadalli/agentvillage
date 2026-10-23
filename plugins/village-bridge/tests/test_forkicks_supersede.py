@@ -707,6 +707,98 @@ class SupersedeTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertFalse(marker.exists())
 
+    # ---- review-a ov#465 N8, product ruling (i): the newest-draft check reads the wait first ---------------------
+
+    def superseded_withdraws(self, draft):
+        return self.daemon.withdraw.call_args_list.count(call(self.task(draft), 'superseded', PREFIX + draft))
+
+    def test_n8_an_older_draft_the_agent_started_is_refused_without_the_nothing_was_ordered_line(self):
+        # Probe P9: the agent's confirm starts D1 and the app creates the order, but the answer is lost; D2 is prepared
+        # and tapped before the pass reads D1. D1 is still refused for good (tombstone + withdraw), with no line.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        self.lose_the_agents_confirm_answer(D1)
+        self.prepare(D2, qty=3)  # D1's withdraw here is refused by core (already decided): its grant is spent
+        self.daemon.tap(D2)
+        withdraws = self.superseded_withdraws(D1)
+        self.run_pass()
+        self.assertNotIn(('42', grant.SUPERSEDED_LINE), self.sent)  # "Nothing was ordered" could be false here
+        self.assertEqual(self.tombstone_of(D1), {'code': 'superseded'})
+        self.assertEqual(self.superseded_withdraws(D1), withdraws + 1)  # the withdraw, exactly as before
+        self.assertFalse((self.home / 'forkicks-drafts' / (D1 + '.await')).exists())
+        self.assertEqual(self.app.orders, {D1: 1, D2: 1})  # D1's order predates the pass, which added only D2's
+        self.assertEqual(self.confirms_sent().count(D1), 1)  # the agent's lost confirm only: never the pass
+        self.assertEqual(len(self.placed_lines()), 1)
+        self.assertEqual(len(self.sent), 1)  # D2's placed line, nothing about D1
+
+    def test_n8_case_a_the_pass_own_refused_start_with_an_unwritable_tombstone_places_only_the_newest(self):
+        # The pass starts D1, D2's prepare lands before its confirm, and the tombstone cannot be written: the retry
+        # (marked ownStart) keeps today's refusal and line without a wait read, and the agent can never place D1.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_guarded = grant.guarded_start
+
+        def guarded(home, draft_id, start):
+            out = real_guarded(home, draft_id, start)
+            grant.set_latest(self.home, D2)
+            return out
+
+        with patch.object(grant, 'guarded_start', side_effect=guarded), \
+                patch.object(grant, 'tombstone', side_effect=OSError('no space')):
+            self.run_pass()
+        marker = json.loads((self.home / 'forkicks-drafts' / (D1 + '.await')).read_text())
+        self.assertEqual((marker['phase'], marker.get('ownStart')), ('awaiting', True))
+        self.prepare(D2, qty=3)
+        self.daemon.tap(D2)
+        self.run_pass(); self.run_pass()
+        self.assertEqual(self.tombstone_of(D1), {'code': 'superseded'})
+        self.assertIn(('42', grant.SUPERSEDED_LINE), self.sent)  # nothing was sent for D1: the line is true
+        self.assertEqual(self.confirm(D1), {'error': 'approval_card_closed', 'instruction': mini.ORDER_SUPERSEDED})
+        self.assertEqual(self.app.orders, {D2: 1})
+
+    def test_n8_case_b_the_pass_own_start_answer_lost_then_a_newer_prepare_places_only_the_newest(self):
+        # The pass's own start is spent with its answer lost (marker still awaiting), then D2 is prepared and tapped.
+        # The wait reads spent: D1 is tombstoned and withdrawn with no line, and the agent can never place D1.
+        self.prepare(D1)
+        self.daemon.tap(D1)
+        real_start = self.daemon.start.side_effect
+
+        def lossy_start(task, key, held):
+            real_start(task, key, held)
+            raise TimeoutError('answer lost')
+
+        self.daemon.start.side_effect = lossy_start
+        self.run_pass()
+        self.daemon.start.side_effect = real_start
+        self.prepare(D2, qty=3)
+        self.daemon.tap(D2)
+        self.run_pass(); self.run_pass()
+        self.assertEqual(self.tombstone_of(D1), {'code': 'superseded'})
+        self.assertNotIn(('42', grant.SUPERSEDED_LINE), self.sent)
+        self.assertEqual(self.confirm(D1), {'error': 'approval_card_closed', 'instruction': mini.ORDER_SUPERSEDED})
+        self.assertEqual(self.app.orders, {D2: 1})
+        self.assertEqual(self.confirms_sent(), [D2])
+
+    def test_n8_a_not_spent_older_draft_reads_the_wait_and_keeps_the_line_and_an_unreadable_wait_too(self):
+        self.prepare(D1)
+        self.daemon.withdraw.side_effect = RuntimeError('timeout')  # D1's card stays live
+        self.prepare(D2, qty=3)
+        self.daemon.withdraw.side_effect = self.daemon._withdraw
+        self.daemon.tap(D1)  # a tap on the old card: granted, never started
+        self.daemon.wait.reset_mock()  # the prepares' own reads (card at prepare) do not count
+        self.run_pass()
+        self.assertIn(call(self.task(D1)), self.daemon.wait.call_args_list)  # the pass read D1's wait first
+        self.daemon.start.assert_not_called()
+        self.assertEqual(self.sent, [('42', grant.SUPERSEDED_LINE)])
+        self.assertEqual(self.tombstone_of(D1), {'code': 'superseded'})
+        # An unreadable wait: today's refusal, its line and its tombstone.
+        self.prepare(D3, qty=4)
+        with patch.object(grant, 'approval_modules', side_effect=ValueError('approval_unavailable')):
+            self.run_pass()
+        self.assertEqual(self.sent[-1], ('42', grant.SUPERSEDED_LINE))
+        self.assertEqual(self.tombstone_of(D2), {'code': 'superseded'})
+        self.assertEqual(self.app.orders, {})
+
     def test_an_expired_tombstone_keeps_an_order_in_flight_recoverable(self):
         # The grant was spent before the pass closed the draft (a start before the quote lapsed): the confirm is still
         # sent with the same draftId, and the app answers its idempotency key.

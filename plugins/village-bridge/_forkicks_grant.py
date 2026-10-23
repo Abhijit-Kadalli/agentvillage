@@ -552,9 +552,14 @@ def _not_placed(home, draft_id, task, owner, marker_path, outcome, code, reason)
     return _finish(home, draft_id, task, owner, marker_path, outcome, code, NOT_PLACED_LINE.format(reason=REASONS[reason]))
 
 
-def _refuse_older(home, draft_id, task, owner, marker_path, reason):
+def _refuse_older(home, draft_id, task, owner, marker_path, reason, spent=False, own_start=False):
     """S1: never start an older draft (or any draft while `.latest` is unreadable). One line per draft, a code.
-    The tombstone keeps every later path (the agent's confirm adopting a spent grant included) from placing it."""
+    The tombstone keeps every later path (the agent's confirm adopting a spent grant included) from placing it.
+    `spent` (review-a ov#465 N8, product ruling (i)): the newest-draft check read this draft's grant spent, so the
+    agent's confirm may have placed it and lost its answer: the tombstone and the withdraw are as always, but no
+    SUPERSEDED_LINE ("Nothing was ordered from your earlier ...") is sent, since it could be false. `own_start`: the
+    refusal of this pass's own start before any confirm (nothing was sent): a retry of an unwritable tombstone keeps
+    today's line, without a wait read (its grant reads spent by that very start)."""
     try:
         with drafts_lock(home):
             tombstone(home, draft_id, reason)
@@ -563,7 +568,7 @@ def _refuse_older(home, draft_id, task, owner, marker_path, reason):
         # No line and no withdraw yet: the marker goes back to awaiting, so the next pass re-runs the newest check
         # first and retries the tombstone; a started marker would let the pass confirm this draft.
         try:
-            _replace(marker_path, {**_read(marker_path), "phase": "awaiting"})
+            _replace(marker_path, {**_read(marker_path), "phase": "awaiting", **({"ownStart": True} if own_start else {})})
         except Exception:  # noqa: BLE001 - the pass never places a draft without a marker
             try:
                 _drop(marker_path)
@@ -575,6 +580,8 @@ def _refuse_older(home, draft_id, task, owner, marker_path, reason):
             approval_modules().withdraw(task, "superseded", KEY_PREFIX + draft_id)
         except Exception:  # noqa: BLE001 - this draft is never started from here on anyway
             pass
+        if spent:  # an order may exist: refused for good, but no "nothing was ordered" line
+            return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_" + reason, None)
         return _finish(home, draft_id, task, owner, marker_path, "denied", reason, SUPERSEDED_LINE)
     LOG.warning("village_bridge forkicks newest_check code=%s", reason)
     return _finish(home, draft_id, task, owner, marker_path, "denied", reason, LATEST_UNREADABLE_LINE)
@@ -674,7 +681,16 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
     if phase == "awaiting":
         reason = newest_reason(home, draft_id)
         if reason is not None:
-            return _refuse_older(home, draft_id, task, owner, marker_path, reason)
+            # Review-a ov#465 N8 (product ruling (i)): the wait first. A grant the agent's confirm spent (its answer
+            # lost) may be a placed order: refused as always, without the "nothing was ordered" line. An unreadable
+            # wait, or a retry of this pass's own refused start (`ownStart`), is today's refusal.
+            spent = False
+            if reason == "superseded" and marker.get("ownStart") is not True:
+                try:
+                    spent = _spent(approval_modules().wait(task), key)
+                except Exception:  # noqa: BLE001 - unreadable: today's refusal, with its line
+                    spent = False
+            return _refuse_older(home, draft_id, task, owner, marker_path, reason, spent=spent)
     if now - since > TTL_S:
         if phase == "attempted":  # the order may exist: no line; the agent's confirm of this draft recovers it
             return _finish(home, draft_id, task, owner, marker_path, "failed", "uncertain_ttl", None)
@@ -748,7 +764,7 @@ def advance(home, config, transport, installed, draft_id, now=None) -> str:
         # spent grant places nothing). A start from an earlier pass is an order in flight and keeps its confirm.
         reason = newest_reason(home, draft_id)
         if reason is not None:
-            return _refuse_older(home, draft_id, task, owner, marker_path, reason)
+            return _refuse_older(home, draft_id, task, owner, marker_path, reason, own_start=True)
     # Recorded BEFORE the confirm is sent: from here on a lost answer may be a placed order.
     _replace(marker_path, {**marker, "phase": "attempted"})
     proof = {"taskId": task, "payloadHash": record["payloadHash"], "payload": record["payload"]}
