@@ -1,17 +1,23 @@
 """av-godconst: the GODCONST ballot as Telegram button cards (docs/GODCONST-TELEGRAM-BALLOT.md).
 
 Fakes only: the bot, the buttons, the tap and the control plane (a dict-backed ballot that merges taps per statement,
-as the app does). One wire test runs the real HTTP client against a loopback server.
+as the app does). Every call goes through the real client (`cp_call`) into a fake opener, and the fake control plane
+routes on the request PATH with the cp's strict bodies (index.js + godconst-ballot.js parseBody), never on an op
+name. The wire tests run the real HTTP client against a loopback server.
 """
 
 from __future__ import annotations
 
 import asyncio
+import email.message
 import http.server
+import io
 import json
 import logging
 import os
 import threading
+import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 
 import pytest
@@ -23,6 +29,17 @@ POOL = "11111111-2222-4333-8444-555555555555"
 OWNER = 4242
 DAY = datetime(2026, 10, 24, 5, 0, tzinfo=timezone.utc).timestamp()  # 10:30 IST
 NIGHT = datetime(2026, 10, 24, 18, 0, tzinfo=timezone.utc).timestamp()  # 23:30 IST
+LATE = datetime(2026, 10, 24, 17, 30, tzinfo=timezone.utc).timestamp()  # 23:00 IST
+MORNING = datetime(2026, 10, 25, 2, 30, tzinfo=timezone.utc).timestamp()  # 08:00 IST, before the pool closes (10:30 IST)
+TENANT = "0190a5b2-aaaa-4222-8333-444455556666"
+KEY = "ballot_key_box"
+#: The control plane's routes (index.js: POST /tenants/:id/godconst/ballot[/rate|/submit]) and each op's exact body
+#: (godconst-ballot.js parseBody: read `{}`, rate exactly three keys, submit exactly `{pool_sha256}`; else 400).
+CP_ROUTES = {f"/tenants/{TENANT}/godconst/ballot": "read", f"/tenants/{TENANT}/godconst/ballot/rate": "rate",
+             f"/tenants/{TENANT}/godconst/ballot/submit": "submit"}
+CP_BODY_KEYS = {"read": set(), "rate": {"pool_sha256", "statement_id", "rating"}, "submit": {"pool_sha256"}}
+SESSION_KEYS = {"pool_id", "pool_sha256", "order_rule", "nonce", "order", "closes_at", "status", "started_at",
+                "header_message_id", "page", "cards", "rated", "final_sent", "send_failures"}
 
 
 def run(coro):
@@ -78,15 +95,22 @@ class Bot:
 
 
 class Server:
-    """The app behind the control plane: one resident's ballot, merged per statement."""
+    """The control plane and the app behind it: one resident's ballot, merged per statement. Called as the plugin's
+    `caller`/`reader`, it runs the plugin's real `cp_call`; the request reaches `answer` through a fake opener (or a
+    loopback server), which routes on the PATH as the real control plane does."""
 
-    def __init__(self, plugin, n=6):
+    def __init__(self, plugin, n=6, fake_opener=True):
         self.P = plugin
         self.state = "open"
         self.order = [f"s{i:03d}" for i in range(1, n + 1)]
         self.ratings = {}
         self.calls = []
         self.refuse = None
+        # The box's wiring as the control plane writes it ($HERMES_HOME/.env; the process env stays clean).
+        with open(os.path.join(os.environ["HERMES_HOME"], ".env"), "w", encoding="utf-8") as handle:
+            handle.write(f"CONTROL_PLANE_URL=http://127.0.0.1:9\nAV_GODCONST_BALLOT_KEY={KEY}\n")
+        if fake_opener:
+            plugin._OPENER = FakeOpener(self)
 
     def view(self):
         return {
@@ -99,23 +123,109 @@ class Server:
         }
 
     def __call__(self, op, body, home=None):
-        self.calls.append((op, dict(body)))
+        return self.P.cp_call(op, body, home)
+
+    def answer(self, path, body):
+        """`(status, payload)` for one POST. The route is the PATH (index.js), the body is the op's exact keys
+        (parseBody), as the real control plane; `calls` records (the routed op, the body)."""
+        op = CP_ROUTES.get(path)
+        self.calls.append((op or path, dict(body)))
+        if op is None:
+            return 404, {"error": "not_found"}
+        if set(body) != CP_BODY_KEYS[op]:
+            return 400, {"error": "body_invalid"}
         if self.refuse:
-            status, code = self.refuse
-            return self.P.Reply(status, {"error": code}, code)
+            return self.refuse[0], {"error": self.refuse[1]}
         if op == "read":
-            return self.P.Reply(200, self.view(), self.state)
+            return 200, self.view()
         if op == "submit":
             if not self.ratings:
-                return self.P.Reply(422, {"error": "incomplete"}, "incomplete")
+                return 422, {"error": "incomplete"}
             self.state = "submitted"
-            return self.P.Reply(200, {"state": "submitted", "revision": 10, "n_rated": len(self.ratings), "n_statements": len(self.order), "progress": {}}, "submitted")
+            return 200, {"state": "submitted", "revision": 10, "n_rated": len(self.ratings), "n_statements": len(self.order), "progress": {}}
         if self.state == "submitted":
-            return self.P.Reply(409, {"error": "submitted"}, "submitted")
+            return 409, {"error": "submitted"}
         assert body["pool_sha256"] == SHA
         self.ratings[body["statement_id"]] = body["rating"]
-        return self.P.Reply(200, {"state": "saved", "unchanged": False, "revision": 9, "ratings": dict(self.ratings),
-                                  "progress": {"answered": len(self.ratings), "total": len(self.order), "missing": 0}}, "saved")
+        return 200, {"state": "saved", "unchanged": False, "revision": 9, "ratings": dict(self.ratings),
+                     "progress": {"answered": len(self.ratings), "total": len(self.order), "missing": 0}}
+
+
+class _Response:
+    def __init__(self, status, raw):
+        self.status, self._raw = status, io.BytesIO(raw)
+
+    def read(self, n=-1):
+        return self._raw.read(n)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class FakeOpener:
+    """Stands in for the plugin's urllib opener: the request `cp_call` built goes to `Server.answer` by its path."""
+
+    def __init__(self, server):
+        self.server = server
+
+    def open(self, request, timeout=None):
+        assert request.get_method() == "POST" and request.get_header("Authorization") == f"Bearer {KEY}"
+        status, payload = self.server.answer(urllib.parse.urlsplit(request.full_url).path, json.loads(request.data))
+        raw = json.dumps(payload).encode()
+        if status != 200:
+            raise urllib.error.HTTPError(request.full_url, status, "refused", email.message.Message(), io.BytesIO(raw))
+        return _Response(status, raw)
+
+
+class LoopbackCP:
+    """The control plane on a loopback port (real HTTP): routes by path through `Server.answer`; `seen` keeps
+    (path, Authorization, raw body)."""
+
+    def __init__(self, server):
+        seen = self.seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+                seen.append((self.path, self.headers["Authorization"], raw))
+                status, payload = server.answer(self.path, json.loads(raw))
+                out = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.origin = f"http://127.0.0.1:{self.httpd.server_port}"
+
+    def __enter__(self):
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        return False
+
+
+class GatedBot(Bot):
+    """A bot whose `hold`-th send waits on `gate`: a pass caught mid-send while the resident taps."""
+
+    def __init__(self, hold):
+        super().__init__()
+        self.hold, self.n, self.gate = hold, 0, None
+
+    async def send_message(self, **kw):
+        self.n += 1
+        if self.n == self.hold:
+            await self.gate.wait()
+        return await super().send_message(**kw)
 
 
 class Query:
@@ -150,6 +260,28 @@ def start(P, bot, server, now=DAY):
 def ledger_text(home):
     with open(os.path.join(home, "av-godconst", "ballot.json"), encoding="utf-8") as handle:
         return handle.read()
+
+
+def assert_no_value_on_disk(home):
+    """N3: the ledger holds ids, positions and message ids only (the session's fixed keys; a card is exactly its
+    message id and its Submit flag); the tombstone is exactly {pool_sha256, nonce, status, at}; the marker is empty.
+    No rating value, text or derivative can sit in any of them."""
+    raw = ledger_text(home)
+    assert TEXT not in raw and "ratings" not in raw
+    stored = json.loads(raw)
+    assert set(stored) <= {"v", "session", "ended"} and stored["v"] == 1
+    session = stored["session"]
+    if session is not None:
+        assert set(session) == SESSION_KEYS
+        assert all(isinstance(sid, str) for sid in session["order"])
+        assert all(type(p) is int for p in session["rated"])
+        for position, card in session["cards"].items():
+            assert position.isdigit() and set(card) == {"message_id", "submit"}
+            assert type(card["message_id"]) is int and type(card["submit"]) is bool
+    if "ended" in stored:
+        assert set(stored["ended"]) == {"pool_sha256", "nonce", "status", "at"}
+    marker = os.path.join(home, "av-events", "godconst", "page-open")
+    assert not os.path.exists(marker) or os.path.getsize(marker) == 0
 
 
 # --------------------------------------------------------------------------- pure logic
@@ -251,7 +383,7 @@ def test_a_rated_pair_brings_the_next_pair_and_a_retap_is_a_revision(plugin, hom
     assert q.answers == ["Saved: Oppose inclusion (changed)"]
     assert server.ratings["s001"] == 2 and len(bot.cards()) == 4
     assert ("rate", {"pool_sha256": SHA, "statement_id": "s001", "rating": 2}) in server.calls
-    assert TEXT not in ledger_text(home)
+    assert_no_value_on_disk(home)
 
 
 def test_the_last_pair_ends_with_one_line(plugin, home):
@@ -266,6 +398,7 @@ def test_the_last_pair_ends_with_one_line(plugin, home):
     tap(plugin, bot, server, bot.cards()[0], 2)
     assert sum("statements rated" in m.text for m in bot.sent) == 1
     assert json.loads(ledger_text(home))["session"]["status"] == "done"
+    assert_no_value_on_disk(home)
 
 
 def test_a_pair_rated_on_the_web_is_skipped_and_web_changes_re_mark_cards(plugin, home):
@@ -315,6 +448,7 @@ def test_old_cards_bad_buttons_and_refusals(plugin, home):
     assert tap(plugin, bot, server, card, 3).answers == ["Your ballot is submitted, so rating is closed for you."]
     stored = json.loads(ledger_text(home))
     assert stored["session"] is None and stored["ended"]["status"] == "submitted" and set(stored["ended"]) == {"pool_sha256", "nonce", "status", "at"}
+    assert_no_value_on_disk(home)
     server.refuse = None
     assert tap(plugin, bot, server, card, 4).answers == ["Your ballot is submitted, so rating is closed for you."]
 
@@ -351,9 +485,11 @@ def test_stop_and_resume(plugin, home):
     for card, value in zip(bot.cards(), (2, 3)):
         tap(plugin, bot, server, card, value)
     assert len(bot.cards()) == 2 and server.ratings == {"s001": 2, "s002": 3}
+    assert_no_value_on_disk(home)
     tap(plugin, bot, server, header, 1, data=header.reply_markup.inline_keyboard[0][1].callback_data)
     start(plugin, bot, server, now=DAY + 2000)
     assert len(bot.cards()) == 4
+    assert_no_value_on_disk(home)
 
 
 def test_a_blocked_bot_retries_then_gives_up(plugin, home):
@@ -457,6 +593,7 @@ def test_submit_asks_then_submits_the_merged_draft_and_forgets_the_ballot(plugin
     stored = json.loads(ledger_text(home))
     assert stored["session"] is None and stored["ended"]["status"] == "submitted"
     assert "s001" not in ledger_text(home)
+    assert_no_value_on_disk(home)
     calls = len(server.calls)
     assert tap(plugin, bot, server, second, 5).answers == ["Your ballot is submitted, so rating is closed for you."]
     assert len(server.calls) == calls
@@ -554,3 +691,187 @@ def test_each_page_touches_the_marker_and_start_up_removes_a_stale_one(plugin, h
     plugin.set_page_open(True)
     os.chmod(plugin.ledger_path(), 0o644)
     assert plugin.reconcile_page_open(now=DAY) is False and not os.path.exists(marker)
+
+
+# --------------------------------------------------------------------------- ov#483 fix-forward (review-b M1, S1, N2)
+
+
+def test_each_op_posts_to_its_own_cp_route_and_an_unknown_op_never_falls_back(plugin, home):
+    """M1: an explicit op -> path map; Submit goes to the cp's submit route, and an unknown op raises before any call
+    (never the rate route)."""
+    server = Server(plugin)
+    assert plugin.OP_PATHS == {"read": "/tenants/{tenant}/godconst/ballot", "rate": "/tenants/{tenant}/godconst/ballot/rate",
+                               "submit": "/tenants/{tenant}/godconst/ballot/submit"}
+    server.ratings["s001"] = 3
+    assert server("read", {}).code == "open"
+    assert server("submit", {"pool_sha256": SHA}).code == "submitted"
+    assert [op for op, _ in server.calls] == ["read", "submit"]
+    for bad in ("bogus", "Submit", "rate ", ""):
+        with pytest.raises(ValueError):
+            plugin.cp_call(bad, {"pool_sha256": SHA})
+    assert len(server.calls) == 2
+
+
+def test_telegram_submit_reaches_the_cp_submit_route_over_the_wire(plugin, home, monkeypatch):
+    """M1 / review-b P1 flipped: "Yes, submit" POSTs exactly {pool_sha256} to /ballot/submit (real HTTP, a loopback
+    control plane that routes by path) and the final line carries the reply's n_rated. At cce708cb it went to
+    /ballot/rate, the cp answered 400 body_invalid and the resident saw "Could not save that."."""
+    server = Server(plugin, fake_opener=False)
+    with LoopbackCP(server) as cp:
+        monkeypatch.setenv("CONTROL_PLANE_URL", cp.origin)
+        bot = Bot()
+        assert start(plugin, bot, server) == "open"
+        first, second = bot.cards()
+        assert tap(plugin, bot, server, first, 4).answers == ["Saved: Support inclusion"]
+        server.ratings["s005"] = 2  # rated on the web page: the final line counts the app's n_rated, not the box's
+        assert tap(plugin, bot, server, second, 1, data=second.reply_markup.inline_keyboard[1][0].callback_data).answers == ["Confirm below."]
+        confirm = bot.sent[-1]
+        q = tap(plugin, bot, server, confirm, 1, data=confirm.reply_markup.inline_keyboard[0][0].callback_data)
+    assert q.answers == ["Submitted"] and q.edited == [None]
+    assert bot.sent[-1].text == "Submitted: 2 of 6 rated. Thank you: your ratings are final."
+    submit_path = f"/tenants/{TENANT}/godconst/ballot/submit"
+    assert [entry for entry in cp.seen if entry[0] == submit_path] == [
+        (submit_path, f"Bearer {KEY}", json.dumps({"pool_sha256": SHA}, separators=(",", ":")).encode())]
+    assert [path.rsplit("/", 1)[-1] for path, _, _ in cp.seen] == ["ballot", "rate", "ballot", "submit"]
+    stored = json.loads(ledger_text(home))
+    assert stored["session"] is None and stored["ended"]["status"] == "submitted"
+    assert_no_value_on_disk(home)
+
+
+def _pass_caught_mid_send(plugin, server, bot, taps):
+    """Run one pass whose first card send (after the header is stored) waits; `taps(handler, bot)` taps meanwhile; then
+    the send is released and the pass finishes. Returns what the taps returned."""
+
+    async def scenario():
+        bot.gate = asyncio.Event()
+        plugin._last_read["at"] = 0.0
+        task = asyncio.create_task(plugin.pass_once(bot, None, make_button, make_markup, now=DAY, reader=server))
+        for _ in range(500):
+            await asyncio.sleep(0.01)
+            if bot.n >= bot.hold:
+                break
+        assert bot.n >= bot.hold and not task.done()
+        handler = plugin.make_handler(None, make_button=make_button, make_markup=make_markup, caller=server, clock=lambda: DAY)
+        out = await taps(handler, bot)
+        bot.gate.set()
+        assert await task == "open"
+        return out
+
+    return asyncio.run(scenario())
+
+
+async def _tap_now(handler, message, data):
+    q = Query(data, message)
+    await handler(type("Update", (), {"callback_query": q})())
+    return q.answers
+
+
+def test_a_stop_tapped_while_a_pass_sends_stays_stopped(plugin, home):
+    """S1 / review-b P4: the pass's write-back never undoes a Stop made during its sends; no next pair follows."""
+    marker = os.path.join(home, "av-events", "godconst", "page-open")
+    server, bot = Server(plugin), GatedBot(hold=2)
+
+    async def stop(handler, bot):
+        header = bot.sent[0]
+        answers = await _tap_now(handler, header, header.reply_markup.inline_keyboard[0][1].callback_data)
+        return answers, json.loads(ledger_text(home))["session"]["status"]
+
+    answers, mid = _pass_caught_mid_send(plugin, server, bot, stop)
+    assert answers == ["Stopped. Your ratings are kept."] and mid == "stopped"
+    assert json.loads(ledger_text(home))["session"]["status"] == "stopped"  # at cce708cb: "active" again
+    assert not os.path.exists(marker)
+    first, second = bot.cards()
+    tap(plugin, bot, server, first, 2)
+    tap(plugin, bot, server, second, 2)
+    start(plugin, bot, server, now=DAY + 400)
+    assert len(bot.cards()) == 2  # nothing after "Stopped"
+    assert json.loads(ledger_text(home))["session"]["status"] == "stopped"
+    assert_no_value_on_disk(home)
+
+
+def test_a_submit_while_a_pass_sends_stays_ended(plugin, home):
+    """S1: a session Submit ends during a pass's sends: the pass never brings the session (or the marker) back."""
+    marker = os.path.join(home, "av-events", "godconst", "page-open")
+    server, bot = Server(plugin), GatedBot(hold=2)
+    server.ratings["s006"] = 3  # one rating on the web page, so the ballot can be submitted
+
+    async def submit(handler, bot):
+        header = bot.sent[0]
+        asked = await _tap_now(handler, header, header.reply_markup.inline_keyboard[0][0].callback_data)
+        confirm = bot.sent[-1]
+        done = await _tap_now(handler, confirm, confirm.reply_markup.inline_keyboard[0][0].callback_data)
+        return asked, done
+
+    asked, done = _pass_caught_mid_send(plugin, server, bot, submit)
+    assert (asked, done) == (["Confirm below."], ["Submitted"])
+    stored = json.loads(ledger_text(home))
+    assert stored["session"] is None and stored["ended"]["status"] == "submitted"  # at cce708cb: the session is back
+    assert not os.path.exists(marker)
+    calls, sent = len(server.calls), len(bot.sent)
+    assert tap(plugin, bot, server, bot.cards()[0], 4).answers == ["Your ballot is submitted, so rating is closed for you."]
+    assert len(server.calls) == calls
+    start(plugin, bot, server, now=DAY + 400)
+    assert len(bot.sent) == sent
+    assert_no_value_on_disk(home)
+
+
+def test_a_night_tick_holds_the_next_pair_but_a_tap_is_answered_at_once(plugin, home):
+    """N2: a pass (a tick) sends nothing outside 08:00-21:30 IST, not only the first card; the resident's own tap at
+    night still gets its next pair at once."""
+    bot, server = Bot(), Server(plugin)
+    start(plugin, bot, server)
+    first, second = bot.cards()
+    # 23:00 IST: the resident rates the pair by taps: the reply (the next pair) goes at once.
+    tap(plugin, bot, server, first, 4, clock=LATE)
+    tap(plugin, bot, server, second, 5, clock=LATE)
+    assert [c.text.splitlines()[0] for c in bot.cards()[2:]] == ["Statement 3 of 6 · Care", "Statement 4 of 6 · Care"]
+    # The next pair is finished on the web page: a night tick holds the following pair ...
+    server.ratings.update({"s003": 2, "s004": 3})
+    sent = len(bot.sent)
+    assert start(plugin, bot, server, now=LATE + 600) == "open"
+    assert start(plugin, bot, server, now=LATE + 1800) == "open"
+    assert len(bot.sent) == sent
+    # ... and the first in-window tick sends it.
+    assert start(plugin, bot, server, now=MORNING) == "open"
+    assert [c.text.splitlines()[0] for c in bot.cards()[4:]] == ["Statement 5 of 6 · Care", "Statement 6 of 6 · Care"]
+
+
+def test_a_night_tick_holds_the_final_line_a_retry_and_a_resume(plugin, home):
+    """N2: the final line, a failed card's retry and the cards after a Resume are tick sends: daytime only."""
+    # The final line (the last pair rated on the web page).
+    bot, server = Bot(), Server(plugin, n=2)
+    start(plugin, bot, server)
+    server.ratings.update({"s001": 1, "s002": 2})
+    sent = len(bot.sent)
+    start(plugin, bot, server, now=LATE)
+    assert len(bot.sent) == sent
+    start(plugin, bot, server, now=MORNING)
+    assert bot.sent[-1].text.startswith("All 2 statements rated.")
+    # A failed card's retry.
+    plugin.save_ledger({"v": 1, "session": None})
+    bot, server = Bot(), Server(plugin, n=4)
+    start(plugin, bot, server)
+    first, second = bot.cards()
+    tap(plugin, bot, server, first, 4)
+    bot.fail = 1
+    tap(plugin, bot, server, second, 4)  # the next pair's send fails
+    assert len(bot.cards()) == 2
+    start(plugin, bot, server, now=LATE)
+    assert len(bot.cards()) == 2
+    start(plugin, bot, server, now=MORNING)
+    assert [c.text.splitlines()[0] for c in bot.cards()[2:]] == ["Statement 3 of 4 · Care", "Statement 4 of 4 · Care"]
+    # A Resume at night: the cards wait for the morning.
+    plugin.save_ledger({"v": 1, "session": None})
+    bot, server = Bot(), Server(plugin)
+    start(plugin, bot, server)
+    header = bot.sent[0]
+    tap(plugin, bot, server, header, 1, data=header.reply_markup.inline_keyboard[0][1].callback_data)
+    for card, value in zip(bot.cards(), (2, 3)):
+        tap(plugin, bot, server, card, value)
+    assert len(bot.cards()) == 2
+    q = tap(plugin, bot, server, header, 1, data=header.reply_markup.inline_keyboard[0][1].callback_data, clock=LATE)
+    assert q.answers == ["Resumed. The next statements come shortly."]
+    start(plugin, bot, server, now=LATE + 60)
+    assert len(bot.cards()) == 2
+    start(plugin, bot, server, now=MORNING)
+    assert len(bot.cards()) == 4

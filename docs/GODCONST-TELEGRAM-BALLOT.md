@@ -137,7 +137,7 @@ this channel. That is the reason for the departure from av-rate, which does inje
 |---|---|
 | Order | The POOL's rule, never a hard-coded one (`telegram-order.ts`): the stored `godconst_pools.rating_order_rule` when present, else the rule Open pins (v2 for a pool with two author arms). Under `godconst-order-v2`, positions (2k, 2k+1) are one agent-written and one ODIN-written statement, with the inside order random per resident. The box never sees authorship and does not need to. |
 | Page | `PAIRS_PER_PAGE = 1`, so `PAGE_SIZE = 2` (`plugins/av-godconst/_logic.py`). One constant. |
-| Start | On the first read that finds the pool `open` for this resident (rating, a participant, not submitted), the header and then the first page go out. The first send happens only between 08:00 and 21:30 IST (B7's opener window) and only before `rating_closes_at`. If every statement is already rated on the web, nothing is sent. |
+| Start | On the first read that finds the pool `open` for this resident (rating, a participant, not submitted), the header and then the first page go out. The first send happens only between 08:00 and 21:30 IST (B7's opener window) and only before `rating_closes_at`. If every statement is already rated on the web, nothing is sent. The same hours hold for every later send a pass (a tick) makes: the next page after one finished on the web page, a failed card's retry, the final line, the cards after a Resume; at night they wait for 08:00. The reply to the resident's own tap (the next page, or the final line, after they rated this one) goes at once at any hour. |
 | Next page | Sent when every statement of the current page is rated (by a tap, or on the web page, seen on the next read). A page whose statements were all rated on the web is skipped. A statement already rated on the web gets no card. |
 | End | Once there is no further page and the current one is rated: one final line (all rated, or "you rated X of N"). The session is then `done`. A later tap still saves. |
 | Revisions | A re-tap on any card saves again (`Saved: ... (changed)`). A change on the web page moves the check on that card at the next read (at most 10 re-marks per pass). |
@@ -226,7 +226,7 @@ not changed here.
 | Pool closed or re-seeded meanwhile | `409 pool_not_rating` / `stale_pool` on the tap ("Rating has closed."). The read settles `closed`. A new pool gets a new session (new nonce), and old cards answer "from an earlier ballot". |
 | Ledger unreadable or tampered with (not 0600, foreign owner, bad JSON) | Nothing is sent or overwritten. Taps answer "from an earlier ballot". Logged `ledger_<code>`. |
 | The app's 404 on a save (no longer admitted) | Treated as a withdrawal: tombstone, "You can't take part right now." The control plane's own `403 not_enabled` (a switch) is not an ending. |
-| Two taps at once, a tap racing a pass | Taps on one card are refused while one is saving. Page sends hold one asyncio lock and re-read the ledger, so a page is sent once. |
+| Two taps at once, a tap racing a pass | Taps on one card are refused while one is saving. Page sends hold one asyncio lock and re-read the ledger, so a page is sent once. A pass never writes its copy of the ledger back whole: it re-reads it under the ledger lock and merges only its own fields (the cards it sent and their message ids, the page, the final line, its send failures, the rated positions). Its own `done` / `undeliverable` applies only while the status is still the one it loaded, so a Stop, Resume, Submit or ending made during its sends stands, and an ended session is never brought back. |
 | The app's order differs from the session's (it never should) | Logged `order_changed`; nothing sent. |
 
 ## 7. What changes in each repo
@@ -315,7 +315,11 @@ The press order (each step is a human Railway variable edit or an owner press; e
    starts. If it says `godconst-order-v1`, the pairing dependency (section 9) is not deployed: stop here.
 6. **Rehearse** with Carter's tenant on a test pool. Open rating in `/admin/constitution`; within about 10 minutes the
    header and the first pair arrive (between 08:00 and 21:30 IST). Rate, re-tap, change one on the page, watch the
-   check move, Stop and Resume, then Close. In the app, `godconst_ballot_revisions.channel` shows `telegram` rows.
+   check move, Stop and Resume. Then press `Submit my ratings` and `Yes, submit`: the answer is `Submitted`, the
+   confirmation's buttons go, and the last line reads `Submitted: X of N rated. Thank you: your ratings are final.`
+   (X is the app's count from the submit's reply). The cp logs `godconst_ballot op=submit ... status=200
+   code=submitted`; a later tap answers `Your ballot is submitted, so rating is closed for you.` Then Close. In the
+   app, `godconst_ballot_revisions.channel` shows `telegram` rows.
 7. **Widen:** `GODCONST_BALLOT_TENANTS=all` (or the cohort's ids), then roll or rewire.
 8. **Round day:** open rating in the morning (IST), so first cards go out the same day. Close as usual; the cards
    need nothing at Close.
@@ -363,8 +367,9 @@ and call `residentOrder`, so both surfaces share one code path.
    at `rating_closes_at - 6 h` if the current pair is unrated. It would count toward the proactive-message ceilings,
    unlike cards that follow a tap.
 3. **A message at Close?** Default: none. The session settles silently, and late taps answer "Rating has closed."
-4. **First-send hours.** Default: 08:00 to 21:30 IST (B7's opener window). A pool opened at night starts its cards
-   at 08:00.
+4. **Send hours.** Default: 08:00 to 21:30 IST (B7's opener window) for the first card and every send a pass makes.
+   A pool opened at night starts its cards at 08:00; a page finished on the web page at night brings the next one at
+   08:00. The reply to the resident's own tap goes at once.
 5. **Channel in the door events.** The export carries it (feat/godconst-ballot-channel). Default: no event field.
    Alternative: proposal 5.1.
 6. **The submit race on the page** (a Telegram tap after the page opened its review). Default: accepted and
