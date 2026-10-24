@@ -39,7 +39,7 @@ class StateDb:
 
     def __init__(self, path: Path, active: bool = False, platform: bool = False):
         """``active``: the store has Hermes's ``messages.active`` column (an older store has none).
-        ``platform``: it also has ``messages.platform_message_id`` (Hermes v2026.9.24's store)."""
+        ``platform``: it also has ``platform_message_id`` and ``display_kind`` (Hermes v2026.9.24's store)."""
         self.path = path
         self.active = active
         self.platform = platform
@@ -50,7 +50,7 @@ class StateDb:
             "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,"
             " content TEXT, timestamp REAL NOT NULL"
             + (", active INTEGER NOT NULL DEFAULT 1, _compressed_summary INTEGER NOT NULL DEFAULT 0" if active else "")
-            + (", platform_message_id TEXT" if platform else "")
+            + (", platform_message_id TEXT, display_kind TEXT" if platform else "")
             + ");"
         )
         con.commit()
@@ -65,11 +65,12 @@ class StateDb:
         return sid
 
     def message(self, sid: str, role: str, content, ts: float, active: int = 1, summary: int = 0,
-                platform_id: str = None) -> None:
+                platform_id: str = None, kind: str = None) -> None:
         con = sqlite3.connect(self.path)
         if self.platform:
             con.execute("INSERT INTO messages (session_id, role, content, timestamp, active, _compressed_summary,"
-                        " platform_message_id) VALUES (?,?,?,?,?,?,?)", (sid, role, content, ts, active, summary, platform_id))
+                        " platform_message_id, display_kind) VALUES (?,?,?,?,?,?,?,?)",
+                        (sid, role, content, ts, active, summary, platform_id, kind))
         elif self.active:
             con.execute("INSERT INTO messages (session_id, role, content, timestamp, active, _compressed_summary)"
                         " VALUES (?,?,?,?,?,?)", (sid, role, content, ts, active, summary))
@@ -101,7 +102,7 @@ def active_db(home):
 
 @pytest.fixture
 def platform_db(home):
-    """A state.db as Hermes v2026.9.24 writes it: ``active`` plus ``platform_message_id``."""
+    """A state.db as Hermes v2026.9.24 writes it: ``active``, ``platform_message_id`` and ``display_kind``."""
     return StateDb(home / "state.db", active=True, platform=True)
 
 
