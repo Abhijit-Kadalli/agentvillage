@@ -1299,6 +1299,43 @@ def test_hw_the_agent_cannot_supply_the_fields(plugin, home, db):
     assert not HUMAN_KEYS & set(plugin.TOOL_SCHEMA["parameters"]["properties"])
 
 
+def test_hw_injected_user_rows_are_not_the_humans_words(plugin, home, platform_db):
+    """A plugin's inject_message lands as a user row without a platform id (av-rate's rating line); only
+    rows Hermes stamped with the Telegram message id are the human's (nonav L22367 S3)."""
+    db = platform_db
+    opened_at(plugin, home, db, NOON)
+    db.message("s-dm", "assistant", "Question one?", NOON + 10)
+    db.message("s-dm", "user", "the real answer", NOON + 20, platform_id="101")
+    db.message("s-dm", "assistant", "Question two?", NOON + 30)
+    db.message("s-dm", "user", "[Rating recorded] Placeholder Person: 4/5 match fit", NOON + 40)  # av-rate, injected
+    db.message("s-dm", "assistant", "Noted that rating.", NOON + 50)
+    closed_at(home, NOON + 60)
+    db.message("s-dm", "user", NOTICE, NOON + 3600)
+    body = answer_record(plugin, home, now=NOON + 3700)
+    assert body["late"] is True
+    assert body["human_text"] == "the real answer" and body["human_message_count"] == 1
+    assert "Rating recorded" not in body["human_text"]
+
+
+def test_hw_injected_row_alone_is_no_words(plugin, home, platform_db):
+    db = platform_db
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "[Rating recorded] Placeholder Person: 2/5 match fit", NOON + 20)
+    body = answer_record(plugin, home)
+    assert body["human_text"] is None and body["human_message_count"] == 0
+
+
+def test_hw_platform_stamped_rows_are_kept_as_before(plugin, home, platform_db):
+    db = platform_db
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "first", NOON + 20, platform_id="7")
+    db.message("s-dm", "user", "second", NOON + 30, platform_id="8")
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
+
+
 def test_hw_late_answer_uses_the_same_rule(plugin, home, db):
     opened_at(plugin, home, db, NOON)
     db.message("s-dm", "assistant", "Question?", NOON + 10)

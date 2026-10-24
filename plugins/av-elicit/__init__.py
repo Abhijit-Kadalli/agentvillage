@@ -757,7 +757,10 @@ def human_words(window_ms: int, home: Optional[str] = None) -> Optional[tuple]:
     Rows: user and assistant messages of the home DM (every session under the home key with
     ``source = 'telegram'`` and ``chat_type = 'dm'``), ``active = 1`` when the column exists (and never a
     context-compaction summary row), at or after ``window_ms``. Human rows are user rows whose content does
-    not start with ``NOTICE_PREFIX`` (blank ones carry no words and are passed over). The span is the human
+    not start with ``NOTICE_PREFIX`` (blank ones carry no words and are passed over) and, when the store has
+    ``platform_message_id``, that carry one: Hermes stamps the Telegram message id on a message the human
+    sent, while a plugin's ``inject_message`` (av-rate's "[Rating recorded]" line, our own notices) arrives
+    as a user row with none, and is no one's words. The span is the human
     rows after the latest assistant row with non-empty content that precedes the newest human row (the agent's
     last reply; a tool-call-only row has empty content and does not end it), oldest first. Caps: at most 10
     messages and 8000 characters of joined text, keeping the most recent whole messages; a newest message
@@ -777,6 +780,8 @@ def human_words(window_ms: int, home: Optional[str] = None) -> Optional[tuple]:
         where += " AND m.active = 1"
     if "_compressed_summary" in columns:
         where += " AND m._compressed_summary = 0"  # a context-compaction summary is neither side's words
+    if "platform_message_id" in columns:
+        where += " AND (m.role = 'assistant' OR m.platform_message_id IS NOT NULL)"  # an injected user row is not the human's
     rows = _sqlite_rows(
         path,
         "SELECT m.role, m.content, m.timestamp FROM messages m JOIN sessions s ON s.id = m.session_id "
