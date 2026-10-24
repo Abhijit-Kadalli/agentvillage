@@ -80,6 +80,9 @@ HUMAN_TEXT_MAX = 8000
 HUMAN_TEXT_JOIN = "\n\n"
 #: Newest rows of the window read when looking for the span (it holds at most 10 human messages).
 HUMAN_SCAN_ROWS = 1000
+#: The control plane's pass leaves a record file bigger than this unread (``RECORD_FILE_MAX`` in
+#: godconst-elicit-pass.js): an answer's human words are cut further so the record always fits.
+RECORD_FILE_BYTES = 16_384
 HUMAN_FIELDS = ("human_text", "human_message_count", "human_text_truncated", "human_text_first_at",
                 "human_text_last_at")
 
@@ -735,44 +738,50 @@ def human_messages_since(since_s: float, home: Optional[str] = None) -> Optional
     return int(count or 0), (int(round(float(last) * 1000)) if last is not None else None)
 
 
-def _has_column(path: str, table: str, column: str) -> Optional[bool]:
-    """Whether ``table`` has ``column`` (an older Hermes store has no ``messages.active``); None when the
-    store cannot be read or has no such table."""
-    rows = _sqlite_rows(path, f"PRAGMA table_info({table})")
+def _message_columns(path: str) -> Optional[set]:
+    """The ``messages`` table's column names (an older Hermes store has no ``active``); None when the store
+    cannot be read or has no such table."""
+    rows = _sqlite_rows(path, "PRAGMA table_info(messages)")
     if not rows:
         return None
-    return any(len(row) > 1 and row[1] == column for row in rows)
+    return {row[1] for row in rows if len(row) > 1}
 
 
 def _filled(content: Any) -> bool:
     return isinstance(content, str) and bool(content.strip())
 
 
-def human_words(window_ms: int, home: Optional[str] = None) -> Optional[dict]:
+def human_words(window_ms: int, home: Optional[str] = None) -> Optional[tuple]:
     """The human's own messages for an ``answer`` record (contract §12.1), read verbatim from state.db.
 
     Rows: user and assistant messages of the home DM (every session under the home key with
-    ``source = 'telegram'`` and ``chat_type = 'dm'``), ``active = 1`` when the column exists, at or after
-    ``window_ms``. Human rows are user rows whose content does not start with ``NOTICE_PREFIX`` (blank ones
-    carry no words and are passed over). The span is the human rows after the latest assistant row with
-    non-empty content that precedes the newest human row (the agent's last reply; a tool-call-only row has
-    empty content and does not end it), oldest first. Caps: at most 10 messages and 8000 characters of joined
-    text, keeping the most recent whole messages; a newest message longer than the cap alone keeps its first
-    8000 characters. Any cut sets ``human_text_truncated``.
+    ``source = 'telegram'`` and ``chat_type = 'dm'``), ``active = 1`` when the column exists (and never a
+    context-compaction summary row), at or after ``window_ms``. Human rows are user rows whose content does
+    not start with ``NOTICE_PREFIX`` (blank ones carry no words and are passed over). The span is the human
+    rows after the latest assistant row with non-empty content that precedes the newest human row (the agent's
+    last reply; a tool-call-only row has empty content and does not end it), oldest first. Caps: at most 10
+    messages and 8000 characters of joined text, keeping the most recent whole messages; a newest message
+    longer than the cap alone keeps its first 8000 characters.
 
-    Returns the five record fields, or None when there is no home key or state.db cannot be read."""
+    Returns ``(messages, truncated)``, ``messages`` a list of ``(content, epoch_s)`` oldest first and
+    ``truncated`` true when a cap cut anything; None when there is no home key or state.db cannot be read."""
     key = session_key(home)
     if not key:
         return None
     path = state_db(home)
-    active = _has_column(path, "messages", "active")
-    if active is None:
+    columns = _message_columns(path)
+    if columns is None:
         return None
+    where = ""
+    if "active" in columns:
+        where += " AND m.active = 1"
+    if "_compressed_summary" in columns:
+        where += " AND m._compressed_summary = 0"  # a context-compaction summary is neither side's words
     rows = _sqlite_rows(
         path,
         "SELECT m.role, m.content, m.timestamp FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.source = 'telegram' AND s.chat_type = 'dm' AND s.session_key = ? "
-        "AND m.role IN ('user', 'assistant') AND m.timestamp >= ?" + (" AND m.active = 1" if active else "")
+        "AND m.role IN ('user', 'assistant') AND m.timestamp >= ?" + where
         + " ORDER BY m.timestamp DESC, m.id DESC LIMIT ?",
         (key, window_ms / 1000.0, HUMAN_SCAN_ROWS),
     )
@@ -803,19 +812,46 @@ def human_words(window_ms: int, home: Optional[str] = None) -> Optional[dict]:
         kept.append((content, at))
         size = grown
     kept.reverse()
+    return kept, more
+
+
+def human_fields(messages: list, truncated: bool) -> dict:
+    """§12.1's five record fields from ``human_words``'s messages (none: count 0, text null)."""
     return {
-        "human_text": HUMAN_TEXT_JOIN.join(c for c, _ in kept) if kept else None,
-        "human_message_count": len(kept),
-        "human_text_truncated": more,
-        "human_text_first_at": now_iso(kept[0][1]) if kept else None,
-        "human_text_last_at": now_iso(kept[-1][1]) if kept else None,
+        "human_text": HUMAN_TEXT_JOIN.join(c for c, _ in messages) if messages else None,
+        "human_message_count": len(messages),
+        "human_text_truncated": bool(truncated),
+        "human_text_first_at": now_iso(messages[0][1]) if messages else None,
+        "human_text_last_at": now_iso(messages[-1][1]) if messages else None,
     }
 
 
-def no_human_words() -> dict:
-    """The fields when nothing could be captured (§12.1: state.db unreadable, or no home key)."""
-    return {"human_text": None, "human_message_count": 0, "human_text_truncated": False,
-            "human_text_first_at": None, "human_text_last_at": None}
+def record_bytes(record: dict) -> int:
+    """The record's size on disk, encoded exactly as ``write_private_json`` writes it."""
+    return len(json.dumps(record, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def fit_human_words(record: dict, messages: list, truncated: bool, limit: int = RECORD_FILE_BYTES) -> dict:
+    """Keep an answer record within the control plane's per-file bound (its pass leaves a bigger file unread,
+    so the whole answer would be lost): drop the oldest messages, then cut the one left from its end, until
+    the record fits. Any cut sets ``human_text_truncated``. Returns the record, updated in place."""
+    while len(messages) > 1 and record_bytes(record) > limit:
+        messages = messages[1:]
+        truncated = True
+        record.update(human_fields(messages, truncated))
+    if messages and record_bytes(record) > limit:
+        content, at = messages[0]
+        low, high = 0, len(content) - 1  # the longest prefix that fits (binary search; a prefix of 0 empties)
+        while low < high:
+            mid = (low + high + 1) // 2
+            record.update(human_fields([(content[:mid], at)], True))
+            if record_bytes(record) <= limit:
+                low = mid
+            else:
+                high = mid - 1
+        messages = [(content[:low], at)] if content[:low].strip() else []
+        record.update(human_fields(messages, True))
+    return record
 
 
 def turn_active(home: Optional[str] = None, now: Optional[float] = None) -> bool:
@@ -1191,16 +1227,18 @@ def record_elicitation(args: Any, session_id: Any, home: Optional[str] = None, n
         fields["agent_question_no"] = fields["question_no"]
         fields["question_no"] = assign_question_no(fields["kind"], fields["question_no"], asked)
         trigger = question_trigger(home, state["accepted_ms"]) if fields["kind"] == "question" else None
-        human = None
+        words = None
         if fields["kind"] == "answer":
             try:
-                human = human_words(window_ms, home)
+                words = human_words(window_ms, home)
             except Exception as exc:  # noqa: BLE001 - the record is still written, without the words
                 _log("human_text_error", logging.WARNING, error=type(exc).__name__)
-            if human is None:
+            if words is None:
                 _log("human_text_unavailable", logging.WARNING)
-                human = no_human_words()
-        record = build_record(fields, trigger, stamp, human=human)
+                words = ([], False)
+        record = build_record(fields, trigger, stamp, human=human_fields(*words) if words else None)
+        if words:
+            fit_human_words(record, *words)
         path = os.path.join(directory, f"{int(stamp * 1000)}-{record['record_id']}.json")
         try:
             write_private_json(path, record)
@@ -1354,7 +1392,7 @@ __all__ = [
     "AGE_CAP_S", "FORMS", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
     "assign_question_no", "ballot_page_marker", "ballot_page_open", "build_record", "busy_reason", "closed_path",
     "closed_time", "confirmation", "current_trigger", "current_window", "current_window_ms", "open_dones", "dm_session_exists", "done_files",
-    "elicitation_record_tool", "gateway_process", "human_messages_since", "human_words", "in_quiet_hours", "inject_dir",
+    "elicitation_record_tool", "gateway_process", "human_messages_since", "human_words", "human_fields", "fit_human_words", "in_quiet_hours", "inject_dir",
     "inject_pass", "inject_text", "is_closed", "last_answer_time", "last_injected", "late_window_start",
     "load_window_state", "marker_applies", "open_done_times", "parse_stage_name", "probe_pass", "probe_path",
     "probe_payload", "question_trigger", "read_closed_marker", "record_elicitation", "records_dir",

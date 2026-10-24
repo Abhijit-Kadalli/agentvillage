@@ -112,8 +112,9 @@ Telegram messages, read verbatim from `state.db` (read-only) when the record is 
 supplies or sees these fields. Its schema and the confirmation line are unchanged.
 
 - Rows: `messages` joined to `sessions` with `source = 'telegram'`, `chat_type = 'dm'` and the home session
-  key (every session under it), `active = 1` when the column exists (an older store has none), `timestamp` at
-  or after the window's `window_ms`. Human rows are `user` rows whose content does not start with
+  key (every session under it), `active = 1` when the column exists (an older store has none), never a
+  context-compaction summary row (`_compressed_summary = 1`, when the column exists), `timestamp` at or after
+  the window's `window_ms`. Human rows are `user` rows whose content does not start with
   `[Agent Village notice` (our notices). Blank ones carry no words and are passed over.
 - Span: the human rows after the latest `assistant` row with non-empty content (the agent's last reply) that
   precedes the newest human row, oldest first. A tool-call-only assistant row has empty content and does not
@@ -121,6 +122,10 @@ supplies or sees these fields. Its schema and the confirmation line are unchange
 - Caps: at most 10 messages and 8000 characters of joined text, keeping the most recent whole messages. If
   the newest message alone is over 8000 characters, its first 8000 are kept. Any cut sets
   `human_text_truncated: true`.
+- File bound: the control plane's pass leaves a record file over 16,384 bytes unread (`RECORD_FILE_MAX`),
+  which would lose the whole answer. When non-ASCII words push the record past that, the oldest messages are
+  dropped first, then the one left is cut from its end until the record fits. The agent's own fields are
+  never cut.
 
 | Field | Value |
 |---|---|

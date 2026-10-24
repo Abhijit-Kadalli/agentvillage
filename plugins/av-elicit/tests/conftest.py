@@ -47,7 +47,8 @@ class StateDb:
             " started_at REAL NOT NULL);"
             "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,"
             " content TEXT, timestamp REAL NOT NULL"
-            + (", active INTEGER NOT NULL DEFAULT 1" if active else "") + ");"
+            + (", active INTEGER NOT NULL DEFAULT 1, _compressed_summary INTEGER NOT NULL DEFAULT 0" if active else "")
+            + ");"
         )
         con.commit()
         con.close()
@@ -60,11 +61,11 @@ class StateDb:
         con.close()
         return sid
 
-    def message(self, sid: str, role: str, content, ts: float, active: int = 1) -> None:
+    def message(self, sid: str, role: str, content, ts: float, active: int = 1, summary: int = 0) -> None:
         con = sqlite3.connect(self.path)
         if self.active:
-            con.execute("INSERT INTO messages (session_id, role, content, timestamp, active) VALUES (?,?,?,?,?)",
-                        (sid, role, content, ts, active))
+            con.execute("INSERT INTO messages (session_id, role, content, timestamp, active, _compressed_summary)"
+                        " VALUES (?,?,?,?,?,?)", (sid, role, content, ts, active, summary))
         else:
             con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)", (sid, role, content, ts))
         con.commit()

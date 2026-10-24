@@ -1202,6 +1202,47 @@ def test_hw_inactive_rows_are_ignored(plugin, home, active_db):
     assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
 
 
+def test_hw_compaction_summaries_are_neither_side(plugin, home, active_db):
+    db = active_db
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "first", NOON + 20)
+    db.message("s-dm", "assistant", "[summary of earlier turns]", NOON + 25, summary=1)  # does not end the span
+    db.message("s-dm", "user", "[CONTEXT COMPACTION] earlier turns", NOON + 26, summary=1)
+    db.message("s-dm", "user", "second", NOON + 30)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
+
+
+def test_hw_record_always_fits_the_control_planes_file_bound(plugin, home, db):
+    """godconst-elicit-pass.js leaves a record file over 16 KiB unread: 8000 three-byte characters would lose
+    the whole answer, so the words are cut further (oldest message first) until the record fits."""
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "अ" * 3000, NOON + 20)
+    db.message("s-dm", "user", "ब" * 3000, NOON + 21)
+    long_text = "स" * 4000
+    body = answer_record(plugin, home, text=long_text, takeaway="t" * 2000)
+    [path] = records(home)
+    assert path.stat().st_size <= plugin.RECORD_FILE_BYTES
+    assert body["text"] == long_text  # the agent's fields are never cut
+    assert body["human_message_count"] == 1 and body["human_text_truncated"] is True
+    assert body["human_text"] == "ब" * len(body["human_text"]) and 0 < len(body["human_text"]) < 3000
+    assert body["human_text_first_at"] == body["human_text_last_at"] == plugin.now_iso(NOON + 21)
+
+
+def test_hw_fit_drops_the_oldest_whole_message_first(plugin):
+    messages = [("a" * 50, 1.0), ("b" * 50, 2.0)]
+    record = {"kind": "answer", **plugin.human_fields(messages, False)}
+    limit = plugin.record_bytes(record) - 10
+    plugin.fit_human_words(record, messages, False, limit=limit)
+    assert record["human_text"] == "b" * 50 and record["human_message_count"] == 1
+    assert record["human_text_truncated"] is True and plugin.record_bytes(record) <= limit
+    small = {"kind": "answer", **plugin.human_fields(messages, False)}
+    plugin.fit_human_words(small, messages, False)  # already fits: untouched
+    assert small["human_message_count"] == 2 and small["human_text_truncated"] is False
+
+
 def test_hw_no_human_words_yet(plugin, home, db):
     opened(plugin, home, db)
     db.message("s-dm", "assistant", "Question?", NOON + 10)
