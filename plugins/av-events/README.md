@@ -31,7 +31,7 @@ plugins/av-events/
   _cron.py         cron.run from the executions ledger and usage audit (flusher thread only)
   _outcome_ask.py  the evening outcome ask: outcome.asked and the resident's answer (DATA-42)
   _headline_flagged.py  opportunity.headline_flagged from the proactive trigger's hand-off files: ids and codes, no text (DATA-487)
-  _rating_cards.py  opportunity.rating_asked / rated / pre_planned from the av-rate plugin's hand-off files: the suggestion rating cards (data docs/design/suggestion-rating.md)
+  _rating_cards.py  opportunity.rating_asked / rated / pre_planned / connection_typed from the av-rate plugin's hand-off files: the suggestion rating cards (data docs/design/suggestion-rating.md)
   _approvals_reminder.py  one Connect-approvals reminder per Telegram DM session while the welcome's button is unstarted (DATA-444)
   _clock.py        the Now line on every turn, cron runs and subagents included: `Now: <Wkd YYYY-MM-DD HH:MM> IST (<h:mm AM/PM>)` (CLOCK-1)
   _prompt_refresh.py  a long session's system prompt follows USER.md / MEMORY.md / AGENTS.md / skills: wraps Hermes's build_turn_context (F1)
@@ -265,6 +265,7 @@ backlog can differ from `emitted_at` by minutes. Every `marts` time series is bu
 | `opportunity.rating_asked` | the flusher, from the av-rate plugin's hand-off files (`av-events/proactive/rating-events/`), one per rating card sent (`plugins/av-rate`; data docs/design/suggestion-rating.md) | closed: `question_version` (`match_fit_5_v1`), `card` (`fit` \| `planned`), `message_hash` (the card text's keyed hash), `window_hours` (24); envelope `opportunity_id`, `intention_id` (null unless the stage named one); actor `system`; event id derived from (type, opportunity, card, revision); off with `rating_cards` in `AV_HOOKS_DISABLED` (`_rating_cards.py`) |
 | `opportunity.rated` | as above, one per tap on card 1 (a re-tap is a revision) | closed: `value` (1..5), `scale` (`match_fit_5_v1`), `channel` (`telegram_button`), `revision`, `rated_at`; `self_report`, actor `participant` |
 | `opportunity.pre_planned` | as above, one per tap on card 2 | closed: `value` (`yes` \| `no`), `channel`, `revision`, `answered_at`; `self_report`, actor `participant` |
+| `opportunity.connection_typed` | as above, one per tap on card 3 (asked only after a fit of 3 or more) | closed: `value` (`friend` \| `spark` \| `collab` \| `unsure`), `scale` (`connection_type_v1`), `channel`, `revision`, `answered_at`; `self_report`, actor `participant` |
 | `outcome.reported` | the flusher, for a resident's Telegram DM whose whole text is an answer to the one open ask, sent as their next message after it or as a reply to it | `value`, `matcher_version` (`outcome_reply_v2`), `intention_reason` (the ask's); `self_report`, actor `participant`, envelope `outcome_id`, `opportunity_id`, `intention_id` (the ask's), `in_reply_to_event_id` = the ask — see "The evening outcome ask" |
 | `profile.updated` | `on_session_finalize`, when a USER.md changed | `kind` ∈ `memory_profile`\|`landing_profile`, `user_md_hash`, plus `length` above `metadata` |
 | `llm.call` | `pre_api_request` + `post_api_request` | `model`, `provider`, the five token buckets, `latency_ms`, `finish_reason`, `tools_hash`, `system_prompt_hash`, plus lengths above `metadata` |
