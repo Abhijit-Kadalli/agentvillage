@@ -259,3 +259,125 @@ def submitted_text(n_rated: Optional[int] = None, n: Optional[int] = None) -> st
 
 def stopped_text() -> str:
     return _esc(["Stopped: no more statement cards. Your ratings are kept, and you can still rate on the Constitution page."])
+
+
+# --------------------------------------------------------------------------- non-voter elicitation cards (GC-ELICIT §11.4)
+#
+# A second, independent mode: after a non-voter's elicitation window settles, the control plane writes
+# ``av-events/godconst/elicit-cards.json`` and the box offers those statements as rating cards. Its own callback prefix,
+# its own ledger; the official ballot (``gcb:``) is never touched.
+
+ELICIT_PREFIX = "gce:"
+ELICIT_HANDLER_PATTERN = r"^gce:"
+#: gce:r:<nonce>:<position>:<value> a rating; gce:x:<nonce> Stop (ends the cards for this elicitation).
+_ELICIT_CALLBACK = re.compile(r"^gce:(?:r:([A-Za-z0-9_-]{8}):(0|[1-9][0-9]{0,2}):([1-5])|x:([A-Za-z0-9_-]{8}))$")
+STOP_LABEL = "Stop these cards"
+
+
+def elicit_rating_callback(nonce: str, position: int, value: int) -> str:
+    return f"gce:r:{nonce}:{position}:{value}"
+
+
+def elicit_stop_callback(nonce: str) -> str:
+    return f"gce:x:{nonce}"
+
+
+def parse_elicit_callback(data: Any) -> Optional[tuple]:
+    """``("rate", nonce, position, value)`` or ``("stop", nonce)``; None for anything else."""
+    if not isinstance(data, str) or len(data.encode("utf-8")) > CALLBACK_DATA_MAX_BYTES:
+        return None
+    m = _ELICIT_CALLBACK.fullmatch(data)
+    if m is None:
+        return None
+    if m.group(1) is not None:
+        return ("rate", m.group(1), int(m.group(2)), int(m.group(3)))
+    return ("stop", m.group(4))
+
+
+def elicit_rating_rows(nonce: str, position: int, make_button: Any, selected: Optional[int] = None) -> list:
+    """Five buttons 1..5 (the ballot's labels); `selected` (the saved rating, memory only) carries the check."""
+    return [[make_button((CHECK if selected == v else "") + str(v), elicit_rating_callback(nonce, position, v)) for v in range(1, 6)]]
+
+
+def elicit_header_rows(nonce: str, make_button: Any) -> list:
+    return [[make_button(STOP_LABEL, elicit_stop_callback(nonce))]]
+
+
+def _positive_int(value: Any) -> bool:
+    return type(value) is int and value > 0
+
+
+def valid_trigger(data: Any) -> Optional[dict]:
+    """The control plane's ``elicit-cards.json`` (§11.2), checked, or None. Unknown keys are dropped."""
+    if not isinstance(data, dict):
+        return None
+    eid, pid, window, ids, expires = (data.get(k) for k in ("elicitation_id", "pool_id", "window_ms", "statement_ids", "expires_ms"))
+    if not (isinstance(eid, str) and _UUID.fullmatch(eid) and isinstance(pid, str) and _UUID.fullmatch(pid)):
+        return None
+    if not (_positive_int(window) and _positive_int(expires)):
+        return None
+    if not isinstance(ids, list) or not 0 < len(ids) <= MAX_STATEMENTS:
+        return None
+    if not all(isinstance(s, str) and _STATEMENT_ID.fullmatch(s) for s in ids) or len(set(ids)) != len(ids):
+        return None
+    return {"elicitation_id": eid, "pool_id": pid, "window_ms": window, "statement_ids": list(ids), "expires_ms": expires}
+
+
+def valid_cards(data: Any, statement_ids: Iterable) -> Optional[list]:
+    """The cards read (``{statements: [{statement_id, text, origin, saved_rating|null}]}``, in the participant's order),
+    checked and kept to `statement_ids`, as ``[{"id", "text", "saved"}]`` in the read's order; None when the shape is
+    wrong. The origin (who wrote it) is dropped: the cards are blind."""
+    if not isinstance(data, dict) or not isinstance(data.get("statements"), list) or len(data["statements"]) > MAX_STATEMENTS:
+        return None
+    wanted = set(statement_ids)
+    out, seen = [], set()
+    for s in data["statements"]:
+        if not isinstance(s, dict):
+            return None
+        sid, text, saved = s.get("statement_id"), s.get("text"), s.get("saved_rating")
+        if not (isinstance(sid, str) and _STATEMENT_ID.fullmatch(sid) and sid not in seen and isinstance(text, str) and 0 < len(text) <= TEXT_MAX):
+            return None
+        if saved is not None and not (type(saved) is int and 1 <= saved <= 5):
+            return None
+        seen.add(sid)
+        if sid in wanted:
+            out.append({"id": sid, "text": text, "saved": saved})
+    return out
+
+
+FOLLOW_UP = "Follow-up (not your ballot)"
+
+
+def elicit_header_text(n: int, expires_at: Optional[float]) -> str:
+    lines = [
+        f"{FOLLOW_UP}: {n} constitution statements to rate (optional)",
+        "",
+        "A research follow-up, separate from the official constitution ballot: these ratings do not change any ballot.",
+        "",
+        "Tap one button per statement, from 1 to 5. Rate as many as you like; skip any. "
+        "Tap again to change a rating. You won't see who wrote each statement.",
+        "",
+    ]
+    lines += [f"{v}  {label}" for v, label in LABELS.items()]
+    lines += ["", f"You'll get {PAGE_SIZE} statements at a time; the next ones arrive once you've rated these. "
+                  "Each tap is saved straight away."]
+    if expires_at is not None:
+        lines += ["", f"Open until {ist_label(expires_at)}."]
+    lines += ["", "Private: only you and the research team see your ratings. Your agent does not see these cards."]
+    return _esc(lines)
+
+
+def elicit_card_text(position: int, n: int, text: str) -> str:
+    return _esc([f"{FOLLOW_UP} · Statement {position + 1} of {n}", "", text, "",
+                 "1 strongly oppose inclusion · 3 neutral · 5 strongly support inclusion"])
+
+
+def elicit_done_text(rated: int, expires_at: Optional[float]) -> str:
+    lines = [f"{FOLLOW_UP}: all {rated} statements rated. Thank you: your ratings are saved."]
+    if expires_at is not None:
+        lines.append(f"You can tap any card again to change a rating until {ist_label(expires_at)}.")
+    return _esc(lines)
+
+
+def elicit_stopped_text() -> str:
+    return _esc([f"{FOLLOW_UP}: stopped, no more statement cards. The ratings you gave are kept."])

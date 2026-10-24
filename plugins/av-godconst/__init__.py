@@ -38,6 +38,13 @@ control plane from ``GODCONST_BALLOT_TENANTS``. Off: nothing is read or sent; ta
 the authority and refuses when the route is off). Logs: ``av-godconst: tenant=<id8> outcome=<code> [k=v]``, codes and
 counts only; never a statement, a text, a rating, a user id, a key or callback data.
 
+**Non-voter elicitation cards** (GC-ELICIT §11.4; section "Non-voter elicitation cards" of the design doc): a second,
+independent mode behind ``AV_GODCONST_ELICIT_CARDS`` (exactly ``1``). When the control plane writes
+``$HERMES_HOME/av-events/godconst/elicit-cards.json`` after a non-voter's elicitation window settles, and no av-elicit
+opener is pending, the box offers those statements as ``gce:`` cards (its own handler, ledger ``av-godconst/elicit.json``
+and tombstones); each tap saves one rating on the elicitation's own ratings via ``.../godconst/elicitation-ratings``.
+It never touches the ballot, and the shared page-open marker stays while either mode has an open page.
+
 Python 3.11, standard library only; the Telegram SDK is imported inside the factory.
 """
 
@@ -72,6 +79,9 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_ID = "av-godconst"
 ON_SWITCH = "AV_GODCONST_BALLOT"
+#: The non-voter elicitation cards' own switch (GC-ELICIT §11.4), written by the control plane for the tenants in
+#: GODCONST_ELICIT_TENANTS. On only when exactly ``1``; independent of ON_SWITCH.
+ELICIT_SWITCH = "AV_GODCONST_ELICIT_CARDS"
 URL_ENV = "CONTROL_PLANE_URL"
 #: The per-tenant ballot credential the control plane writes (godconst-ballot-key.js). Never EDGEOS_API_KEY: the agent
 #: can read that one. av-approval custody strips this name from every agent-run child (custody_keys.json, FLOOR), so
@@ -89,7 +99,10 @@ SUBMIT_PATH = "/tenants/{tenant}/godconst/ballot/submit"
 #: The control plane routes by PATH (index.js: ``.../ballot`` is the read, ``.../ballot/rate`` and ``.../ballot/submit``
 #: their ops) and holds each op to its exact body (godconst-ballot.js parseBody). One path per op; an op with no path
 #: raises in cp_call and never falls back to another route (ov#483 M1: Submit went to /rate and got 400 body_invalid).
-OP_PATHS = {"read": READ_PATH, "rate": RATE_PATH, "submit": SUBMIT_PATH}
+ELICIT_READ_PATH = "/tenants/{tenant}/godconst/elicitation-cards"
+ELICIT_RATE_PATH = "/tenants/{tenant}/godconst/elicitation-ratings"
+OP_PATHS = {"read": READ_PATH, "rate": RATE_PATH, "submit": SUBMIT_PATH,
+            "elicit_read": ELICIT_READ_PATH, "elicit_rate": ELICIT_RATE_PATH}
 HTTP_TIMEOUT_S = 12.0
 RESPONSE_MAX_BYTES = 2 * 1024 * 1024
 
@@ -207,7 +220,28 @@ def page_is_open(session: Optional[dict], now: float) -> bool:
     return any(p in sent and p not in rated for p in L.page_positions(int(session["page"]), len(session["order"])))
 
 
+def ballot_page_open_now(home: Optional[str] = None, now: Optional[float] = None) -> bool:
+    """The ballot mode's page is open, from its ledger as it is on disk (no lock: writes are atomic renames)."""
+    try:
+        ledger, why = load_ledger(home)
+        return why is None and page_is_open(ledger.get("session"), time.time() if now is None else now)
+    except Exception:  # noqa: BLE001 - a ledger of the wrong types: unknown, so not open
+        _log("page_marker_unknown", mode="ballot")
+        return False
+
+
 def set_page_open(is_open: bool, home: Optional[str] = None, touch: bool = False) -> None:
+    """The ballot mode's say on the shared marker: kept while either mode has an open page (the elicitation cards'
+    page is read from their ledger), so neither mode removes the other's hold."""
+    _write_marker(is_open or elicit_page_open_now(home), home, touch)
+
+
+def set_elicit_page_open(is_open: bool, home: Optional[str] = None, touch: bool = False) -> None:
+    """The elicitation cards' say on the shared marker (the ballot's page read from its ledger)."""
+    _write_marker(is_open or ballot_page_open_now(home), home, touch)
+
+
+def _write_marker(is_open: bool, home: Optional[str] = None, touch: bool = False) -> None:
     """Create (empty, 0600, in a 0700 directory) or remove the marker; `touch` refreshes its mtime (each page sent: the
     av-elicit plugin ignores a marker older than 12 h, so a page left open long ago never holds the opener). Never
     raises."""
@@ -228,10 +262,10 @@ def set_page_open(is_open: bool, home: Optional[str] = None, touch: bool = False
 def reconcile_page_open(home: Optional[str] = None, now: Optional[float] = None) -> bool:
     """At plugin start: keep the marker only while the ledger shows an open page inside the window (a crash or a
     restart never leaves it stale). True when it is kept."""
+    stamp = time.time() if now is None else now
     with _LEDGER_LOCK:
-        ledger, why = load_ledger(home)
-    keep = why is None and page_is_open(ledger.get("session"), time.time() if now is None else now)
-    set_page_open(keep, home)
+        keep = ballot_page_open_now(home, stamp) or elicit_page_open_now(home, stamp)
+    _write_marker(keep, home)
     return keep
 
 
@@ -296,8 +330,13 @@ def _read_private(path: str, max_bytes: int) -> tuple:
     if st.st_size > max_bytes:
         return None, "too_big"
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(fd, encoding="utf-8") as handle:
+            opened = os.fstat(handle.fileno())  # what is read is what was checked (no swap between lstat and open)
+            if not stat.S_ISREG(opened.st_mode):
+                return None, "not_regular"
+            if opened.st_size > max_bytes:
+                return None, "too_big"
             return json.loads(handle.read(max_bytes + 1)), None
     except (OSError, ValueError):
         return None, "unreadable"
@@ -834,8 +873,9 @@ def _button_fields(button: Any) -> tuple:
     return str(getattr(button, "text", "") or ""), getattr(button, "callback_data", None)
 
 
-def mark_keyboard(rows: Any, data: str, make_button: Callable) -> Optional[list]:
-    """The card's keyboard with the check on the tapped ``gcb:`` button only; None when nothing changes."""
+def mark_keyboard(rows: Any, data: str, make_button: Callable, prefix: str = L.PREFIX) -> Optional[list]:
+    """The card's keyboard with the check on the tapped button (of `prefix`: ``gcb:``, or ``gce:``) only; None when
+    nothing changes."""
     if not rows:
         return None
     found = changed = False
@@ -844,7 +884,7 @@ def mark_keyboard(rows: Any, data: str, make_button: Callable) -> Optional[list]
         new_row = []
         for button in row or ():
             text, callback = _button_fields(button)
-            if isinstance(callback, str) and callback.startswith(L.PREFIX):
+            if isinstance(callback, str) and callback.startswith(prefix):
                 bare = text[len(L.CHECK):] if text.startswith(L.CHECK) else text
                 want = L.CHECK + bare if callback == data else bare
                 found = found or callback == data
@@ -1085,6 +1125,633 @@ async def _control(query: Any, message: Any, kind: str, session: dict, ledger: d
             await _send(bot, str(chat), L.stopped_text())
 
 
+# --------------------------------------------------------------------------- non-voter elicitation cards (GC-ELICIT §11.4)
+#
+# A second mode, independent of the ballot: once a non-voter's elicitation window has settled, the control plane writes
+# ``$HERMES_HOME/av-events/godconst/elicit-cards.json`` = {elicitation_id, pool_id, window_ms, statement_ids,
+# expires_ms} (atomically; removed on withdrawal). While ``AV_GODCONST_ELICIT_CARDS`` is exactly ``1``, the file is
+# present, valid and unexpired, no av-elicit opener is pending and no ballot page or ballot session is open, the pass
+# sends a short header (village daytime) and those statements two at a time, five buttons each (``gce:``), every one
+# labelled a follow-up that is not the ballot. Each tap saves one rating on the elicitation's own ratings (never the
+# ballot) through the control plane. Its own ledger (``av-godconst/elicit.json``: ids, positions, message ids; never a
+# text or a value), its own tombstones keyed by elicitation id (an ended elicitation never restarts), and the shared
+# page-open marker kept while either mode has an open page.
+
+ELICIT_TRIGGER_MAX_BYTES = 64 * 1024
+#: After a temporary failure of a cards read (the network, a 5xx, a switch, the window not settled yet), the pass
+#: waits this long before reading again.
+ELICIT_RETRY_S = 300.0
+#: Tombstones kept (newest last).
+ELICIT_ENDED_MAX = 50
+#: The trigger file missing on this many passes in a row is a withdrawal (one miss could be a rewrite in flight).
+ELICIT_MISSING_PASSES = 2
+#: 4xx refusals of a cards read or a save that end this box's cards for the elicitation (app#601): not a non-voter
+#: window, withdrawn, gone, no research grant, expired; plus the aliases of the first cut. Everything else is temporary
+#: (``window_not_settled``, a switch's ``not_enabled``, a 404 with no code, any 5xx, the network) and is retried.
+ELICIT_END_CODES = frozenset({
+    "not_non_voter", "voter_window", "withdrawn", "elicitation_withdrawn", "elicitation_not_found",
+    "research_grant_required", "expired",
+    "consent_withdrawn", "research_consent_required", "prior_ballot", "not_eligible", "not_found", "closed",
+})
+#: A save's 422 for one statement no longer in the window: final for that statement only (its card is dropped).
+UNKNOWN_STATEMENT = "unknown_statement"
+ELICIT_CLOSED = "This rating has closed."
+ELICIT_FAILED = "Could not save that. Tap again in a moment."
+ELICIT_GONE = "This statement is no longer available."
+
+_ELICIT_LOCK = threading.RLock()
+_ELICIT_ASYNC_LOCK: Optional[asyncio.Lock] = None
+_elicit_read = {"failed_at": 0.0}
+#: Consecutive passes that found the trigger file missing, for the session with this nonce (memory only).
+_elicit_missing = {"nonce": None, "n": 0}
+
+
+def elicit_on(home: Optional[str] = None) -> bool:
+    return env(ELICIT_SWITCH, home) == "1"
+
+
+def elicit_trigger_path(home: Optional[str] = None) -> str:
+    return os.path.join(home or hermes_home(), "av-events", "godconst", "elicit-cards.json")
+
+
+def elicit_inject_dir(home: Optional[str] = None) -> str:
+    return os.path.join(home or hermes_home(), "av-events", "elicit", "inject")
+
+
+def elicit_ledger_path(home: Optional[str] = None) -> str:
+    return os.path.join(state_dir(home), "elicit.json")
+
+
+def _elicit_lock() -> asyncio.Lock:
+    global _ELICIT_ASYNC_LOCK
+    if _ELICIT_ASYNC_LOCK is None:
+        _ELICIT_ASYNC_LOCK = asyncio.Lock()
+    return _ELICIT_ASYNC_LOCK
+
+
+def read_elicit_trigger(home: Optional[str] = None) -> tuple:
+    """`(trigger, None)`, or `(None, code)`: missing, not_regular, foreign_owner, not_private (group or world
+    writable), too_big, bad_shape. Opened without following a link and without blocking (a FIFO never hangs the pass),
+    then checked on the open descriptor, so what is checked is what is read."""
+    path = elicit_trigger_path(home)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "not_regular"  # a symlink (ELOOP), a directory, a socket
+    try:
+        st = os.fstat(fd)
+        uid = _uid()
+        if not stat.S_ISREG(st.st_mode):
+            return None, "not_regular"
+        if uid is not None and st.st_uid != uid:
+            return None, "foreign_owner"
+        if st.st_mode & 0o022:
+            return None, "not_private"
+        if st.st_size > ELICIT_TRIGGER_MAX_BYTES:
+            return None, "too_big"
+        raw = b""
+        while len(raw) <= ELICIT_TRIGGER_MAX_BYTES:
+            chunk = os.read(fd, ELICIT_TRIGGER_MAX_BYTES + 1 - len(raw))
+            if not chunk:
+                break
+            raw += chunk
+    except OSError:
+        return None, "bad_shape"
+    finally:
+        os.close(fd)
+    if len(raw) > ELICIT_TRIGGER_MAX_BYTES:
+        return None, "too_big"
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except ValueError:
+        return None, "bad_shape"
+    trigger = L.valid_trigger(data)
+    return (trigger, None) if trigger is not None else (None, "bad_shape")
+
+
+def opener_pending(home: Optional[str] = None) -> bool:
+    """An av-elicit opener is pending: any ``inject/*.txt`` or ``*.sending``. A listing that fails (other than a
+    missing directory) counts as pending: the cards wait rather than land on top of the agent's conversation."""
+    try:
+        names = os.listdir(elicit_inject_dir(home))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        _log("inject_list_failed")
+        return True
+    return any(name.endswith((".txt", ".sending")) for name in names)
+
+
+def ballot_holds_elicit(home: Optional[str] = None, now: Optional[float] = None) -> bool:
+    """The ballot mode is busy here: a ballot page open, or a ballot session active inside its window. The
+    elicitation cards send nothing meanwhile, so the two never interleave in the resident's chat."""
+    stamp = time.time() if now is None else now
+    try:
+        ledger, why = load_ledger(home)
+        session = ledger.get("session") if why is None else None
+        if not isinstance(session, dict):
+            return False
+        if page_is_open(session, stamp):
+            return True
+        if session.get("status") != ACTIVE:
+            return False
+        closes = L.epoch_from_iso(session.get("closes_at")) if session.get("closes_at") else None
+        return closes is None or stamp < closes
+    except Exception:  # noqa: BLE001 - a ledger of the wrong types: unknown, so not busy
+        _log("page_marker_unknown", mode="ballot")
+        return False
+
+
+def _expired(expires_ms: Any, now: float) -> bool:
+    return not isinstance(expires_ms, int) or now * 1000.0 >= expires_ms
+
+
+def empty_elicit_ledger() -> dict:
+    return {"v": 1, "session": None, "ended": []}
+
+
+def load_elicit_ledger(home: Optional[str] = None) -> tuple:
+    data, why = _read_private(elicit_ledger_path(home), LEDGER_MAX_BYTES)
+    if why is not None:
+        return empty_elicit_ledger(), why
+    if (not isinstance(data, dict) or data.get("v") != 1 or not isinstance(data.get("ended", []), list)
+            or not (data.get("session") is None or isinstance(data.get("session"), dict))):
+        return empty_elicit_ledger(), "bad_shape"
+    data.setdefault("ended", [])
+    return data, None
+
+
+def save_elicit_ledger(ledger: dict, home: Optional[str] = None) -> None:
+    with _ELICIT_LOCK:
+        _write_private(elicit_ledger_path(home), ledger)
+
+
+def _done_positions(session: dict) -> set:
+    """Positions that need nothing more: rated, or dropped (the statement no longer in the window)."""
+    return set(session.get("rated", [])) | set(session.get("dropped", []))
+
+
+def elicit_page_is_open(session: Optional[dict], now: float) -> bool:
+    """A sent elicitation page with an unrated card, cards active (not yet all rated), before expiry."""
+    if not isinstance(session, dict) or session.get("status") != ACTIVE or int(session.get("page", -1)) < 0:
+        return False
+    if _expired(session.get("expires_ms"), now):
+        return False
+    done = _done_positions(session)
+    sent = {int(p) for p in session.get("cards", {})}
+    return any(p in sent and p not in done for p in L.page_positions(int(session["page"]), len(session.get("order", []))))
+
+
+def elicit_page_open_now(home: Optional[str] = None, now: Optional[float] = None) -> bool:
+    try:
+        ledger, why = load_elicit_ledger(home)
+        return why is None and elicit_page_is_open(ledger.get("session"), time.time() if now is None else now)
+    except Exception:  # noqa: BLE001 - a ledger of the wrong types: unknown, so not open
+        _log("page_marker_unknown", mode="elicit")
+        return False
+
+
+def elicit_ended(ledger: dict, elicitation_id: Optional[str] = None, nonce: Optional[str] = None) -> Optional[str]:
+    """The ending recorded for this elicitation (a pass) or this nonce (a tap), else None."""
+    for item in ledger.get("ended") or ():
+        if isinstance(item, dict) and (elicitation_id is not None and item.get("elicitation_id") == elicitation_id
+                                       or nonce is not None and item.get("nonce") == nonce):
+            return str(item.get("status") or "ended")
+    return None
+
+
+def _tombstone(ledger: dict, elicitation_id: str, nonce: Optional[str], status: str, now: float) -> None:
+    ended = [e for e in ledger.get("ended") or () if isinstance(e, dict) and e.get("elicitation_id") != elicitation_id]
+    ended.append({"elicitation_id": elicitation_id, "nonce": nonce, "status": status, "at": now_iso(now)})
+    ledger["ended"] = ended[-ELICIT_ENDED_MAX:]
+    ledger.pop("start_failures", None)
+
+
+def end_elicit(ledger: dict, status: str, home: Optional[str] = None, now: Optional[float] = None) -> bool:
+    """Delete the elicitation session and keep a tombstone {elicitation_id, nonce, status, at}. True when there was one."""
+    session = ledger.get("session")
+    if not isinstance(session, dict):
+        return False
+    stamp = time.time() if now is None else now
+    ledger["session"] = None
+    _tombstone(ledger, session["elicitation_id"], session.get("nonce"), status, stamp)
+    save_elicit_ledger(ledger, home)
+    set_elicit_page_open(False, home)
+    _log("elicit_ended", status=status)
+    return True
+
+
+def _end_if_same(nonce: str, status: str, home: Optional[str], now: float) -> bool:
+    """Under the lock: end the ledger's session only while it is still the one with this nonce."""
+    ledger, why = load_elicit_ledger(home)
+    session = ledger.get("session") if why is None else None
+    if isinstance(session, dict) and session.get("nonce") == nonce:
+        return end_elicit(ledger, status, home, now)
+    return False
+
+
+def _final_refusal(reply: Reply) -> bool:
+    return reply.status is not None and 400 <= reply.status < 500 and reply.code in ELICIT_END_CODES
+
+
+def _elicit_session_ending(session: dict, trigger: Optional[dict], now: float) -> Optional[str]:
+    """Why the session ends now: ``replaced`` (another elicitation's file) or ``expired``; None to keep it. A missing
+    file is confirmed over passes (``_elicit_missing``); a malformed file holds without ending."""
+    if trigger is not None and trigger["elicitation_id"] != session.get("elicitation_id"):
+        return "replaced"
+    if _expired(session.get("expires_ms"), now) or (trigger is not None and _expired(trigger["expires_ms"], now)):
+        return "expired"
+    return None
+
+
+def new_elicit_session(trigger: dict, order: list, now: float) -> dict:
+    return {
+        "elicitation_id": trigger["elicitation_id"], "nonce": secrets.token_urlsafe(6)[: L.NONCE_CHARS].replace("=", "A"),
+        "order": list(order), "expires_ms": trigger["expires_ms"], "status": ACTIVE, "started_at": now_iso(now),
+        "header_message_id": None, "page": -1, "cards": {}, "rated": [], "dropped": [], "send_failures": 0,
+    }
+
+
+def _elicit_needs_send(session: dict) -> bool:
+    """Something to send on a pass: the current page's unsent card, or the next page (or the last line) once the
+    current one needs nothing more."""
+    n = len(session["order"])
+    page = int(session["page"])
+    done = _done_positions(session)
+    if page >= 0 and any(str(p) not in session["cards"] and p not in done for p in L.page_positions(page, n)):
+        return True
+    return L.page_done(page, n, done)
+
+
+async def _elicit_read_cards(call: Callable, elicitation_id: str, statement_ids: list, home: Optional[str], count: Callable) -> tuple:
+    """`(cards, reply)`: the cards (filtered to `statement_ids`, the read's order) or None, and the reply."""
+    reply = await asyncio.to_thread(call, "elicit_read", {"elicitation_id": elicitation_id}, home)
+    if not reply.ok:
+        count("read_failed")
+        _log("elicit_read_failed", code=reply.code)
+        return None, reply
+    cards = L.valid_cards(reply.data, statement_ids)
+    if cards is None:
+        count("read_bad_shape")
+        return None, Reply(reply.status, None, "bad_shape")
+    return cards, reply
+
+
+def _send_failure(ledger: dict, session: dict, home: Optional[str], count: Callable) -> None:
+    _send_failed(session, count)
+    if session["status"] == "undeliverable":
+        end_elicit(ledger, "undeliverable", home)
+    else:
+        save_elicit_ledger(ledger, home)
+
+
+async def _elicit_advance(bot: Any, chat: str, session: dict, cards: list, ledger: dict, home: Optional[str],
+                          make_button: Callable, make_markup: Callable, count: Callable) -> None:
+    """Send what is due: the current page's missing cards, then each next page while the one before needs nothing
+    more (a pair already rated shows its checks and the next follows), and the last line once every statement is
+    rated (the session stays, status ``done``: re-taps still save until expiry or withdrawal). Texts and saved values
+    come from `cards` (this read) and are never stored. The caller holds the elicitation lock."""
+    order = session["order"]
+    n = len(order)
+    by_id = {c["id"]: c for c in cards}
+    if [c["id"] for c in cards if c["id"] in set(order)] != [sid for sid in order if sid in by_id]:
+        # The participant's order for these ids never changes: a different one is a fault, never re-read every pass.
+        count("order_changed")
+        end_elicit(ledger, "order_changed", home)
+        return
+    session["dropped"] = sorted(set(session.get("dropped", [])) | {i for i, sid in enumerate(order) if sid not in by_id})
+    session["rated"] = sorted(set(session["rated"]) | {i for i, sid in enumerate(order) if sid in by_id and by_id[sid]["saved"] is not None})
+    done = _done_positions(session)
+    expires = session["expires_ms"] / 1000.0
+    while True:
+        page = int(session["page"])
+        if page >= 0:
+            for position in L.page_positions(page, n):
+                if str(position) in session["cards"] or position in set(session["dropped"]):
+                    continue
+                card = by_id[order[position]]
+                message_id = await _send(bot, chat, L.elicit_card_text(position, n, card["text"]),
+                                         make_markup(L.elicit_rating_rows(session["nonce"], position, make_button, card["saved"])))
+                if message_id is None:
+                    _send_failure(ledger, session, home, count)
+                    return
+                session["cards"][str(position)] = {"message_id": message_id}
+                session["send_failures"] = 0
+                save_elicit_ledger(ledger, home)
+                set_elicit_page_open(elicit_page_is_open(session, time.time()), home, touch=True)
+                count("card_sent")
+                await asyncio.sleep(SEND_GAP_S)
+            if not L.page_done(page, n, done):
+                save_elicit_ledger(ledger, home)
+                set_elicit_page_open(elicit_page_is_open(session, time.time()), home)
+                return
+        if page + 1 >= L.page_count(n):
+            break
+        session["page"] = page + 1
+        save_elicit_ledger(ledger, home)
+    # Every statement rated (or dropped): the last line once; the cards stay tappable for revisions.
+    if session["status"] == ACTIVE:
+        if await _send(bot, chat, L.elicit_done_text(len(session["rated"]), expires)) is None:
+            count("send_failed")
+        session["status"] = "done"
+        count("final_sent")
+        _log("elicit_all_rated")
+    save_elicit_ledger(ledger, home)
+    set_elicit_page_open(False, home)
+
+
+async def elicit_pass_once(bot: Any, adapter: Any, make_button: Callable, make_markup: Callable, home: Optional[str] = None,
+                           now: Optional[float] = None, reader: Optional[Callable] = None) -> str:
+    """One pass of the elicitation cards: end what is over, start or continue what is due. Returns a code; never
+    raises. Independent of the ballot's switch; holds while the ballot is busy."""
+    stamp = time.time() if now is None else now
+    call = reader or cp_call
+    codes: dict = {}
+
+    def count(code: str, n: int = 1) -> None:
+        codes[code] = codes.get(code, 0) + n
+
+    try:
+        async with _elicit_lock():
+            result = await _elicit_pass_locked(bot, adapter, make_button, make_markup, home, stamp, call, count)
+    except Exception:  # noqa: BLE001 - the pass never raises into the gateway
+        logger.warning("av-godconst: tenant=%s outcome=elicit_pass_error", tenant_id8())
+        return "pass_error"
+    if codes:
+        _log("elicit_sync", **codes)
+    return result
+
+
+async def _elicit_pass_locked(bot: Any, adapter: Any, make_button: Callable, make_markup: Callable, home: Optional[str],
+                              stamp: float, call: Callable, count: Callable) -> str:
+    ledger, why = load_elicit_ledger(home)
+    if why not in (None, "missing"):
+        _log(f"elicit_ledger_{why}")
+        return f"ledger_{why}"
+    trigger, twhy = read_elicit_trigger(home)
+    session = ledger.get("session")
+    if isinstance(session, dict):
+        if twhy == "missing":
+            if _elicit_missing["nonce"] == session["nonce"]:
+                _elicit_missing["n"] += 1
+            else:
+                _elicit_missing.update(nonce=session["nonce"], n=1)
+            if _elicit_missing["n"] < ELICIT_MISSING_PASSES:
+                return "trigger_missing"
+            end_elicit(ledger, "withdrawn", home, stamp)
+            return "ended_withdrawn"
+        _elicit_missing.update(nonce=None, n=0)
+        ending = _elicit_session_ending(session, trigger, stamp)
+        if ending is not None:
+            end_elicit(ledger, ending, home, stamp)
+            session = None
+            if ending != "replaced":
+                return f"ended_{ending}"
+    if not elicit_on(home):
+        return "off"
+    if trigger is None:
+        if twhy != "missing":
+            _log("elicit_trigger_invalid", code=twhy)
+        return "no_trigger" if twhy == "missing" else f"trigger_{twhy}"
+    if session is None:
+        if _expired(trigger["expires_ms"], stamp):
+            return "expired"
+        if elicit_ended(ledger, elicitation_id=trigger["elicitation_id"]):
+            return "ended_here"
+    elif session["status"] != ACTIVE:
+        return "idle"  # all rated: re-taps still save; nothing more is sent
+    if opener_pending(home):
+        return "opener_pending"
+    if ballot_holds_elicit(home, stamp):
+        return "ballot_active"
+    if session is not None and not _elicit_needs_send(session):
+        return "idle"
+    if not L.in_send_window(stamp):  # every send a pass makes: village daytime (the ballot's rule)
+        return "waiting_daytime"
+    chat = home_chat_id(adapter)
+    if chat is None:
+        return "no_home_chat"
+    if stamp - _elicit_read["failed_at"] < ELICIT_RETRY_S:
+        return "not_due"
+    cards, reply = await _elicit_read_cards(call, trigger["elicitation_id"], trigger["statement_ids"], home, count)
+    if cards is None:
+        if _final_refusal(reply):
+            if session is not None:
+                end_elicit(ledger, "refused", home, stamp)
+            else:
+                _tombstone(ledger, trigger["elicitation_id"], None, "refused", stamp)
+                save_elicit_ledger(ledger, home)
+            return f"refused_{reply.code}"
+        _elicit_read["failed_at"] = stamp  # temporary: retried after the backoff, until expiry
+        return reply.code
+    _elicit_read["failed_at"] = 0.0
+    if session is None:
+        eid = trigger["elicitation_id"]
+        if not cards or all(c["saved"] is not None for c in cards):
+            status = "empty" if not cards else "all_rated"
+            _tombstone(ledger, eid, None, status, stamp)
+            save_elicit_ledger(ledger, home)
+            _log("elicit_not_started", status=status)
+            return status
+        session = new_elicit_session(trigger, [c["id"] for c in cards], stamp)
+        header = await _send(bot, chat, L.elicit_header_text(len(cards), trigger["expires_ms"] / 1000.0),
+                             make_markup(L.elicit_header_rows(session["nonce"], make_button)))
+        if header is None:
+            # Nothing kept but the count (ids only): the next pass starts again; SEND_FAILURES_MAX in a row end it.
+            failures = ledger.get("start_failures")
+            n = failures["n"] + 1 if isinstance(failures, dict) and failures.get("elicitation_id") == eid and isinstance(failures.get("n"), int) else 1
+            count("send_failed")
+            if n >= SEND_FAILURES_MAX:
+                _tombstone(ledger, eid, None, "undeliverable", stamp)
+                count("settled_undeliverable")
+            else:
+                ledger["start_failures"] = {"elicitation_id": eid, "n": n}
+            save_elicit_ledger(ledger, home)
+            return "send_failed"
+        ledger.pop("start_failures", None)
+        session["header_message_id"] = header
+        ledger["session"] = session
+        save_elicit_ledger(ledger, home)
+        count("started")
+        _log("elicit_order", n=len(cards))
+    await _elicit_advance(bot, chat, session, cards, ledger, home, make_button, make_markup, count)
+    return "sent"
+
+
+def make_elicit_handler(adapter: Any = None, *, make_button: Callable, make_markup: Callable, home: Optional[str] = None,
+                        clock: Callable[[], float] = time.time, caller: Optional[Callable] = None) -> Callable:
+    """The PTB callback for ``gce:`` taps: the ballot's owner rule; one save per tap; Stop ends the cards. The save
+    and the answer never wait for a pass: the elicitation lock is taken only to merge into the ledger and advance."""
+    call = caller or cp_call
+
+    async def on_tap(update: Any, context: Any = None) -> None:
+        query = getattr(update, "callback_query", None)
+        if query is None:
+            return
+        key: Optional[tuple] = None
+        try:
+            data = getattr(query, "data", None)
+            user = _positive_id(getattr(getattr(query, "from_user", None), "id", None))
+            message = getattr(query, "message", None)
+            chat_obj = getattr(message, "chat", None) if message is not None else None
+            raw_chat = getattr(chat_obj, "id", None)
+            chat = None if raw_chat is None else str(raw_chat).strip()
+            chat_type = getattr(chat_obj, "type", None)
+            chat_type = getattr(chat_type, "value", chat_type)
+            if not is_owner_tap(adapter, user, chat, chat_type):
+                _log("elicit_not_owner")
+                await _answer(query, NOT_YOURS)
+                return
+            parsed = L.parse_elicit_callback(data)
+            if parsed is None:
+                _log("elicit_bad_data")
+                await _answer(query, BAD_BUTTON)
+                return
+            key = ("gce", str(chat), str(getattr(message, "message_id", "")))
+            if key in _in_flight:
+                key = None
+                _log("elicit_in_flight")
+                await _answer(query, IN_FLIGHT)
+                return
+            _in_flight.add(key)
+            await _elicit_tap(query, message, parsed, data, call, make_button, make_markup, home, clock)
+        except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
+            logger.warning("av-godconst: tenant=%s outcome=elicit_handler_error", tenant_id8())
+            await _answer(query, ELICIT_FAILED)
+        finally:
+            if key is not None:
+                _in_flight.discard(key)
+
+    return on_tap
+
+
+async def _elicit_tap(query: Any, message: Any, parsed: tuple, data: str, call: Callable, make_button: Callable,
+                      make_markup: Callable, home: Optional[str], clock: Callable[[], float]) -> None:
+    ledger, why = load_elicit_ledger(home)
+    session = ledger.get("session") if why is None else None
+    nonce = parsed[1]
+    if why is None and elicit_ended(ledger, nonce=nonce) or not isinstance(session, dict) or session.get("nonce") != nonce:
+        _log("elicit_closed_card" if why is None else f"elicit_ledger_{why}")
+        await _answer(query, ELICIT_CLOSED)
+        return
+    now = clock()
+    trigger, twhy = read_elicit_trigger(home)
+    if twhy == "missing":
+        # Withdrawn, or a rewrite in flight: nothing is saved; the pass confirms a withdrawal before it ends anything.
+        _log("elicit_trigger_missing")
+        await _answer(query, ELICIT_CLOSED)
+        return
+    ending = _elicit_session_ending(session, trigger, now)
+    if ending is not None:
+        async with _elicit_lock():
+            _end_if_same(nonce, ending, home, now)
+        await _answer(query, ELICIT_CLOSED)
+        return
+    if parsed[0] == "stop":
+        async with _elicit_lock():
+            _end_if_same(nonce, "stopped", home, now)
+        await _answer(query, "Stopped. The ratings you gave are kept.")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            _log("edit_failed")
+        bot = _bot_of(query, message)
+        chat = getattr(getattr(message, "chat", None), "id", None)
+        if bot is not None and chat is not None:
+            await _send(bot, str(chat), L.elicit_stopped_text())
+        return
+    if trigger is None:  # malformed: hold (no save), never end
+        _log("elicit_trigger_invalid", code=twhy)
+        await _answer(query, ELICIT_FAILED)
+        return
+    _, _, position, value = parsed
+    n = len(session["order"])
+    if position >= n:
+        _log("elicit_bad_position")
+        await _answer(query, BAD_BUTTON)
+        return
+    if position in set(session.get("dropped", [])):
+        await _answer(query, ELICIT_GONE)
+        return
+    sid = session["order"][position]
+    body = {"elicitation_id": session["elicitation_id"], "ratings": [{"statement_id": sid, "rating": value}], "channel": "telegram_card"}
+    # The save and the answer outside the lock: a pass mid-send never delays the resident's tap.
+    reply = await asyncio.to_thread(call, "elicit_rate", body, home)
+    if not reply.ok:
+        _log("elicit_save_refused", code=reply.code)
+        if reply.status == 422 and reply.code == UNKNOWN_STATEMENT:
+            await _answer(query, ELICIT_GONE)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:  # noqa: BLE001
+                _log("edit_failed")
+            await _elicit_merge(query, message, nonce, "dropped", position, trigger, call, make_button, make_markup, home, clock)
+            return
+        if _final_refusal(reply):
+            async with _elicit_lock():
+                _end_if_same(nonce, "refused", home, now)
+            await _answer(query, ELICIT_CLOSED)
+        else:
+            await _answer(query, ELICIT_FAILED)
+        return
+    changed = position in set(session["rated"])
+    _log("elicit_saved", changed=int(changed))
+    await _answer(query, f"Saved: {L.LABELS[value]}" + (" (changed)" if changed else ""))
+    rows = getattr(getattr(message, "reply_markup", None), "inline_keyboard", None)
+    marked = mark_keyboard(rows, data, make_button, prefix=L.ELICIT_PREFIX)
+    if marked is not None:
+        try:
+            await query.edit_message_reply_markup(reply_markup=make_markup(marked))
+        except Exception:  # noqa: BLE001 - saved already; a stale check is cosmetic
+            _log("edit_failed")
+    await _elicit_merge(query, message, nonce, "rated", position, trigger, call, make_button, make_markup, home, clock)
+
+
+async def _elicit_merge(query: Any, message: Any, nonce: str, field: str, position: int, trigger: dict, call: Callable,
+                        make_button: Callable, make_markup: Callable, home: Optional[str], clock: Callable[[], float]) -> None:
+    """Under the lock: re-load the ledger, add the position to `field` (rated or dropped) of the session that still
+    has this nonce (a session ended or replaced meanwhile is never brought back), save, and advance when the current
+    pair needs nothing more (the reply to the resident's tap: any hour, never over a pending opener or a busy ballot)."""
+    async with _elicit_lock():
+        ledger, why = load_elicit_ledger(home)
+        session = ledger.get("session") if why is None else None
+        if not isinstance(session, dict) or session.get("nonce") != nonce:
+            _log("elicit_merge_skipped")
+            return
+        session[field] = sorted(set(session.get(field, [])) | {position})
+        save_elicit_ledger(ledger, home)
+        now = clock()
+        set_elicit_page_open(elicit_page_is_open(session, now), home)
+        n = len(session["order"])
+        if session["status"] != ACTIVE or not L.page_done(int(session["page"]), n, _done_positions(session)):
+            return
+        if opener_pending(home):
+            _log("elicit_opener_pending")
+            return
+        if ballot_holds_elicit(home, now):
+            _log("elicit_ballot_active")
+            return
+        bot = _bot_of(query, message)
+        chat = getattr(getattr(message, "chat", None), "id", None)
+        if bot is None or chat is None:
+            return
+        codes: dict = {}
+
+        def count(code: str, k: int = 1) -> None:
+            codes[code] = codes.get(code, 0) + k
+
+        cards, reply = await _elicit_read_cards(call, session["elicitation_id"], trigger["statement_ids"], home, count)
+        if cards is None:
+            if _final_refusal(reply):
+                end_elicit(ledger, "refused", home, now)
+            return
+        await _elicit_advance(bot, str(chat), session, cards, ledger, home, make_button, make_markup, count)
+        if codes:
+            _log("elicit_sync", **codes)
+
+
 # --------------------------------------------------------------------------- wiring
 
 
@@ -1098,9 +1765,14 @@ def _wire_telegram(application: Any, adapter: Any) -> None:
     application.add_handler(CallbackQueryHandler(make_handler(adapter, make_button=make_button, make_markup=make_markup),
                                                  pattern=L.HANDLER_PATTERN, block=False))
     logger.info("av-godconst: ballot card buttons wired (pattern %s)", L.HANDLER_PATTERN)
+    application.add_handler(CallbackQueryHandler(make_elicit_handler(adapter, make_button=make_button, make_markup=make_markup),
+                                                 pattern=L.ELICIT_HANDLER_PATTERN, block=False))
+    logger.info("av-godconst: elicitation card buttons wired (pattern %s)", L.ELICIT_HANDLER_PATTERN)
 
     async def tick(*_: Any) -> None:
+        # Two independent modes, each behind its own switch; each pass never raises.
         await pass_once(application.bot, adapter, make_button, make_markup)
+        await elicit_pass_once(application.bot, adapter, make_button, make_markup)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -1127,8 +1799,9 @@ def _wire_telegram(application: Any, adapter: Any) -> None:
 
 
 def register(ctx: Any) -> None:
-    """Hermes plugin entrypoint: one scoped Telegram callback handler and the pass. No tools, no hooks. At start the
-    page-open marker is reconciled with the ledger (removed unless a page is open inside the window)."""
+    """Hermes plugin entrypoint: two scoped Telegram callback handlers (``gcb:`` the ballot, ``gce:`` the elicitation
+    cards) and the pass. No tools, no hooks. At start the page-open marker is reconciled with both ledgers (removed
+    unless either mode has a page open inside its window)."""
     try:
         reconcile_page_open()
     except Exception:  # noqa: BLE001
@@ -1148,6 +1821,7 @@ def register(ctx: Any) -> None:
 
 
 __all__ = [
-    "Reply", "ballot_on", "cp_call", "cp_origin", "home_chat_id", "is_owner_tap", "ledger_path", "load_ledger",
-    "make_handler", "mark_keyboard", "new_session", "pass_once", "register", "save_ledger", "sync",
+    "Reply", "ballot_on", "cp_call", "cp_origin", "elicit_on", "elicit_pass_once", "home_chat_id", "is_owner_tap",
+    "ledger_path", "load_elicit_ledger", "load_ledger", "make_elicit_handler", "make_handler", "mark_keyboard",
+    "new_session", "pass_once", "register", "save_ledger", "sync",
 ]

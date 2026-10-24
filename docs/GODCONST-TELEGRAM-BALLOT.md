@@ -298,6 +298,10 @@ av-elicit plugin (GC-ELICIT, overlay PR #478) ignores a marker older than 12 h, 
 talk never lands in the middle of a pair. B7's control-plane path (the opener after a submit) is unaffected: a
 Telegram submit runs the same after-submit hook as the page's.
 
+The non-voter elicitation cards (section 11) share this one marker. Each mode decides only for itself and the marker
+is removed only when neither mode has an open page: the ballot mode's writes consult the elicitation ledger, and the
+elicitation mode's writes consult the ballot ledger. Start-up reconcile keeps it if either is open.
+
 ## 8. The owner's runbook
 
 The press order (each step is a human Railway variable edit or an owner press; every step is reversible):
@@ -378,3 +382,109 @@ and call `residentOrder`, so both surfaces share one code path.
    the question residents will ask. Drop it if the lead prefers not to raise the agent at all.
 8. **Page size.** Default: one pair per page (`PAIRS_PER_PAGE = 1`). Two pairs per page halves the number of round
    trips but doubles what is on screen.
+
+## 11. Non-voter elicitation cards (GC-ELICIT §11.4)
+
+A second, independent mode of the same plugin (overlay branch `feat/av-godconst-nv-cards`, plugin 0.2.0; app side
+draft app#601). After a non-voter's elicitation window (`prior_ballot = false`, opener `v4-nv`) has settled, the box
+offers the window's statements as rating cards. The ratings land in the app's `godconst_elicitation_ratings` (keyed
+to the window), never on the official ballot. The ballot mode's state is only read (to hold, see below), never
+written, and its routes are never called.
+
+**Switch.** `AV_GODCONST_ELICIT_CARDS`, on only when exactly `1` (process environment, else `$HERMES_HOME/.env`, read
+like `AV_GODCONST_BALLOT`). The control plane writes it with `AV_GODCONST_BALLOT_KEY` for every tenant in
+`GODCONST_ELICIT_TENANTS` while `GODCONST_ELICIT_ENABLED=1`. It works with `AV_GODCONST_BALLOT` off. Same key, same
+`CONTROL_PLANE_URL` pinned to `CP_HOSTS`, same own-tenant id; the key stays stripped from every agent-run child
+(av-approval custody, unchanged).
+
+**Trigger.** The control plane writes `$HERMES_HOME/av-events/godconst/elicit-cards.json` =
+`{"elicitation_id", "pool_id", "window_ms", "statement_ids": [...], "expires_ms"}` atomically at the window's close
+(24 h expiry) and removes it on withdrawal. The file is opened `O_RDONLY | O_NOFOLLOW | O_NONBLOCK` and checked on the
+open descriptor: a regular file, owned by the box user, not group- or world-writable, at most 64 KiB, of that shape.
+The page is shown only when it passes, `now < expires_ms`, its elicitation has no tombstone here, and:
+
+- no av-elicit opener is pending (any `$HERMES_HOME/av-events/elicit/inject/*.txt` or `*.sending`; a listing that
+  fails counts as pending and logs `inject_list_failed`);
+- the ballot mode is not busy: no ballot page open and no ballot session `active` inside its window (a stopped,
+  finished or ended ballot does not hold).
+
+Both holds apply to every elicitation send, the pass's and the one after a tap, and end nothing.
+
+**Flow.** On the plugin's 60 s pass (after the ballot's pass, each never raising):
+
+1. Not started and eligible, in village daytime (08:00 to 21:30 IST, the ballot header's rule): read
+   `POST /tenants/<own>/godconst/elicitation-cards` `{elicitation_id}` -> `{statements: [{statement_id, text,
+   origin, saved_rating|null}]}`. Nothing is sent before a read succeeds. The read's order (the participant's) is
+   kept; only ids in the file's `statement_ids` are shown; `origin` is dropped (blind cards). Then a short header
+   headed `Follow-up (not your ballot): N constitution statements to rate (optional)`, saying it is separate from the
+   official ballot and changes no ballot (labels, the expiry, privacy; no reminders, no Submit), with one button,
+   `Stop these cards`.
+2. Cards two at a time (`Follow-up (not your ballot) · Statement i of n`, the text, five buttons `1..5` with the
+   ballot's labels). A statement with a `saved_rating` shows its check; a pair already fully rated is shown and the
+   next pair follows at once.
+3. A tap (`gce:r:<nonce>:<position>:<value>`, its own `CallbackQueryHandler`, `block=False`, the ballot's owner rule:
+   the box's own resident in their own DM) posts `POST /tenants/<own>/godconst/elicitation-ratings`
+   `{elicitation_id, ratings: [{statement_id, rating}], channel: "telegram_card"}`, one statement per tap; the server
+   counts revisions. The save, the answer (`Saved: <label>`, `(changed)` on a re-tap) and the check on the tapped
+   button happen outside the plugin's elicitation lock, so a pass mid-send never delays a tap. The lock is taken only
+   to re-load the ledger, merge the rated position into the session that still has the tap's nonce (a session ended
+   or replaced meanwhile is never brought back), save, and advance.
+4. When the current pair needs nothing more, the next pair goes at once (the reply to the resident's tap, any hour).
+   When every statement is rated, one line: `Follow-up (not your ballot): all N statements rated. Thank you: your
+   ratings are saved. You can tap any card again to change a rating until <expiry>.` The session stays (status
+   `done`): re-taps keep saving as revisions until expiry or withdrawal, nothing more is sent, and the page-open
+   marker is removed.
+5. A save refused `422 unknown_statement` is final for that statement only: the answer is `This statement is no
+   longer available.`, its card's buttons go, and it counts as done for advancing (`dropped` in the ledger). A
+   statement the read no longer returns is dropped the same way.
+6. The pass reads again only when something is due (a card whose send failed, a pair held by a pending opener, a busy
+   ballot or night). A temporary read failure waits 5 minutes and retries until expiry. Three failed sends in a row,
+   the header's included (counted in the ledger by elicitation id), end the cards (`undeliverable`).
+
+**Refusals** (app#601). Final, only on a 4xx: `not_non_voter`, `voter_window`, `withdrawn`, `elicitation_withdrawn`,
+`elicitation_not_found`, `research_grant_required`, `expired`, and the first cut's aliases `consent_withdrawn`,
+`research_consent_required`, `prior_ballot`, `not_eligible`, `not_found`, `closed`. Temporary: `window_not_settled`
+(retried until expiry), a switch (`not_enabled`, `unauthorized`), a 404 with no code (a route switched off), any 5xx,
+the network. A temporary save failure answers `Could not save that. Tap again in a moment.` and the card stays.
+
+**Endings.** Each deletes the session and keeps a tombstone `{elicitation_id, nonce, status, at}` (the last 50), so
+the elicitation never restarts and later taps answer `This rating has closed.` without a call:
+
+| Ending | Seen by | Status |
+|---|---|---|
+| The file missing on two passes in a row (withdrawal) | the pass | `withdrawn` |
+| `expires_ms` passed | the pass or a tap | `expired` |
+| A file for another elicitation | the pass or a tap | `replaced` (the new one may then start) |
+| A final refusal of the read or a save | the pass or a tap | `refused` |
+| Stop on the header | a tap | `stopped` (the header's button goes; one line confirms; saved ratings stay) |
+| The participant's order of the shown ids changed | the pass or a tap | `order_changed` |
+| Every listed statement rated before the start / none listed in the read | the pass | `all_rated` / `empty` (nothing sent) |
+| Three failed sends in a row (header included) | the pass or a tap | `undeliverable` |
+
+A tap while the file is missing saves nothing and ends nothing (the answer is `This rating has closed.`); the pass
+confirms the withdrawal on its second look, and a file that is back meanwhile resets the count. A malformed file holds
+(nothing sent, taps answer `Could not save that...`) without ending: the control plane writes atomically, so a
+malformed file is a fault to look at.
+
+**Nothing private on disk, nothing to the agent.** The ledger `$HERMES_HOME/av-godconst/elicit.json` (0600 in a 0700
+directory, separate from `ballot.json`) holds the elicitation id, a nonce, the shown statement ids in order, the
+expiry, message ids, the positions known rated or dropped, a header-failure count by elicitation id, and the
+tombstones; never a text, a rating value or an origin. The check a card shows comes from the read (or the tap) in
+memory only. Nothing is injected into the agent's session, no event is emitted (the app emits
+`godconst.elicitation_rating_saved@1`), and logs carry codes and counts only (`av-godconst: tenant=<id8>
+outcome=elicit_* [k=v]`).
+
+**Page-open marker.** While a sent elicitation page has an unrated card (session `active`, before expiry), the shared
+marker `$HERMES_HOME/av-events/godconst/page-open` exists (touched on each card sent), so av-elicit holds. See 7a for
+how the two modes share it. A ledger of either mode that cannot be read as the right types counts as not open (logged
+`page_marker_unknown`), so a corrupt ledger never pins the marker. The ballot ledger reader (`_read_private`) now also
+opens without blocking and re-checks the open descriptor.
+
+**Defaults taken (open to the lead).**
+1. Stop ends the cards for this elicitation (no Resume), as agreed; the ballot keeps Stop / Resume.
+2. Statements with a saved rating are shown with their check rather than skipped, so the resident can revise them.
+3. A malformed trigger file holds instead of ending.
+4. The trigger file may be group/world readable (0644) but not writable: it holds ids only, and the control plane's
+   exec may not write 0600. The ballot ledger's stricter 0600 rule is kept for this plugin's own files.
+5. `not_found` stays final (a first-cut alias, with a code); a 404 without a code is temporary.
+6. A stopped ballot does not hold the elicitation cards; an active one (even between pairs) does.
