@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
-import { hermesAvailable } from "./install_index";
+import { hermesAvailable } from "../skills/index-network/scripts/hermes-cli";
 import { syncZzzInstalledJobId } from "./zzz_job_registry";
 
 export const ZZZ_JOB_NAME = "Edge — zzz pairs";
