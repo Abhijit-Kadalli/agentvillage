@@ -63,6 +63,12 @@ integer from 1), `category` (a category slug), `form` (question: `open` | `trade
 `other`), `text` (required for question and answer, at most 4000 characters), `takeaway` (answer, at most
 2000), `statement_ids` (answer, a list of ids such as `s004`).
 
+The resident's Telegram progress bubble for a call reads "⚙️ Noting that", never the tool's name (contract
+§10), in the `new` (fleet default) and `all` progress modes; `/verbose`, a mode the resident chooses, shows raw
+tool calls by design. Hermes has no registration field for that text; av-display gives the tool its verb, drops
+its argument preview, and adds a preview builder for this tool only, so a `stop` (no `text`) does not fall back
+to the raw name. The tool keeps its name: the agent's notices and the records use it.
+
 `question_no` is assigned by the tool, never taken from the agent (contract 3c amended: an agent numbers
 from its whole DM history, so its opener can come out as 8). A question is 1 + the questions recorded in the
 current window (from `window.json`), so the opener is always 1. An answer or a stop is the window's latest
