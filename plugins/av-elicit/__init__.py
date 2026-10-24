@@ -80,9 +80,12 @@ HUMAN_TEXT_MAX = 8000
 HUMAN_TEXT_JOIN = "\n\n"
 #: Newest rows of the window read when looking for the span (it holds at most 10 human messages).
 HUMAN_SCAN_ROWS = 1000
-#: The control plane's pass leaves a record file bigger than this unread (``RECORD_FILE_MAX`` in
-#: godconst-elicit-pass.js): an answer's human words are cut further so the record always fits.
-RECORD_FILE_BYTES = 16_384
+#: The control plane's pass leaves a record file bigger than this unread: ``RECORD_FILE_MAX`` in
+#: agentvillage-controlplane's control-plane/src/godconst-elicit-pass.js, 65536 since its human-words PR
+#: (#397). Never raise this before the control plane does: an older pass drops a bigger record as
+#: ``too_large``. An answer's human words are cut further if the record would not fit (8000 three-byte
+#: characters beside the agent's longest fields still fit).
+RECORD_FILE_BYTES = 65_536
 HUMAN_FIELDS = ("human_text", "human_message_count", "human_text_truncated", "human_text_first_at",
                 "human_text_last_at")
 
@@ -838,10 +841,12 @@ def record_bytes(record: dict) -> int:
     return len(json.dumps(record, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
-def fit_human_words(record: dict, messages: list, truncated: bool, limit: int = RECORD_FILE_BYTES) -> dict:
-    """Keep an answer record within the control plane's per-file bound (its pass leaves a bigger file unread,
-    so the whole answer would be lost): drop the oldest messages, then cut the one left from its end, until
-    the record fits. Any cut sets ``human_text_truncated``. Returns the record, updated in place."""
+def fit_human_words(record: dict, messages: list, truncated: bool, limit: Optional[int] = None) -> dict:
+    """Keep an answer record within the control plane's per-file bound (``RECORD_FILE_BYTES`` unless ``limit``
+    says otherwise; its pass leaves a bigger file unread, so the whole answer would be lost): drop the oldest
+    messages, then cut the one left from its end, until the record fits. Any cut sets
+    ``human_text_truncated``. Returns the record, updated in place."""
+    limit = RECORD_FILE_BYTES if limit is None else limit
     while len(messages) > 1 and record_bytes(record) > limit:
         messages = messages[1:]
         truncated = True
