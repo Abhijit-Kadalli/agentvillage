@@ -19,6 +19,8 @@ Maya Rao, about Climate finance
 🤩  Great fit
 
 Maya Rao never sees this.
+
+(Evening questions message - you can ask me to stop or manage it)
 [ 😕 ] [ 😐 ] [ 🙂 ] [ 😊 ] [ 🤩 ]
 ```
 
@@ -26,8 +28,8 @@ The buttons carry one emoji each (values 1..5, `match_fit_5_v1` unchanged); five
 not fit a phone row, so the words are in the body. The privacy line promises only what the plugin
 can keep whatever the resident's research consent (it cannot read consent): the counterpart never
 sees the answer. Where the answer goes beyond the agent's own records is the consent brief's to say.
-The card carries no DATA-373 manage line (product call, 2026-10-24); the resident still stops the
-cards through the "Evening questions" job (below).
+Card 1 ends with the DATA-373 manage line; the resident stops the cards through the "Evening
+questions" job (below).
 
 A tap answers "Recorded: Good fit", marks the button, and sends card 2:
 
@@ -40,13 +42,11 @@ When card 1 was 3 or more, card 2's first tap sends card 3 (scale `connection_ty
 
 ```
 What kind of connection is this?
-We'll show you if it's mutual!
 [ 🫂 Friend ] [ ❤️‍🔥 Spark ] [ 🤝 Collab ]
 [        🤷 Not sure yet         ]
 ```
 
-A fit of 1 or 2 ends at card 2. "We'll show you if it's mutual!" is a product promise; the mutual
-reveal is not built yet (data docs/design/suggestion-rating.md).
+A fit of 1 or 2 ends at card 2.
 
 Each card takes taps for 24 h from its own send; a re-tap with another value is a revision (last
 wins downstream), the same value again answers "Already recorded" and records nothing. After card 3
@@ -127,7 +127,7 @@ av-events key (`av-events/hash.key`), else this plugin's own `av-events/av-rate.
 - An acceptance rolled over by the cap expires unasked after 3 village days.
 - The cap is the shared day budget above (day marks counted as deliveries).
 - The agent answers the injected line with "Got it!" only (the line says so; `tools.md` too).
-- The cards reuse the "Evening questions" stop/manage toggle and honour it (above); they carry no manage line.
+- The cards reuse the "Evening questions" stop/manage toggle and its manage line (on card 1), and honour it (above).
 - The counterpart's cleaned name and Index's cleaned headline appear on the card.
 - The old text ask stays in the tree behind `AV_OUTCOME_TEXT_ASK` (default off) for one release.
 - The cleaned name is kept on the ledger (a 0600 file in the home) for the injected line.
