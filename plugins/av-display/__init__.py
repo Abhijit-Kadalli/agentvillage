@@ -22,16 +22,19 @@ plugin extends them once, at ``register()``:
   ``elicitation_record`` ("Noting that"; GC-ELICIT contract §10: the resident
   never sees that tool's name). A verb Hermes already has for a name is never
   replaced.
-* ``_PREVIEW_BUILDERS`` gains, for each of those Village tools that is in the
-  no-preview set, a builder that returns its verb. The line builder checks for a
-  preview before it reads the verbs: a call whose arguments hold none of
+* ``_PREVIEW_BUILDERS`` gains one builder, for ``elicitation_record`` only
+  (``PREVIEW_BUILDER_TOOLS``), that returns its verb. The line builder checks
+  for a preview before it reads the verbs: a call whose arguments hold none of
   Hermes's preview keys (``build_tool_preview``, agent/display.py:451-469, keys
   :361; an ``elicitation_record`` stop carries no ``text``) has no preview and
   renders as ``<emoji> <name>...`` (run_turn_runner.py:290-291), the raw name.
-  With the builder the preview is never empty, so the line is ``<emoji> <verb>``.
-  A call with no arguments at all still has no preview (:458-459, before any
-  builder); ``elicitation_record`` always has ``kind`` and ``question_no``. A
-  builder Hermes already has for a name is never replaced.
+  With the builder the line is ``<emoji> Noting that`` in the "new" (default)
+  and "all" progress modes; ``/verbose`` shows the raw tool call by design and
+  is left alone. ``elicitation_record`` always has ``kind`` and
+  ``question_no``, so it never hits the no-arguments early return (:458-459).
+  Other Village tools keep Hermes's preview: it also feeds tool events, Slack,
+  the API progress label, ACP titles and the CLI. A builder Hermes already has
+  is never replaced.
 * The ``terminal`` code block, on Telegram only. Before the tables are read,
   ``_progress_build_message`` asks ``TurnRunner._progress_terminal_blocks``
   (run_turn_runner.py:238-258, called at :270, returned at :276) for a fenced
@@ -108,7 +111,8 @@ shows the full arguments (on Telegram as Hermes's JSON line rather than a code
 block). Only the three tables and those three methods are touched, and one command
 registered; tool execution and compaction are not. A Hermes without either
 verb table, or with a table of an unexpected type, or without
-``_PREVIEW_BUILDERS`` (the verbs are still added), or without
+``_PREVIEW_BUILDERS`` (the verbs are still added; only the stop line keeps the
+raw name), or without
 ``TurnRunner._progress_terminal_blocks``,
 ``GatewayTurnMixin._hmwa_hygiene_notify`` or
 ``GatewayTurnMixin._hmwa_first_contact_notes``, or a context without
@@ -192,9 +196,14 @@ def _verb_preview(verb: str) -> Any:
     return build
 
 
+#: The only tool given a preview builder (GC-ELICIT contract §10). Other Village tools keep Hermes's preview,
+#: which other surfaces (tool events, Slack, the API progress label, ACP titles, the CLI) also show.
+PREVIEW_BUILDER_TOOLS = ("elicitation_record",)
+
+
 def apply_preview_builders(display: Any) -> int:
-    """For each Village tool whose verb drops its preview, a preview builder returning that verb, so a call
-    with no preview key still renders ``<emoji> <verb>``, never the raw name. The number added."""
+    """For ``elicitation_record``, a preview builder returning its verb, so a call with no preview key (a stop)
+    still renders ``<emoji> Noting that``, never the raw name. The number added (0 or 1)."""
     builders = getattr(display, "_PREVIEW_BUILDERS", None)
     verbs = getattr(display, "_TOOL_VERBS", None)
     no_preview = getattr(display, "_TOOL_VERBS_NO_PREVIEW", None)
@@ -202,7 +211,7 @@ def apply_preview_builders(display: Any) -> int:
         logger.info("av-display: agent.display has no _PREVIEW_BUILDERS dict; left as is")
         return 0
     added = 0
-    for name in VILLAGE_VERBS:
+    for name in PREVIEW_BUILDER_TOOLS:
         verb = verbs.get(name)
         if isinstance(verb, str) and verb and name in no_preview and name not in builders:
             builders[name] = _verb_preview(verb)

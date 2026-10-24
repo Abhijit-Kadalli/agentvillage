@@ -7,8 +7,11 @@ tables as they are at v2026.9.24, and ``line()`` renders a progress line the way
 
 from __future__ import annotations
 
+import importlib
+import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -84,13 +87,57 @@ def test_the_elicitation_tool_name_matches_av_elicit(plugin):
     assert 'TOOL_NAME = "elicitation_record"' in source
 
 
-def test_every_village_tool_without_a_preview_key_still_renders_its_verb(plugin, fake_display, fake_runner):
+def test_only_elicitation_record_gets_a_preview_builder(plugin, fake_display):
+    before = dict(fake_display._PREVIEW_BUILDERS)
     plugin.register(None)
-    for name, verb in plugin.VILLAGE_VERBS.items():
-        assert runner_line(fake_display, fake_runner, name, {"some_id": "x"}) == f"⚙️ {verb}", name
-    # A built-in keeps Hermes's own builder; an unknown tool gets none.
+    assert set(fake_display._PREVIEW_BUILDERS) - set(before) == {"elicitation_record"}
+    # Every other Village tool keeps Hermes's preview (other surfaces show it).
+    assert fake_display.build_tool_preview("record_intention", {"text": "meet founders"}) == "meet founders"
+    assert fake_display.build_tool_preview("recall", {"query": "kombucha"}) == "kombucha"
     assert fake_display.build_tool_preview("memory", {"action": "add"}) == "memory preview"
-    assert "consent_status" not in fake_display._PREVIEW_BUILDERS
+
+
+def _hermes_checkout():
+    """The pinned ref (HERMES_AGENT_SRC, as the hygiene tests below), else the local install's checkout."""
+    candidates = [Path(os.environ["HERMES_AGENT_SRC"])] if os.environ.get("HERMES_AGENT_SRC") else []
+    candidates += [Path.home() / "dev" / "hermes-agent-ref-v2026.9.24", Path.home() / ".hermes" / "hermes-agent"]
+    return next((c for c in candidates if (c / "agent" / "display.py").is_file()), None)
+
+
+@pytest.fixture
+def real_display():
+    """Hermes's own agent.display, imported from a checkout; every module it pulled in is dropped after."""
+    checkout = _hermes_checkout()
+    if checkout is None:
+        pytest.skip("no Hermes checkout with agent/display.py (set HERMES_AGENT_SRC)")
+    saved = {name: sys.modules.pop(name) for name in list(sys.modules) if name == "agent" or name.startswith("agent.")}
+    before = set(sys.modules)
+    sys.path.insert(0, str(checkout))
+    try:
+        try:
+            module = importlib.import_module("agent.display")
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"agent.display from {checkout} not importable: {type(exc).__name__}: {exc}")
+        yield module
+    finally:
+        sys.path.remove(str(checkout))
+        for name in set(sys.modules) - before:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+
+
+def test_real_hermes_build_tool_preview_gives_every_elicitation_call_noting_that(plugin, real_display):
+    # The fake is not the only check: Hermes's own agent.display (build_tool_preview and the verb tables).
+    display = real_display
+    assert display.build_tool_preview("elicitation_record", dict(ELICITATION_CALLS[2])) is None  # the leak
+    assert plugin.apply(display) is True
+    for args in ELICITATION_CALLS:
+        preview = display.build_tool_preview("elicitation_record", dict(args))
+        assert preview  # never empty, so run_turn_runner never falls back to the raw name
+        assert display.get_tool_verb("elicitation_record") == "Noting that"
+        assert display.verb_drops_preview("elicitation_record")
+    # Another Village tool keeps Hermes's preview.
+    assert display.build_tool_preview("record_intention", {"text": "meet founders"}) == "meet founders"
 
 
 def test_a_preview_builder_hermes_already_has_is_never_replaced(plugin, fake_display):
