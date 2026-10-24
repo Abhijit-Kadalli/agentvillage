@@ -100,9 +100,13 @@ CURRENT_POPUP_RULE = (
     "An intention is for this popup, Edge City India (Mandrem, Goa, October 11 to November 1, "
     "2026), from what the resident said in this popup's conversations or their current profile: "
     "never carry over a plan, place or preference from an earlier popup, older memory or an "
-    "earlier year. If you are not sure it is current, ask them before you record it; a "
-    "background run, which cannot ask, records nothing it is not sure of."
+    "earlier year. A want they have now still counts when it only mentions something from "
+    "before or runs past the popup's end, such as help finishing a project they began earlier "
+    "or company for a trip after the popup. If you are not sure it is current, ask them before "
+    "you record it; a background run, which cannot ask, records nothing it is not sure of."
 )
+#: OV499 S1: the rule in one line, inside what tool_search shows.
+CURRENT_POPUP_SHORT = "Only this popup's wants: none carried over from an earlier popup or year."
 
 #: Kinds that record nothing: a yes after the agent recorded its words, someone
 #: else's quoted or forwarded words (not their want), a no to the one ask, and a
@@ -347,11 +351,12 @@ def test_the_rule_is_stated_once_in_each_prompt(ri):
 
 def test_the_tool_description_is_exactly_the_rule_and_the_tools_contract(ri):
     expected = (
-        "Record an intention: something the person you work for wants, is looking for, or is open "
-        "to at this popup, that meeting people they do not already know could serve. "
+        "Record an intention: what the person you work for wants or is open to that meeting new "
+        "people could serve. "
+        + CURRENT_POPUP_SHORT
+        + " "
         + SOURCE_SHORT
-        + " This is the one front door for intentions: never call Index create_intent or "
-        "index_create_intent for a new want. "
+        + " One front door: never call Index create_intent or index_create_intent for a new want. "
         + CURRENT_POPUP_RULE
         + " This tool publishes to Index in the same call and "
         "returns the intention_id to keep for later update or withdraw calls. "
@@ -373,11 +378,26 @@ def test_the_tool_description_is_exactly_the_rule_and_the_tools_contract(ri):
     # V1-LEAK (B): the this-popup-only rule, once, word for word.
     assert ri.CURRENT_POPUP_RULE == CURRENT_POPUP_RULE
     assert ri.TOOL_DESCRIPTION.count(CURRENT_POPUP_RULE) == 1
+    assert ri.CURRENT_POPUP_SHORT == CURRENT_POPUP_SHORT
     assert ri.SOURCE_SHORT == SOURCE_SHORT
     # tool_search shows only the first 500 characters: the short rule is inside them.
     assert SOURCE_SHORT in ri.TOOL_DESCRIPTION[:TOOL_SEARCH_CLIP]
     # Plain text: the model reads the tool description as it is.
     assert "`" not in ri.TOOL_DESCRIPTION
+
+
+def test_the_tool_search_clip_carries_the_popup_rule_and_both_banned_names_whole(ri):
+    """OV499 S1: tool_search shows only the first 500 characters. They carry the
+    one-line popup rule, the whole short source rule, and both tool names of the
+    front-door ban as whole words (not cut to a prefix such as "index_creat")."""
+    clip = ri.TOOL_DESCRIPTION[:TOOL_SEARCH_CLIP]
+    assert CURRENT_POPUP_SHORT in clip
+    assert SOURCE_SHORT in clip
+    assert "never call Index create_intent or index_create_intent" in clip
+    assert re.search(r"\bindex_create_intent\b", clip)
+    assert re.search(r"(?<![\w])create_intent\b", clip)
+    # The full rule follows the ban; it is pinned word for word above.
+    assert ri.TOOL_DESCRIPTION.index(CURRENT_POPUP_RULE) > ri.TOOL_DESCRIPTION.index("index_create_intent")
 
 
 def test_the_schemas_source_description_is_pinned(ri):

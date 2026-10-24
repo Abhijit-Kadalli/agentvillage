@@ -23,8 +23,11 @@ An intention is for this popup: what the resident wants now, at Edge City
 India (Mandrem, Goa, October 11 to November 1, 2026), from what they said in
 this popup's conversations or their current profile. Never carry over a plan,
 place or preference from an earlier popup, older memory or an earlier year.
-If you are not sure it is current, ask them before you record it; a background
-pass, which cannot ask, records nothing it is not sure of.
+A want they have now still counts when it only mentions something from before
+or runs past the popup's end, such as help finishing a project they began
+earlier or company for a trip after the popup. If you are not sure it is
+current, ask them before you record it; a background pass, which cannot ask,
+records nothing it is not sure of.
 
 Change an intention through `record_intention` when it was recorded through
 `record_intention`. An intention it did not record (made in the Index app, or
