@@ -15,7 +15,7 @@ payload is built HERE, so the shape the door sees is this module's, not the file
 | `opportunity.rating_asked` | `question_version` (`match_fit_5_v1`; `connection_type_v1` for card 3), `card` (`fit` / `planned` / `type`), `message_hash` (the card text's keyed hash, 64 hex), `window_hours` (24) | `system` |
 | `opportunity.rated` | `value` (1..5), `scale` (`match_fit_5_v1`), `channel` (`telegram_button`), `revision` (1..), `rated_at` | `participant`, `self_report` |
 | `opportunity.pre_planned` | `value` (`yes` / `no`), `channel`, `revision`, `answered_at` | `participant`, `self_report` |
-| `opportunity.connection_typed` | `value` (`friend` / `spark` / `collab`), `scale` (`connection_type_v1`), `channel`, `revision`, `answered_at` | `participant`, `self_report` |
+| `opportunity.connection_typed` | `value` (`friend` / `spark` / `collab` / `unsure`), `scale` (`connection_type_v1`), `channel`, `revision`, `answered_at` | `participant`, `self_report` |
 
 Envelope: `opportunity_id` (the Index id, lower-cased when it is a UUID), `intention_id` (null unless
 the stage named one). Event ids are derived from (type, opportunity, card, revision), so a file read
@@ -48,7 +48,7 @@ RATED = "opportunity.rated"
 PRE_PLANNED = "opportunity.pre_planned"
 CONNECTION_TYPED = "opportunity.connection_typed"
 TYPE_SCALE = "connection_type_v1"
-TYPE_VALUES = frozenset({"friend", "spark", "collab"})
+TYPE_VALUES = frozenset({"friend", "spark", "collab", "unsure"})
 EVENT_TYPES = frozenset({ASKED, RATED, PRE_PLANNED, CONNECTION_TYPED})
 CARDS = frozenset({"fit", "planned", "type"})
 RECORD_KEYS = frozenset({"event_type", "opportunity_id", "intention_id", "card", "revision", "value", "at", "message_hash"})

@@ -117,7 +117,7 @@ def test_event_ids_derive_from_type_opportunity_card_and_revision(live, home, av
     asked(message_hash=None), asked(value=3), asked(revision=2), asked(message_hash="x" * 64),
     rated(value=0), rated(value=6), rated(value="4"), rated(card="planned"), rated(message_hash=HASH),
     planned(value="maybe"), planned(card="fit"), planned(revision=0),
-    typed(value="unsure"), typed(value="romance"), typed(card="planned"), typed(message_hash=HASH), rated(card="type"),
+    typed(value="maybe"), typed(value="romance"), typed(card="planned"), typed(message_hash=HASH), rated(card="type"),
     {**rated(), "note": "text"}, rated(opportunity_id="has space"), rated(intention_id=5), rated(at="2026-10-21T13:31:00"), rated(event_type="outcome.reported"),
 ])
 def test_a_record_not_exactly_the_shape_is_dropped_and_counted(live, home, av, record):

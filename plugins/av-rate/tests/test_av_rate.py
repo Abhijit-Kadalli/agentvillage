@@ -143,7 +143,7 @@ def test_callback_data_shape_and_the_64_byte_limit(plugin):
         assert plugin.parse_callback(data) == ("type", choice, nonce)
 
 
-@pytest.mark.parametrize("data", [None, "", "avr:f:0:" + "a" * 22, "avr:f:6:" + "a" * 22, "avr:p:x:" + "a" * 22, "avr:t:u:" + "a" * 22, "avr:t:friend:" + "a" * 22, "avr:f:3:" + "a" * 21, "avr:f:3:" + "a" * 23, "avr:f:3:" + "é" * 22, *CORE_CALLBACKS])
+@pytest.mark.parametrize("data", [None, "", "avr:f:0:" + "a" * 22, "avr:f:6:" + "a" * 22, "avr:p:x:" + "a" * 22, "avr:t:x:" + "a" * 22, "avr:t:friend:" + "a" * 22, "avr:f:3:" + "a" * 21, "avr:f:3:" + "a" * 23, "avr:f:3:" + "é" * 22, *CORE_CALLBACKS])
 def test_parse_refuses_anything_else(plugin, data):
     assert plugin.parse_callback(data) is None
 
@@ -204,8 +204,8 @@ def test_keyboards_one_row_each_emoji_yes_no_and_connection_type(plugin):
     rows = plugin.planned_rows("n" * 22, lambda t, d: Button(t, callback_data=d))
     assert len(rows) == 1 and [b.text for b in rows[0]] == ["Yes", "No"]
     rows = plugin.type_rows("n" * 22, lambda t, d: Button(t, callback_data=d))
-    assert len(rows) == 1 and [b.text for b in rows[0]] == ["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"]
-    assert [b.callback_data for b in rows[0]] == [plugin.type_callback(c, "n" * 22) for c in ("f", "s", "c")]
+    assert [[b.text for b in row] for row in rows] == [["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"], ["🤷 Not sure yet"]]
+    assert [b.callback_data for row in rows for b in row] == [plugin.type_callback(c, "n" * 22) for c in ("f", "s", "c", "u")]
 
 
 def test_mark_keyboard_checks_the_tapped_button_only(plugin):
@@ -378,7 +378,7 @@ def test_planned_tap_records_and_sends_card_three_once(plugin, home, on):
     assert card["type_message_id"] == 103
     assert plugin.epoch_from_iso(card["closes_at_type"]) == pytest.approx(T0 + 60 + 24 * 3600)
     assert bot.sent[2]["text"] == "What kind of connection is this?\nWe&#x27;ll show you if it&#x27;s mutual!"
-    assert [b.text for b in bot.sent[2]["reply_markup"].inline_keyboard[0]] == ["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"]
+    assert [[b.text for b in row] for row in bot.sent[2]["reply_markup"].inline_keyboard] == [["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"], ["🤷 Not sure yet"]]
     planned = [r for r in records(home) if r["event_type"] == "opportunity.pre_planned"]
     assert planned == [{"event_type": "opportunity.pre_planned", "opportunity_id": OPP, "intention_id": None, "card": "planned", "revision": 1,
                         "value": "no", "at": plugin.now_iso(T0 + 60), "message_hash": None}]

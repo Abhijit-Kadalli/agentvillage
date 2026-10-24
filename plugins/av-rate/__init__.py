@@ -8,7 +8,7 @@ sent by the resident's own bot and answered with a tap:
           for 1..5 (labels in the body: Not a fit / Weak fit / OK fit / Good fit / Great fit, scale
           ``match_fit_5_v1``) and a privacy line.
   Card 2  "Did you already plan this meetup?"  [Yes] [No], sent after card 1's first tap.
-  Card 3  "What kind of connection is this?"  [🫂 Friend] [❤️‍🔥 Spark] [🤝 Collab] (scale
+  Card 3  "What kind of connection is this?"  [🫂 Friend] [❤️‍🔥 Spark] [🤝 Collab] / [🤷 Not sure yet] (scale
           ``connection_type_v1``), sent after card 2's first tap when card 1 was 3 or more.
 
 **Who decides what to ask.** The evening trigger (``skills/index-network/scripts/rating-cards.ts``
@@ -38,7 +38,7 @@ the stage to the next pick-up, never drop it; a stage older than ``STAGE_MAX_AGE
 dropped and counted.
 
 **callback_data** (under Telegram's 64 bytes): ``avr:f:<1-5>:<nonce>`` for card 1 and
-``avr:p:<y|n>:<nonce>`` for card 2, ``avr:t:<f|s|c>:<nonce>`` for card 3. ``<nonce>`` is the first 22 base64url characters of
+``avr:p:<y|n>:<nonce>`` for card 2, ``avr:t:<f|s|c|u>:<nonce>`` for card 3. ``<nonce>`` is the first 22 base64url characters of
 HMAC-SHA256(key, "avr|<opportunity_id>|match_fit_5_v1") under the tenant's av-events key
 (``av-events/hash.key``; this plugin's own ``av-events/av-rate.key`` when av-events has made none
 yet). The ledger maps a nonce back to its opportunity; a nonce not on file answers "no longer
@@ -73,7 +73,7 @@ re-sent (``stage_resolved_pending``).
    close with card 1 answered) one line
    is injected into the resident's DM session through ``ctx.inject_message`` (gated by Hermes on
    ``plugins.entries.av-rate.allow_gateway_injection: true``): ``[Rating recorded] <Name>: <value>/5
-   match fit; already planned: <yes|no|not answered>; connection: <friend|spark|collab|not answered>.
+   match fit; already planned: <yes|no|not answered>; connection: <friend|spark|collab|unsure|not answered>.
    Reply with exactly: Got it!`` Hermes persists that turn as
    ``internal_notification`` (actor ``system`` on the data side). A refusal or an error is retried
    on later pick-ups up to ``INJECT_ATTEMPTS_MAX`` times (Hermes's ``inject_message`` returns one
@@ -124,7 +124,7 @@ PREFIX = "avr:"
 #: The PTB handler's pattern: scoped, so core callback flows fall through to Hermes.
 HANDLER_PATTERN = r"^avr:"
 NONCE_CHARS = 22
-CALLBACK_DATA = re.compile(r"^avr:(f:[1-5]|p:[yn]|t:[fsc]):([A-Za-z0-9_-]{22})$")
+CALLBACK_DATA = re.compile(r"^avr:(f:[1-5]|p:[yn]|t:[fscu]):([A-Za-z0-9_-]{22})$")
 #: Telegram's limit on callback_data (bytes, UTF-8).
 CALLBACK_DATA_MAX_BYTES = 64
 
@@ -142,10 +142,10 @@ PLANNED_LABELS = {"y": "Yes", "n": "No"}
 PLANNED_VALUES = {"y": "yes", "n": "no"}
 CARD_TYPE = "type"
 TYPE_SCALE = "connection_type_v1"
-#: Card 3's buttons in order, one row; one letter each in callback_data.
-TYPE_CHOICES = ("f", "s", "c")
-TYPE_VALUES = {"f": "friend", "s": "spark", "c": "collab"}
-TYPE_LABELS = {"f": "🫂 Friend", "s": "❤️‍🔥 Spark", "c": "🤝 Collab"}
+#: Card 3's buttons in order: the three types on one row, "Not sure yet" alone below; one letter each in callback_data.
+TYPE_CHOICES = ("f", "s", "c", "u")
+TYPE_VALUES = {"f": "friend", "s": "spark", "c": "collab", "u": "unsure"}
+TYPE_LABELS = {"f": "🫂 Friend", "s": "❤️‍🔥 Spark", "c": "🤝 Collab", "u": "🤷 Not sure yet"}
 #: Card 3 is asked only when card 1 was answered at least this (OK fit or better).
 TYPE_MIN_FIT = 3
 CHECK = "✅ "
@@ -668,7 +668,8 @@ def planned_rows(nonce: str, make_button: Callable[[str, str], Any], selected: O
 
 
 def type_rows(nonce: str, make_button: Callable[[str, str], Any], selected: Optional[str] = None) -> list[list[Any]]:
-    return [[make_button((CHECK if selected == choice else "") + TYPE_LABELS[choice], type_callback(choice, nonce)) for choice in TYPE_CHOICES]]
+    buttons = [make_button((CHECK if selected == choice else "") + TYPE_LABELS[choice], type_callback(choice, nonce)) for choice in TYPE_CHOICES]
+    return [buttons[:3], buttons[3:]]
 
 
 def fit_text(agent_name: str, name: str, headline: Optional[str]) -> str:
