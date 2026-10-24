@@ -150,12 +150,26 @@ test("a retired name that is a symlink is unlinked; what it points at stays", ()
   expect(readFileSync(join(elsewhere, "references", "notes.md"), "utf8")).toBe("kept\n");
 });
 
-test("install.ts over a home holding skills/geo-esmeralda ends without it and keeps a Hermes skill", () => {
+test("every retired name planted in a box's skills dir is removed, with what was added under it (OV426 N1)", () => {
+  const root = temp("av-retired-every-");
+  for (const name of RETIRED_SKILL_DIRS) {
+    skill(root, name);
+    mkdirSync(join(root, name, "references"), { recursive: true });
+    writeFileSync(join(root, name, "references", "added.md"), "added on the box\n");
+  }
+  const lines: string[] = [];
+  expect(removeRetiredSkillDirs(root, RETIRED_SKILL_DIRS, (l) => lines.push(l))).toEqual([...RETIRED_SKILL_DIRS]);
+  for (const name of RETIRED_SKILL_DIRS) expect({ name, there: existsSync(join(root, name)) }).toEqual({ name, there: false });
+  expect(lines).toEqual(RETIRED_SKILL_DIRS.map((name) => `→ removed retired skill ${name} from ${root}`));
+});
+
+test("install.ts over a home holding every retired skill ends without them and keeps a Hermes skill", () => {
   const home = temp("av-retired-home-");
   const fakeHermes = join(home, "fake-hermes");
   writeFileSync(fakeHermes, "#!/bin/sh\nexit 127\n");
   chmodSync(fakeHermes, 0o755);
-  skill(join(home, "skills"), "geo-esmeralda");
+  // OV426 N1: every retired name, edge-esmeralda included, not only the first one retired.
+  for (const name of RETIRED_SKILL_DIRS) skill(join(home, "skills"), name);
   skill(join(home, "skills"), "apple");
 
   const run = Bun.spawnSync({
@@ -168,8 +182,11 @@ test("install.ts over a home holding skills/geo-esmeralda ends without it and ke
 
   expect(run.exitCode).toBe(0);
   const stdout = run.stdout.toString();
-  expect(stdout).toContain(`→ removed retired skill geo-esmeralda from ${join(home, "skills")}`);
-  expect(existsSync(join(home, "skills", "geo-esmeralda"))).toBe(false);
+  for (const name of RETIRED_SKILL_DIRS) {
+    expect(stdout).toContain(`→ removed retired skill ${name} from ${join(home, "skills")}`);
+    expect({ name, there: existsSync(join(home, "skills", name)) }).toEqual({ name, there: false });
+  }
+  expect(RETIRED_SKILL_DIRS as readonly string[]).toContain("edge-esmeralda");
   expect(existsSync(join(home, "skills", "apple", "SKILL.md"))).toBe(true);
   expect(existsSync(join(home, "skills", "edge-india", "SKILL.md"))).toBe(true);
 });
