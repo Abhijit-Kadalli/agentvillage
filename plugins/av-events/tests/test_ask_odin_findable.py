@@ -35,9 +35,6 @@ ODIN_QUERIES = (
     "explain a ruling",
     "constitution ruling",
     "explain constitution clause",
-    "propose a rule",
-    "proposed rule",
-    "check a proposed rule",
     "constitution agent",
 )
 
@@ -81,7 +78,7 @@ def test_description_leads_with_the_searchable_sentence(odin_mod):
     assert odin_mod.TOOL_DESCRIPTION[:60].startswith("ODIN, the village constitution agent: ask ODIN")
     assert odin_mod.TOOL_SCHEMA["description"] == odin_mod.TOOL_DESCRIPTION
     words = set(_tokenize(odin_mod.TOOL_DESCRIPTION))
-    wanted = ("odin", "constitution", "ruling", "rule", "explain", "propose", "proposed", "proposal", "question")
+    wanted = ("odin", "constitution", "ruling", "rule", "explain", "question")
     assert {_tokenize(word)[0] for word in wanted} <= words
 
 

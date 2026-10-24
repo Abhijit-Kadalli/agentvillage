@@ -104,9 +104,8 @@ const NOT_GATED: readonly NotGated[] = [
     plugin: "av-events",
     reason:
       "SIDE EFFECT, raised with the lead (ask_village's wire, same reasoning): sends one ≤500-char question with a " +
-      "kind (question, explain, proposal) to the cp, which runs one tool-free completion on ODIN's box over the " +
-      "voted constitution and returns the answer; a proposal is only checked and, when the pool is in intake, " +
-      "forwarded to the app's intake for review, never merged; reads no resident data, grants nothing; registered " +
+      "kind (question or explain) to the cp, which runs one tool-free completion on ODIN's box over the voted " +
+      "constitution and returns the answer; reads no resident data, grants nothing; registered " +
       "only with AV_ASK_ODIN on; refused in group sessions; per-tenant and fleet limits on the cp",
   },
   {

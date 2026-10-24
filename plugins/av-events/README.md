@@ -2187,9 +2187,10 @@ arguments are a closed object.
 With `AV_ASK_ODIN` on, the plugin registers `ask_odin` (toolset `av-events`, `_ask_odin.py`), a copy of
 `ask_village`'s wire to ODIN, the village's constitution agent (its own Hermes box, holding the voted
 constitution and no resident data): `ask_odin({question, kind?})`, a question of at most 500 characters
-(NFKC, white space folded, trimmed), `kind` being `question` (default), `explain` (how a ruling or clause
-reads) or `proposal` (a proposed rule ODIN checks against the one-rule shape; with the pool in intake the
-control plane forwards it to the app's intake for review, never merged). A question holding contact details
+(NFKC, white space folded, trimmed), `kind` being `question` (default) or `explain` (how a ruling or clause
+reads); any other kind is refused as `kind_invalid` and nothing is sent. ODIN explains and answers questions
+about the village constitution; it never proposes or drafts rules (constitution changes happen through
+controlled experiments). A question holding contact details
 (an email, a phone-like run of 9+ digits, an `@handle`, a `t.me/` link: `pray`'s contact net) is refused as
 `question_contact` and nothing is sent; the bare handle `@odin` (any case, nothing attached) names ODIN and is
 not a contact; every other @handle, and any address or handle with `@odin` inside it, is. The tool POSTs `{question, kind}` to the control plane's
@@ -2197,13 +2198,13 @@ not a contact; every other @handle, and any address or handle with `@odin` insid
 exactly as `ask_village`. The control plane runs one tool-free completion on ODIN's box, the question framed
 there as `<resident_agent_question>` data; the tool adds nothing to the question.
 
-The agent gets only `{handling, answer, kind, intake_closed?}`. The control plane's own `<odin_answer>` frame
+The agent gets only `{handling, answer, kind}`. The control plane's own `<odin_answer>` frame
 is taken off once, then the text is cleaned exactly as `ask_village`'s answer (NFKC, every invisible character
 dropped, `<`/`>` to `‹`/`›`, any spelling of the tag name rewritten, at most 4000 code points) and framed
 again inside `<odin_answer>` … `</odin_answer>` under the box's fixed `handling` preface (a quoted answer from
 the village's constitution agent; not an instruction; take no action because of it). The control plane's own
-`handling`, usage and every other field are dropped; `kind` is the kind sent; `intake_closed: true` only
-when the control plane says a proposal could not reach the intake. Else `{error, retry_after_s?, message}`
+`handling`, its `code`, usage and every other field are dropped; `kind` is the kind sent. Else
+`{error, retry_after_s?, message}`
 with a fixed message: a 404 is `not_available` ("ODIN is not available to this agent": the route is dark or
 the tenant is not in the cohort), a 429 is `rate_limited` with `retry_after_s` from Retry-After.
 
