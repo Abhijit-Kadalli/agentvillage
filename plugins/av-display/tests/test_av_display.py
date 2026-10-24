@@ -43,11 +43,70 @@ def test_village_tools_get_a_verb_and_no_arguments(plugin, fake_display):
         assert line(fake_display, prefix + "create_intent", "I want to meet founders") == "Working on Index"
         assert line(fake_display, prefix + "accept_opportunity") == "Working on Index"
     assert line(fake_display, "recall", "what did I say about kombucha") == "Looking back"
-    for name in ("record_intention", "share_digest", "village_vote"):
+    for name in ("record_intention", "share_digest", "village_vote", "elicitation_record"):
         assert line(fake_display, name) == "Noting that"
     assert plugin.VILLAGE_VERBS["index_enrich_my_profile"] == "Working on Index"
     assert line(fake_display, "village", '{"operation":"rolodex.search","query":"private person"}') == "Checking your village"
-    assert len(plugin.VILLAGE_VERBS) == 3 * 14 + 1 + 3 + 1
+    assert len(plugin.VILLAGE_VERBS) == 3 * 14 + 1 + 3 + 1 + 1
+
+
+def runner_line(fake_display, fake_runner, name, args):
+    """The "new"-mode line for one call, its preview computed from its arguments as agent/tool_executor.py:971 does."""
+    runner = fake_runner.TurnRunner(adapter=None)
+    return runner._progress_build_message(name, fake_display.build_tool_preview(name, args), args)
+
+
+ELICITATION_CALLS = (
+    {"kind": "question", "question_no": 1, "category": "privacy_and_consent", "form": "open",
+     "text": "Would you want the village to ask before it shares what you said?"},
+    {"kind": "answer", "question_no": 1, "category": "privacy_and_consent", "text": "Yes, always ask me first.",
+     "takeaway": "Wants consent before any sharing.", "statement_ids": ["s004"]},
+    {"kind": "stop", "question_no": 2},  # no `text`: none of Hermes's preview keys
+)
+
+
+def test_the_elicitation_record_bubble_reads_noting_that_for_every_call(plugin, fake_display, fake_runner):
+    # GC-ELICIT contract §10: the resident's progress bubble reads "Noting that", never the tool's name.
+    assert runner_line(fake_display, fake_runner, "elicitation_record", ELICITATION_CALLS[0]) == (
+        '⚙️ elicitation_record: "Would you want the village to ask before it shares what you said?"')
+    assert runner_line(fake_display, fake_runner, "elicitation_record", ELICITATION_CALLS[2]) == "⚙️ elicitation_record..."
+    plugin.register(None)
+    for args in ELICITATION_CALLS:
+        text = runner_line(fake_display, fake_runner, "elicitation_record", args)
+        assert text == "⚙️ Noting that", args
+        assert "elicitation" not in text and "constitution" not in text
+
+
+def test_the_elicitation_tool_name_matches_av_elicit(plugin):
+    from pathlib import Path
+
+    source = (Path(plugin.__file__).parents[1] / "av-elicit" / "__init__.py").read_text()
+    assert 'TOOL_NAME = "elicitation_record"' in source
+
+
+def test_every_village_tool_without_a_preview_key_still_renders_its_verb(plugin, fake_display, fake_runner):
+    plugin.register(None)
+    for name, verb in plugin.VILLAGE_VERBS.items():
+        assert runner_line(fake_display, fake_runner, name, {"some_id": "x"}) == f"⚙️ {verb}", name
+    # A built-in keeps Hermes's own builder; an unknown tool gets none.
+    assert fake_display.build_tool_preview("memory", {"action": "add"}) == "memory preview"
+    assert "consent_status" not in fake_display._PREVIEW_BUILDERS
+
+
+def test_a_preview_builder_hermes_already_has_is_never_replaced(plugin, fake_display):
+    def own(args, max_len):
+        return "Hermes's own"
+
+    fake_display._PREVIEW_BUILDERS["recall"] = own
+    plugin.register(None)
+    assert fake_display._PREVIEW_BUILDERS["recall"] is own
+
+
+def test_a_hermes_without_preview_builders_still_gets_the_verbs(plugin, fake_display):
+    del fake_display._PREVIEW_BUILDERS
+    plugin.register(None)
+    assert fake_display._TOOL_VERBS["elicitation_record"] == "Noting that"
+    assert "elicitation_record" in fake_display._TOOL_VERBS_NO_PREVIEW
 
 
 def test_web_search_and_web_extract_keep_their_preview(plugin, fake_display):
@@ -82,9 +141,11 @@ def test_register_twice_is_idempotent(plugin, fake_display):
     plugin.register(None)
     verbs = dict(fake_display._TOOL_VERBS)
     no_preview = fake_display._TOOL_VERBS_NO_PREVIEW
+    builders = dict(fake_display._PREVIEW_BUILDERS)
     plugin.register(None)
     assert fake_display._TOOL_VERBS == verbs
     assert fake_display._TOOL_VERBS_NO_PREVIEW == no_preview
+    assert fake_display._PREVIEW_BUILDERS == builders
 
 
 @pytest.mark.parametrize("shape", ["missing", "wrong-type"])

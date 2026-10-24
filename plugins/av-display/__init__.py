@@ -17,9 +17,21 @@ plugin extends them once, at ``register()``:
   still print its preview), plus the Village's own tools below.
 * ``_TOOL_VERBS`` gains a verb for the Village's own tools (``VILLAGE_VERBS``):
   the Index tools under each of the three prefixes (reads "Checking Index",
-  changes "Working on Index"), ``recall`` ("Looking back") and av-events'
-  ``record_intention``, ``share_digest`` and ``village_vote`` ("Noting that").
-  A verb Hermes already has for a name is never replaced.
+  changes "Working on Index"), ``recall`` ("Looking back"), av-events'
+  ``record_intention``, ``share_digest`` and ``village_vote``, and av-elicit's
+  ``elicitation_record`` ("Noting that"; GC-ELICIT contract §10: the resident
+  never sees that tool's name). A verb Hermes already has for a name is never
+  replaced.
+* ``_PREVIEW_BUILDERS`` gains, for each of those Village tools that is in the
+  no-preview set, a builder that returns its verb. The line builder checks for a
+  preview before it reads the verbs: a call whose arguments hold none of
+  Hermes's preview keys (``build_tool_preview``, agent/display.py:451-469, keys
+  :361; an ``elicitation_record`` stop carries no ``text``) has no preview and
+  renders as ``<emoji> <name>...`` (run_turn_runner.py:290-291), the raw name.
+  With the builder the preview is never empty, so the line is ``<emoji> <verb>``.
+  A call with no arguments at all still has no preview (:458-459, before any
+  builder); ``elicitation_record`` always has ``kind`` and ``question_no``. A
+  builder Hermes already has for a name is never replaced.
 * The ``terminal`` code block, on Telegram only. Before the tables are read,
   ``_progress_build_message`` asks ``TurnRunner._progress_terminal_blocks``
   (run_turn_runner.py:238-258, called at :270, returned at :276) for a fenced
@@ -93,9 +105,10 @@ plugin extends them once, at ``register()``:
 ``web_search`` and ``web_extract`` keep their preview (the query or URL is the
 useful part). Verbose mode, which a resident can pick with ``/verbose``, still
 shows the full arguments (on Telegram as Hermes's JSON line rather than a code
-block). Only the two tables and those three methods are touched, and one command
+block). Only the three tables and those three methods are touched, and one command
 registered; tool execution and compaction are not. A Hermes without either
-table, or with a table of an unexpected type, or without
+verb table, or with a table of an unexpected type, or without
+``_PREVIEW_BUILDERS`` (the verbs are still added), or without
 ``TurnRunner._progress_terminal_blocks``,
 ``GatewayTurnMixin._hmwa_hygiene_notify`` or
 ``GatewayTurnMixin._hmwa_first_contact_notes``, or a context without
@@ -142,6 +155,7 @@ def _village_verbs() -> Dict[str, str]:
     verbs["recall"] = LOOKING_BACK  # plugins/recall TOOL_NAME
     for name in ("record_intention", "share_digest", "village_vote"):  # plugins/av-events
         verbs[name] = NOTING_THAT
+    verbs["elicitation_record"] = NOTING_THAT  # plugins/av-elicit TOOL_NAME
     return verbs
 
 
@@ -166,8 +180,34 @@ def apply(display: Any) -> bool:
     if missing:
         # A frozenset in Hermes 0.21.5: rebind the module attribute, keeping its type.
         display._TOOL_VERBS_NO_PREVIEW = type(no_preview)(set(no_preview) | wanted)
-    logger.info("av-display: agent.display _TOOL_VERBS +%d, _TOOL_VERBS_NO_PREVIEW +%d", added_verbs, missing)
+    added_builders = apply_preview_builders(display)
+    logger.info("av-display: agent.display _TOOL_VERBS +%d, _TOOL_VERBS_NO_PREVIEW +%d, _PREVIEW_BUILDERS +%d",
+                added_verbs, missing, added_builders)
     return True
+
+
+def _verb_preview(verb: str) -> Any:
+    def build(args: Any, max_len: Any = None) -> str:
+        return verb
+    return build
+
+
+def apply_preview_builders(display: Any) -> int:
+    """For each Village tool whose verb drops its preview, a preview builder returning that verb, so a call
+    with no preview key still renders ``<emoji> <verb>``, never the raw name. The number added."""
+    builders = getattr(display, "_PREVIEW_BUILDERS", None)
+    verbs = getattr(display, "_TOOL_VERBS", None)
+    no_preview = getattr(display, "_TOOL_VERBS_NO_PREVIEW", None)
+    if not isinstance(builders, dict) or not isinstance(verbs, dict) or not isinstance(no_preview, (set, frozenset)):
+        logger.info("av-display: agent.display has no _PREVIEW_BUILDERS dict; left as is")
+        return 0
+    added = 0
+    for name in VILLAGE_VERBS:
+        verb = verbs.get(name)
+        if isinstance(verb, str) and verb and name in no_preview and name not in builders:
+            builders[name] = _verb_preview(verb)
+            added += 1
+    return added
 
 
 _WRAPPED_MARK = "_av_display_wrapped"
@@ -350,7 +390,7 @@ def apply_first_contact_notes(run_turn_module: Any) -> bool:
 
 
 def register(ctx: Any) -> None:
-    """Hermes plugin entrypoint. No tools, no hooks: two display tables, three methods and /village, once."""
+    """Hermes plugin entrypoint. No tools, no hooks: three display tables, three methods and /village, once."""
     try:
         register_village_command(ctx)
     except Exception:  # noqa: BLE001 - a command must never stop the gateway
