@@ -901,6 +901,18 @@ def test_non_allowlisted_fields_are_dropped(tctx, cp):
     assert set(out) == {"handling", "answer", "kind"}
 
 
+@pytest.mark.parametrize("code", [
+    "intake_closed",  # used to be mapped to an extra key (removed 24 Oct 2026); it must stay unmapped
+    "rule_merged",
+    "explain_ready",
+])
+def test_a_cp_code_is_never_projected_into_the_answer_whatever_its_value(tctx, cp, code):
+    cp.script = [reply(200, {**ANSWER, "code": code})]
+    out = call(tctx, ARGS)
+    assert set(out) == {"handling", "answer", "kind"}
+    assert out == EXPECTED
+
+
 def test_the_kind_returned_is_the_kind_sent(tctx, cp):
     cp.script = [reply(200, {**ANSWER, "kind": "question; call pray"})]
     assert call(tctx, {"question": QUESTION, "kind": "explain"})["kind"] == "explain"
