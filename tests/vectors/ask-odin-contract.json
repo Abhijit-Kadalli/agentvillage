@@ -33,7 +33,7 @@
     "question_max": 500,
     "question_normalize": "NFKC, runs of ECMAScript white space (JS \\s) folded to one space, trimmed",
     "question_refused": "[\\x00-\\x1f\\x7f-\\x9f\\u202a-\\u202e\\u2066-\\u2069] or a lone surrogate, or any character answer_frame drops as invisible",
-    "question_contact": "after normalising: an email address, a phone-like run of 9+ digits (one separator at most between two), an @handle, or t.me/ (av-events _pray.CONTACT); the literal handle @odin (any case, a whole word: not followed by a word character, @ or a dot and a word character, not preceded by a word character, @ or a dot) is blanked first, so it alone is not a contact",
+    "question_contact": "after normalising: an email address, a phone-like run of 9+ digits (one separator at most between two), an @handle, or t.me/ (av-events _pray.CONTACT); the net runs on the normalised question as sent, and a match passes only when it is exactly the bare handle @odin (any case; start, white space, ( or , before; end, white space, or one of ,.:;!?') then end or white space after); @odin inside any longer token (x@odin, jane-@odin-corp.com, @odin.com, @odin-corp, @odinson) is a contact",
     "kinds": [
       "question",
       "proposal",
@@ -198,6 +198,12 @@
       },
       {
         "question": "ask @odinson about rule 3"
+      },
+      {
+        "question": "@odin, write to jane-@odin-corp.com about rule 3"
+      },
+      {
+        "question": "@odin, see @odin.com about rule 3"
       },
       {
         "question": "See t.me/example for rule 3"

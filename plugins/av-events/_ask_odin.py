@@ -21,8 +21,9 @@ character, lone surrogate, bidi override or other invisible character; else
 `question_invalid`. A question carrying contact details (an email address, a
 phone-like run of 9 or more digits, an `@handle` or a `t.me/` link: `_pray`'s
 contact net) is `question_contact` and nothing is sent: ODIN needs no one's
-contact details and must not be handed any. The literal handle `@odin` (any
-case, a whole word) names ODIN and is not a contact; every other @handle is.
+contact details and must not be handed any. The bare handle `@odin` (any
+case, nothing attached) names ODIN and is not a contact; every other @handle,
+and any address or handle with `@odin` inside it, is.
 `kind`: `question` (the default), `proposal` (a draft rule for ODIN to check
 against the one-rule shape) or `explain` (how a ruling or a clause reads);
 else `kind_invalid`. Anything else is `invalid_body`.
@@ -125,10 +126,12 @@ JS_SPACE = re.compile("[" + re.escape(_pray.JS_TRIM) + "]+")
 FORBIDDEN = re.compile(r"[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 #: `pray`'s contact net (email, 9+ digit phone-like run, @handle, t.me link). Cheap, not a guarantee.
 CONTACT = _pray.CONTACT
-#: The literal handle `@odin` (any case, a whole word) names ODIN itself, not anyone's contact: it is
-#: blanked before the contact net runs (the question is still sent as written). That token only:
-#: `@odinson`, `@odin_x`, `x@odin`, `@odin.example` and every other @handle are still refused.
-ODIN_HANDLE = re.compile(r"(?<![\w@.])@odin(?![\w@]|\.\w)", re.IGNORECASE)
+#: The bare handle `@odin` (any case) names ODIN itself, not anyone's contact. The contact net runs on
+#: the question as written, and a match is let through only when it is exactly this token with nothing
+#: attached: start or white space, `(` or `,` before; end, white space, or one of `,.:;!?')` then end or
+#: white space after. Any match holding `@odin` inside a longer token (`x@odin`, `jane-@odin-corp.com`,
+#: `@odin.com`, `@odin-corp`, `@odinson`) and every other @handle are still refused.
+ODIN_HANDLE = re.compile(r"(?<![^\s(,])@odin(?=\s|\Z|[,.:;!?')](?:\s|\Z))", re.IGNORECASE)
 
 #: The codes passed through from the cp (ODIN-PHASE1-CP).
 PASSED_CODES = frozenset({
@@ -233,6 +236,12 @@ def _error(code: str, retry_after_s: Optional[int] = None) -> dict:
 # ---- Validation -------------------------------------------------------------
 
 
+def _is_odin_handle(text: str, match: re.Match) -> bool:
+    """True only when the contact-net match is exactly the bare `@odin` token (ODIN_HANDLE)."""
+    bare = ODIN_HANDLE.match(text, match.start())
+    return bare is not None and bare.end() == match.end()
+
+
 def normalize_question(raw: Any) -> tuple[Optional[str], Optional[str]]:
     """`(question, None)` as sent, or `(None, code)`: NFKC, white space folded and trimmed, 1-500 code
     points, no control or invisible character, no contact detail."""
@@ -243,8 +252,7 @@ def normalize_question(raw: Any) -> tuple[Optional[str], Optional[str]]:
     text = JS_SPACE.sub(" ", unicodedata.normalize("NFKC", raw)).strip(" ")
     if not 1 <= len(text) <= QUESTION_MAX or FORBIDDEN.search(text) or any(_pray.invisible(ch) for ch in text):
         return None, "question_invalid"
-    unaddressed = ODIN_HANDLE.sub(" ", text)
-    if any(pattern.search(unaddressed) for pattern in CONTACT):
+    if any(not _is_odin_handle(text, match) for pattern in CONTACT for match in pattern.finditer(text)):
         return None, "question_contact"
     return text, None
 
