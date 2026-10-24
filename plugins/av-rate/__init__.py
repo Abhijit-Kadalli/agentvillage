@@ -4,10 +4,12 @@ Replaces the evening outcome ask's text question ("Did you and <name> meet? Repl
 useful, or missed.", overlay #198) with two Telegram button cards about the suggestion itself,
 sent by the resident's own bot and answered with a tap:
 
-  Card 1  "How good a match was this suggestion from <agentName>?"  five numeral buttons 1..5
-          (labels in the body: Not a fit / Weak fit / OK fit / Good fit / Great fit, scale
+  Card 1  "How good a match was this suggestion from <agentName>?"  five emoji buttons 😕 😐 🙂 😊 🤩
+          for 1..5 (labels in the body: Not a fit / Weak fit / OK fit / Good fit / Great fit, scale
           ``match_fit_5_v1``) and a privacy line.
   Card 2  "Did you already plan this meetup?"  [Yes] [No], sent after card 1's first tap.
+  Card 3  "What kind of connection is this?"  [🫂 Friend] [❤️‍🔥 Spark] [🤝 Collab] (scale
+          ``connection_type_v1``), sent after card 2's first tap.
 
 **Who decides what to ask.** The evening trigger (``skills/index-network/scripts/rating-cards.ts``
 through ``proactive.ts``) picks the accepted connections to ask about and writes one stage file per
@@ -36,7 +38,7 @@ the stage to the next pick-up, never drop it; a stage older than ``STAGE_MAX_AGE
 dropped and counted.
 
 **callback_data** (under Telegram's 64 bytes): ``avr:f:<1-5>:<nonce>`` for card 1 and
-``avr:p:<y|n>:<nonce>`` for card 2. ``<nonce>`` is the first 22 base64url characters of
+``avr:p:<y|n>:<nonce>`` for card 2, ``avr:t:<f|s|c>:<nonce>`` for card 3. ``<nonce>`` is the first 22 base64url characters of
 HMAC-SHA256(key, "avr|<opportunity_id>|match_fit_5_v1") under the tenant's av-events key
 (``av-events/hash.key``; this plugin's own ``av-events/av-rate.key`` when av-events has made none
 yet). The ledger maps a nonce back to its opportunity; a nonce not on file answers "no longer
@@ -67,10 +69,11 @@ re-sent (``stage_resolved_pending``).
    ``opportunity.rating_asked@1`` / ``opportunity.rated@1`` / ``opportunity.pre_planned@1`` with ids
    derived from (type, opportunity, card, revision), so a re-send never doubles a row). This plugin
    never posts to the ingest API itself and never builds an envelope.
-2. The agent: after card 2 resolves (or when the windows close with only card 1 answered) one line
+2. The agent: after card 3 resolves (or when the windows close with card 1 answered) one line
    is injected into the resident's DM session through ``ctx.inject_message`` (gated by Hermes on
    ``plugins.entries.av-rate.allow_gateway_injection: true``): ``[Rating recorded] <Name>: <value>/5
-   match fit; already planned: <yes|no|not answered>.`` Hermes persists that turn as
+   match fit; already planned: <yes|no|not answered>; connection: <friend|spark|collab|not answered>
+   (private: never mention it to anyone).`` Hermes persists that turn as
    ``internal_notification`` (actor ``system`` on the data side). A refusal or an error is retried
    on later pick-ups up to ``INJECT_ATTEMPTS_MAX`` times (Hermes's ``inject_message`` returns one
    boolean for "flag off", "no live gateway" and "scheduling failed", so they cannot be told
@@ -120,7 +123,7 @@ PREFIX = "avr:"
 #: The PTB handler's pattern: scoped, so core callback flows fall through to Hermes.
 HANDLER_PATTERN = r"^avr:"
 NONCE_CHARS = 22
-CALLBACK_DATA = re.compile(r"^avr:(f:[1-5]|p:[yn]):([A-Za-z0-9_-]{22})$")
+CALLBACK_DATA = re.compile(r"^avr:(f:[1-5]|p:[yn]|t:[fsc]):([A-Za-z0-9_-]{22})$")
 #: Telegram's limit on callback_data (bytes, UTF-8).
 CALLBACK_DATA_MAX_BYTES = 64
 
@@ -132,17 +135,28 @@ WINDOW_S = WINDOW_HOURS * 3600
 CARD_FIT = "fit"
 CARD_PLANNED = "planned"
 LABELS = {1: "Not a fit", 2: "Weak fit", 3: "OK fit", 4: "Good fit", 5: "Great fit"}
+#: Card 1's buttons: one emoji per value, the words in the body (five labelled buttons do not fit a phone row).
+EMOJI = {1: "😕", 2: "😐", 3: "🙂", 4: "😊", 5: "🤩"}
 PLANNED_LABELS = {"y": "Yes", "n": "No"}
 PLANNED_VALUES = {"y": "yes", "n": "no"}
+CARD_TYPE = "type"
+TYPE_SCALE = "connection_type_v1"
+#: Card 3's buttons in order, one row; one letter each in callback_data.
+TYPE_CHOICES = ("f", "s", "c")
+TYPE_VALUES = {"f": "friend", "s": "spark", "c": "collab"}
+TYPE_LABELS = {"f": "🫂 Friend", "s": "❤️‍🔥 Spark", "c": "🤝 Collab"}
 CHECK = "✅ "
 #: DATA-373: every scheduled message ends with its manage line, this card too.
 MANAGE_LINE = "(Evening questions message - you can ask me to stop or manage it)"
 #: True whatever the resident's research consent: the plugin cannot know it, so it promises only
 #: what it can keep (the counterpart never sees the answer; where it goes beyond the agent's own
 #: records is the consent brief's to say, not this card's).
-PRIVACY_LINE = "Private: {name} never sees your answer."
+PRIVACY_LINE = "{name} never sees this."
 QUESTION_FIT = "How good a match was this suggestion from {agent}?"
 QUESTION_PLANNED = "Did you already plan this meetup?"
+QUESTION_TYPE = "What kind of connection is this?"
+#: Product promise (2026-10-24): a mutual answer is shown to both. Not built yet; see the design note.
+TYPE_MUTUAL_LINE = "We'll show you if it's mutual!"
 
 ON_SWITCH = "AV_RATE_CARDS"
 SESSION_KEY_ENV = "AV_RATE_SESSION_KEY"
@@ -617,14 +631,14 @@ def keyed_hash(key: bytes, text: str) -> str:
 
 def parse_callback(data: Any) -> Optional[tuple[str, str, str]]:
     """``(card, choice, nonce)`` for a well-formed ``avr:`` value inside 64 bytes: card ``fit`` with
-    choice ``1``..``5``, or ``planned`` with ``y``/``n``. Else None."""
+    choice ``1``..``5``, ``planned`` with ``y``/``n``, or ``type`` with one of TYPE_CHOICES. Else None."""
     if not isinstance(data, str) or len(data.encode("utf-8")) > CALLBACK_DATA_MAX_BYTES:
         return None
     match = CALLBACK_DATA.fullmatch(data)
     if match is None:
         return None
     kind, choice = match.group(1).split(":", 1)
-    return (CARD_FIT if kind == "f" else CARD_PLANNED), choice, match.group(2)
+    return {"f": CARD_FIT, "p": CARD_PLANNED, "t": CARD_TYPE}[kind], choice, match.group(2)
 
 
 def fit_callback(value: int, nonce: str) -> str:
@@ -635,13 +649,21 @@ def planned_callback(choice: str, nonce: str) -> str:
     return f"avr:p:{choice}:{nonce}"
 
 
+def type_callback(choice: str, nonce: str) -> str:
+    return f"avr:t:{choice}:{nonce}"
+
+
 def fit_rows(nonce: str, make_button: Callable[[str, str], Any], selected: Optional[int] = None) -> list[list[Any]]:
-    """One row of five numeral buttons; the selected one carries a check mark."""
-    return [[make_button((CHECK if selected == value else "") + str(value), fit_callback(value, nonce)) for value in range(1, 6)]]
+    """One row of five emoji buttons; the selected one carries a check mark."""
+    return [[make_button((CHECK if selected == value else "") + EMOJI[value], fit_callback(value, nonce)) for value in range(1, 6)]]
 
 
 def planned_rows(nonce: str, make_button: Callable[[str, str], Any], selected: Optional[str] = None) -> list[list[Any]]:
     return [[make_button((CHECK if selected == choice else "") + PLANNED_LABELS[choice], planned_callback(choice, nonce)) for choice in ("y", "n")]]
+
+
+def type_rows(nonce: str, make_button: Callable[[str, str], Any], selected: Optional[str] = None) -> list[list[Any]]:
+    return [[make_button((CHECK if selected == choice else "") + TYPE_LABELS[choice], type_callback(choice, nonce)) for choice in TYPE_CHOICES]]
 
 
 def fit_text(agent_name: str, name: str, headline: Optional[str]) -> str:
@@ -649,16 +671,18 @@ def fit_text(agent_name: str, name: str, headline: Optional[str]) -> str:
     lines = [html.escape(QUESTION_FIT.format(agent=agent_name))]
     lines.append(html.escape(f"{name}, about {headline}" if headline else name))
     lines.append("")
-    lines += [html.escape(f"{value}  {label}") for value, label in LABELS.items()]
+    lines += [html.escape(f"{EMOJI[value]}  {label}") for value, label in LABELS.items()]
     lines.append("")
     lines.append(html.escape(PRIVACY_LINE.format(name=name)))
-    lines.append("")
-    lines.append(html.escape(MANAGE_LINE))
     return "\n".join(lines)
 
 
 def planned_text() -> str:
     return html.escape(QUESTION_PLANNED)
+
+
+def type_text() -> str:
+    return html.escape(QUESTION_TYPE) + "\n" + html.escape(TYPE_MUTUAL_LINE)
 
 
 # --------------------------------------------------------------------------- owner
@@ -799,13 +823,31 @@ def planned_closed(card: dict, now: float) -> bool:
     return closes is None or now > closes
 
 
+def type_closed(card: dict, now: float) -> bool:
+    """Card 3's own window, 24 h from its own send; before card 3 is sent, card 2's window."""
+    if card.get("type_message_id") is None:
+        return planned_closed(card, now)
+    closes = epoch_from_iso(card.get("closes_at_type"))
+    return closes is None or now > closes
+
+
+def card_closed(card: dict, kind: str, now: float) -> bool:
+    if kind == CARD_FIT:
+        return is_closed(card, now)
+    return planned_closed(card, now) if kind == CARD_PLANNED else type_closed(card, now)
+
+
+#: The ledger field holding each card's Telegram message id.
+MESSAGE_FIELD = {CARD_FIT: "message_id", CARD_PLANNED: "planned_message_id", CARD_TYPE: "type_message_id"}
+
+
 def card_message_matches(card: dict, kind: str, message_id: Any) -> bool:
-    """The tap's message is the card's own: card 1's `message_id` or card 2's `planned_message_id`.
-    A card whose id for that kind is unknown (a pending card resolved after a crash) binds on this
-    first tap instead."""
-    stored = card.get("message_id") if kind == CARD_FIT else card.get("planned_message_id")
+    """The tap's message is the card's own: card 1's `message_id`, card 2's `planned_message_id` or
+    card 3's `type_message_id`. A card 1 whose id is unknown (a pending card resolved after a
+    crash) binds on this first tap instead."""
+    stored = card.get(MESSAGE_FIELD[kind])
     if stored is None:
-        # Card 1 with no id on file (a pending card resolved after a crash) binds now; a card 2
+        # Card 1 with no id on file (a pending card resolved after a crash) binds now; a card 2 or 3
         # that was never sent has no message a tap could come from.
         return kind == CARD_FIT
     return str(stored) == str(message_id)
@@ -880,6 +922,11 @@ def planned_record(opportunity_id: str, intention_id: Optional[str], value: str,
             "card": CARD_PLANNED, "revision": revision, "value": value, "at": at, "message_hash": None}
 
 
+def type_record(opportunity_id: str, intention_id: Optional[str], value: str, revision: int, at: str) -> dict:
+    return {"event_type": "opportunity.connection_typed", "opportunity_id": opportunity_id, "intention_id": intention_id,
+            "card": CARD_TYPE, "revision": revision, "value": value, "at": at, "message_hash": None}
+
+
 # --------------------------------------------------------------------------- the agent hand-off
 
 
@@ -888,7 +935,11 @@ def injected_line(card: dict) -> str:
     planned = card.get("planned") or {}
     value = fit.get("value")
     planned_text_value = planned.get("value") if planned.get("value") in ("yes", "no") else "not answered"
-    return f"[Rating recorded] {card.get('name', 'This person')}: {value}/5 match fit; already planned: {planned_text_value}."
+    kind = card.get("type") or {}
+    type_value = kind.get("value") if kind.get("value") in TYPE_VALUES.values() else "not answered"
+    # The connection type can be romantic interest in a named person: the agent may use it, never repeat it.
+    return (f"[Rating recorded] {card.get('name', 'This person')}: {value}/5 match fit; already planned: {planned_text_value}; "
+            f"connection: {type_value} (private: never mention it to anyone).")
 
 
 def session_key_for(chat_id: str) -> str:
@@ -914,10 +965,10 @@ def inject(card: dict, chat_id: str, ctx: Any = None) -> str:
 
 
 def ready_to_inject(card: dict, now: float) -> bool:
-    """After card 2 resolves, or when both windows have closed with card 1 answered."""
+    """After card 3 resolves, or when every window has closed with card 1 answered."""
     if card.get("injected") or not card.get("fit"):
         return False
-    return bool(card.get("planned")) or (is_closed(card, now) and planned_closed(card, now))
+    return bool(card.get("type")) or (is_closed(card, now) and planned_closed(card, now) and type_closed(card, now))
 
 
 def _settle_injection(card: dict, code: str) -> bool:
@@ -1069,13 +1120,16 @@ async def _send_staged(bot: Any, adapter: Any, make_button: Callable[[str, str],
                 "chat_id": chat,
                 "message_id": None,
                 "planned_message_id": None,
+                "type_message_id": None,
                 "pending_since": now_iso(now),
                 "pid": os.getpid(),
                 "sent_at": None,
                 "closes_at": None,
                 "closes_at_planned": None,
+                "closes_at_type": None,
                 "fit": None,
                 "planned": None,
+                "type": None,
                 "injected": False,
             }
             return "reserved"
@@ -1227,6 +1281,15 @@ def record_tap(ledger: dict, opportunity_id: str, card: str, choice: str, now: f
         entry["fit"] = {"value": value, "revision": revision, "at": at}
         hand_off(rated_record(opportunity_id, entry.get("intention_id"), value, revision, at), home, now)
         return LABELS[value], str(value), revision
+    if card == CARD_TYPE:
+        type_text_value = TYPE_VALUES[choice]
+        current = entry.get("type") or {}
+        if current.get("value") == type_text_value:
+            return TYPE_LABELS[choice], type_text_value, None
+        revision = int(current.get("revision", 0)) + 1
+        entry["type"] = {"value": type_text_value, "revision": revision, "at": at}
+        hand_off(type_record(opportunity_id, entry.get("intention_id"), type_text_value, revision, at), home, now)
+        return TYPE_LABELS[choice], type_text_value, revision
     value_text = PLANNED_VALUES[choice]
     current = entry.get("planned") or {}
     if current.get("value") == value_text:
@@ -1285,16 +1348,16 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                 opportunity_id, entry = found
                 if str(entry.get("chat_id", "")) != str(chat) or not card_message_matches(entry, card_kind, message_id):
                     return ("message_mismatch", None), False
-                closed = is_closed(entry, now) if card_kind == CARD_FIT else planned_closed(entry, now)
-                if closed:
+                if card_closed(entry, card_kind, now):
                     return ("closed", None), False
                 if card_kind == CARD_FIT and entry.get("message_id") is None:
                     entry["message_id"] = message_id
-                first_fit = card_kind == CARD_FIT and not entry.get("fit")
+                # The first answer to card 1 sends card 2; the first answer to card 2 sends card 3.
+                first = card_kind != CARD_TYPE and not entry.get(card_kind)
                 label, _value, revision = record_tap(ledger, opportunity_id, card_kind, choice, now, home)
                 if revision is None:
-                    return ("already", (opportunity_id, label, first_fit, None)), False
-                return ("recorded", (opportunity_id, label, first_fit, revision)), True
+                    return ("already", (opportunity_id, label, first, None)), False
+                return ("recorded", (opportunity_id, label, first, revision)), True
 
             outcome, why = ledger_update(home, lambda ledger: _unwrap(take(ledger)))
             if why is not None:
@@ -1310,7 +1373,7 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                 _log("closed")
                 await _answer(query, CLOSED)
                 return
-            opportunity_id, label, first_fit, revision = detail
+            opportunity_id, label, first, revision = detail
             if code == "already":
                 _log(ALREADY)
                 await _answer(query, f"Already recorded: {label}")
@@ -1334,9 +1397,10 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                     await query.edit_message_reply_markup(reply_markup=make_markup(marked))
                 except Exception:  # noqa: BLE001 - a stale card is cosmetic
                     _log("edit_failed")
-            if first_fit and send_planned:
-                await _send_planned(query, message, nonce, opportunity_id, make_button, make_markup, home, now)
-            if card_kind == CARD_PLANNED:
+            if first and send_planned:
+                await _send_next(query, message, nonce, opportunity_id, CARD_PLANNED if card_kind == CARD_FIT else CARD_TYPE,
+                                 make_button, make_markup, home, now)
+            if card_kind == CARD_TYPE:
                 snapshot, why = ledger_update(home, lambda ledger: (dict(ledger["cards"].get(opportunity_id) or {}), False))
                 if why is None and snapshot and ready_to_inject(snapshot, now):
                     code = await asyncio.to_thread(inject, snapshot, str(snapshot.get("chat_id", "")), ctx)
@@ -1365,28 +1429,31 @@ def _unwrap(result: tuple[Any, bool]) -> Any:
     return outcome if save else (outcome, False)
 
 
-async def _send_planned(query: Any, message: Any, nonce: str, opportunity_id: str, make_button: Callable[[str, str], Any],
-                        make_markup: Callable[[list], Any], home: Optional[str], now: float) -> None:
+async def _send_next(query: Any, message: Any, nonce: str, opportunity_id: str, kind: str, make_button: Callable[[str, str], Any],
+                     make_markup: Callable[[list], Any], home: Optional[str], now: float) -> None:
+    """Card 2 (``kind`` planned) after card 1's first tap, or card 3 (``kind`` type) after card 2's."""
+    text, rows = (planned_text(), planned_rows) if kind == CARD_PLANNED else (type_text(), type_rows)
+    tag = "planned" if kind == CARD_PLANNED else "type"
     bot = getattr(message, "get_bot", None)
     bot = bot() if callable(bot) else getattr(query, "bot", None) or getattr(message, "bot", None)
     chat = getattr(getattr(message, "chat", None), "id", None)
     if bot is None or chat is None:
-        _log("planned_no_bot")
+        _log(f"{tag}_no_bot")
         return
     try:
-        sent = await bot.send_message(chat_id=chat, text=planned_text(), parse_mode="HTML",
-                                      reply_markup=make_markup(planned_rows(nonce, make_button)))
+        sent = await bot.send_message(chat_id=chat, text=text, parse_mode="HTML",
+                                      reply_markup=make_markup(rows(nonce, make_button)))
     except Exception:  # noqa: BLE001
-        _log("planned_send_failed")
+        _log(f"{tag}_send_failed")
         return
-    planned_id = getattr(sent, "message_id", None)
+    sent_id = getattr(sent, "message_id", None)
 
     def note(ledger: dict) -> Any:
         entry = ledger["cards"].get(opportunity_id)
         if entry is None:
             return None, False
-        entry["planned_message_id"] = planned_id
-        entry["closes_at_planned"] = now_iso(now + WINDOW_S)
+        entry[MESSAGE_FIELD[kind]] = sent_id
+        entry[f"closes_at_{tag}"] = now_iso(now + WINDOW_S)
         return entry.get("intention_id")
 
     intention_id, why = ledger_update(home, note)
@@ -1395,8 +1462,8 @@ async def _send_planned(query: Any, message: Any, nonce: str, opportunity_id: st
         return
     key = hash_key(home)
     if key is not None:
-        hand_off(asked_record(opportunity_id, intention_id, CARD_PLANNED, keyed_hash(key, planned_text()), now_iso(now)), home, now)
-    _log("planned_sent")
+        hand_off(asked_record(opportunity_id, intention_id, kind, keyed_hash(key, text), now_iso(now)), home, now)
+    _log(f"{tag}_sent")
 
 
 # --------------------------------------------------------------------------- wiring
@@ -1461,11 +1528,12 @@ def register(ctx: Any) -> None:
 
 
 __all__ = [
-    "CALLBACK_DATA_MAX_BYTES", "CARD_FIT", "CARD_PLANNED", "CHANNEL", "EVENING_JOB_NAMES", "INJECT_ATTEMPTS_MAX", "LABELS",
+    "CALLBACK_DATA_MAX_BYTES", "CARD_FIT", "CARD_PLANNED", "CARD_TYPE", "CHANNEL", "EMOJI", "EVENING_JOB_NAMES", "INJECT_ATTEMPTS_MAX", "LABELS",
     "MANAGE_LINE", "PRIVACY_LINE", "QUIET_DEFAULT_WINDOW", "SCALE", "STAGE_MAX_AGE_S", "WINDOW_HOURS", "asked_record",
     "card_message_matches", "cards_on", "evening_job_state", "fit_callback", "fit_rows", "fit_text", "hand_off", "hash_key",
     "in_window", "injected_line", "is_owner_tap", "ledger_path", "ledger_update", "load_ledger", "make_handler", "make_nonce",
     "mark_keyboard", "parse_callback", "parse_window", "pick_up", "planned_callback", "planned_closed", "planned_record",
     "planned_rows", "planned_text", "quiet_delivery", "quiet_hours", "rated_record", "ready_to_inject", "record_tap", "register",
-    "save_ledger", "session_key_for", "stage_dir", "events_dir", "team_tenant", "valid_stage",
+    "save_ledger", "session_key_for", "stage_dir", "events_dir", "team_tenant", "type_callback", "type_closed", "type_record",
+    "type_rows", "type_text", "valid_stage",
 ]

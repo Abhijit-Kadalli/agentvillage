@@ -62,8 +62,15 @@ def planned(**over):
     return data
 
 
+def typed(**over):
+    data = {"event_type": "opportunity.connection_typed", "opportunity_id": OPP, "intention_id": None, "card": "type", "revision": 1, "value": "spark", "at": AT, "message_hash": None}
+    data.update(over)
+    return data
+
+
 def events(av, plugin):
-    return [e for e in av.read_buffer(plugin._COLLECTOR) if e["event_type"].startswith("opportunity.rat") or e["event_type"] == "opportunity.pre_planned"]
+    kinds = ("opportunity.pre_planned", "opportunity.connection_typed")
+    return [e for e in av.read_buffer(plugin._COLLECTOR) if e["event_type"].startswith("opportunity.rat") or e["event_type"] in kinds]
 
 
 def test_three_records_become_three_events_with_the_contracts_payloads(live, home, av):
@@ -87,6 +94,16 @@ def test_three_records_become_three_events_with_the_contracts_payloads(live, hom
     assert live._COLLECTOR.rating_tick().get("emitted") is None
 
 
+def test_card_three_ask_and_answer_carry_the_connection_type_scale(live, home, av):
+    hand_off(home, asked(card="type"), typed())
+    assert live._COLLECTOR.rating_tick().get("emitted") == 2
+    ask, kind = events(av, live)
+    assert ask["payload"] == {"question_version": "connection_type_v1", "card": "type", "message_hash": HASH, "window_hours": 24}
+    assert kind["event_type"] == "opportunity.connection_typed"
+    assert kind["payload"] == {"value": "spark", "scale": "connection_type_v1", "channel": "telegram_button", "revision": 1, "answered_at": AT}
+    assert kind["actor"] == "participant" and kind["evidence_class"] == "self_report"
+
+
 def test_event_ids_derive_from_type_opportunity_card_and_revision(live, home, av):
     hand_off(home, rated(), name="a.json")
     hand_off(home, rated(), name="b.json")
@@ -100,6 +117,7 @@ def test_event_ids_derive_from_type_opportunity_card_and_revision(live, home, av
     asked(message_hash=None), asked(value=3), asked(revision=2), asked(message_hash="x" * 64),
     rated(value=0), rated(value=6), rated(value="4"), rated(card="planned"), rated(message_hash=HASH),
     planned(value="maybe"), planned(card="fit"), planned(revision=0),
+    typed(value="unsure"), typed(value="romance"), typed(card="planned"), typed(message_hash=HASH), rated(card="type"),
     {**rated(), "note": "text"}, rated(opportunity_id="has space"), rated(intention_id=5), rated(at="2026-10-21T13:31:00"), rated(event_type="outcome.reported"),
 ])
 def test_a_record_not_exactly_the_shape_is_dropped_and_counted(live, home, av, record):
