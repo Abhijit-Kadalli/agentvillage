@@ -160,9 +160,19 @@ python3 -m pytest plugins/av-elicit/tests
 
 ## Hardening (overlay review, contract §9)
 
-- **Gateway only.** The inject/probe thread runs only in the gateway process (`gateway run|start` in argv, or
-  `_HERMES_GATEWAY=1`). In the TUI `inject_message` would hand the notice to the local operator. The tool is
-  registered everywhere. Each registration gets its own stop event; an old thread is stopped and joined first.
+- **Gateway only.** The inject/probe thread runs only in the gateway process (`gateway run` or a bare `gateway`
+  in argv, or `_HERMES_GATEWAY=1`). In the TUI `inject_message` would hand the notice to the local operator. The
+  tool is registered everywhere. Each registration gets its own stop event; an old thread is stopped and joined
+  first. Every start is serialised by one lock, so no loop ever runs twice.
+- **`gateway start|restart`.** These may or may not run the gateway in-process:
+  - With no service manager (macOS, as the installer's final `gateway restart` leaves it), `restart` stops the
+    old gateway and runs one in this process.
+  - With a service manager, `restart` only asks it and exits. `start` never runs the gateway in-process.
+  - Hermes sets `_HERMES_GATEWAY=1` when it imports `gateway/run.py`, which happens after plugins have
+    registered. So under these two commands, `register` starts one waiter thread that checks the marker every
+    second and starts the loop the first time it is `1`. A hand-off that exits without the marker never runs a
+    loop. A direct start or an unload stops the waiter. Before this change, a foreground `restart` logged
+    `loop_skipped reason=not_gateway` and never injected.
 - **Claim before injecting.** `.txt` is renamed `.sending` first; a file that cannot be claimed is never injected.
   Accepted: `.sending` -> `.done` (mtime stamped). Refused or raised: back to `.txt`. A `.sending` older than 60 s
   (a process died mid-injection) becomes `.skipped`, since a second opener is worse than a missing one.

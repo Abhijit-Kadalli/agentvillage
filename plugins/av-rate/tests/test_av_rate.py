@@ -137,9 +137,13 @@ def test_callback_data_shape_and_the_64_byte_limit(plugin):
     assert plugin.parse_callback(plugin.planned_callback("y", nonce)) == ("planned", "y", nonce)
     assert plugin.parse_callback(plugin.planned_callback("n", nonce)) == ("planned", "n", nonce)
     assert len(plugin.planned_callback("n", nonce).encode("utf-8")) <= 64
+    for choice, value in plugin.TYPE_VALUES.items():
+        data = plugin.type_callback(choice, nonce)
+        assert len(data.encode("utf-8")) <= plugin.CALLBACK_DATA_MAX_BYTES
+        assert plugin.parse_callback(data) == ("type", choice, nonce)
 
 
-@pytest.mark.parametrize("data", [None, "", "avr:f:0:" + "a" * 22, "avr:f:6:" + "a" * 22, "avr:p:x:" + "a" * 22, "avr:f:3:" + "a" * 21, "avr:f:3:" + "a" * 23, "avr:f:3:" + "é" * 22, *CORE_CALLBACKS])
+@pytest.mark.parametrize("data", [None, "", "avr:f:0:" + "a" * 22, "avr:f:6:" + "a" * 22, "avr:p:x:" + "a" * 22, "avr:t:x:" + "a" * 22, "avr:t:friend:" + "a" * 22, "avr:f:3:" + "a" * 21, "avr:f:3:" + "a" * 23, "avr:f:3:" + "é" * 22, *CORE_CALLBACKS])
 def test_parse_refuses_anything_else(plugin, data):
     assert plugin.parse_callback(data) is None
 
@@ -188,27 +192,29 @@ def test_card_one_text_labels_privacy_and_manage_line(plugin):
     text = plugin.fit_text("Edge", "Maya <Rao>", "Climate & finance")
     assert text.startswith("How good a match was this suggestion from Edge?\nMaya &lt;Rao&gt;, about Climate &amp; finance\n")
     for value, label in plugin.LABELS.items():
-        assert f"{value}  {label}" in text
-    assert "Private: Maya &lt;Rao&gt; never sees your answer." in text
-    assert "research team" not in text
-    assert text.endswith("\n\n" + plugin.MANAGE_LINE)
+        assert f"{plugin.EMOJI[value]}  {label}" in text
+    assert text.endswith("\n\nMaya &lt;Rao&gt; never sees this.")
+    assert "research team" not in text and plugin.MANAGE_LINE not in text
     assert "about" not in plugin.fit_text("Edge", "Maya", None).splitlines()[1]
 
 
-def test_keyboards_one_row_numerals_and_yes_no(plugin):
+def test_keyboards_one_row_each_emoji_yes_no_and_connection_type(plugin):
     rows = plugin.fit_rows("n" * 22, lambda t, d: Button(t, callback_data=d))
-    assert len(rows) == 1 and [b.text for b in rows[0]] == ["1", "2", "3", "4", "5"]
+    assert len(rows) == 1 and [b.text for b in rows[0]] == ["😕", "😐", "🙂", "😊", "🤩"]
     rows = plugin.planned_rows("n" * 22, lambda t, d: Button(t, callback_data=d))
     assert len(rows) == 1 and [b.text for b in rows[0]] == ["Yes", "No"]
+    rows = plugin.type_rows("n" * 22, lambda t, d: Button(t, callback_data=d))
+    assert [[b.text for b in row] for row in rows] == [["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"], ["🤷 Not sure yet"]]
+    assert [b.callback_data for row in rows for b in row] == [plugin.type_callback(c, "n" * 22) for c in ("f", "s", "c", "u")]
 
 
 def test_mark_keyboard_checks_the_tapped_button_only(plugin):
     nonce = "n" * 22
     rows = plugin.fit_rows(nonce, lambda t, d: Button(t, callback_data=d))
     marked = plugin.mark_keyboard(rows, plugin.fit_callback(4, nonce), lambda t, d: Button(t, callback_data=d))
-    assert [b.text for b in marked[0]] == ["1", "2", "3", "✅ 4", "5"]
+    assert [b.text for b in marked[0]] == ["😕", "😐", "🙂", "✅ 😊", "🤩"]
     again = plugin.mark_keyboard(marked, plugin.fit_callback(2, nonce), lambda t, d: Button(t, callback_data=d))
-    assert [b.text for b in again[0]] == ["1", "✅ 2", "3", "4", "5"]
+    assert [b.text for b in again[0]] == ["😕", "✅ 😐", "🙂", "😊", "🤩"]
 
 
 # --------------------------------------------------------------------------- owner
@@ -239,7 +245,7 @@ def test_pickup_sends_card_one_records_the_ledger_and_hands_the_ask_over(plugin,
     sent = bot.sent[0]
     assert sent["chat_id"] == int(OWNER) and sent["parse_mode"] == "HTML"
     assert "Maya Rao, about Climate finance" in sent["text"]
-    assert [b.text for b in sent["reply_markup"].inline_keyboard[0]] == ["1", "2", "3", "4", "5"]
+    assert [b.text for b in sent["reply_markup"].inline_keyboard[0]] == ["😕", "😐", "🙂", "😊", "🤩"]
     card = ledger(home)["cards"][OPP]
     assert card["message_id"] == 101 and card["fit"] is None and card["planned"] is None and card["injected"] is False
     assert card["nonce"] == plugin.make_nonce(plugin.hash_key(), OPP)
@@ -322,7 +328,7 @@ def test_fit_tap_records_marks_sends_card_two_and_hands_the_event_over(plugin, h
     query = Query(plugin.fit_callback(4, nonce), bot, rows=rows)
     run(handler(plugin, now=T0 + 60)(types.SimpleNamespace(callback_query=query)))
     assert query.answers == ["Recorded: Good fit"]
-    assert [b.text for b in query.edits[0].inline_keyboard[0]] == ["1", "2", "3", "✅ 4", "5"]
+    assert [b.text for b in query.edits[0].inline_keyboard[0]] == ["😕", "😐", "🙂", "✅ 😊", "🤩"]
     card = ledger(home)["cards"][OPP]
     assert card["fit"] == {"value": 4, "revision": 1, "at": plugin.now_iso(T0 + 60)}
     assert card["planned_message_id"] == 102
@@ -360,22 +366,133 @@ def test_a_retap_is_a_revision_and_sends_no_second_card_two(plugin, home, on):
     assert [r["revision"] for r in records(home) if r["event_type"] == "opportunity.rated"] == [1, 2]
 
 
-def test_planned_tap_records_and_injects_the_line_once(plugin, home, on):
+def test_planned_tap_records_and_sends_card_three_once(plugin, home, on):
     ctx = Ctx()
     bot, nonce = tapped(plugin, home, on)
     h = handler(plugin, ctx=ctx, now=T0 + 60)
     run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
-    assert ctx.calls == []
     run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
-    assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: no.", f"agent:main:telegram:dm:{OWNER}")]
+    assert ctx.calls == []  # the agent hears once card 3 resolves
     card = ledger(home)["cards"][OPP]
-    assert card["planned"] == {"value": "no", "revision": 1, "at": plugin.now_iso(T0 + 60)} and card["injected"] is True
+    assert card["planned"] == {"value": "no", "revision": 1, "at": plugin.now_iso(T0 + 60)} and card["injected"] is False
+    assert card["type_message_id"] == 103
+    assert plugin.epoch_from_iso(card["closes_at_type"]) == pytest.approx(T0 + 60 + 24 * 3600)
+    assert bot.sent[2]["text"] == "What kind of connection is this?\nWe&#x27;ll show you if it&#x27;s mutual!"
+    assert [[b.text for b in row] for row in bot.sent[2]["reply_markup"].inline_keyboard] == [["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"], ["🤷 Not sure yet"]]
     planned = [r for r in records(home) if r["event_type"] == "opportunity.pre_planned"]
     assert planned == [{"event_type": "opportunity.pre_planned", "opportunity_id": OPP, "intention_id": None, "card": "planned", "revision": 1,
                         "value": "no", "at": plugin.now_iso(T0 + 60), "message_hash": None}]
-    # A revision of card 2 does not inject again.
+    asks = [r["card"] for r in records(home) if r["event_type"] == "opportunity.rating_asked"]
+    assert asks == ["fit", "planned", "type"]
+    # A revision of card 2 sends no second card 3.
     run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot, message_id=102))))
-    assert len(ctx.calls) == 1
+    assert len(bot.sent) == 3
+
+
+def test_type_tap_records_and_injects_the_line_once(plugin, home, on):
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
+    query = Query(plugin.type_callback("s", nonce), bot, message_id=103)
+    run(h(types.SimpleNamespace(callback_query=query)))
+    assert query.answers == ["Recorded: ❤️‍🔥 Spark"]
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: no; connection: spark. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
+    card = ledger(home)["cards"][OPP]
+    assert card["type"] == {"value": "spark", "revision": 1, "at": plugin.now_iso(T0 + 60)} and card["injected"] is True
+    typed = [r for r in records(home) if r["event_type"] == "opportunity.connection_typed"]
+    assert typed == [{"event_type": "opportunity.connection_typed", "opportunity_id": OPP, "intention_id": None, "card": "type", "revision": 1,
+                      "value": "spark", "at": plugin.now_iso(T0 + 60), "message_hash": None}]
+    # A card-3 tap on card 2's message is refused; a revision does not inject again or send another card.
+    wrong = Query(plugin.type_callback("f", nonce), bot, message_id=102)
+    run(h(types.SimpleNamespace(callback_query=wrong)))
+    assert wrong.answers == [plugin.INVALID]
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.type_callback("c", nonce), bot, message_id=103))))
+    assert ledger(home)["cards"][OPP]["type"]["revision"] == 2
+    assert len(ctx.calls) == 1 and len(bot.sent) == 3
+    # Card 3 closes 24 h after its own send.
+    late = Query(plugin.type_callback("f", nonce), bot, message_id=103)
+    run(handler(plugin, ctx=ctx, now=T0 + 60 + 24 * 3600 + 1)(types.SimpleNamespace(callback_query=late)))
+    assert late.answers == [plugin.CLOSED]
+
+
+@pytest.mark.parametrize("fit", [1, 2])
+def test_a_low_fit_skips_card_three_and_injects_after_card_two(plugin, home, on, fit):
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(fit, nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot, message_id=102))))
+    assert len(bot.sent) == 2  # card 1 and card 2 only
+    card = ledger(home)["cards"][OPP]
+    assert card["type_message_id"] is None and card["injected"] is True
+    assert ctx.calls == [(f"[Rating recorded] Maya Rao: {fit}/5 match fit; already planned: yes; connection: not answered. Reply with exactly: Got it!",
+                          f"agent:main:telegram:dm:{OWNER}")]
+    assert [r["card"] for r in records(home) if r["event_type"] == "opportunity.rating_asked"] == ["fit", "planned"]
+    # Raising card 1 afterwards sends no late card 3.
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(5, nonce), bot))))
+    assert len(bot.sent) == 2 and len(ctx.calls) == 1
+
+
+def test_an_early_answer_never_leaves_the_card_locked(plugin, home, on):
+    """Review #492: "Already recorded" and "closed" used to keep the card in flight forever."""
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, now=T0 + 60)
+    for value, answer in ((3, "Recorded: OK fit"), (3, "Already recorded: OK fit"), (5, "Recorded: Great fit")):
+        query = Query(plugin.fit_callback(value, nonce), bot)
+        run(h(types.SimpleNamespace(callback_query=query)))
+        assert query.answers == [answer]
+    late = Query(plugin.fit_callback(4, nonce), bot)
+    run(handler(plugin, now=T0 + 24 * 3600 + 1)(types.SimpleNamespace(callback_query=late)))
+    assert late.answers == [plugin.CLOSED]
+    assert plugin._in_flight == set()
+
+
+def test_a_claimed_injection_is_not_due_until_the_claim_lapses(plugin, home, on):
+    """Review #492: the tap and the pick-up must not inject one card twice."""
+    card = {"fit": {"value": 4}, "planned": {"value": "no"}, "type": {"value": "spark"}, "injected": False}
+    assert plugin.ready_to_inject(card, T0)
+    card["inject_claimed_at"] = plugin.now_iso(T0)
+    assert not plugin.ready_to_inject(card, T0 + 60)
+    assert plugin.ready_to_inject(card, T0 + plugin.INJECT_CLAIM_S + 1)
+    ctx = Ctx(accept=False)
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(2, nonce), bot))))
+    assert plugin.claim_injection(None, OPP, T0 + 60) is None  # card 2 not answered yet
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
+    # The refused attempt released its claim: the next pick-up may try again.
+    assert "inject_claimed_at" not in ledger(home)["cards"][OPP]
+    assert plugin.claim_injection(None, OPP, T0 + 61) is not None
+    assert plugin.claim_injection(None, OPP, T0 + 62) is None
+
+
+def test_a_card_three_that_cannot_be_sent_settles_on_card_two(plugin, home, on):
+    """Review #492: a failed card 3 send used to hold the agent line for up to 24 h."""
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
+    bot.fail = 1
+    query = Query(plugin.planned_callback("y", nonce), bot, message_id=102)
+    run(h(types.SimpleNamespace(callback_query=query)))
+    assert query.answers == ["Recorded: Yes"]
+    card = ledger(home)["cards"][OPP]
+    assert card["type_send_failed"] is True and card["type_message_id"] is None and card["injected"] is True
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: yes; connection: not answered. Reply with exactly: Got it!",
+                          f"agent:main:telegram:dm:{OWNER}")]
+
+
+def test_the_pickup_injects_when_card_three_is_left_unanswered(plugin, home, on):
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(5, nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot, message_id=102))))
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 - 1) == {}
+    assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 + 1) == {"injected": 1}
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 5/5 match fit; already planned: yes; connection: not answered. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
 
 
 def test_injection_refused_or_erroring_never_blocks_the_tap(plugin, home, on):
@@ -413,7 +530,7 @@ def test_each_card_has_its_own_24_hour_window_then_the_pickup_injects_card_one_a
     assert late.answers == ["This question has closed."]
     assert ledger(home)["cards"][OPP]["planned"] is None
     assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 + 1) == {"injected": 1}
-    assert ctx.calls == [("[Rating recorded] Maya Rao: 3/5 match fit; already planned: not answered.", f"agent:main:telegram:dm:{OWNER}")]
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 3/5 match fit; already planned: not answered; connection: not answered. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
     # An unanswered card is never injected.
     stage(home, plugin, opp=OPP2)
     pickup(plugin, bot, now=T0)
@@ -594,6 +711,7 @@ def test_injection_is_retried_up_to_the_cap_then_closed(plugin, home, on):
     h = handler(plugin, ctx=ctx, now=T0 + 60)
     run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
     run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.type_callback("f", nonce), bot, message_id=103))))
     assert ledger(home)["cards"][OPP]["inject_attempts"] == 1 and ledger(home)["cards"][OPP]["injected"] is False
     assert pickup(plugin, bot, ctx=ctx, now=T0 + 120) == {"inject_refused": 1}
     assert pickup(plugin, bot, ctx=ctx, now=T0 + 180) == {"inject_refused": 1}

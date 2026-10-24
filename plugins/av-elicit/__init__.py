@@ -112,6 +112,8 @@ GATEWAY_STATE_FRESH_S = 10 * 60
 #: A ``.sending`` claim older than this was left by a process that died mid-injection.
 ORPHAN_SENDING_S = 60
 JOIN_TIMEOUT_S = 1.0
+#: Under ``gateway start|restart``: how often the waiter checks for Hermes's gateway marker.
+MARKER_POLL_S = 1.0
 
 TOOL_DESCRIPTION = (
     "Record one step of the ODIN constitution conversation with your human: a question you sent them "
@@ -156,6 +158,11 @@ TOOL_SCHEMA: dict = {
 _CTX: Any = None
 _THREAD: Optional[threading.Thread] = None
 _STOP: Optional[threading.Event] = None
+#: The one thread waiting for the gateway marker under ``gateway start|restart``, and its stop event.
+_WAITER: Optional[threading.Thread] = None
+_WAIT_STOP: Optional[threading.Event] = None
+#: Serialises every start of the loop (register, a reload, the waiter): no loop ever runs twice.
+_LOOP_LOCK = threading.Lock()
 _REGISTERED = False
 _LAST_PROBE = 0.0
 _LAST_CODE: Optional[str] = None
@@ -1286,18 +1293,32 @@ def elicitation_record_tool(args: Any = None, **kwargs: Any) -> str:
 # --------------------------------------------------------------------------- loop and registration
 
 
-def gateway_argv(argv: Optional[list] = None) -> bool:
-    """``hermes gateway run`` (or ``start``) on the command line (av-approval's ``_plugins.gateway_argv``)."""
+def _gateway_subcommand(argv: Optional[list] = None) -> Optional[str]:
+    """The word after ``gateway`` in ``sys.argv[1:5]`` (``""`` for a bare ``hermes gateway``), else None."""
     args = [str(a) for a in (sys.argv if argv is None else argv)][1:5]
     if "gateway" not in args:
-        return False
+        return None
     rest = args[args.index("gateway") + 1:]
-    return not rest or rest[0] in ("run", "start")
+    return rest[0] if rest else ""
+
+
+def gateway_argv(argv: Optional[list] = None) -> bool:
+    """``hermes gateway run`` (or a bare ``hermes gateway``): a command line that always runs the gateway in
+    this process."""
+    return _gateway_subcommand(argv) in ("", "run")
+
+
+def gateway_handoff_argv(argv: Optional[list] = None) -> bool:
+    """``hermes gateway start`` or ``restart``: a command line that may or may not run the gateway here. With
+    no service manager, ``restart`` stops the old gateway and runs one in this process (``run_gateway``); with
+    one, ``start`` and ``restart`` only ask the service manager and exit. Only Hermes's ``_HERMES_GATEWAY=1``,
+    which ``gateway/run.py`` sets when it is imported (after plugins have registered), tells the two apart."""
+    return _gateway_subcommand(argv) in ("start", "restart")
 
 
 def gateway_process(argv: Optional[list] = None) -> bool:
-    """H1: this process is the gateway (its argv, or Hermes's ``_HERMES_GATEWAY=1``). In the TUI or a CLI,
-    ``inject_message`` goes to the local input queue, so the loop must never run there."""
+    """H1: this process is the gateway (``gateway run`` in argv, or Hermes's ``_HERMES_GATEWAY=1``). In the TUI
+    or a CLI, ``inject_message`` goes to the local input queue, so the loop must never run there."""
     return gateway_argv(argv) or os.environ.get(GATEWAY_MARKER) == "1"
 
 
@@ -1326,6 +1347,8 @@ def _on_unload() -> None:
     global _REGISTERED
     if _STOP is not None:
         _STOP.set()
+    if _WAIT_STOP is not None:
+        _WAIT_STOP.set()
     _REGISTERED = False
 
 
@@ -1350,11 +1373,54 @@ def register_record_tool(ctx: Any) -> bool:
 
 def start_loop() -> bool:
     """L1: a fresh stop Event per registration; an old thread is stopped and joined (briefly) first, so a
-    reload never leaves two loops on one event. Only in the gateway process (H1)."""
-    global _THREAD, _STOP
-    if not gateway_process():
+    reload never leaves two loops on one event. Only in the gateway process (H1).
+
+    Under ``hermes gateway start|restart`` the process may become the gateway only after plugins registered
+    (Hermes sets ``_HERMES_GATEWAY=1`` when it imports ``gateway/run.py``): one waiter thread then checks the
+    marker every second and starts the loop the first time it is ``1``. A restart that only hands off to the
+    service manager exits without the marker, so it never runs a loop. Returns True when the loop started now."""
+    with _LOOP_LOCK:
+        if gateway_process():
+            _start_loop_locked()
+            return True
+        if gateway_handoff_argv():
+            _start_waiter_locked()
+            _log("loop_waiting", reason="gateway_marker")
+            return False
         _log("loop_skipped", reason="not_gateway")
         return False
+
+
+def _await_gateway(stop: threading.Event) -> None:
+    """The waiter: start the loop once, the first time Hermes's gateway marker is ``1`` (never when the loop
+    already runs, or after unload or a direct start stopped this waiter)."""
+    while True:
+        if os.environ.get(GATEWAY_MARKER) == "1":
+            with _LOOP_LOCK:
+                if not stop.is_set() and not (_THREAD is not None and _THREAD.is_alive()):
+                    _start_loop_locked()
+                    _log("loop_started", reason="gateway_marker")
+            return
+        if stop.wait(MARKER_POLL_S):
+            return
+
+
+def _start_waiter_locked() -> None:
+    """At most one waiter per process (caller holds ``_LOOP_LOCK``)."""
+    global _WAITER, _WAIT_STOP
+    if _WAITER is not None and _WAITER.is_alive() and _WAIT_STOP is not None and not _WAIT_STOP.is_set():
+        return
+    stop = threading.Event()
+    _WAIT_STOP = stop
+    _WAITER = threading.Thread(target=_await_gateway, args=(stop,), name="av-elicit-wait", daemon=True)
+    _WAITER.start()
+
+
+def _start_loop_locked() -> None:
+    """Start the inject/probe thread (caller holds ``_LOOP_LOCK``); a waiting waiter is stopped first."""
+    global _THREAD, _STOP
+    if _WAIT_STOP is not None:
+        _WAIT_STOP.set()
     old_thread, old_stop = _THREAD, _STOP
     if old_stop is not None:
         old_stop.set()
@@ -1368,7 +1434,6 @@ def start_loop() -> bool:
     _STOP = stop
     _THREAD = threading.Thread(target=_loop, args=(stop,), name="av-elicit", daemon=True)
     _THREAD.start()
-    return True
 
 
 def register(ctx: Any) -> None:
@@ -1397,7 +1462,7 @@ __all__ = [
     "AGE_CAP_S", "FORMS", "KINDS", "NOTICE_PREFIX", "TOOL_NAME", "TOOL_SCHEMA", "TRIGGERS", "Refused",
     "assign_question_no", "ballot_page_marker", "ballot_page_open", "build_record", "busy_reason", "closed_path",
     "closed_time", "confirmation", "current_trigger", "current_window", "current_window_ms", "open_dones", "dm_session_exists", "done_files",
-    "elicitation_record_tool", "gateway_process", "human_messages_since", "human_words", "human_fields", "fit_human_words", "in_quiet_hours", "inject_dir",
+    "elicitation_record_tool", "gateway_argv", "gateway_handoff_argv", "gateway_process", "human_messages_since", "human_words", "human_fields", "fit_human_words", "in_quiet_hours", "inject_dir",
     "inject_pass", "inject_text", "is_closed", "last_answer_time", "last_injected", "late_window_start",
     "load_window_state", "marker_applies", "open_done_times", "parse_stage_name", "probe_pass", "probe_path",
     "probe_payload", "question_trigger", "read_closed_marker", "record_elicitation", "records_dir",
