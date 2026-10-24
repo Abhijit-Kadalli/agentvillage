@@ -465,6 +465,26 @@ def test_a_collab_card_that_cannot_be_sent_settles_on_card_one(plugin, home, on)
     assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; could imagine collaborating: not answered. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
 
 
+def test_a_collab_card_whose_send_timed_out_still_takes_its_tap(plugin, home, on):
+    """Review #497: Telegram may take the message even when the send call fails."""
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    bot.fail = 1
+    run(handler(plugin, ctx=ctx, now=T0 + 60)(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(3, nonce), bot))))
+    query = Query(plugin.collab_callback("y", nonce), bot, message_id=777)
+    run(handler(plugin, ctx=ctx, now=T0 + 120)(types.SimpleNamespace(callback_query=query)))
+    assert query.answers == ["Recorded: Yes"]
+    card = ledger(home)["cards"][OPP]
+    assert card["collab_message_id"] == 777 and card["collab"]["value"] == "yes"
+    assert len(ctx.calls) == 1  # told once, at the failed send
+    assert [r["value"] for r in records(home) if r["event_type"] == "opportunity.collab_interest"] == ["yes"]
+
+
+def test_an_older_releases_answered_planned_card_settles_at_once(plugin):
+    card = {"fit": {"value": 4}, "planned": {"value": "no"}, "injected": False, "closes_at": plugin.now_iso(T0 + 24 * 3600)}
+    assert plugin.ready_to_inject(card, T0 + 60)
+
+
 def test_the_pickup_injects_when_the_collab_card_is_left_unanswered(plugin, home, on):
     ctx = Ctx()
     bot, nonce = tapped(plugin, home, on)

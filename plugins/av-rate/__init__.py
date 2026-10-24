@@ -177,7 +177,7 @@ SEND_ATTEMPTS_MAX = 3
 INJECT_ATTEMPTS_MAX = 3
 #: An injection claimed this recently is in progress elsewhere (the tap or the pick-up); a claim
 #: older than this (a crash mid-injection) lapses and the card is due again.
-INJECT_CLAIM_S = 120
+INJECT_CLAIM_S = 600
 #: A pending (write-ahead) card with no message id after this long is kept as asked, never re-sent.
 PENDING_MAX_AGE_S = 10 * 60
 STAGE_MAX_BYTES = 4096
@@ -847,9 +847,10 @@ def card_message_matches(card: dict, kind: str, message_id: Any) -> bool:
     resolved after a crash) binds on this first tap instead."""
     stored = card.get(MESSAGE_FIELD[kind])
     if stored is None:
-        # Card 1 with no id on file (a pending card resolved after a crash) binds now; a card 2
-        # that was never sent has no message a tap could come from.
-        return kind == CARD_FIT
+        # Card 1 with no id on file (a pending card resolved after a crash) binds now; so does a
+        # card 2 whose send reported failure (a timeout after Telegram took the message). A card 2
+        # never attempted has no message a tap could come from.
+        return kind == CARD_FIT or (kind == CARD_COLLAB and bool(card.get("collab_send_failed")))
     return str(stored) == str(message_id)
 
 
@@ -972,7 +973,8 @@ def ready_to_inject(card: dict, now: float) -> bool:
         return False
     if card.get("collab"):
         return True
-    if card.get("collab_message_id") is None and card.get("collab_send_failed"):
+    # Card 2 could not be sent, or an older release's planned card was answered: card 1 settles it.
+    if card.get("collab_message_id") is None and (card.get("collab_send_failed") or card.get("planned")):
         return True
     return is_closed(card, now) and collab_closed(card, now)
 
@@ -1370,8 +1372,8 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                     return ("message_mismatch", None), False
                 if card_closed(entry, card_kind, now):
                     return ("closed", None), False
-                if card_kind == CARD_FIT and entry.get("message_id") is None:
-                    entry["message_id"] = message_id
+                if card_kind in (CARD_FIT, CARD_COLLAB) and entry.get(MESSAGE_FIELD[card_kind]) is None:
+                    entry[MESSAGE_FIELD[card_kind]] = message_id
                 # The first answer to card 1, whatever the rating, sends card 2.
                 first = card_kind == CARD_FIT and not entry.get("fit")
                 label, _value, revision = record_tap(ledger, opportunity_id, card_kind, choice, now, home)
