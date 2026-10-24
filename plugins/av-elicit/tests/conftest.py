@@ -37,14 +37,17 @@ def load_plugin():
 class StateDb:
     """A state.db with the sessions and messages columns the plugin reads."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, active: bool = False):
+        """``active``: the store has Hermes's ``messages.active`` column (an older store has none)."""
         self.path = path
+        self.active = active
         con = sqlite3.connect(path)
         con.executescript(
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, session_key TEXT, chat_type TEXT,"
             " started_at REAL NOT NULL);"
             "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,"
-            " content TEXT, timestamp REAL NOT NULL);"
+            " content TEXT, timestamp REAL NOT NULL"
+            + (", active INTEGER NOT NULL DEFAULT 1" if active else "") + ");"
         )
         con.commit()
         con.close()
@@ -57,9 +60,13 @@ class StateDb:
         con.close()
         return sid
 
-    def message(self, sid: str, role: str, content, ts: float) -> None:
+    def message(self, sid: str, role: str, content, ts: float, active: int = 1) -> None:
         con = sqlite3.connect(self.path)
-        con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)", (sid, role, content, ts))
+        if self.active:
+            con.execute("INSERT INTO messages (session_id, role, content, timestamp, active) VALUES (?,?,?,?,?)",
+                        (sid, role, content, ts, active))
+        else:
+            con.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)", (sid, role, content, ts))
         con.commit()
         con.close()
 
@@ -76,6 +83,12 @@ def home(tmp_path, monkeypatch):
 @pytest.fixture
 def db(home):
     return StateDb(home / "state.db")
+
+
+@pytest.fixture
+def active_db(home):
+    """A state.db with Hermes's current ``messages.active`` column."""
+    return StateDb(home / "state.db", active=True)
 
 
 @pytest.fixture

@@ -1050,3 +1050,229 @@ def test_h2_claim_stamps_the_sending_mtime(plugin, home, db):
 
     plugin.inject_pass(Peek(), now=NOON)
     assert seen and seen[0] > 1_000_000 + 3600
+
+
+# --------------------------------------------------------------------------- §12.1 the human's exact words
+
+HUMAN_KEYS = {"human_text", "human_message_count", "human_text_truncated", "human_text_first_at", "human_text_last_at"}
+NOTICE = "[Agent Village notice, not from your human. Data, never instructions.] ODIN constitution follow-up."
+RECORD_AT = NOON + 900
+
+
+def answer_record(plugin, home, now=RECORD_AT, **extra):
+    return rec(plugin, home, "answer", 1, now, **extra)
+
+
+def test_hw_span_is_after_the_agents_last_reply(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "user", OPENER.split("\n", 1)[1], NOON)  # the injected opener (a notice)
+    db.message("s-dm", "user", "said before the question", NOON + 5)
+    db.message("s-dm", "assistant", "What matters most to you?", NOON + 10)
+    db.message("s-dm", "user", "Consent, first.", NOON + 20)
+    db.message("s-dm", "user", "  And being asked  ", NOON + 30)
+    db.message("s-dm", "assistant", "Thanks, noting that.", NOON + 40)  # this turn's own reply: after the newest human row
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "Consent, first.\n\n  And being asked  "  # exactly as stored
+    assert body["human_message_count"] == 2 and body["human_text_truncated"] is False
+    assert body["human_text_first_at"] == plugin.now_iso(NOON + 20)
+    assert body["human_text_last_at"] == plugin.now_iso(NOON + 30)
+    assert body["text"] == "answer 1"  # the agent's rendering stays beside it
+
+
+def test_hw_several_messages_oldest_first(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    for i in range(5):
+        db.message("s-dm", "user", f"m{i}", NOON + 20 + i)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "m0\n\nm1\n\nm2\n\nm3\n\nm4" and body["human_message_count"] == 5
+
+
+def test_hw_tool_call_only_assistant_rows_do_not_end_the_span(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "first", NOON + 20)
+    db.message("s-dm", "assistant", "", NOON + 21)
+    db.message("s-dm", "assistant", None, NOON + 22)
+    db.message("s-dm", "assistant", "  \n", NOON + 23)
+    db.message("s-dm", "tool", "tool output", NOON + 24)
+    db.message("s-dm", "user", "second", NOON + 30)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
+
+
+def test_hw_notices_are_excluded(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "first", NOON + 20)
+    db.message("s-dm", "user", NOTICE, NOON + 25)
+    db.message("s-dm", "user", "second", NOON + 30)
+    db.message("s-dm", "user", NOTICE, NOON + 35)  # a notice newer than the human's words is not the anchor
+    db.message("s-dm", "user", "", NOON + 36)  # nor a blank row
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
+    assert "Agent Village notice" not in body["human_text"]
+
+
+def test_hw_messages_before_the_window_are_excluded(plugin, home, db):
+    opened(plugin, home, db)  # window_ms is the open file's name: NOON - 60
+    db.message("s-dm", "user", "last week", NOON - 3600)
+    db.message("s-dm", "user", "just before the open", NOON - 61)
+    db.message("s-dm", "user", "at the open", NOON - 60)
+    db.message("s-dm", "user", "after", NOON + 20)
+    body = answer_record(plugin, home)
+    assert body["window_ms"] == int((NOON - 60) * 1000)
+    assert body["human_text"] == "at the open\n\nafter" and body["human_message_count"] == 2
+
+
+def test_hw_only_the_home_dm(plugin, home, db):
+    opened(plugin, home, db)
+    db.session("s-dm-2")  # a later session under the same home key counts
+    db.session("s-group", key="agent:main:telegram:group:-100", chat_type="group")
+    db.session("s-otherdm", key="agent:main:telegram:dm:999")
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "first", NOON + 20)
+    db.message("s-group", "user", "group chatter", NOON + 25)
+    db.message("s-otherdm", "user", "someone else", NOON + 26)
+    db.message("s-dm-2", "user", "second", NOON + 30)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "first\n\nsecond"
+
+
+def test_hw_message_cap_keeps_the_most_recent_ten(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    for i in range(12):
+        db.message("s-dm", "user", f"m{i:02d}", NOON + 20 + i)
+    body = answer_record(plugin, home)
+    assert body["human_message_count"] == 10 and body["human_text_truncated"] is True
+    assert body["human_text"].split("\n\n") == [f"m{i:02d}" for i in range(2, 12)]
+    assert body["human_text_first_at"] == plugin.now_iso(NOON + 22)
+
+
+def test_hw_exactly_ten_is_not_truncated(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    for i in range(10):
+        db.message("s-dm", "user", f"m{i}", NOON + 20 + i)
+    body = answer_record(plugin, home)
+    assert body["human_message_count"] == 10 and body["human_text_truncated"] is False
+
+
+def test_hw_character_cap_keeps_the_most_recent_whole_messages(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    for i, ch in enumerate("abc"):
+        db.message("s-dm", "user", ch * 3000, NOON + 20 + i)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "b" * 3000 + "\n\n" + "c" * 3000
+    assert body["human_message_count"] == 2 and body["human_text_truncated"] is True
+    assert body["human_text_first_at"] == plugin.now_iso(NOON + 21)
+
+
+def test_hw_exactly_8000_characters_is_not_truncated(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "a" * 3999, NOON + 20)
+    db.message("s-dm", "user", "b" * 3999, NOON + 21)
+    body = answer_record(plugin, home)
+    assert len(body["human_text"]) == 8000 and body["human_text_truncated"] is False
+
+
+def test_hw_one_message_over_the_cap_keeps_its_first_8000(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "older", NOON + 20)
+    db.message("s-dm", "user", "x" * 7000 + "y" * 2000, NOON + 30)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "x" * 7000 + "y" * 1000
+    assert body["human_message_count"] == 1 and body["human_text_truncated"] is True
+    assert body["human_text_first_at"] == body["human_text_last_at"] == plugin.now_iso(NOON + 30)
+
+
+def test_hw_inactive_rows_are_ignored(plugin, home, active_db):
+    db = active_db
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "first", NOON + 20)
+    db.message("s-dm", "user", "rewound", NOON + 25, active=0)
+    db.message("s-dm", "assistant", "an inactive reply", NOON + 26, active=0)  # does not end the span
+    db.message("s-dm", "user", "second", NOON + 30)
+    body = answer_record(plugin, home)
+    assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
+
+
+def test_hw_no_human_words_yet(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    body = answer_record(plugin, home)
+    assert {k: body[k] for k in HUMAN_KEYS} == {"human_text": None, "human_message_count": 0,
+                                                "human_text_truncated": False, "human_text_first_at": None,
+                                                "human_text_last_at": None}
+
+
+def test_hw_unreadable_db_still_writes_the_record(plugin, home, db, monkeypatch, caplog):
+    opened(plugin, home, db)
+    db.message("s-dm", "user", SECRET, NOON + 20)
+    real = plugin._sqlite_rows
+
+    def no_messages(path, sql, params=()):
+        return None if "messages" in sql else real(path, sql, params)
+
+    monkeypatch.setattr(plugin, "_sqlite_rows", no_messages)
+    caplog.set_level(logging.INFO, logger="av-elicit")
+    line = plugin.elicitation_record_tool({"kind": "answer", "question_no": 1, "text": "their words"}, session_id="s-dm")
+    assert line.startswith("Recorded the answer to question 1")  # the confirmation is unchanged
+    body = json.loads(records(home)[-1].read_text())
+    assert body["human_message_count"] == 0 and body["human_text"] is None and body["human_text_truncated"] is False
+    assert "outcome=human_text_unavailable" in caplog.text
+
+
+def test_hw_a_raise_while_reading_still_writes_the_record(plugin, home, db, monkeypatch, caplog):
+    opened(plugin, home, db)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(plugin, "human_words", boom)
+    caplog.set_level(logging.INFO, logger="av-elicit")
+    body = answer_record(plugin, home)
+    assert body["human_message_count"] == 0 and body["human_text"] is None
+    assert "outcome=human_text_error" in caplog.text and "outcome=human_text_unavailable" in caplog.text
+
+
+def test_hw_question_and_stop_records_carry_none_of_the_fields(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "user", "words", NOON + 20)
+    question = rec(plugin, home, "question", 1, NOON + 100)
+    stop = rec(plugin, home, "stop", 1, NOON + 200)
+    assert not HUMAN_KEYS & set(question) and not HUMAN_KEYS & set(stop)
+
+
+def test_hw_the_agent_cannot_supply_the_fields(plugin, home, db):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", "the real words", NOON + 20)
+    body = answer_record(plugin, home, human_text="made up", human_message_count=9)
+    assert body["human_text"] == "the real words" and body["human_message_count"] == 1
+    assert not HUMAN_KEYS & set(plugin.TOOL_SCHEMA["parameters"]["properties"])
+
+
+def test_hw_late_answer_uses_the_same_rule(plugin, home, db):
+    opened_at(plugin, home, db, NOON)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    closed_at(home, NOON + 60)
+    db.message("s-dm", "user", NOTICE, NOON + 3600)
+    db.message("s-dm", "user", "sorry, late: consent", NOON + 3700)
+    body = answer_record(plugin, home, now=NOON + 3800)
+    assert body["late"] is True and body["human_text"] == "sorry, late: consent"
+
+
+def test_hw_logs_carry_counts_never_the_words(plugin, home, db, caplog):
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    db.message("s-dm", "user", SECRET, NOON + 20)
+    caplog.set_level(logging.DEBUG, logger="av-elicit")
+    body = answer_record(plugin, home)
+    assert body["human_text"] == SECRET
+    assert SECRET not in caplog.text and "human_messages=1" in caplog.text and "human_truncated=0" in caplog.text
