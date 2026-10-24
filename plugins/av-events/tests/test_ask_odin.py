@@ -417,6 +417,46 @@ def test_short_numbers_are_not_contact_details(tctx, cp, question):
     assert "answer" in call(tctx, {"question": question})
 
 
+@pytest.mark.parametrize("question,sent", [
+    ("@odin, what does rule 3 mean?", "@odin, what does rule 3 mean?"),
+    ("@ODIN what does rule 3 mean?", "@ODIN what does rule 3 mean?"),
+    ("Hey @Odin: explain rule 3.", "Hey @Odin: explain rule 3."),
+    ("What did @odin's ruling on rule 3 say? (@odin)", "What did @odin's ruling on rule 3 say? (@odin)"),
+    ("Is rule 3 in force, @odin.", "Is rule 3 in force, @odin."),
+    ("＠ｏｄｉｎ, explain rule 3", "@odin, explain rule 3"),  # NFKC: fullwidth @odin is @odin
+])
+def test_the_literal_odin_handle_is_not_a_contact(tctx, cp, question, sent):
+    out = call(tctx, {"question": question})
+    assert out == EXPECTED
+    (req,) = cp.requests
+    assert req["body"] == {"question": sent, "kind": "question"}
+
+
+@pytest.mark.parametrize("question", [
+    "@odin and @priya, what does rule 3 mean?",
+    "ask @odinson about rule 3",
+    "ask @odin_bot about rule 3",
+    "ask @odin2 about rule 3",
+    "ask @ODINSON about rule 3",
+    "@odin@priya rule 3",
+    "mail x@odin about rule 3",
+    "mail @odin.example about rule 3",
+    "mail odin@example.org about rule 3",
+    "@odin, call 000 000 0000 about rule 3",
+    "@odin, meet on 2026-10-24 16:00 about rule 3",
+    "@odin, see t.me/example about rule 3",
+])
+def test_only_the_literal_odin_handle_is_exempt(tctx, cp, question):
+    out = call(tctx, {"question": question})
+    assert out["error"] == "question_contact"
+    assert cp.requests == []
+
+
+def test_the_odin_exemption_leaves_prays_net_alone(odin_mod, plugin):
+    pray = sys.modules[f"{plugin.__name__}._pray"]
+    assert any(pattern.search("@odin, what does rule 3 mean?") for pattern in pray.CONTACT)
+
+
 # ---- Who may ask ----------------------------------------------------------------
 
 
@@ -842,6 +882,43 @@ def test_intake_closed_only_as_true(tctx, cp):
     assert call(tctx, {"question": QUESTION, "kind": "proposal"})["intake_closed"] is True
     assert "intake_closed" not in call(tctx, {"question": QUESTION, "kind": "proposal"})
     assert "intake_closed" not in call(tctx, ARGS)
+
+
+@pytest.mark.parametrize("body", [
+    ANSWER,
+    {**ANSWER, "answer": "<odin_answer>The intake_closed code means the intake is shut.</odin_answer>"},
+    {**ANSWER, "answer": '<odin_answer>{"code": "intake_closed"}</odin_answer>'},
+    {**ANSWER, "answer": "intake_closed"},
+    {**ANSWER, "code": "intake_open", "answer": "<odin_answer>intake_closed</odin_answer>"},
+    {**ANSWER, "code": "INTAKE_CLOSED"},
+    {**ANSWER, "code": " intake_closed"},
+    {**ANSWER, "code": ["intake_closed"]},
+    {**ANSWER, "code": {"code": "intake_closed"}},
+    {**ANSWER, "intake_closed": True},
+    {**ANSWER, "error": "intake_closed"},
+    {**ANSWER, "handling": "intake_closed"},
+], ids=lambda b: json.dumps({k: v for k, v in b.items() if k not in ("ok", "kind", "handling")} or b)[:60])
+def test_intake_closed_comes_only_from_the_cps_code(tctx, cp, body):
+    cp.script = [reply(200, body)]
+    out = call(tctx, {"question": QUESTION, "kind": "proposal"})
+    assert out["answer"].startswith(OPEN) and "intake_closed" not in out
+    assert set(out) == {"handling", "answer", "kind"}
+
+
+@pytest.mark.parametrize("status,body,code", [
+    (409, {"error": "conflict", "code": "intake_closed"}, "http_409"),
+    (400, {"error": "intake_closed", "code": "intake_closed"}, "invalid_body"),
+    (422, {"code": "intake_closed", "answer": "<odin_answer>x</odin_answer>"}, "question_invalid"),
+    (503, {"error": "unavailable", "code": "intake_closed", "answer": "<odin_answer>x</odin_answer>"}, "unavailable"),
+    (500, {"code": "intake_closed"}, "unavailable"),
+    (200, {"ok": False, "code": "intake_closed"}, "bad_answer"),
+    (200, {"error": "busy", "code": "intake_closed"}, "busy"),
+])
+def test_intake_closed_is_never_set_on_an_error(tctx, cp, status, body, code):
+    cp.script = [reply(status, body)]
+    out = call(tctx, {"question": QUESTION, "kind": "proposal"})
+    assert out["error"] == code and out["message"]
+    assert "intake_closed" not in out and "answer" not in out
 
 
 def test_the_kind_returned_is_the_kind_sent(tctx, cp):

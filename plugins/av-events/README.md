@@ -2191,7 +2191,8 @@ constitution and no resident data): `ask_odin({question, kind?})`, a question of
 reads) or `proposal` (a proposed rule ODIN checks against the one-rule shape; with the pool in intake the
 control plane forwards it to the app's intake for review, never merged). A question holding contact details
 (an email, a phone-like run of 9+ digits, an `@handle`, a `t.me/` link: `pray`'s contact net) is refused as
-`question_contact` and nothing is sent. The tool POSTs `{question, kind}` to the control plane's
+`question_contact` and nothing is sent; the literal handle `@odin` (any case, a whole word) names ODIN and is
+not a contact, every other @handle is. The tool POSTs `{question, kind}` to the control plane's
 `/tenants/{TENANT_ID}/odin/ask` with `Authorization: Bearer $EDGEOS_API_KEY` and `X-AV-Session-Kind: dm|cron`,
 exactly as `ask_village`. The control plane runs one tool-free completion on ODIN's box, the question framed
 there as `<resident_agent_question>` data; the tool adds nothing to the question.

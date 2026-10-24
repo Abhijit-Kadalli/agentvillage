@@ -21,10 +21,11 @@ character, lone surrogate, bidi override or other invisible character; else
 `question_invalid`. A question carrying contact details (an email address, a
 phone-like run of 9 or more digits, an `@handle` or a `t.me/` link: `_pray`'s
 contact net) is `question_contact` and nothing is sent: ODIN needs no one's
-contact details and must not be handed any. `kind`: `question` (the default),
-`proposal` (a draft rule for ODIN to check against the one-rule shape) or
-`explain` (how a ruling or a clause reads); else `kind_invalid`. Anything else
-is `invalid_body`.
+contact details and must not be handed any. The literal handle `@odin` (any
+case, a whole word) names ODIN and is not a contact; every other @handle is.
+`kind`: `question` (the default), `proposal` (a draft rule for ODIN to check
+against the one-rule shape) or `explain` (how a ruling or a clause reads);
+else `kind_invalid`. Anything else is `invalid_body`.
 
 **Who may ask.** The same fail-closed helper as `pray` and `ask_village`
 (`_pray.session_kind`): a task positively bound to a direct chat, or the
@@ -124,6 +125,10 @@ JS_SPACE = re.compile("[" + re.escape(_pray.JS_TRIM) + "]+")
 FORBIDDEN = re.compile(r"[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 #: `pray`'s contact net (email, 9+ digit phone-like run, @handle, t.me link). Cheap, not a guarantee.
 CONTACT = _pray.CONTACT
+#: The literal handle `@odin` (any case, a whole word) names ODIN itself, not anyone's contact: it is
+#: blanked before the contact net runs (the question is still sent as written). That token only:
+#: `@odinson`, `@odin_x`, `x@odin`, `@odin.example` and every other @handle are still refused.
+ODIN_HANDLE = re.compile(r"(?<![\w@.])@odin(?![\w@]|\.\w)", re.IGNORECASE)
 
 #: The codes passed through from the cp (ODIN-PHASE1-CP).
 PASSED_CODES = frozenset({
@@ -238,7 +243,8 @@ def normalize_question(raw: Any) -> tuple[Optional[str], Optional[str]]:
     text = JS_SPACE.sub(" ", unicodedata.normalize("NFKC", raw)).strip(" ")
     if not 1 <= len(text) <= QUESTION_MAX or FORBIDDEN.search(text) or any(_pray.invisible(ch) for ch in text):
         return None, "question_invalid"
-    if any(pattern.search(text) for pattern in CONTACT):
+    unaddressed = ODIN_HANDLE.sub(" ", text)
+    if any(pattern.search(unaddressed) for pattern in CONTACT):
         return None, "question_contact"
     return text, None
 

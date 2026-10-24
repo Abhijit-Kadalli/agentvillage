@@ -33,7 +33,7 @@
     "question_max": 500,
     "question_normalize": "NFKC, runs of ECMAScript white space (JS \\s) folded to one space, trimmed",
     "question_refused": "[\\x00-\\x1f\\x7f-\\x9f\\u202a-\\u202e\\u2066-\\u2069] or a lone surrogate, or any character answer_frame drops as invisible",
-    "question_contact": "after normalising: an email address, a phone-like run of 9+ digits (one separator at most between two), an @handle, or t.me/ (av-events _pray.CONTACT)",
+    "question_contact": "after normalising: an email address, a phone-like run of 9+ digits (one separator at most between two), an @handle, or t.me/ (av-events _pray.CONTACT); the literal handle @odin (any case, a whole word: not followed by a word character, @ or a dot and a word character, not preceded by a word character, @ or a dot) is blanked first, so it alone is not a contact",
     "kinds": [
       "question",
       "proposal",
@@ -93,6 +93,25 @@
       "body": {
         "question": "Quiet hours?",
         "kind": "question"
+      }
+    },
+    {
+      "args": {
+        "question": "@odin, what does rule 3 mean?"
+      },
+      "body": {
+        "question": "@odin, what does rule 3 mean?",
+        "kind": "question"
+      }
+    },
+    {
+      "args": {
+        "question": "Does @ODIN read the ruling on shared kitchens?",
+        "kind": "explain"
+      },
+      "body": {
+        "question": "Does @ODIN read the ruling on shared kitchens?",
+        "kind": "explain"
       }
     },
     {
@@ -173,6 +192,12 @@
       },
       {
         "question": "Ask @example_handle about rule 3"
+      },
+      {
+        "question": "@odin and @priya, what does rule 3 mean?"
+      },
+      {
+        "question": "ask @odinson about rule 3"
       },
       {
         "question": "See t.me/example for rule 3"
