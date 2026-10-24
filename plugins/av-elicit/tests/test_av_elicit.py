@@ -867,6 +867,106 @@ def test_l1_each_registration_gets_its_own_stop_event(plugin, monkeypatch):
     assert first.is_set() and plugin._STOP is not first and not plugin._STOP.is_set()
 
 
+# --------------------------------------------------------------------------- gateway start|restart (lazy loop)
+
+
+def _counting_loop(plugin, monkeypatch):
+    """Replace the loop body with one that records each start and runs until stopped."""
+    import threading
+
+    starts = []
+    lock = threading.Lock()
+
+    def loop(stop):
+        with lock:
+            starts.append(stop)
+        stop.wait(5)
+
+    monkeypatch.setattr(plugin, "_loop", loop)
+    monkeypatch.setattr(plugin, "MARKER_POLL_S", 0.01)
+    return starts
+
+
+def _wait_for(predicate, timeout=2.0):
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        _time.sleep(0.01)
+    return bool(predicate())
+
+
+def test_gw_argv_kinds(plugin):
+    assert plugin.gateway_argv(["hermes", "gateway", "run"]) and plugin.gateway_argv(["hermes", "gateway"])
+    assert plugin.gateway_argv(["python", "-m", "hermes_cli.main", "gateway", "run"])
+    for sub in ("start", "restart"):
+        argv = ["hermes", "gateway", sub]
+        assert not plugin.gateway_argv(argv) and plugin.gateway_handoff_argv(argv)
+    for argv in (["hermes", "gateway", "status"], ["hermes", "gateway", "stop"], ["hermes", "chat"], ["hermes"]):
+        assert not plugin.gateway_argv(argv) and not plugin.gateway_handoff_argv(argv)
+
+
+def test_gw_restart_starts_the_loop_once_the_marker_is_set(plugin, home, monkeypatch):
+    """Live rig: a foreground `hermes gateway restart` registers plugins before gateway/run.py sets
+    _HERMES_GATEWAY=1. The loop starts when the marker appears, exactly once."""
+    starts = _counting_loop(plugin, monkeypatch)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr(plugin.sys, "argv", ["hermes", "gateway", "restart"])
+    plugin.register(Ctx())
+    assert plugin._REGISTERED and plugin._THREAD is None and plugin._WAITER.is_alive()
+    assert not _wait_for(lambda: starts, timeout=0.1)
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    assert _wait_for(lambda: len(starts) == 1)
+    assert _wait_for(lambda: not plugin._WAITER.is_alive())
+    assert not _wait_for(lambda: len(starts) > 1, timeout=0.1)
+    assert plugin.start_loop() is True  # a reload with the marker set replaces the loop, never adds one
+    assert _wait_for(lambda: len(starts) == 2) and starts[0].is_set() and not starts[1].is_set()
+    plugin._STOP.set()
+
+
+def test_gw_handoff_without_the_marker_never_runs_a_loop(plugin, home, monkeypatch):
+    """`gateway start`, or a `restart` that only asks the service manager, exits without the marker."""
+    starts = _counting_loop(plugin, monkeypatch)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    for sub in ("start", "restart"):
+        monkeypatch.setattr(plugin.sys, "argv", ["hermes", "gateway", sub])
+        assert plugin.start_loop() is False
+    assert not _wait_for(lambda: starts, timeout=0.2)
+    assert plugin._THREAD is None
+    waiter = plugin._WAITER
+    plugin._on_unload()  # unload stops the waiter: a marker set afterwards starts nothing
+    assert _wait_for(lambda: not waiter.is_alive())
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    assert not _wait_for(lambda: starts, timeout=0.1)
+
+
+def test_gw_one_waiter_and_a_direct_start_stops_it(plugin, home, monkeypatch):
+    starts = _counting_loop(plugin, monkeypatch)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr(plugin.sys, "argv", ["hermes", "gateway", "restart"])
+    plugin.start_loop()
+    first = plugin._WAITER
+    plugin.start_loop()
+    assert plugin._WAITER is first  # never a second waiter
+    monkeypatch.setattr(plugin.sys, "argv", ["hermes", "gateway", "run"])
+    assert plugin.start_loop() is True
+    assert _wait_for(lambda: not first.is_alive())
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    assert _wait_for(lambda: len(starts) == 1) and not _wait_for(lambda: len(starts) > 1, timeout=0.1)
+    plugin._STOP.set()
+
+
+def test_gw_tui_never_waits(plugin, home, monkeypatch):
+    starts = _counting_loop(plugin, monkeypatch)
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    monkeypatch.setattr(plugin.sys, "argv", ["hermes", "chat"])
+    assert plugin.start_loop() is False
+    assert plugin._WAITER is None and plugin._THREAD is None
+    assert not _wait_for(lambda: starts, timeout=0.05)
+
+
 def test_h2_claims_before_injecting_and_unclaims_on_refusal(plugin, home, db):
     db.session("s-dm")
     stage(home, "open", OPENER, NOON - 60)
