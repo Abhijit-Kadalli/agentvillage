@@ -43,7 +43,7 @@
  *     answer is the series' FIRST occurrence (EdgeOS reads `my_rsvp_status` and `attendee_count` of the first
  *     session when no `occurrence_start` is given); with it, `occurrence <ISO>`. stdout stays EdgeOS's JSON.
  *   - `rsvp` without `--occurrence` on a recurring event books nothing: it lists the series' next sessions
- *     (their `start`, from a list of the next RECURRING_WINDOW_DAYS days) on stderr and exits 4, so the agent
+ *     (their `start`, from a list of the next RECURRING_WINDOW_DAYS days) on stderr and exits 5, so the agent
  *     asks the person which session and runs `rsvp` again with that `--occurrence`.
  *
  * The key: `EDGEOS_API_KEY`, `AV_POPUP_ID` and `EDGEOS_API_BASE` come from the environment, else from
@@ -63,7 +63,8 @@
  *   2 not connected: EDGEOS_API_KEY or AV_POPUP_ID not set (the line says which, never a value), or
  *     EDGEOS_API_BASE not an EdgeOS https base;
  *   3 a usage error (the line says which);
- *   4 (rsvp only) a recurring event and no `--occurrence`: nothing was booked; the next sessions are listed.
+ *   5 (rsvp only) a recurring event and no `--occurrence`: nothing was booked; the next sessions are listed
+ *     (not 4, which the profile and directory scripts use for a lapsed sign-in, nor 2, "not connected").
  */
 import { EDGEOS_HOSTS, apiBase, setting } from "./events";
 
@@ -145,6 +146,9 @@ export function validInstant(value: string): boolean {
  * An `--occurrence` value as the instant EdgeOS expects, or null. A `Z` instant (EdgeOS's own `start_time`
  * form) is returned unchanged; one with an offset becomes the same instant in UTC, its fraction kept; a value
  * still percent-encoded as the portal's `?occ=` carries it (`encodeURIComponent(start_time)`) is decoded once.
+ * A year outside 0001-9999 (before or after the shift) is refused. The av-events observer reads the same value
+ * with `script_occurrence` (plugins/av-events/_edgeos.py); `tests/occurrence-parity.json` runs through both,
+ * so the two always name the same occurrence.
  */
 export function occurrenceInstant(raw: string): string | null {
   let value = raw;
@@ -155,12 +159,12 @@ export function occurrenceInstant(raw: string): string | null {
       return null;
     }
   }
-  if (!validInstant(value)) return null;
+  if (!validInstant(value) || Number(value.slice(0, 4)) < 1) return null;
   if (value.endsWith("Z")) return value;
   const m = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::(\d{2})(\.\d{1,6})?)?([+-]\d{2}:\d{2})$/);
   if (!m) return null;
   const at = new Date(`${m[1]}:${m[2] ?? "00"}${m[4]}`);
-  if (Number.isNaN(at.getTime())) return null;
+  if (Number.isNaN(at.getTime()) || at.getUTCFullYear() < 1 || at.getUTCFullYear() > 9999) return null;
   return `${at.toISOString().slice(0, 19)}${m[3] ?? ""}Z`;
 }
 
@@ -389,7 +393,7 @@ async function send(
 
 /**
  * A bare `rsvp` on a recurring event: book nothing, list the series' next sessions (`start` of each, from the
- * events list of the next RECURRING_WINDOW_DAYS days) and exit 4. A session detached from the series is its
+ * events list of the next RECURRING_WINDOW_DAYS days) and exit 5. A session detached from the series is its
  * own event and is booked by its own id without `--occurrence` (EdgeOS refuses one for a non-recurring event).
  */
 async function recurringRefusal(
@@ -432,7 +436,7 @@ async function recurringRefusal(
     : listed
       ? `No session starts in the next ${RECURRING_WINDOW_DAYS} days; list the series with a later window and copy the row's start.`
       : "Its sessions could not be listed; list the series with a window and copy the row's start.";
-  return { code: 4, out: "", err: `${head}\n${tail}\n` };
+  return { code: 5, out: "", err: `${head}\n${tail}\n` };
 }
 
 export async function run(

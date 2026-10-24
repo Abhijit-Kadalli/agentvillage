@@ -327,7 +327,7 @@ describe("recurring events name their occurrence (EDGEOS-OCCURRENCE)", () => {
     expect(occurrenceNote({ ...SERIES, start_time: "next tuesday" }, "")).toContain("(start unknown)");
   });
 
-  test("a bare rsvp on a recurring event books nothing: it lists the next sessions and exits 4", async () => {
+  test("a bare rsvp on a recurring event books nothing: it lists the next sessions and exits 5", async () => {
     const at = (h: number) => new Date(NOW + h * 3_600_000).toISOString().replace(".000Z", "Z");
     const rows = [
       ...Array.from({ length: MAX_SESSIONS + 3 }, (_, i) => ({ id: EVENT, occurrence_id: `${EVENT}_x${i}`, start_time: at(24 * (MAX_SESSIONS + 3 - i)) })),
@@ -336,7 +336,7 @@ describe("recurring events name their occurrence (EDGEOS-OCCURRENCE)", () => {
     ];
     const f = routed(SERIES, { results: rows, paging: {} });
     const r = await run(["rsvp", EVENT], ENV(), f.impl, NOW);
-    expect([r.code, r.out]).toEqual([4, ""]);
+    expect([r.code, r.out]).toEqual([5, ""]);
     expect(f.calls.every((c) => c.init.method === "GET")).toBe(true);
     expect(f.calls.length).toBe(2);
     const list = new URL(f.calls[1].url);
@@ -357,10 +357,10 @@ describe("recurring events name their occurrence (EDGEOS-OCCURRENCE)", () => {
 
   test("a bare rsvp on a recurring event whose sessions cannot be listed still books nothing", async () => {
     const empty = await run(["rsvp", EVENT], ENV(), routed(SERIES).impl, NOW);
-    expect([empty.code, empty.err]).toEqual([4, expect.stringContaining("No session starts in the next 14 days")]);
+    expect([empty.code, empty.err]).toEqual([5, expect.stringContaining("No session starts in the next 14 days")]);
     const noPopup = routed({ ...SERIES, popup_id: null });
     const r = await run(["rsvp", EVENT], { HERMES_HOME: home(), EDGEOS_API_KEY: KEY }, noPopup.impl, NOW);
-    expect([r.code, r.err]).toEqual([4, expect.stringContaining("could not be listed")]);
+    expect([r.code, r.err]).toEqual([5, expect.stringContaining("could not be listed")]);
     expect(noPopup.calls.length).toBe(1);
   });
 
@@ -401,4 +401,33 @@ describe("recurring events name their occurrence (EDGEOS-OCCURRENCE)", () => {
       expect([r.code, r.out, r.err]).toEqual([1, "", `edgeos: EdgeOS answered 400: ${detail}\n`]);
     }
   });
+});
+
+describe("the --occurrence parity table (EDGEOS-OCCURRENCE; the av-events observer runs the same file)", () => {
+  // plugins/av-events/tests/test_edgeos_occurrence_parity.py reads this table through the observer's own
+  // parser (`script_occurrence`, `http_call`): the two sides must name the same occurrence for every input.
+  const table = JSON.parse(readFileSync(join(import.meta.dir, "occurrence-parity.json"), "utf8")) as {
+    cases: { name: string; input: string; sends: string | null }[];
+  };
+
+  test("the table covers the Z, offset, encoded, doubly-encoded and refused forms", () => {
+    const sends = table.cases.map((c) => c.sends);
+    expect(table.cases.length).toBeGreaterThan(30);
+    expect(sends).toContain(null);
+    expect(table.cases.some((c) => c.input.includes("%25") && c.sends === null)).toBe(true);
+    expect(table.cases.some((c) => c.input.includes("%2B05%3A30") && c.sends !== null)).toBe(true);
+  });
+
+  for (const c of table.cases) {
+    test(c.name, () => {
+      expect(occurrenceInstant(c.input)).toBe(c.sends);
+      const parsed = parseArgs(["event", EVENT, "--occurrence", c.input]);
+      if (c.sends === null) {
+        expect("error" in parsed).toBe(true);
+      } else {
+        expect(request(parsed as Args).query.get("occurrence_start")).toBe(c.sends);
+        expect(request(parseArgs(["rsvp", EVENT, "--occurrence", c.input]) as Args).body).toEqual({ occurrence_start: c.sends });
+      }
+    });
+  }
 });
