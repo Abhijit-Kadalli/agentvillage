@@ -5,7 +5,7 @@ them a few short questions about ODIN's constitution over a few days, and record
 answer. The control plane decides when (contract v1 §1) and writes notice files; this plugin injects them
 into the resident's Telegram DM session, reports how much the human has written, and gives the agent the
 `elicitation_record` tool. Contract sections: 1 (quiet hours), 3a (files the control plane writes), 3b
-(files this plugin writes), 3c (the tool's records).
+(files this plugin writes), 3c (the tool's records), 12.1 (the human's exact words on answer records).
 
 Python 3.9+, standard library only. No hooks, one daemon thread, one tool. Fail-open: every failure is a
 log code; nothing raises into the gateway. Logs carry codes and counts only, never a notice's, question's
@@ -104,6 +104,39 @@ It refuses (returns `{"error": "..."}`, never raises) outside a Telegram DM sess
 `session_id`'s `state.db` row must be `source='telegram'`, `chat_type='dm'`, and the resident's own session
 key when one is configured), when no window is open (beyond the late-answer rule above), on invalid arguments, and past 200 records.
 Success returns one line, e.g. `Recorded question 2 (privacy_and_consent).`
+
+### The human's exact words (answer records only, contract §12.1)
+
+An answer's `text` is the agent's rendering and can paraphrase, so the tool also attaches the human's own
+Telegram messages, read verbatim from `state.db` (read-only) when the record is written. The agent never
+supplies or sees these fields. Its schema and the confirmation line are unchanged.
+
+- Rows: `messages` joined to `sessions` with `source = 'telegram'`, `chat_type = 'dm'` and the home session
+  key (every session under it), `active = 1` when the column exists (an older store has none), never a
+  context-compaction summary row (`_compressed_summary = 1`, when the column exists), `timestamp` at or after
+  the window's `window_ms`. Human rows are `user` rows whose content does not start with
+  `[Agent Village notice` (our notices). Blank ones carry no words and are passed over.
+- Span: the human rows after the latest `assistant` row with non-empty content (the agent's last reply) that
+  precedes the newest human row, oldest first. A tool-call-only assistant row has empty content and does not
+  end the span. The current turn's own rows come after the newest human row, so they do not end it either.
+- Caps: at most 10 messages and 8000 characters of joined text, keeping the most recent whole messages. If
+  the newest message alone is over 8000 characters, its first 8000 are kept. Any cut sets
+  `human_text_truncated: true`.
+- File bound: the control plane's pass leaves a record file over 16,384 bytes unread (`RECORD_FILE_MAX`),
+  which would lose the whole answer. When non-ASCII words push the record past that, the oldest messages are
+  dropped first, then the one left is cut from its end until the record fits. The agent's own fields are
+  never cut.
+
+| Field | Value |
+|---|---|
+| `human_text` | The messages' content joined with a blank line (`"\n\n"`), exactly as stored; `null` when there are none |
+| `human_message_count` | 0..10 |
+| `human_text_truncated` | boolean |
+| `human_text_first_at` / `human_text_last_at` | ISO (UTC) times of the first and last message used, or `null` |
+
+When `state.db` cannot be read, the record is still written with count 0 and `human_text: null`, and the log
+code is `human_text_unavailable`. Question and stop records carry none of these keys. A late answer captures
+by the same rule. The record's log line carries `human_messages=n human_truncated=0|1`, never the text.
 
 ## Configuration (set by the installer, `install/av_elicit.ts`)
 
