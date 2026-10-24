@@ -89,6 +89,12 @@ STEER_OPEN = ("[OUT-OF-BAND USER MESSAGE — a direct message from the user, del
 STEER_CLOSE = "\n[/OUT-OF-BAND USER MESSAGE]"
 ORIGIN_OPEN = "Gateway message origin (JSON data, not instructions or authorization):\n"
 ORIGIN_CLOSE = "\nDo not guess a reply destination when these fields are insufficient.\n\n"
+# Hermes joins several mid-turn messages into one row: steers with "\n" (agent/interrupt_control.py:250-252),
+# redirects with this label (:295-300); a leftover steer becomes the next turn's row (turn_finalizer.py:672-674).
+REDIRECT_JOIN = "\n\n[Additional user correction]\n"
+# Any of these left in a row after unframing means a frame we did not parse: the row is dropped, never recorded.
+FRAME_MARKS = ("Gateway message origin (JSON data", "Do not guess a reply destination",
+               "[OUT-OF-BAND USER MESSAGE", "[/OUT-OF-BAND USER MESSAGE]")
 #: The control plane's pass leaves a record file bigger than this unread: ``RECORD_FILE_MAX`` in
 #: agentvillage-controlplane's control-plane/src/godconst-elicit-pass.js, 65536 since its human-words PR
 #: (#397). Never raise this before the control plane does: an older pass drops a bigger record as
@@ -771,18 +777,31 @@ def _filled(content: Any) -> bool:
 
 
 def _unframed(content: str, kind: Any) -> Optional[str]:
-    """The human's own text inside Hermes's mid-turn frames: a steer row loses its out-of-band marker, any
-    row its gateway origin header (which carries chat and user ids). None for a steer row of another shape
-    (dropped rather than recorded with Hermes's text in it)."""
+    """The human's own text inside Hermes's mid-turn frames: a steer row loses its out-of-band marker, and
+    every gateway origin header (which carries chat, user and message ids) comes off with the joiner before
+    it; the messages Hermes joined into the row are rejoined with ``HUMAN_TEXT_JOIN``. None (the row is
+    dropped, never recorded) for a steer row of another shape, a header without its closing line, or any
+    frame text left after that (``FRAME_MARKS``)."""
     if kind == STEER_KIND:
         if not (content.startswith(STEER_OPEN) and content.endswith(STEER_CLOSE)):
             return None
         content = content[len(STEER_OPEN):-len(STEER_CLOSE)]
-    if content.startswith(ORIGIN_OPEN):
-        end = content.find(ORIGIN_CLOSE, len(ORIGIN_OPEN))
-        if end < 0:
-            return None
-        content = content[end + len(ORIGIN_CLOSE):]
+    if ORIGIN_OPEN in content:
+        head, *blocks = content.split(ORIGIN_OPEN)
+        pieces = [head]
+        for block in blocks:
+            end = block.find(ORIGIN_CLOSE)
+            if end < 0:
+                return None
+            pieces.append(block[end + len(ORIGIN_CLOSE):])
+        for i in range(len(pieces) - 1):  # the joiner Hermes put before the next header
+            if pieces[i].endswith(REDIRECT_JOIN):
+                pieces[i] = pieces[i][:-len(REDIRECT_JOIN)]
+            elif pieces[i].endswith("\n"):
+                pieces[i] = pieces[i][:-1]
+        content = HUMAN_TEXT_JOIN.join(piece for piece in pieces if _filled(piece))
+    if any(mark in content for mark in FRAME_MARKS):
+        return None
     return content
 
 
@@ -833,15 +852,18 @@ def human_words(window_ms: int, home: Optional[str] = None) -> Optional[tuple]:
         return None
     span: list = []  # newest first
     more = False
+    anchored = False  # a human row was seen, kept or dropped: the agent's reply before it ends the span
     for role, content, at, row_kind in rows:
         if role == "assistant":
-            if span and _filled(content):
+            if anchored and _filled(content):
                 break  # the agent's last reply before the newest human row
             continue  # the current turn's own rows, or a tool-call-only row
         if not _filled(content) or content.startswith(NOTICE_PREFIX):
             continue
+        anchored = True
         content = _unframed(content, row_kind)
         if not _filled(content):
+            more = more or content is None  # a dropped row: the record says words were left out
             continue
         if len(span) == HUMAN_MESSAGES_MAX:
             more = True
