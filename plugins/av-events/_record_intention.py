@@ -354,13 +354,24 @@ SOURCE_SHORT = (
     "no standing go-ahead in this conversation covers is ambient."
 )
 
+#: V1-LEAK (B): an intention is for this popup only. Plain text (no backticks), and
+#: it names no earlier popup or its town: naming one plants it.
+CURRENT_POPUP_RULE = (
+    "An intention is for this popup, Edge City India (Mandrem, Goa, October 11 to November 1, "
+    "2026), from what the resident said in this popup's conversations or their current profile: "
+    "never carry over a plan, place or preference from an earlier popup, older memory or an "
+    "earlier year. If you are not sure it is current, ask them before you record it; a "
+    "background run, which cannot ask, records nothing it is not sure of."
+)
+
 TOOL_DESCRIPTION = (
     "Record an intention: something the person you work for wants, is looking for, or is open "
-    "to, that meeting people they do not already know could serve. "
+    "to at this popup, that meeting people they do not already know could serve. "
     + SOURCE_SHORT
     + " This is the one front door "
     "for intentions: never call Index create_intent or index_create_intent for a new want. "
-    "This tool publishes to Index in the same call and returns the intention_id to keep for "
+    + CURRENT_POPUP_RULE
+    + " This tool publishes to Index in the same call and returns the intention_id to keep for "
     "later update or withdraw calls. "
     + PUBLISH_RULE
     + " Only then pass publish=false, with reason participant_asked or personal. "
