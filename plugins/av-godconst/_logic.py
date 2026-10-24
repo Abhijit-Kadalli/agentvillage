@@ -345,9 +345,14 @@ def valid_cards(data: Any, statement_ids: Iterable) -> Optional[list]:
     return out
 
 
+FOLLOW_UP = "Follow-up (not your ballot)"
+
+
 def elicit_header_text(n: int, expires_at: Optional[float]) -> str:
     lines = [
-        f"Village constitution: {n} statements to rate (optional)",
+        f"{FOLLOW_UP}: {n} constitution statements to rate (optional)",
+        "",
+        "A research follow-up, separate from the official constitution ballot: these ratings do not change any ballot.",
         "",
         "Tap one button per statement, from 1 to 5. Rate as many as you like; skip any. "
         "Tap again to change a rating. You won't see who wrote each statement.",
@@ -363,13 +368,16 @@ def elicit_header_text(n: int, expires_at: Optional[float]) -> str:
 
 
 def elicit_card_text(position: int, n: int, text: str) -> str:
-    return _esc([f"Statement {position + 1} of {n}", "", text, "",
+    return _esc([f"{FOLLOW_UP} · Statement {position + 1} of {n}", "", text, "",
                  "1 strongly oppose inclusion · 3 neutral · 5 strongly support inclusion"])
 
 
-def elicit_done_text(n: int) -> str:
-    return _esc([f"All {n} statements rated. Thank you: your ratings are saved."])
+def elicit_done_text(rated: int, expires_at: Optional[float]) -> str:
+    lines = [f"{FOLLOW_UP}: all {rated} statements rated. Thank you: your ratings are saved."]
+    if expires_at is not None:
+        lines.append(f"You can tap any card again to change a rating until {ist_label(expires_at)}.")
+    return _esc(lines)
 
 
 def elicit_stopped_text() -> str:
-    return _esc(["Stopped: no more statement cards. The ratings you gave are kept."])
+    return _esc([f"{FOLLOW_UP}: stopped, no more statement cards. The ratings you gave are kept."])
