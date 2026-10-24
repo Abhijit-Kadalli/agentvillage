@@ -398,7 +398,7 @@ def test_type_tap_records_and_injects_the_line_once(plugin, home, on):
     query = Query(plugin.type_callback("s", nonce), bot, message_id=103)
     run(h(types.SimpleNamespace(callback_query=query)))
     assert query.answers == ["Recorded: ❤️‍🔥 Spark"]
-    assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: no; connection: spark (private: never mention it to anyone).", f"agent:main:telegram:dm:{OWNER}")]
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: no; connection: spark. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
     card = ledger(home)["cards"][OPP]
     assert card["type"] == {"value": "spark", "revision": 1, "at": plugin.now_iso(T0 + 60)} and card["injected"] is True
     typed = [r for r in records(home) if r["event_type"] == "opportunity.connection_typed"]
@@ -425,7 +425,7 @@ def test_the_pickup_injects_when_card_three_is_left_unanswered(plugin, home, on)
     run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot, message_id=102))))
     assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 - 1) == {}
     assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 + 1) == {"injected": 1}
-    assert ctx.calls == [("[Rating recorded] Maya Rao: 5/5 match fit; already planned: yes; connection: not answered (private: never mention it to anyone).", f"agent:main:telegram:dm:{OWNER}")]
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 5/5 match fit; already planned: yes; connection: not answered. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
 
 
 def test_injection_refused_or_erroring_never_blocks_the_tap(plugin, home, on):
@@ -463,7 +463,7 @@ def test_each_card_has_its_own_24_hour_window_then_the_pickup_injects_card_one_a
     assert late.answers == ["This question has closed."]
     assert ledger(home)["cards"][OPP]["planned"] is None
     assert pickup(plugin, bot, ctx=ctx, now=T0 + 60 + 24 * 3600 + 1) == {"injected": 1}
-    assert ctx.calls == [("[Rating recorded] Maya Rao: 3/5 match fit; already planned: not answered; connection: not answered (private: never mention it to anyone).", f"agent:main:telegram:dm:{OWNER}")]
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 3/5 match fit; already planned: not answered; connection: not answered. Reply with exactly: Got it!", f"agent:main:telegram:dm:{OWNER}")]
     # An unanswered card is never injected.
     stage(home, plugin, opp=OPP2)
     pickup(plugin, bot, now=T0)

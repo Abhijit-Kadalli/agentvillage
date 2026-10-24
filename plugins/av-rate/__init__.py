@@ -72,8 +72,8 @@ re-sent (``stage_resolved_pending``).
 2. The agent: after card 3 resolves (or when the windows close with card 1 answered) one line
    is injected into the resident's DM session through ``ctx.inject_message`` (gated by Hermes on
    ``plugins.entries.av-rate.allow_gateway_injection: true``): ``[Rating recorded] <Name>: <value>/5
-   match fit; already planned: <yes|no|not answered>; connection: <friend|spark|collab|not answered>
-   (private: never mention it to anyone).`` Hermes persists that turn as
+   match fit; already planned: <yes|no|not answered>; connection: <friend|spark|collab|not answered>.
+   Reply with exactly: Got it!`` Hermes persists that turn as
    ``internal_notification`` (actor ``system`` on the data side). A refusal or an error is retried
    on later pick-ups up to ``INJECT_ATTEMPTS_MAX`` times (Hermes's ``inject_message`` returns one
    boolean for "flag off", "no live gateway" and "scheduling failed", so they cannot be told
@@ -157,6 +157,8 @@ QUESTION_PLANNED = "Did you already plan this meetup?"
 QUESTION_TYPE = "What kind of connection is this?"
 #: Product promise (2026-10-24): a mutual answer is shown to both. Not built yet; see the design note.
 TYPE_MUTUAL_LINE = "We'll show you if it's mutual!"
+#: Ends the injected line: the agent's reply to the three taps is this and nothing else.
+REPLY_INSTRUCTION = "Reply with exactly: Got it!"
 
 ON_SWITCH = "AV_RATE_CARDS"
 SESSION_KEY_ENV = "AV_RATE_SESSION_KEY"
@@ -937,9 +939,9 @@ def injected_line(card: dict) -> str:
     planned_text_value = planned.get("value") if planned.get("value") in ("yes", "no") else "not answered"
     kind = card.get("type") or {}
     type_value = kind.get("value") if kind.get("value") in TYPE_VALUES.values() else "not answered"
-    # The connection type can be romantic interest in a named person: the agent may use it, never repeat it.
+    # The resident has just tapped three cards: the agent's whole answer is a short acknowledgement.
     return (f"[Rating recorded] {card.get('name', 'This person')}: {value}/5 match fit; already planned: {planned_text_value}; "
-            f"connection: {type_value} (private: never mention it to anyone).")
+            f"connection: {type_value}. {REPLY_INSTRUCTION}")
 
 
 def session_key_for(chat_id: str) -> str:
