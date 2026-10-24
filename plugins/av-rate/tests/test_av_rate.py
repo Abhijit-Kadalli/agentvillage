@@ -417,6 +417,24 @@ def test_type_tap_records_and_injects_the_line_once(plugin, home, on):
     assert late.answers == [plugin.CLOSED]
 
 
+@pytest.mark.parametrize("fit", [1, 2])
+def test_a_low_fit_skips_card_three_and_injects_after_card_two(plugin, home, on, fit):
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(fit, nonce), bot))))
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("y", nonce), bot, message_id=102))))
+    assert len(bot.sent) == 2  # card 1 and card 2 only
+    card = ledger(home)["cards"][OPP]
+    assert card["type_message_id"] is None and card["injected"] is True
+    assert ctx.calls == [(f"[Rating recorded] Maya Rao: {fit}/5 match fit; already planned: yes; connection: not answered. Reply with exactly: Got it!",
+                          f"agent:main:telegram:dm:{OWNER}")]
+    assert [r["card"] for r in records(home) if r["event_type"] == "opportunity.rating_asked"] == ["fit", "planned"]
+    # Raising card 1 afterwards sends no late card 3.
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(5, nonce), bot))))
+    assert len(bot.sent) == 2 and len(ctx.calls) == 1
+
+
 def test_the_pickup_injects_when_card_three_is_left_unanswered(plugin, home, on):
     ctx = Ctx()
     bot, nonce = tapped(plugin, home, on)

@@ -9,7 +9,7 @@ sent by the resident's own bot and answered with a tap:
           ``match_fit_5_v1``) and a privacy line.
   Card 2  "Did you already plan this meetup?"  [Yes] [No], sent after card 1's first tap.
   Card 3  "What kind of connection is this?"  [🫂 Friend] [❤️‍🔥 Spark] [🤝 Collab] (scale
-          ``connection_type_v1``), sent after card 2's first tap.
+          ``connection_type_v1``), sent after card 2's first tap when card 1 was 3 or more.
 
 **Who decides what to ask.** The evening trigger (``skills/index-network/scripts/rating-cards.ts``
 through ``proactive.ts``) picks the accepted connections to ask about and writes one stage file per
@@ -69,7 +69,8 @@ re-sent (``stage_resolved_pending``).
    ``opportunity.rating_asked@1`` / ``opportunity.rated@1`` / ``opportunity.pre_planned@1`` with ids
    derived from (type, opportunity, card, revision), so a re-send never doubles a row). This plugin
    never posts to the ingest API itself and never builds an envelope.
-2. The agent: after card 3 resolves (or when the windows close with card 1 answered) one line
+2. The agent: after card 3 resolves, after card 2 when card 3 is not asked (or when the windows
+   close with card 1 answered) one line
    is injected into the resident's DM session through ``ctx.inject_message`` (gated by Hermes on
    ``plugins.entries.av-rate.allow_gateway_injection: true``): ``[Rating recorded] <Name>: <value>/5
    match fit; already planned: <yes|no|not answered>; connection: <friend|spark|collab|not answered>.
@@ -145,6 +146,8 @@ TYPE_SCALE = "connection_type_v1"
 TYPE_CHOICES = ("f", "s", "c")
 TYPE_VALUES = {"f": "friend", "s": "spark", "c": "collab"}
 TYPE_LABELS = {"f": "🫂 Friend", "s": "❤️‍🔥 Spark", "c": "🤝 Collab"}
+#: Card 3 is asked only when card 1 was answered at least this (OK fit or better).
+TYPE_MIN_FIT = 3
 CHECK = "✅ "
 #: DATA-373: every scheduled message ends with its manage line, this card too.
 MANAGE_LINE = "(Evening questions message - you can ask me to stop or manage it)"
@@ -833,6 +836,12 @@ def type_closed(card: dict, now: float) -> bool:
     return closes is None or now > closes
 
 
+def wants_type(card: dict) -> bool:
+    """Card 3 follows card 2 only for a match rated OK fit or better."""
+    value = (card.get("fit") or {}).get("value")
+    return isinstance(value, int) and value >= TYPE_MIN_FIT
+
+
 def card_closed(card: dict, kind: str, now: float) -> bool:
     if kind == CARD_FIT:
         return is_closed(card, now)
@@ -967,10 +976,15 @@ def inject(card: dict, chat_id: str, ctx: Any = None) -> str:
 
 
 def ready_to_inject(card: dict, now: float) -> bool:
-    """After card 3 resolves, or when every window has closed with card 1 answered."""
+    """After card 3 resolves; after card 2 when card 3 is not asked (card 1 below TYPE_MIN_FIT);
+    or when every window has closed with card 1 answered."""
     if card.get("injected") or not card.get("fit"):
         return False
-    return bool(card.get("type")) or (is_closed(card, now) and planned_closed(card, now) and type_closed(card, now))
+    if card.get("type"):
+        return True
+    if card.get("planned") and card.get("type_message_id") is None and not wants_type(card):
+        return True
+    return is_closed(card, now) and planned_closed(card, now) and type_closed(card, now)
 
 
 def _settle_injection(card: dict, code: str) -> bool:
@@ -1354,8 +1368,10 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                     return ("closed", None), False
                 if card_kind == CARD_FIT and entry.get("message_id") is None:
                     entry["message_id"] = message_id
-                # The first answer to card 1 sends card 2; the first answer to card 2 sends card 3.
-                first = card_kind != CARD_TYPE and not entry.get(card_kind)
+                # The first answer to card 1 sends card 2; the first answer to card 2 sends card 3
+                # when card 1 was OK fit or better.
+                first = ((card_kind == CARD_FIT and not entry.get("fit"))
+                         or (card_kind == CARD_PLANNED and not entry.get("planned") and wants_type(entry)))
                 label, _value, revision = record_tap(ledger, opportunity_id, card_kind, choice, now, home)
                 if revision is None:
                     return ("already", (opportunity_id, label, first, None)), False
@@ -1402,7 +1418,7 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
             if first and send_planned:
                 await _send_next(query, message, nonce, opportunity_id, CARD_PLANNED if card_kind == CARD_FIT else CARD_TYPE,
                                  make_button, make_markup, home, now)
-            if card_kind == CARD_TYPE:
+            if card_kind != CARD_FIT:
                 snapshot, why = ledger_update(home, lambda ledger: (dict(ledger["cards"].get(opportunity_id) or {}), False))
                 if why is None and snapshot and ready_to_inject(snapshot, now):
                     code = await asyncio.to_thread(inject, snapshot, str(snapshot.get("chat_id", "")), ctx)
