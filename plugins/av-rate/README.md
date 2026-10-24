@@ -1,8 +1,8 @@
 # av-rate: the suggestion rating cards
 
 Design: agentvillage-data `docs/design/suggestion-rating.md`. Replaces the evening outcome ask's
-text question (overlay #198, "Did you and <name> meet? Reply met, not useful, or missed.") with up to
-three Telegram button cards about the suggestion itself.
+text question (overlay #198, "Did you and <name> meet? Reply met, not useful, or missed.") with two
+Telegram button cards about the suggestion itself.
 
 ## What the resident sees
 
@@ -31,28 +31,23 @@ sees the answer. Where the answer goes beyond the agent's own records is the con
 Card 1 ends with the DATA-373 manage line; the resident stops the cards through the "Evening
 questions" job (below).
 
-A tap answers "Recorded: Good fit", marks the button, and sends card 2:
+A tap answers "Recorded: Good fit", marks the button, and sends card 2, whatever the rating
+(scale `collab_interest_v1`):
 
 ```
-Did you already plan this meetup?
+Could you imagine collaborating with this person 🤝?
 [ Yes ] [ No ]
+[ Not sure yet ]
 ```
 
-When card 1 was 3 or more, card 2's first tap sends card 3 (scale `connection_type_v1`):
-
-```
-What kind of connection is this?
-[ 🫂 Friend ] [ ❤️‍🔥 Spark ] [ 🤝 Collab ]
-[        🤷 Not sure yet         ]
-```
-
-A fit of 1 or 2 ends at card 2.
+The earlier card 2, "Did you already plan this meetup?", is no longer sent; a tap on one still open
+from an older release is recorded as `opportunity.pre_planned` as before.
 
 Each card takes taps for 24 h from its own send; a re-tap with another value is a revision (last
-wins downstream), the same value again answers "Already recorded" and records nothing. After card 3
-(after card 2 when card 3 is not asked), or when every window has closed with card 1 answered, the
-agent gets one line in the DM session:
-`[Rating recorded] Maya Rao: 4/5 match fit; already planned: no; connection: spark. Reply with exactly: Got it!`
+wins downstream), the same value again answers "Already recorded" and records nothing. After card 2
+(or when card 2 could not be sent, or both windows have closed with card 1 answered), the agent gets
+one line in the DM session:
+`[Rating recorded] Maya Rao: 4/5 match fit; could imagine collaborating: yes. Reply with exactly: Got it!`
 and replies "Got it!".
 
 ### The resident's controls
@@ -103,11 +98,11 @@ count (`marts.proactive_messages_per_resident_day`, rule `proactive_ceiling_v2`)
 |---|---|---|
 | Pick the subjects | `skills/index-network/scripts/rating-cards.ts` via `proactive.ts` (the `evening` action, 19:00 IST) | every connection Index lists `accepted`, not on the plugin's ledger, first seen within 3 village days, oldest first, at most 3 per evening; one stage file per subject in `av-events/proactive/rating/` (0600; the cleaned name and headline are the only text) |
 | Send card 1 | this plugin, `pick_up`, every 60 s on the gateway loop (PTB job queue when installed, else an asyncio task) | `AV_RATE_CARDS` on: reads the stages, sends to the home chat, records the card on `av-events/proactive/rated.json`, hands `opportunity.rating_asked` over |
-| Taps | `CallbackQueryHandler` on `^avr:` (`block=False`) | owner only (av-vote's rule), inside the window, revisions; marks the button; first fit tap sends card 2, first planned tap sends card 3 when the fit is 3 or more; hands `opportunity.rated` / `opportunity.pre_planned` / `opportunity.connection_typed` over |
+| Taps | `CallbackQueryHandler` on `^avr:` (`block=False`) | owner only (av-vote's rule), inside the window, revisions; marks the button; first fit tap sends card 2 (any rating); hands `opportunity.rated` / `opportunity.collab_interest` over (`opportunity.pre_planned` for a retired planned card) |
 | Events | `plugins/av-events/_rating_cards.py`, on the flusher's cron-tail cadence | reads `av-events/proactive/rating-events/*.json`, emits with ids derived from (type, opportunity, card, revision), consumes the files |
 | The agent | `ctx.inject_message` | gated by `plugins.entries.av-rate.allow_gateway_injection: true` (the installer writes it) |
 
-`callback_data`: `avr:f:<1-5>:<nonce>`, `avr:p:<y|n>:<nonce>` and `avr:t:<f|s|c|u>:<nonce>`, under 64 bytes. The nonce is 22
+`callback_data`: `avr:f:<1-5>:<nonce>`, `avr:c:<y|n|u>:<nonce>` (and the retired `avr:p:<y|n>:<nonce>`), under 64 bytes. The nonce is 22
 base64url characters of HMAC-SHA256(key, `avr|<opportunity_id>|match_fit_5_v1`) under the tenant's
 av-events key (`av-events/hash.key`), else this plugin's own `av-events/av-rate.key`.
 
@@ -115,10 +110,10 @@ av-events key (`av-events/hash.key`), else this plugin's own `av-events/av-rate.
 
 | Type | Payload | Envelope | Actor |
 |---|---|---|---|
-| `opportunity.rating_asked@1` | `question_version` `match_fit_5_v1` (`connection_type_v1` for card 3), `card` `fit`/`planned`/`type`, `message_hash` (the card text's keyed hash), `window_hours` 24 | `opportunity_id`, `intention_id` (null unless the stage named one) | `system` |
+| `opportunity.rating_asked@1` | `question_version` `match_fit_5_v1` (`collab_interest_v1` for card 2), `card` `fit`/`collab`, `message_hash` (the card text's keyed hash), `window_hours` 24 | `opportunity_id`, `intention_id` (null unless the stage named one) | `system` |
 | `opportunity.rated@1` | `value` 1..5, `scale` `match_fit_5_v1`, `channel` `telegram_button`, `revision`, `rated_at` | same | `participant`, `self_report` |
-| `opportunity.pre_planned@1` | `value` `yes`/`no`, `channel`, `revision`, `answered_at` | same | `participant`, `self_report` |
-| `opportunity.connection_typed@1` | `value` `friend`/`spark`/`collab`/`unsure`, `scale` `connection_type_v1`, `channel`, `revision`, `answered_at` | same | `participant`, `self_report` |
+| `opportunity.collab_interest@1` | `value` `yes`/`no`/`unsure`, `scale` `collab_interest_v1`, `channel`, `revision`, `answered_at` | same | `participant`, `self_report` |
+| `opportunity.pre_planned@1` | `value` `yes`/`no`, `channel`, `revision`, `answered_at` (retired card: older releases only) | same | `participant`, `self_report` |
 
 ### Assumptions built in (the design note's open items, defaults taken)
 
@@ -208,11 +203,9 @@ your own Telegram account paired as the bot's owner (the home channel after `/se
 
 5. Within about 60 s card 1 arrives in your DM with the bot. The log shows
    `av-rate: tenant=local-te outcome=pickup sent=1`. Tap an emoji: the toast says `Recorded: ...`,
-   the button gets a check mark, card 2 arrives (`outcome=recorded`, `outcome=planned_sent`). Tap
-   Yes or No: card 3 arrives when you tapped 🙂 or better (`outcome=type_sent`); tap a type:
-   `outcome=injected` and the bot answers "Got it!" to
-   `[Rating recorded] Maya: 4/5 match fit; already planned: no; connection: spark. ...` (with 😕 or 😐
-   the line goes out on the Yes/No tap instead; with the gate off you see
+   the button gets a check mark, card 2 arrives (`outcome=recorded`, `outcome=collab_sent`). Tap
+   Yes, No or Not sure yet: `outcome=injected` and the bot answers "Got it!" to
+   `[Rating recorded] Maya: 4/5 match fit; could imagine collaborating: yes. ...` (with the gate off you see
    `outcome=inject_refused` and Hermes's own warning naming `allow_gateway_injection`).
 
 6. Check the files and events:
@@ -220,10 +213,10 @@ your own Telegram account paired as the bot's owner (the home channel after `/se
    ```bash
    cat ~/.hermes/av-events/proactive/rated.json | python3 -m json.tool
    ls ~/.hermes/av-events/proactive/rating-events/        # emptied by av-events within a minute
-   grep -h '"opportunity\.\(rating_asked\|rated\|pre_planned\|connection_typed\)"' ~/.hermes/av-events/buffer* 2>/dev/null | head
+   grep -h '"opportunity\.\(rating_asked\|rated\|collab_interest\)"' ~/.hermes/av-events/buffer* 2>/dev/null | head
    ```
 
-   With a local ingest: `select event_type, actor, payload from events.events where event_type like 'opportunity.rat%' or event_type in ('opportunity.pre_planned', 'opportunity.connection_typed') order by occurred_at;`
+   With a local ingest: `select event_type, actor, payload from events.events where event_type like 'opportunity.rat%' or event_type = 'opportunity.collab_interest' order by occurred_at;`
 
 To test the trigger itself instead of `--stage-test`, run the evening action with the plugin's seams
 in `skills/index-network/scripts/tests/rating-cards.test.ts`, or on a box with an Index key:
