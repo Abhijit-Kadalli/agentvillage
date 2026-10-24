@@ -26,7 +26,7 @@ at a time). The same factory starts the pick-up: PTB's job queue every ``PICKUP_
 staged cards and injects the lines that are due.
 
 **The resident's controls** (wave 1). The cards go out under the installer's "Edge — evening
-questions" job and its manage line. Before a send the pick-up checks, exactly as the trigger does:
+questions" job (the card itself carries no manage line, a product call of 2026-10-24). Before a send the pick-up checks, exactly as the trigger does:
 the job is not stopped (Hermes's job record ``cron/jobs.json``: a job named as the evening job
 whose id ``av-events/installed_jobs.json`` lists, ``enabled`` false, ``state`` ``paused`` or a
 ``paused_at`` means stopped; message-labels.ts ``storedJobEnabled``), this is not a team tenant
@@ -47,8 +47,7 @@ valid". The nonce is routing only: the owner check and the message binding autho
 **A tap**: owner only (the box's own resident, in their private chat with the bot: the home
 channel's ids, ``TELEGRAM_HOME_CHANNEL``, or Hermes's approved pairings, exactly av-vote's rule),
 on a message the ledger knows (the tap's chat is the card's ``chat_id`` and its message id is
-card 1's or card 2's); card 1 inside the 24 h window after card 1 went out and card 2 inside its
-own 24 h window after card 2 went out, else "This question has closed." and no event; a re-tap
+card 1's, card 2's or card 3's); each card inside its own 24 h window after it went out, else "This question has closed." and no event; a re-tap
 with another value is a revision (``revision`` 1, 2, ...; last wins downstream), the same value
 again is answered "Already recorded" and records nothing. Answers the tap with "Recorded: <label>",
 marks the chosen button, sends card 2 after card 1's first tap, and hands the event over. Double
@@ -66,7 +65,8 @@ re-sent (``stage_resolved_pending``).
 **Three sinks per tap.**
 1. The events, through av-events (``plugins/av-events/_rating_cards.py`` reads
    ``av-events/proactive/rating-events/*.json`` on the flusher's cadence and emits
-   ``opportunity.rating_asked@1`` / ``opportunity.rated@1`` / ``opportunity.pre_planned@1`` with ids
+   ``opportunity.rating_asked@1`` / ``opportunity.rated@1`` / ``opportunity.pre_planned@1`` /
+   ``opportunity.connection_typed@1`` with ids
    derived from (type, opportunity, card, revision), so a re-send never doubles a row). This plugin
    never posts to the ingest API itself and never builds an envelope.
 2. The agent: after card 3 resolves, after card 2 when card 3 is not asked (or when the windows
@@ -149,7 +149,8 @@ TYPE_LABELS = {"f": "🫂 Friend", "s": "❤️‍🔥 Spark", "c": "🤝 Collab
 #: Card 3 is asked only when card 1 was answered at least this (OK fit or better).
 TYPE_MIN_FIT = 3
 CHECK = "✅ "
-#: DATA-373: every scheduled message ends with its manage line, this card too.
+#: DATA-373's manage line. The rating cards no longer carry it (product call, 2026-10-24); kept for the
+#: tests that pin its absence.
 MANAGE_LINE = "(Evening questions message - you can ask me to stop or manage it)"
 #: True whatever the resident's research consent: the plugin cannot know it, so it promises only
 #: what it can keep (the counterpart never sees the answer; where it goes beyond the agent's own
@@ -179,6 +180,9 @@ STAGE_MAX_AGE_S = 3 * 24 * 3600
 SEND_ATTEMPTS_MAX = 3
 #: An injection that is refused or errors is retried on later pick-ups this many times in all.
 INJECT_ATTEMPTS_MAX = 3
+#: An injection claimed this recently is in progress elsewhere (the tap or the pick-up); a claim
+#: older than this (a crash mid-injection) lapses and the card is due again.
+INJECT_CLAIM_S = 120
 #: A pending (write-ahead) card with no message id after this long is kept as asked, never re-sent.
 PENDING_MAX_AGE_S = 10 * 60
 STAGE_MAX_BYTES = 4096
@@ -981,16 +985,36 @@ def ready_to_inject(card: dict, now: float) -> bool:
     or when every window has closed with card 1 answered."""
     if card.get("injected") or not card.get("fit"):
         return False
+    claimed = epoch_from_iso(card.get("inject_claimed_at"))
+    if claimed is not None and now - claimed < INJECT_CLAIM_S:
+        return False
     if card.get("type"):
         return True
-    if card.get("planned") and card.get("type_message_id") is None and not wants_type(card):
+    # Card 3 not asked (a fit below TYPE_MIN_FIT) or its send failed: card 2 settles the card.
+    if card.get("planned") and card.get("type_message_id") is None and (not wants_type(card) or card.get("type_send_failed")):
         return True
     return is_closed(card, now) and planned_closed(card, now) and type_closed(card, now)
 
 
+def claim_injection(home: Optional[str], opportunity_id: str, now: float) -> Optional[dict]:
+    """A snapshot of the card when it is due, claimed in the same critical section so a tap and the
+    pick-up never inject one card twice; else None."""
+
+    def claim(ledger: dict) -> Any:
+        card = ledger["cards"].get(opportunity_id)
+        if not isinstance(card, dict) or not ready_to_inject(card, now):
+            return None, False
+        card["inject_claimed_at"] = now_iso(now)
+        return dict(card)
+
+    snapshot, why = ledger_update(home, claim)
+    return snapshot if why is None else None
+
+
 def _settle_injection(card: dict, code: str) -> bool:
-    """Record one injection attempt on the card. True when the card is now final (injected, no
-    context, or out of attempts)."""
+    """Record one injection attempt on the card and release its claim. True when the card is now
+    final (injected, no context, or out of attempts)."""
+    card.pop("inject_claimed_at", None)
     if code == "injected" or code == "inject_no_ctx":
         card["injected"] = True
         card["injected_code"] = code
@@ -1221,8 +1245,8 @@ async def _inject_due(home: Optional[str], now: float, count: Callable[..., None
     if why is not None or not due:
         return
     for opportunity_id in due:
-        snapshot, why = ledger_update(home, lambda ledger: (dict(ledger["cards"].get(opportunity_id) or {}), False))
-        if why is not None or not snapshot or not ready_to_inject(snapshot, now):
+        snapshot = claim_injection(home, opportunity_id, now)
+        if not snapshot:
             continue
         code = await asyncio.to_thread(inject, snapshot, str(snapshot.get("chat_id", "")), ctx)
         count(code)
@@ -1328,6 +1352,7 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
             return
         key: Optional[tuple[str, str]] = None
         recorded = False
+        handed_over = False
         try:
             data = getattr(query, "data", None)
             user = _positive_id(getattr(getattr(query, "from_user", None), "id", None))
@@ -1400,13 +1425,16 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
             recorded = True
             _log(RECORDED, revision=revision)
             await _answer(query, f"Recorded: {label}")
+            handed_over = True  # the steps below release the key
         except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
             logger.warning("av-rate: tenant=%s outcome=handler_error", tenant_id8())
             if not recorded:
                 await _answer(query, FAILED)
-            if key is not None:
-                _in_flight.discard(key)
             return
+        finally:
+            # Every early return (closed, already recorded, not this card) frees the card for the next tap.
+            if key is not None and not handed_over:
+                _in_flight.discard(key)
         # Recorded and answered. Each later step fails on its own; none ever answers FAILED.
         try:
             rows = getattr(getattr(message, "reply_markup", None), "inline_keyboard", None)
@@ -1420,8 +1448,8 @@ def make_handler(adapter: Any = None, *, make_button: Callable[[str, str], Any],
                 await _send_next(query, message, nonce, opportunity_id, CARD_PLANNED if card_kind == CARD_FIT else CARD_TYPE,
                                  make_button, make_markup, home, now)
             if card_kind != CARD_FIT:
-                snapshot, why = ledger_update(home, lambda ledger: (dict(ledger["cards"].get(opportunity_id) or {}), False))
-                if why is None and snapshot and ready_to_inject(snapshot, now):
+                snapshot = claim_injection(home, opportunity_id, now)
+                if snapshot:
                     code = await asyncio.to_thread(inject, snapshot, str(snapshot.get("chat_id", "")), ctx)
                     _log(code)
 
@@ -1458,12 +1486,14 @@ async def _send_next(query: Any, message: Any, nonce: str, opportunity_id: str, 
     chat = getattr(getattr(message, "chat", None), "id", None)
     if bot is None or chat is None:
         _log(f"{tag}_no_bot")
+        _note_send_failed(home, opportunity_id, kind)
         return
     try:
         sent = await bot.send_message(chat_id=chat, text=text, parse_mode="HTML",
                                       reply_markup=make_markup(rows(nonce, make_button)))
     except Exception:  # noqa: BLE001
         _log(f"{tag}_send_failed")
+        _note_send_failed(home, opportunity_id, kind)
         return
     sent_id = getattr(sent, "message_id", None)
 
@@ -1483,6 +1513,21 @@ async def _send_next(query: Any, message: Any, nonce: str, opportunity_id: str, 
     if key is not None:
         hand_off(asked_record(opportunity_id, intention_id, kind, keyed_hash(key, text), now_iso(now)), home, now)
     _log(f"{tag}_sent")
+
+
+def _note_send_failed(home: Optional[str], opportunity_id: str, kind: str) -> None:
+    """Card 3 is never retried: a failed send lets card 2's answer settle the card for the agent."""
+    if kind != CARD_TYPE:
+        return
+
+    def note(ledger: dict) -> Any:
+        entry = ledger["cards"].get(opportunity_id)
+        if entry is None:
+            return None, False
+        entry["type_send_failed"] = True
+        return None
+
+    ledger_update(home, note)
 
 
 # --------------------------------------------------------------------------- wiring

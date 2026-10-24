@@ -111,7 +111,7 @@ def valid_record(data: Any) -> Optional[dict]:
         if card != "planned" or value not in ("yes", "no") or message_hash is not None:
             return None
     else:
-        if card != "type" or value not in TYPE_VALUES or message_hash is not None:
+        if card != "type" or not isinstance(value, str) or value not in TYPE_VALUES or message_hash is not None:
             return None
     return {
         "event_type": event_type,

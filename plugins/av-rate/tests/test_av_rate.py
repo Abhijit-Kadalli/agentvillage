@@ -435,6 +435,55 @@ def test_a_low_fit_skips_card_three_and_injects_after_card_two(plugin, home, on,
     assert len(bot.sent) == 2 and len(ctx.calls) == 1
 
 
+def test_an_early_answer_never_leaves_the_card_locked(plugin, home, on):
+    """Review #492: "Already recorded" and "closed" used to keep the card in flight forever."""
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, now=T0 + 60)
+    for value, answer in ((3, "Recorded: OK fit"), (3, "Already recorded: OK fit"), (5, "Recorded: Great fit")):
+        query = Query(plugin.fit_callback(value, nonce), bot)
+        run(h(types.SimpleNamespace(callback_query=query)))
+        assert query.answers == [answer]
+    late = Query(plugin.fit_callback(4, nonce), bot)
+    run(handler(plugin, now=T0 + 24 * 3600 + 1)(types.SimpleNamespace(callback_query=late)))
+    assert late.answers == [plugin.CLOSED]
+    assert plugin._in_flight == set()
+
+
+def test_a_claimed_injection_is_not_due_until_the_claim_lapses(plugin, home, on):
+    """Review #492: the tap and the pick-up must not inject one card twice."""
+    card = {"fit": {"value": 4}, "planned": {"value": "no"}, "type": {"value": "spark"}, "injected": False}
+    assert plugin.ready_to_inject(card, T0)
+    card["inject_claimed_at"] = plugin.now_iso(T0)
+    assert not plugin.ready_to_inject(card, T0 + 60)
+    assert plugin.ready_to_inject(card, T0 + plugin.INJECT_CLAIM_S + 1)
+    ctx = Ctx(accept=False)
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(2, nonce), bot))))
+    assert plugin.claim_injection(None, OPP, T0 + 60) is None  # card 2 not answered yet
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.planned_callback("n", nonce), bot, message_id=102))))
+    # The refused attempt released its claim: the next pick-up may try again.
+    assert "inject_claimed_at" not in ledger(home)["cards"][OPP]
+    assert plugin.claim_injection(None, OPP, T0 + 61) is not None
+    assert plugin.claim_injection(None, OPP, T0 + 62) is None
+
+
+def test_a_card_three_that_cannot_be_sent_settles_on_card_two(plugin, home, on):
+    """Review #492: a failed card 3 send used to hold the agent line for up to 24 h."""
+    ctx = Ctx()
+    bot, nonce = tapped(plugin, home, on)
+    h = handler(plugin, ctx=ctx, now=T0 + 60)
+    run(h(types.SimpleNamespace(callback_query=Query(plugin.fit_callback(4, nonce), bot))))
+    bot.fail = 1
+    query = Query(plugin.planned_callback("y", nonce), bot, message_id=102)
+    run(h(types.SimpleNamespace(callback_query=query)))
+    assert query.answers == ["Recorded: Yes"]
+    card = ledger(home)["cards"][OPP]
+    assert card["type_send_failed"] is True and card["type_message_id"] is None and card["injected"] is True
+    assert ctx.calls == [("[Rating recorded] Maya Rao: 4/5 match fit; already planned: yes; connection: not answered. Reply with exactly: Got it!",
+                          f"agent:main:telegram:dm:{OWNER}")]
+
+
 def test_the_pickup_injects_when_card_three_is_left_unanswered(plugin, home, on):
     ctx = Ctx()
     bot, nonce = tapped(plugin, home, on)
