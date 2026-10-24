@@ -193,8 +193,9 @@ def test_card_one_text_labels_privacy_and_manage_line(plugin):
     assert text.startswith("How good a match was this suggestion from Edge?\nMaya &lt;Rao&gt;, about Climate &amp; finance\n")
     for value, label in plugin.LABELS.items():
         assert f"{plugin.EMOJI[value]}  {label}" in text
-    assert text.endswith("\n\nMaya &lt;Rao&gt; never sees this.")
-    assert "research team" not in text and plugin.MANAGE_LINE not in text
+    assert "\n\nMaya &lt;Rao&gt; never sees this.\n\n" in text
+    assert "research team" not in text
+    assert text.endswith("\n\n" + plugin.MANAGE_LINE)
     assert "about" not in plugin.fit_text("Edge", "Maya", None).splitlines()[1]
 
 
@@ -377,7 +378,7 @@ def test_planned_tap_records_and_sends_card_three_once(plugin, home, on):
     assert card["planned"] == {"value": "no", "revision": 1, "at": plugin.now_iso(T0 + 60)} and card["injected"] is False
     assert card["type_message_id"] == 103
     assert plugin.epoch_from_iso(card["closes_at_type"]) == pytest.approx(T0 + 60 + 24 * 3600)
-    assert bot.sent[2]["text"] == "What kind of connection is this?\nWe&#x27;ll show you if it&#x27;s mutual!"
+    assert bot.sent[2]["text"] == "What kind of connection is this?"
     assert [[b.text for b in row] for row in bot.sent[2]["reply_markup"].inline_keyboard] == [["🫂 Friend", "❤️‍🔥 Spark", "🤝 Collab"], ["🤷 Not sure yet"]]
     planned = [r for r in records(home) if r["event_type"] == "opportunity.pre_planned"]
     assert planned == [{"event_type": "opportunity.pre_planned", "opportunity_id": OPP, "intention_id": None, "card": "planned", "revision": 1,

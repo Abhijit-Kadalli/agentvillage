@@ -26,7 +26,7 @@ at a time). The same factory starts the pick-up: PTB's job queue every ``PICKUP_
 staged cards and injects the lines that are due.
 
 **The resident's controls** (wave 1). The cards go out under the installer's "Edge — evening
-questions" job (the card itself carries no manage line, a product call of 2026-10-24). Before a send the pick-up checks, exactly as the trigger does:
+questions" job and its manage line (on card 1). Before a send the pick-up checks, exactly as the trigger does:
 the job is not stopped (Hermes's job record ``cron/jobs.json``: a job named as the evening job
 whose id ``av-events/installed_jobs.json`` lists, ``enabled`` false, ``state`` ``paused`` or a
 ``paused_at`` means stopped; message-labels.ts ``storedJobEnabled``), this is not a team tenant
@@ -149,8 +149,7 @@ TYPE_LABELS = {"f": "🫂 Friend", "s": "❤️‍🔥 Spark", "c": "🤝 Collab
 #: Card 3 is asked only when card 1 was answered at least this (OK fit or better).
 TYPE_MIN_FIT = 3
 CHECK = "✅ "
-#: DATA-373's manage line. The rating cards no longer carry it (product call, 2026-10-24); kept for the
-#: tests that pin its absence.
+#: DATA-373: every scheduled message ends with its manage line, card 1 too (card 1 opens the set).
 MANAGE_LINE = "(Evening questions message - you can ask me to stop or manage it)"
 #: True whatever the resident's research consent: the plugin cannot know it, so it promises only
 #: what it can keep (the counterpart never sees the answer; where it goes beyond the agent's own
@@ -159,8 +158,6 @@ PRIVACY_LINE = "{name} never sees this."
 QUESTION_FIT = "How good a match was this suggestion from {agent}?"
 QUESTION_PLANNED = "Did you already plan this meetup?"
 QUESTION_TYPE = "What kind of connection is this?"
-#: Product promise (2026-10-24): a mutual answer is shown to both. Not built yet; see the design note.
-TYPE_MUTUAL_LINE = "We'll show you if it's mutual!"
 #: Ends the injected line: the agent's reply to the three taps is this and nothing else.
 REPLY_INSTRUCTION = "Reply with exactly: Got it!"
 
@@ -684,6 +681,8 @@ def fit_text(agent_name: str, name: str, headline: Optional[str]) -> str:
     lines += [html.escape(f"{EMOJI[value]}  {label}") for value, label in LABELS.items()]
     lines.append("")
     lines.append(html.escape(PRIVACY_LINE.format(name=name)))
+    lines.append("")
+    lines.append(html.escape(MANAGE_LINE))
     return "\n".join(lines)
 
 
@@ -692,7 +691,7 @@ def planned_text() -> str:
 
 
 def type_text() -> str:
-    return html.escape(QUESTION_TYPE) + "\n" + html.escape(TYPE_MUTUAL_LINE)
+    return html.escape(QUESTION_TYPE)
 
 
 # --------------------------------------------------------------------------- owner
