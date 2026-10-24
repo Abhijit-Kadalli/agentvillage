@@ -69,6 +69,13 @@ tool calls by design. Hermes has no registration field for that text; av-display
 its argument preview, and adds a preview builder for this tool only, so a `stop` (no `text`) does not fall back
 to the raw name. The tool keeps its name: the agent's notices and the records use it.
 
+The tool is kept out of Hermes's `tool_search` bridge while av-events is loaded: its R-DEON list
+(`plugins/av-events/_village_visible.py`, `VISIBLE_TOOLS`) keeps `elicitation_record` (toolset
+`av-elicit`) in the model's tool list, so the agent calls it directly and the bubble above applies.
+Deferred, it was never called in two live Haiku runs: the agent saved what it learned to memory
+instead, even when the notice named `tool_search` and `tool_call`. `AV_VILLAGE_TOOLS_VISIBLE=0`
+(av-events) defers it again.
+
 `question_no` is assigned by the tool, never taken from the agent (contract 3c amended: an agent numbers
 from its whole DM history, so its opener can come out as 8). A question is 1 + the questions recorded in the
 current window (from `window.json`), so the opener is always 1. An answer or a stop is the window's latest

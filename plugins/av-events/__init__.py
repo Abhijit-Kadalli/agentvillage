@@ -1464,8 +1464,9 @@ def register(ctx) -> None:
         _miniapp_epoch.register_section(ctx)
     except Exception:  # noqa: BLE001 - optional; the hooks are not
         pass
-    # R-DEON: the village tools (ask_village, search_village, query_village, village) stay in the
-    # model's tool list when Hermes's tool_search defers plugin tools (`_village_visible.py`).
+    # R-DEON: the village tools (ask_village, search_village, query_village, village) and
+    # av-elicit's elicitation_record (GC-ELICIT) stay in the model's tool list when Hermes's
+    # tool_search defers plugin tools (`_village_visible.py`).
     # Behind AV_VILLAGE_TOOLS_VISIBLE (default on); a missing seam is one log line.
     try:
         _village_visible.install()
