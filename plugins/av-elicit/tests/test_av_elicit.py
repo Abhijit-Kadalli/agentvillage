@@ -1314,9 +1314,29 @@ def test_hw_compaction_summaries_are_neither_side(plugin, home, active_db):
     assert body["human_text"] == "first\n\nsecond" and body["human_message_count"] == 2
 
 
-def test_hw_record_always_fits_the_control_planes_file_bound(plugin, home, db):
-    """godconst-elicit-pass.js leaves a record file over 16 KiB unread: 8000 three-byte characters would lose
-    the whole answer, so the words are cut further (oldest message first) until the record fits."""
+def test_hw_8000_three_byte_characters_beside_maximal_agent_fields_fit_untruncated(plugin, home, db):
+    """The cp's RECORD_FILE_MAX is 64 KiB (agentvillage-controlplane #397): the whole capped span always fits."""
+    assert plugin.RECORD_FILE_BYTES == 65_536
+    opened(plugin, home, db)
+    db.message("s-dm", "assistant", "Question?", NOON + 10)
+    words = ["अ" * 3999, "ब" * 3999]  # 7998 + the "\n\n" join = 8000 characters, 24000 bytes
+    db.message("s-dm", "user", words[0], NOON + 20)
+    db.message("s-dm", "user", words[1], NOON + 21)
+    ids = [f"s{i:03d}" + "x" * 60 for i in range(plugin.STATEMENT_IDS_MAX)]  # 64 ids of 64 characters
+    body = answer_record(plugin, home, text="स" * plugin.TEXT_MAX, takeaway="क" * plugin.TAKEAWAY_MAX,
+                         category="c" * 64, statement_ids=ids)
+    [path] = records(home)
+    assert path.stat().st_size <= plugin.RECORD_FILE_BYTES
+    assert len(body["human_text"]) == plugin.HUMAN_TEXT_MAX
+    assert body["human_text"] == "\n\n".join(words)
+    assert body["human_message_count"] == 2 and body["human_text_truncated"] is False
+    assert body["statement_ids"] == ids and len(body["text"]) == plugin.TEXT_MAX
+
+
+def test_hw_record_always_fits_the_control_planes_file_bound(plugin, home, db, monkeypatch):
+    """Under a smaller bound (the old cp's 16 KiB), the words are cut further (oldest message first) until the
+    record fits, never the agent's fields."""
+    monkeypatch.setattr(plugin, "RECORD_FILE_BYTES", 16_384)
     opened(plugin, home, db)
     db.message("s-dm", "assistant", "Question?", NOON + 10)
     db.message("s-dm", "user", "अ" * 3000, NOON + 20)

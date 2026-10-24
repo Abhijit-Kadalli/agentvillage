@@ -122,10 +122,11 @@ supplies or sees these fields. Its schema and the confirmation line are unchange
 - Caps: at most 10 messages and 8000 characters of joined text, keeping the most recent whole messages. If
   the newest message alone is over 8000 characters, its first 8000 are kept. Any cut sets
   `human_text_truncated: true`.
-- File bound: the control plane's pass leaves a record file over 16,384 bytes unread (`RECORD_FILE_MAX`),
-  which would lose the whole answer. When non-ASCII words push the record past that, the oldest messages are
-  dropped first, then the one left is cut from its end until the record fits. The agent's own fields are
-  never cut.
+- File bound: the control plane's pass leaves a record file over 65,536 bytes unread (`RECORD_FILE_MAX`,
+  raised from 16,384 in agentvillage-controlplane #397), which would lose the whole answer. 8000 three-byte
+  characters beside the agent's longest fields fit untruncated. If a record would still pass the bound, the
+  oldest messages are dropped first, then the one left is cut from its end until the record fits. The agent's
+  own fields are never cut. `RECORD_FILE_BYTES` must never be raised before the control plane's bound is.
 
 | Field | Value |
 |---|---|
