@@ -701,7 +701,9 @@ def test_each_op_posts_to_its_own_cp_route_and_an_unknown_op_never_falls_back(pl
     (never the rate route)."""
     server = Server(plugin)
     assert plugin.OP_PATHS == {"read": "/tenants/{tenant}/godconst/ballot", "rate": "/tenants/{tenant}/godconst/ballot/rate",
-                               "submit": "/tenants/{tenant}/godconst/ballot/submit"}
+                               "submit": "/tenants/{tenant}/godconst/ballot/submit",
+                               "elicit_read": "/tenants/{tenant}/godconst/elicitation-cards",
+                               "elicit_rate": "/tenants/{tenant}/godconst/elicitation-ratings"}
     server.ratings["s001"] = 3
     assert server("read", {}).code == "open"
     assert server("submit", {"pool_sha256": SHA}).code == "submitted"
