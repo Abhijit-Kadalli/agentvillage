@@ -412,8 +412,10 @@ test("MOSAIC (app#486): Dizko's shape, its context read/write after mini-app.rea
   // restricted with the 12-line namespace declaration, and never an MCP block or a credit.
   const manifest = reviewedManifest("mosaic");
   expect(manifest).toMatchObject({ id: "mosaic", version: "1.0.0", skills: ["mosaic"], operations: [read], homepage: "https://agents.edgecity.live" });
-  expect(Object.keys(manifest).sort()).toEqual(["data", "description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
-  expect([manifest.restricted, manifest.data]).toEqual([true, { context: { maxEntries: 12 } }]);
+  // `staff: true` (v2.1.17, lead L24457): the validator's FIRST_PARTY grant, as the cp's MOSAIC constant says (cp#410).
+  // A catalog mark only: the box projection below keeps id, version, operations and skills.
+  expect(Object.keys(manifest).sort()).toEqual(["data", "description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "staff", "version"]);
+  expect([manifest.restricted, manifest.staff, manifest.data]).toEqual([true, true, { context: { maxEntries: 12 } }]);
   expect([[...manifest.operations], [...reviewedManifest("mosaic", { person: true, context: true }).operations]]).toEqual([[...previous.operations], [...mosaic.operations]]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read"]);
   // Only ever staged on install: not shipped to every box, never a references path.
