@@ -40,6 +40,8 @@ The answer is in `result`:
   Mosaic yet (or has no animal yet); `not_ready` means matching is not on yet;
   `not_open` means Mosaic is not open for them yet. Say so plainly and point
   them to Mosaic in the Agent Village app. Never guess matches.
+- During a withdrawal hold the read answers `available: false` with `reason`
+  `withdrawal_hold`: say so, and that they can try again later.
 - `people` (best first): each has `name`, `animal`, `rank` (1 is their best
   match), `why` (one reason line), `link` (their private pair page), and
   `page` when it is written: `headline`, `could` (something they could do
