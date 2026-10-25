@@ -111,6 +111,13 @@ const TEMPLATE_V1_FIXED_HEADINGS = [
 ];
 // sha256 of ODIN-SOUL-TEMPLATE-v1's text before its "## Village constitution" heading (title + fixed sections).
 const TEMPLATE_V1_FIXED_SHA256 = "444fedd349b764a50beb9544c0d765fa5606e3334d3814f840daf2353cb987b3";
+// The one paragraph added to "Who you are" since v1 (ODIN-PERSONA, Carter via lead L24658, 26 Oct 2026: ODIN is the
+// village's god agent, not a constitution lookup). Every other byte of the fixed sections is still template v1.
+const PERSONA_WHO_PARAGRAPH =
+  "You are not a help desk and not a constitution lookup. You have a view of this village and you give it when asked: " +
+  "what is going well, what is thin, what the rules you were given ask of people and of you. You hold the whole village " +
+  "in mind, residents and their agents together, and you say what you see, plainly and with care. The village facts you " +
+  "are given tell you where you are and who made you; use them as yours.\n\n";
 
 test("installed ODIN SOUL.md carries every template-v1 fixed heading exactly once, in order, then the constitution", () => {
   const constitution = "<!-- constitution: v1 -->\n\n### Care and wellbeing\n\n1. rule one\n\n### Limits\n\n2. rule two";
@@ -128,14 +135,17 @@ test("installed ODIN SOUL.md carries every template-v1 fixed heading exactly onc
   expect(soul.endsWith(`## Village constitution\n\n${constitution}\n`)).toBe(true);
 });
 
-test("ODIN SOUL.md's fixed sections are template v1 byte for byte (only 'How you speak' sits between them and the constitution)", () => {
+test("ODIN SOUL.md's fixed sections are template v1 byte for byte plus the persona paragraph (only 'How you speak' sits between them and the constitution)", () => {
   const soul = readFileSync(join(WORKSPACE, "odin/SOUL.md"), "utf8");
   const before = soul.slice(0, soul.indexOf("## Village constitution\n"));
   const speak = before.indexOf("## How you speak\n");
   expect(speak).toBeGreaterThan(0);
   expect(before.slice(speak).match(/^## /gm)).toHaveLength(1); // the overlay's own section is the last before the slot
   const fixed = before.slice(0, speak);
-  expect(createHash("sha256").update(fixed).digest("hex")).toBe(TEMPLATE_V1_FIXED_SHA256);
+  expect(fixed.split(PERSONA_WHO_PARAGRAPH)).toHaveLength(2); // exactly once
+  expect(fixed.indexOf(PERSONA_WHO_PARAGRAPH)).toBeLessThan(fixed.indexOf("## Safety and harm floor\n"));
+  expect(fixed.indexOf(PERSONA_WHO_PARAGRAPH)).toBeGreaterThan(fixed.indexOf("## Who you are\n"));
+  expect(createHash("sha256").update(fixed.replace(PERSONA_WHO_PARAGRAPH, "")).digest("hex")).toBe(TEMPLATE_V1_FIXED_SHA256);
 });
 
 test("reset removes the same files after an odin install and leaves constitution.md", () => {
