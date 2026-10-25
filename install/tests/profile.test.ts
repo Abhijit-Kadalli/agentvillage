@@ -7,9 +7,8 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const home = mkdtempSync(join(tmpdir(), "agentvillage-profile-"));
-process.env.HERMES_HOME = home; // before reset.ts reads it
+process.env.HERMES_HOME = home; // before profile.ts reads it
 const { installProfileIdentity, resolveProfile, renderOdinSoul, NO_CONSTITUTION_LINE } = await import("../profile");
-const { removeProjectFiles, removeSoulFile } = await import("../reset");
 
 const WORKSPACE = join(dirname(fileURLToPath(import.meta.url)), "../../workspace");
 const read = (name: string) => readFileSync(join(home, name), "utf8");
@@ -151,8 +150,15 @@ test("ODIN SOUL.md's fixed sections are template v1 byte for byte plus the perso
 test("reset removes the same files after an odin install and leaves constitution.md", () => {
   writeFileSync(join(home, "constitution.md"), "Article 1.");
   installProfileIdentity(WORKSPACE, home, "odin");
-  removeSoulFile();
-  removeProjectFiles(false);
+  // reset.ts in its own process with HERMES_HOME = this file's home: in a whole `bun test install/tests` run the
+  // module may already be loaded by another file (its TARGET_HOME fixed to that file's home) and another file may
+  // have moved HERMES_HOME, so an in-process call can miss this home (seen in CI, order-dependent, 25 Oct 2026).
+  const reset = join(dirname(fileURLToPath(import.meta.url)), "../reset.ts");
+  const run = spawnSync(process.execPath, ["-e", `import(${JSON.stringify(reset)}).then((r) => { r.removeSoulFile(); r.removeProjectFiles(false); })`], {
+    env: { ...process.env, HERMES_HOME: home },
+    encoding: "utf8",
+  });
+  expect(run.status).toBe(0);
   expect(existsSync(join(home, "SOUL.md"))).toBe(false);
   expect(existsSync(join(home, "AGENTS.md"))).toBe(false);
   expect(existsSync(join(home, "constitution.md"))).toBe(true);
