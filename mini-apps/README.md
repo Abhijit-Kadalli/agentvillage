@@ -497,6 +497,40 @@ replies are exact-thread reservations and an empty newly enabled pair can receiv
 one fixed introduction per epoch. All writes share a two-per-UTC-day budget. The job does not
 deliver pair content to the resident or copy it into other surfaces.
 
+## Edge Nexus: the village knowledge graph
+
+The [v2 manifest](nexus/manifest.json) and the native bundle allowlist
+(`_mini_apps.py` `NEXUS`, exact equality, in this order) expose eleven named
+operations, each mapped by the app to one Edge Nexus MCP tool: eight reads
+(`nexus.initialize`, `.search`, `.get`, `.source`, `.schema`, `.history`,
+`.changes_since`, `.proposals`) and three writes (`nexus.submit_source`,
+`nexus.write`, `nexus.propose`). `mini-app.read` refuses `nexus`.
+
+There is no per-resident sign-in. The service is `app-token`: the app server
+holds one token for Edge Nexus (`MINI_APP_NEXUS_TOKEN`) and sends the owner's
+Telegram user id (from pairing), and their current username when known, with
+each call; Edge Nexus acts as that resident. The id is `nexus` because the
+validator reserves `edge-`.
+
+Input rides the existing `arguments` object and is checked in
+`plugins/village-bridge/_nexus.py` against Edge Nexus's own tool schemas (the
+manifest's `input` schemas say the same): exact keys, uuids, bounds and the
+operation's request budget, plus the agent rules Edge Nexus enforces (a
+`confidence` and `rationale` on every graph op, never `how: "confirmed"`).
+Anything else is `invalid_nexus_arguments` before transport. The three writes
+also need the verified gate (`gate_verified`, zzz's path), no manual grant.
+Results are scrubbed (hidden characters become spaces, so source offsets hold)
+and framed as untrusted; v2's generic codes (`not_connected`, `not_found`,
+`not_authorized`, `unavailable`, `invalid_arguments`, `rate_limited`) map to
+Edge Nexus-only text, for these operations only.
+
+The writes are `write`, not `needs-card`: each is one recorded, revertable
+commit or proposal under the owner's name, not a payment. Overlay first, then
+the CP catalog row and sandbox allowlist, then the app routes, then Edge City
+staff set `MINI_APP_NEXUS_TOKEN`. The app-server contract is in
+[nexus/README.md](nexus/README.md); reference app-server code is in
+[docs/reference/nexus/](../docs/reference/nexus/app-server.ts).
+
 ## Slopfolio: connected private drafts
 
 The [reviewed manifest](slopfolio/manifest.json) and native bundle allowlist

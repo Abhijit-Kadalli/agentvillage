@@ -60,7 +60,7 @@ test("reviewed skills are optional, disk-only staging has deterministic receipts
   expect(receipt).toEqual(reconcileMiniApps(all, root));
   expect(receipt).toEqual(reconcileMiniApps(all, root, undefined, true));
   expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(all)).digest("hex"));
-  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md", "skills/zzzbot/SKILL.md", "skills/slopfolio/SKILL.md", "skills/mosaic/SKILL.md", "skills/zzzbot/scripts/zzz_managed_runner.py", "skills/zzzbot/prompts/participate.md"]);
+  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md", "skills/zzzbot/SKILL.md", "skills/slopfolio/SKILL.md", "skills/mosaic/SKILL.md", "skills/nexus/SKILL.md", "skills/zzzbot/scripts/zzz_managed_runner.py", "skills/zzzbot/prompts/participate.md"]);
   expect(receipt).not.toHaveProperty("active");
   writeFileSync(join(root, "skills", "gold-stars", "SKILL.md"), "tampered");
   expect(() => reconcileMiniApps(all, root, undefined, true)).toThrow("mini_apps_skill_mismatch");
@@ -87,6 +87,7 @@ test("uninstall revokes the projection and removes only exact managed files, nev
   expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "slopfolio", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "mosaic", "SKILL.md"))).toBe(false);
+  expect(existsSync(join(root, "skills", "nexus", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
   expect(reconcileMiniApps({ version: 1, apps: [] }, root, undefined, true).apps).toEqual([]);
 });
@@ -110,6 +111,7 @@ test("the helper never removes an installer-shipped skill, for any desired set",
     expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(second.some((a) => a.id === "zzzbot"));
     expect(existsSync(join(root, "skills", "slopfolio", "SKILL.md"))).toBe(second.some((a) => a.id === "slopfolio"));
     expect(existsSync(join(root, "skills", "mosaic", "SKILL.md"))).toBe(second.some((a) => a.id === "mosaic"));
+    expect(existsSync(join(root, "skills", "nexus", "SKILL.md"))).toBe(second.some((a) => a.id === "nexus"));
   }
 });
 
@@ -281,6 +283,49 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   expect(existsSync(join(root, "skills", "zzzbot", "prompts", "participate.md"))).toBe(false);
   reconcileMiniApps({ version: 1, apps: [] }, root);
   expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(false);
+});
+
+test("Edge Nexus manifest and native allowlist pin exactly its eleven named operations and stage the skill", () => {
+  const app = REVIEWED_MINI_APPS.find(app => app.id === "nexus")!;
+  const reads = ["nexus.initialize", "nexus.search", "nexus.get", "nexus.source", "nexus.schema", "nexus.history", "nexus.changes_since", "nexus.proposals"];
+  const writes = ["nexus.submit_source", "nexus.write", "nexus.propose"];
+  const manifest = reviewedManifest("nexus");
+  expect(app).toEqual({ id: "nexus", version: "1.0.0", operations: [...reads, ...writes], skills: ["nexus"] });
+  expect(manifest).toMatchObject({ ...app, homepage: "https://nexus.positivesumexperiments.com/" });
+  // app-token: no per-resident OAuth (`auth`), no relay (`mcp`); sandbox, so restricted.
+  expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
+  expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read", "action"]);
+  expect(manifest).not.toHaveProperty("mcp");
+  expect(manifest).not.toHaveProperty("auth");
+  const v2 = JSON.parse(readFileSync(join(REPO, "mini-apps", "nexus", "manifest.json"), "utf8"));
+  expect(v2.service).toEqual({ kind: "mcp", baseUrl: "https://nexus.positivesumexperiments.com/api/mcp", auth: { mode: "app-token", secretRef: "MINI_APP_NEXUS_TOKEN" } });
+  expect(v2.operations.map((op: { class: string }) => op.class)).toEqual([...reads.map(() => "read"), ...writes.map(() => "write")]);
+  expect(v2.operations.map((op: { target: { tool: string } }) => op.target.tool)).toEqual([...reads, ...writes].map(name => name.replace(".", "_")));
+  expect(EDGE_SKILL_NAMES).not.toContain("nexus");
+  const projection = { version: 1, apps: [app] };
+  expect(validateProjection(projection)).toEqual(projection);
+  for (const changed of [
+    { ...app, operations: [...app.operations, "nexus.jobs_claim"] },
+    { ...app, operations: [...app.operations].reverse() },
+    { ...app, operations: ["mini-app.read"] },
+    { ...app, operations: reads },
+    { ...app, skills: ["other"] },
+    { ...app, version: "1.0.1" },
+  ]) expect(() => validateProjection({ version: 1, apps: [changed] })).toThrow("mini_apps_unreviewed_bundle");
+  const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
+  expect(plugin).toContain('NEXUS_WRITE_OPERATIONS = ("nexus.submit_source", "nexus.write", "nexus.propose")');
+  const root = installedBox();
+  const receipt = reconcileMiniApps(projection, root);
+  expect(receipt.files.map(file => file.path)).toEqual(["skills/nexus/SKILL.md"]);
+  expect(readFileSync(join(root, "skills", "nexus", "SKILL.md"))).toEqual(readFileSync(join(REPO, "skills", "nexus", "SKILL.md")));
+  expect(statSync(join(root, "skills", "nexus", "SKILL.md")).mode & 0o777).toBe(0o600);
+  expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(receipt);
+  // The skill fetches nothing remote and never asks for a token.
+  const skill = readFileSync(join(REPO, "skills", "nexus", "SKILL.md"), "utf8");
+  expect(skill).not.toMatch(/prompt\.txt|\.well-known|\/api\/mcp|curl|wget/);
+  expect(skill).toMatch(/^name: nexus$/m);
+  reconcileMiniApps({ version: 1, apps: [] }, root);
+  expect(existsSync(join(root, "skills", "nexus", "SKILL.md"))).toBe(false);
 });
 
 test("ov#441 S1: managed ZZZ participation is the cp projection's zzzbot + zzz-bridge pair and nothing else", () => {

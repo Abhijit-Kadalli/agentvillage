@@ -1446,6 +1446,27 @@ class BridgeTest(unittest.TestCase):
     self.nexus_home(entry=changed)
     # A planted or reordered list refuses the whole projection, Gold Stars included.
     self.assertFalse(mini.installed(home,'nexus','nexus.search'));self.assertFalse(mini.installed(home,'gold-stars','gold-stars.quota'))
+ def test_nexus_box_checks_name_the_manifest_operations_keys_and_budgets(self):
+  # The box module and the reviewed v2 manifest say the same thing: the order, tool, class, budget, and each
+  # input's keys and required keys (the graph ops one branch per `op`).
+  nexus=sys.modules['village_bridge._nexus']
+  manifest=json.loads((Path(__file__).parents[3]/'mini-apps'/'nexus'/'manifest.json').read_text())
+  self.assertEqual([o['name'] for o in manifest['operations']],mini.NEXUS['operations'])
+  self.assertEqual(manifest['version'],mini.NEXUS['version']);self.assertEqual([manifest['skills'][0]['name']],mini.NEXUS['skills'])
+  for o in manifest['operations']:
+   with self.subTest(op=o['name']):
+    required,checks=nexus.NEXUS_INPUTS[o['name']]
+    self.assertEqual(o['target']['tool'],nexus.NEXUS_TOOLS[o['name']])
+    self.assertEqual(o['class'],'write' if o['name'] in mini.NEXUS_WRITE_OPERATIONS else 'read')
+    self.assertEqual(o['maxRequestBytes'],nexus.NEXUS_MAX_REQUEST[o['name']])
+    self.assertEqual(set(o['input']['properties']),set(checks));self.assertEqual(set(o['input'].get('required',[])),set(required))
+    self.assertIs(o['input']['additionalProperties'],False)
+  ops=next(o for o in manifest['operations'] if o['name']=='nexus.write')['input']['properties']['ops']['items']['oneOf']
+  self.assertEqual({b['properties']['op']['const'] for b in ops},set(nexus.GRAPH_OPS))
+  for branch in ops:
+   name=branch['properties']['op']['const'];required,fields=nexus.GRAPH_OPS[name]
+   with self.subTest(graph_op=name):
+    self.assertEqual(set(branch['properties']),{'op',*fields,*nexus.META});self.assertEqual(set(branch['required']),{'op',*required})
  def test_nexus_operations_refused_without_the_install(self):
   with self.gate():
    for op in mini.NEXUS['operations']:
