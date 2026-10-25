@@ -31,6 +31,12 @@ DAY = datetime(2026, 10, 24, 5, 0, tzinfo=timezone.utc).timestamp()  # 10:30 IST
 NIGHT = datetime(2026, 10, 24, 18, 0, tzinfo=timezone.utc).timestamp()  # 23:30 IST
 LATE = datetime(2026, 10, 24, 17, 30, tzinfo=timezone.utc).timestamp()  # 23:00 IST
 MORNING = datetime(2026, 10, 25, 2, 30, tzinfo=timezone.utc).timestamp()  # 08:00 IST, before the pool closes (10:30 IST)
+# The close instant is far in the future: the page-open marker is written from the wall clock (time.time()), so a
+# fixed close in the near past turned these tests red (2026-10-25 05:00Z). 25 Oct 2099 is a Sunday at 10:30 IST, so
+# the expected "until 10:30 IST, Sun 25 Oct." texts are the same.
+CLOSES = datetime(2099, 10, 25, 5, 0, tzinfo=timezone.utc).timestamp()
+CLOSES_ISO = "2099-10-25T05:00:00.000Z"
+AFTER_CLOSE = CLOSES + 60
 TENANT = "0190a5b2-aaaa-4222-8333-444455556666"
 KEY = "ballot_key_box"
 #: The control plane's routes (index.js: POST /tenants/:id/godconst/ballot[/rate|/submit]) and each op's exact body
@@ -115,7 +121,7 @@ class Server:
     def view(self):
         return {
             "state": self.state,
-            "pool": {"id": POOL, "sha256": SHA, "rating_closes_at": "2026-10-25T05:00:00.000Z", "n_statements": len(self.order), "order_rule": "godconst-order-v2"},
+            "pool": {"id": POOL, "sha256": SHA, "rating_closes_at": CLOSES_ISO, "n_statements": len(self.order), "order_rule": "godconst-order-v2"},
             "categories": [{"id": "care", "label": "Care"}],
             "statements": [{"id": sid, "category": "care", "text": f"{TEXT} {sid}", "author_type": "odin"} for sid in self.order] if self.state == "open" else [],
             "ratings": dict(self.ratings),
@@ -603,7 +609,7 @@ def test_the_window_closing_forgets_the_ballot(plugin, home):
     bot, server = Bot(), Server(plugin)
     start(plugin, bot, server)
     card = bot.cards()[0]
-    after = datetime(2026, 10, 25, 5, 1, tzinfo=timezone.utc).timestamp()
+    after = AFTER_CLOSE
     assert tap(plugin, bot, server, card, 3, clock=after).answers == ["Rating has closed."]
     assert json.loads(ledger_text(home))["ended"]["status"] == "closed"
     assert all(op != "rate" for op, _ in server.calls)
@@ -662,7 +668,7 @@ def test_the_marker_goes_on_submit_window_close_and_withdrawal(plugin, home):
             yes = bot.sent[-1].reply_markup.inline_keyboard[0][0].callback_data
             tap(plugin, bot, server, bot.sent[-1], 1, data=yes)
         elif ending == "window":
-            after = datetime(2026, 10, 25, 5, 1, tzinfo=timezone.utc).timestamp()
+            after = AFTER_CLOSE
             assert run(plugin.pass_once(bot, None, make_button, make_markup, now=after, reader=server)) == "window_over"
         else:
             server.refuse = (403, "consent_withdrawn")
@@ -682,7 +688,7 @@ def test_each_page_touches_the_marker_and_start_up_removes_a_stale_one(plugin, h
     # Start-up: an open page inside the window keeps it ...
     assert plugin.reconcile_page_open(now=DAY + 100) is True and os.path.exists(marker)
     # ... the window over, no session, or an unreadable ledger removes it.
-    after = datetime(2026, 10, 25, 5, 1, tzinfo=timezone.utc).timestamp()
+    after = AFTER_CLOSE
     assert plugin.reconcile_page_open(now=after) is False and not os.path.exists(marker)
     plugin.set_page_open(True)
     plugin.save_ledger({"v": 1, "session": None})

@@ -30,7 +30,12 @@ KEY = "ballot_key_box"
 EID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 EID2 = "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 POOL = "11111111-2222-4333-8444-555555555555"
-EXPIRES_MS = int((DAY + 24 * 3600) * 1000)
+# The close instant is far in the future: the page-open marker is written from the wall clock (time.time()), so a
+# fixed close in the near past turned these tests red (2026-10-25 05:00Z). 25 Oct 2099 is a Sunday at 10:30 IST, so
+# the expected "until 10:30 IST, Sun 25 Oct." texts are the same.
+CLOSES = datetime(2099, 10, 25, 5, 0, tzinfo=timezone.utc).timestamp()
+CLOSES_ISO = "2099-10-25T05:00:00.000Z"
+EXPIRES_MS = int(CLOSES * 1000)
 READ = f"/tenants/{TENANT}/godconst/elicitation-cards"
 RATE = f"/tenants/{TENANT}/godconst/elicitation-ratings"
 SESSION_KEYS = {"elicitation_id", "nonce", "order", "expires_ms", "status", "started_at", "header_message_id", "page",
@@ -262,7 +267,7 @@ def open_ballot_page(P, home, status="active"):
     """A ballot ledger with a sent, unrated card inside its window (the ballot mode's open page)."""
     P.save_ledger({"v": 1, "session": {
         "pool_id": POOL, "pool_sha256": "a" * 64, "order_rule": "godconst-order-v2", "nonce": "BALLOT12", "order": ["b1", "b2"],
-        "closes_at": "2026-10-25T05:00:00.000Z", "status": status, "started_at": "x", "header_message_id": 1, "page": 0,
+        "closes_at": CLOSES_ISO, "status": status, "started_at": "x", "header_message_id": 1, "page": 0,
         "cards": {"0": {"message_id": 2, "submit": False}}, "rated": [], "final_sent": False, "send_failures": 0}})
 
 
