@@ -758,9 +758,11 @@ def scrubbed_tree(value):
 
 
 def nexus_scrubbed(value):
-    """scrubbed_tree() for Edge Nexus answers: the same characters, but each REPLACED by a space instead of removed, and
-    line breaks and tabs kept, so a source slice keeps its character offsets (evidence spans point into it) and its
-    lines; nothing cut, since the whole answer is already bounded by transport()'s byte limit."""
+    """scrubbed_tree() for Edge Nexus answers: the same characters, but each REPLACED by spaces instead of removed, and
+    line breaks and tabs kept, so a source slice keeps its lines and its offsets. Edge Nexus's offsets are JavaScript
+    string (UTF-16) offsets: a hidden character outside the BMP (two UTF-16 units) becomes two spaces, so every
+    `start`/`end` Edge Nexus returns still points at the same text. The box never recounts or rewrites an offset.
+    Nothing is cut, since the whole answer is already bounded by transport()'s byte limit."""
     if isinstance(value, dict):
         return {nexus_scrubbed(k): nexus_scrubbed(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -771,7 +773,7 @@ def nexus_scrubbed(value):
     for ch in value:
         category = unicodedata.category(ch)
         hidden = category in ("Cf", "Cs", "Co", "Cn", "Cc", "Zl", "Zp") or ch in INVISIBLE
-        out.append(" " if hidden and ch not in "\n\t" else ch)
+        out.append(("  " if ord(ch) > 0xFFFF else " ") if hidden and ch not in "\n\t" else ch)
     return "".join(out)
 
 

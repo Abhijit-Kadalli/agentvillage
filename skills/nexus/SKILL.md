@@ -99,8 +99,11 @@ the whole village and revertable by people. So:
 - **Every write carries a `confidence` (0 to 1) and a `rationale`** (why you
   believe it, in a sentence): on every op in `nexus.write`, on every op in a
   proposal's `heldWork`, and `confidence` on `nexus.propose` itself. Give
-  `evidence` spans (`{sourceId, start, end}`, from a passage hit's `start` and
-  `end`) for anything taken from a source. Without them it is refused.
+  `evidence` spans (`{sourceId, start, end}`) for anything taken from a
+  source. Copy `start` and `end` exactly from a passage hit (or add them to a
+  `nexus.source` slice's `offset`); never count characters yourself: Edge
+  Nexus counts in JavaScript string units. Without a confidence and rationale
+  it is refused.
 - **Never `how: "confirmed"`.** Only a person confirms a fact in Edge Nexus.
   Use `quoted` (a source says it in words, with evidence), `said_by` (an
   attribution: who said something), or `inferred` (you concluded it).
@@ -171,21 +174,26 @@ Tell the owner what happened in plain words. Never ask for a token or code.
   rules above (a missing confidence or rationale, `how: "confirmed"`, a key
   that isn't in the table, an id that isn't one, or a request over the size
   limit). Fix them and retry once.
-- `not_connected`: Edge Nexus does not recognise the owner's Telegram account
-  yet, or knows it under an older username. Ask the owner to sign in once at
-  https://nexus.positivesumexperiments.com with Telegram, then try again.
-- `not_authorized`: Edge Nexus has turned Agent Village access off for this
-  owner. Ask them to talk to an Edge Nexus admin; do not retry.
-- `not_found`: Edge Nexus has no record for this owner. Ask them to sign in
-  once on the website.
-- `unavailable` or `rate_limited`: Edge Nexus is not answering assistants
+- `not_authorized` (as the error itself): Edge Nexus has switched Agent
+  Village access off. Tell the owner; an Edge Nexus admin can turn it back on.
+  Do not retry.
+- `rate_limited`: Edge Nexus allows 60 calls a minute for each resident. Wait
+  a minute before the next call; do not retry at once.
+- `unavailable` or `not_connected`: Edge Nexus is not answering assistants
   right now. Do not retry now; the owner can use the website.
 - `approval_unavailable`: this agent cannot write right now. Do not claim
   anything was added; the owner can add it on the website.
-- An answer with `isError: true` is Edge Nexus saying no, as
-  `CODE: reason` (for example `INVALID`, `NOT_FOUND`, `FORBIDDEN`). Tell the
-  owner the reason in plain words; fix and retry once only if the reason says
-  what to fix.
+- An answer with `isError: true` is Edge Nexus saying no to that call: its
+  `structured` is `{code, detail}` and its `text` is `CODE: detail`. Tell the
+  owner the reason in plain words.
+  - `invalid_arguments`: the detail says what to fix (e.g. a missing
+    confidence on op 0). Fix it and retry once.
+  - `not_found`: no such node, source or proposal. Search again; never guess
+    an id or path.
+  - `not_authorized`: the owner may not do that in Edge Nexus (only admins
+    can). Offer a `nexus.propose` instead when it fits.
+  - `conflict`: it changed since you read it. Read it again, then retry once
+    if the change still makes sense.
 - Anything unclear after a write: do not claim it was added, and do not
   simply write again (a second write is a second commit). Read first:
   `nexus.history` on the node, or `nexus.search`, then write only what is

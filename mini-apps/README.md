@@ -509,8 +509,9 @@ operations, each mapped by the app to one Edge Nexus MCP tool: eight reads
 There is no per-resident sign-in. The service is `app-token`: the app server
 holds one token for Edge Nexus (`MINI_APP_NEXUS_TOKEN`) and sends the owner's
 Telegram user id (from pairing), and their current username when known, with
-each call; Edge Nexus acts as that resident. The id is `nexus` because the
-validator reserves `edge-`.
+each call; Edge Nexus acts as its Agent Village agent on behalf of that
+resident (an unknown Telegram id creates the person; 60 tool calls a minute per
+resident). The id is `nexus` because the validator reserves `edge-`.
 
 Input rides the existing `arguments` object and is checked in
 `plugins/village-bridge/_nexus.py` against Edge Nexus's own tool schemas (the
@@ -519,10 +520,12 @@ operation's request budget, plus the agent rules Edge Nexus enforces (a
 `confidence` and `rationale` on every graph op, never `how: "confirmed"`).
 Anything else is `invalid_nexus_arguments` before transport. The three writes
 also need the verified gate (`gate_verified`, zzz's path), no manual grant.
-Results are scrubbed (hidden characters become spaces, so source offsets hold)
-and framed as untrusted; v2's generic codes (`not_connected`, `not_found`,
-`not_authorized`, `unavailable`, `invalid_arguments`, `rate_limited`) map to
-Edge Nexus-only text, for these operations only.
+Results are scrubbed (hidden characters become spaces of the same UTF-16
+length, so Edge Nexus's JavaScript-string offsets hold) and framed as
+untrusted; v2's generic codes (`not_connected`, `not_authorized`,
+`unavailable`, `invalid_arguments`, `rate_limited`) map to Edge Nexus-only
+text, for these operations only. A tool's other refusals come back as data,
+`isError` with `{code, detail}`.
 
 The writes are `write`, not `needs-card`: each is one recorded, revertable
 commit or proposal under the owner's name, not a payment. Overlay first, then

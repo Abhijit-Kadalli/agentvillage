@@ -1,4 +1,0 @@
-{
-  "code": "invalid_arguments",
-  "detail": "x-agent-village-telegram-user-id must be the owner's numeric Telegram user id."
-}

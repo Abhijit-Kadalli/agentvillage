@@ -10,8 +10,11 @@
  *      schema and `maxRequestBytes` (the box checked them too; the server never trusts the box);
  *   2. MCP over streamable HTTP (initialize, notifications/initialized, tools/call) with the one app token and
  *      the owner's Telegram id (and username, when known), inside the operation's timeout and response budget;
- *   3. Edge Nexus's refusals and JSON-RPC errors become the generic codes the box knows; a result becomes
- *      {text, structured, isError}, with `text` left empty when it is only the JSON of `structured`.
+ *   3. Edge Nexus's refusals before MCP (401, 403) and JSON-RPC errors become the generic codes the box knows; a
+ *      tool's own refusal (isError, structuredContent {code, detail}) is an operational code for the box when it
+ *      is rate_limited, not_connected or unavailable, and otherwise data the agent can act on (invalid_arguments,
+ *      not_found, not_authorized, conflict, with Edge Nexus's detail); a result becomes {text, structured, isError},
+ *      with `text` left empty when it is only the JSON of `structured`.
  * The answer is `{status, body}`: what the app route sends back to the box. Refusals are `{code}` only, never
  * upstream wording (the box shows its own text for each code).
  *
@@ -29,7 +32,6 @@ const REFUSAL_BYTES = 4096;
 export const CODES = {
   invalid_arguments: 422,
   not_connected: 403,
-  not_found: 404,
   not_authorized: 403,
   unavailable: 503,
   rate_limited: 429,
@@ -37,8 +39,14 @@ export const CODES = {
   response_too_large: 502,
 } as const;
 export type Code = keyof typeof CODES;
-// Edge Nexus's own pre-MCP codes passed through to the box as they are. 401 and 503 are handled before this.
-const PASSED_THROUGH = new Set<string>(["not_connected", "not_found", "not_authorized", "rate_limited", "invalid_arguments", "unavailable"]);
+// Edge Nexus's own pre-MCP codes passed through to the box as they are. 401 and 503 are handled before this; today
+// Edge Nexus sends only 403 not_authorized here (the Agent Village agent revoked: the whole link is off).
+const PASSED_THROUGH = new Set<string>(["not_authorized", "rate_limited", "invalid_arguments", "unavailable"]);
+// A tool refusal with one of these codes is about the link, not the arguments: the box shows its own text.
+const OPERATIONAL = new Set<string>(["rate_limited", "not_connected", "unavailable"]);
+// Edge Nexus's limits on the identity headers (services/mcp/agent-village.ts): a value outside them is a 401.
+const TELEGRAM_ID = /^[1-9][0-9]{0,15}$/;
+const USERNAME = /^[A-Za-z0-9_]{4,32}$/;
 
 export type ToolResult = { text: string; structured: unknown; isError: boolean };
 export type Answer = { status: 200; body: ToolResult } | { status: number; body: { code: Code } };
@@ -176,7 +184,7 @@ export function createNexusBridge(options: {
     const args = request.arguments ?? {};
     const owner = String(request.ownerTelegramId ?? "");
     // The owner comes from the paired Telegram account (pairing verified it), never from the box.
-    if (!/^[1-9][0-9]{0,19}$/.test(owner)) throw new Error("owner telegram id missing");
+    if (!TELEGRAM_ID.test(owner) || !Number.isSafeInteger(Number(owner))) throw new Error("owner telegram id missing");
     if (!op || !matches(op.input, args)) return refuse("invalid_arguments");
     if (Buffer.byteLength(JSON.stringify(args)) > op.maxRequestBytes) return refuse("invalid_arguments");
     return { status: 200, body: await callTool(op, owner, request.ownerTelegramUsername, args) };
@@ -193,10 +201,10 @@ export function createNexusBridge(options: {
         Accept: "application/json, text/event-stream",
         "Content-Type": "application/json",
       };
-      // The username, when Agent Village knows it, lets Edge Nexus refuse a stale id-to-person record (a Telegram
-      // username can be given up and taken by someone else). A malformed one is left out rather than sent.
+      // The username, when Agent Village knows it, refreshes Edge Nexus's record (pairing is the source of truth: a
+      // different username is accepted, never refused). A malformed one is left out: Edge Nexus answers it 401.
       const name = typeof username === "string" ? username.replace(/^@/, "") : "";
-      if (/^[A-Za-z0-9_]{1,32}$/.test(name)) headers["X-Agent-Village-Telegram-Username"] = name;
+      if (USERNAME.test(name)) headers["X-Agent-Village-Telegram-Username"] = name;
       else if (name) log("username_malformed_not_sent");
 
       const post = async (message: object): Promise<Response> => {
@@ -209,7 +217,7 @@ export function createNexusBridge(options: {
         params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "agent-village", version: manifest.version } } });
       const initMessage = rpcMessage(init.headers.get("content-type") ?? "", await readCapped(init, op.maxResponseBytes), 1);
       if (initMessage.error || !initMessage.result) throw new Refusal("connection_or_request_refused");
-      // Edge Nexus is stateless (one server per request) and may not return a session; carry one if it does.
+      // Edge Nexus is stateless (one server per request) and returns no session today; carry one if it ever does.
       const session = init.headers.get("mcp-session-id");
       if (session) headers["Mcp-Session-Id"] = session;
       headers["MCP-Protocol-Version"] = initMessage.result.protocolVersion ?? PROTOCOL_VERSION;
@@ -223,6 +231,8 @@ export function createNexusBridge(options: {
       const result = message.result;
       if (!result || typeof result !== "object") throw new Refusal("connection_or_request_refused");
       const structured = result.structuredContent ?? null;
+      const refusal = result.isError === true && isObject(structured) ? structured.code : undefined;
+      if (typeof refusal === "string" && OPERATIONAL.has(refusal)) throw new Refusal(refusal as Code);
       let text = (Array.isArray(result.content) ? result.content : [])
         .filter((part: any) => part && part.type === "text" && typeof part.text === "string")
         .map((part: any) => part.text)

@@ -184,21 +184,22 @@ NEXUS_INVALID = ("Nothing was sent. Check the nexus skill's input for this opera
                  "into parts).")
 NEXUS_SITE = "https://nexus.positivesumexperiments.com"
 # The plugin's own text for each error code it knows, only for nexus operations. Only this text reaches the agent,
-# never upstream fields. NEXUS_APP_CODES are v2's generic codes the app server answers with (Edge Nexus's own
-# refusals before MCP); the last two are this plugin's transport codes.
-NEXUS_APP_CODES = ("not_connected", "not_found", "not_authorized", "unavailable", "invalid_arguments", "rate_limited")
+# never upstream fields. NEXUS_APP_CODES are the codes the app server answers the box with: Edge Nexus's refusals
+# before MCP (401 is shown as unavailable; 403 not_authorized is the Agent Village link switched off in Edge Nexus),
+# a tool's rate_limited (60 calls a minute per resident), not_connected or unavailable, and the app's own
+# invalid_arguments. A tool's other refusals (invalid_arguments, not_found, not_authorized, conflict) come back as
+# data: isError true, structured {code, detail}. The last two entries are this plugin's transport codes.
+NEXUS_APP_CODES = ("not_connected", "not_authorized", "unavailable", "invalid_arguments", "rate_limited")
 NEXUS_ERRORS = {
-    "not_connected": ("Edge Nexus does not recognise this Telegram account yet, or knows it under an older username. Ask "
-                      "the owner to sign in once at " + NEXUS_SITE + " with Telegram, then try again. Never ask for a "
-                      "token or code."),
-    "not_found": ("Edge Nexus has no record it can act for with this Telegram account. Ask the owner to sign in once at "
-                  + NEXUS_SITE + " with Telegram, then try again."),
-    "not_authorized": ("Edge Nexus has turned Agent Village access off for this owner. Ask them to talk to an Edge Nexus "
-                       "admin; do not retry."),
+    "not_connected": ("Edge Nexus did not accept this owner's identity for this call. Try once more; if it repeats, the "
+                      "owner can use " + NEXUS_SITE + " (sign in with Telegram). Never ask for a token or code."),
+    "not_authorized": ("Edge Nexus has switched Agent Village access off. Tell the owner; an Edge Nexus admin can turn it "
+                       "back on. Do not retry."),
     "unavailable": "Edge Nexus is not answering assistants right now. Do not retry now; the owner can use " + NEXUS_SITE + ".",
     "invalid_arguments": ("Edge Nexus refused these arguments. Check the nexus skill's input rules, then retry once with "
                           "corrected arguments."),
-    "rate_limited": "Edge Nexus is getting too many requests. Do not retry now; try again later.",
+    "rate_limited": ("Edge Nexus allows 60 calls a minute for each resident and this owner has used them. Wait a minute "
+                     "before the next call; do not retry at once."),
     "connection_or_request_refused": NEXUS_UNCLEAR,
     "response_too_large": "Ask for less (a smaller limit, historyLimit or source slice); no partial result was returned.",
 }

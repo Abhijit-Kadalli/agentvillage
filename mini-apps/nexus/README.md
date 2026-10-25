@@ -47,12 +47,27 @@ then `initialize` (protocol `2025-06-18`), `notifications/initialized` and a
 unchanged as the tool's MCP `arguments`. Carry `Mcp-Session-Id` if Edge Nexus
 returns one (it is stateless, one server per request, and may not). The
 Telegram id and username come from the owner's pairing, never from the box or
-the model. When the username is sent, Edge Nexus may refuse a call whose
-username does not match its record for that Telegram id (`not_connected`), so a
-username given up and taken by someone else cannot map one person to another.
+the model.
 
 The Edge Nexus side of this contract is in the Edge Nexus repository,
-`docs/MINIAPP.md`.
+`docs/MINIAPP.md` (code: `apps/web/src/services/mcp/agent-village.ts`).
+
+## Identity on the Edge Nexus side
+
+- The Telegram id is the person. An unknown id **creates** the person (any
+  Telegram account can use Edge Nexus), so there is no "not linked yet" refusal
+  and nothing for the owner to do first.
+- The username header, when sent, refreshes the person's username. A different
+  username is accepted (Agent Village's pairing is the source of truth), never
+  refused. A malformed one (not 4-32 letters, digits or `_`) is a 401, so the
+  app leaves it out rather than sending it.
+- The Telegram id must be 1-16 digits and a safe integer; anything else is a 401.
+- Every call acts as one "Agent Village" agent on behalf of the resident, with
+  the resident's role. Commits and audit rows show actor Agent Village,
+  `on_behalf_of` the resident, client `agent-village`.
+- An admin revoking that agent switches the whole link off (403).
+- **Rate limit: 60 tool calls a minute per resident** (`initialize` and
+  `tools/list` do not count). Over it, the tool answers `rate_limited`.
 
 ## Operations
 
@@ -128,31 +143,39 @@ The schemas keep Edge Nexus's own bounds; the byte budgets are the real limit
 on a long source (a 2,000,000-character source is valid in Edge Nexus but does
 not fit 262,144 bytes). The skill tells the agent to split a longer source.
 
-## Edge Nexus's refusals before MCP
+## Edge Nexus's refusals
 
-Edge Nexus checks the token and the Telegram id before any tool runs, and
-answers a refusal as exactly `{code, detail}` with a generic code. The app
-maps:
+Before MCP (the response body, before any tool runs), always `{code, detail}`:
 
-| Edge Nexus answers | The app answers the box |
-|---|---|
-| HTTP 401 `{"code":"not_authorized"}` | `unavailable`. A wrong token is an Agent Village config problem: never show the resident text for `not_authorized` |
-| HTTP 503 `{"code":"unavailable"}` | `unavailable` (the MCP server or the Agent Village link is switched off) |
-| HTTP 403 `{"code":"not_connected"}` | `not_connected`: the username header does not match Edge Nexus's record for this Telegram id |
-| HTTP 404 `{"code":"not_found"}` | `not_found`: Edge Nexus will not act for this Telegram id (if it chooses not to create people on first sight) |
-| HTTP 403 `{"code":"not_authorized"}` | `not_authorized`: an Edge Nexus admin turned Agent Village off for this person |
-| HTTP 429 `{"code":"rate_limited"}` | `rate_limited` |
-| HTTP 400 `{"code":"invalid_arguments"}` | `invalid_arguments`: the Telegram id header is not a numeric id (an app bug) |
+| Edge Nexus answers | When | The app answers the box |
+|---|---|---|
+| HTTP 401 `not_authorized` | The token is unknown (the body also carries OAuth's `error` and `error_description`), or the Telegram id header is missing or not a positive integer, or the username header is malformed | `unavailable`: an Agent Village configuration problem; never show the resident text for `not_authorized` |
+| HTTP 403 `not_authorized` | An Edge Nexus admin revoked the Agent Village agent: the link is off for everyone | `not_authorized` |
 
-Anything else is `connection_or_request_refused`, which tells the agent not to
-claim a write landed and to read before writing again. The box replaces each
-code with its own text (`_nexus.py` `NEXUS_ERRORS`), never upstream wording.
-JSON-RPC `-32602` is `invalid_arguments`.
+Anything else before MCP (a 5xx, an unexpected body) is `unavailable` for a
+503 and otherwise `connection_or_request_refused`, which tells the agent not to
+claim a write landed and to read before writing again. JSON-RPC `-32602` is
+`invalid_arguments`.
 
-A tool's own refusal (Edge Nexus's `ServiceError`: `INVALID`, `NOT_FOUND`,
-`FORBIDDEN`, `CONFLICT` ...) is an MCP result with `isError: true` and the text
-`CODE: reason`; it is passed through as data, and the skill tells the agent to
-say the reason in plain words.
+A tool's own refusal is an MCP result with `isError: true`, the text part
+`CODE: message`, and `structuredContent: {code, detail}`, with Edge Nexus's
+mapping of its `ServiceError` codes:
+
+| Edge Nexus code | `code` | The app |
+|---|---|---|
+| `INVALID` | `invalid_arguments` | passes the result through as data (the detail says what to fix) |
+| `UNAUTHENTICATED` | `not_connected` | answers the box `not_connected` |
+| `FORBIDDEN` (the resident may not) | `not_authorized` | passes it through as data |
+| `NOT_FOUND`, `GONE` | `not_found` | passes it through as data |
+| `CONFLICT`, `STALE_VERSION` | `conflict` | passes it through as data |
+| `RATE_LIMITED` | `rate_limited` | answers the box `rate_limited` |
+| anything unexpected | `unavailable` | answers the box `unavailable` |
+
+So the codes the box sees as refusals are `not_connected`, `not_authorized`,
+`unavailable`, `invalid_arguments` (the app's own input check) and
+`rate_limited`; it replaces each with its own text (`_nexus.py`
+`NEXUS_ERRORS`), never upstream wording. A tool refusal passed as data reaches
+the agent framed as untrusted, with Edge Nexus's `detail`.
 
 ## Results
 
@@ -160,17 +183,25 @@ Return the MCP result as
 `{"text": <the text content parts joined by a blank line>, "structured": <structuredContent or null>, "isError": <bool>}`.
 Edge Nexus writes most results only as JSON (its text part is then exactly
 `JSON.stringify(structuredContent)`); the app sends `text: ""` in that case so
-the answer is not carried twice. The box scrubs hidden characters at every
-depth (each replaced by a space, so a source slice keeps its character
-offsets) and frames the result as untrusted data. Responses are capped at
+the answer is not carried twice. The box frames the result as untrusted data
+and scrubs hidden characters at every depth, replacing each with spaces.
+
+**Offsets.** Edge Nexus's evidence spans (`{sourceId, start, end}`) and
+`nexus.source` offsets are JavaScript string offsets: UTF-16 code units, end
+exclusive. The box never recounts or rewrites them: it passes `start`, `end`
+and `offset` through as numbers, and its scrubber keeps the UTF-16 length of
+every string (a hidden character outside the BMP becomes two spaces), so an
+offset Edge Nexus returned still points at the same text. The skill tells the
+agent to copy `start` and `end` from passage hits, never to count them. Responses are capped at
 262,144 bytes; the skill reads sources in 20,000-character slices.
 
 ## Edge Nexus side safety (its repository, `docs/MINIAPP.md`, is authoritative)
 
-- The token speaks for every resident; Edge Nexus knows it only by its hash.
-- An Agent Village call acts as an outside agent on behalf of the person with
-  that Telegram id, with that person's permissions: never an admin's tools,
-  never the Librarian's.
+- The token speaks for every resident; Edge Nexus knows it only by its sha256
+  hash (`AGENT_VILLAGE_TOKENS`, several while rotating).
+- An Agent Village call acts as the Agent Village agent on behalf of the person
+  with that Telegram id, with that person's role: only the eleven resident
+  tools are listed or run, never the Librarian's.
 - Every change is a commit with the person, the door (Agent Village) and the
   agent's confidence and rationale in the audit log; people can revert it.
 - Search words are stored without who asked.
@@ -199,12 +230,27 @@ tree of manifests and READMEs only.
 ## V0 conformance evidence
 
 The fixtures in
-[`scripts/tests/fixtures/nexus/`](../../scripts/tests/fixtures/nexus/) are the
-`{code, detail}` refusals this contract specifies (the table above). They are
-written from the contract, not yet recorded from Edge Nexus: replace them with
-recorded bodies once the Agent Village link is live in Edge Nexus. Each refusal
-is the same for every operation (it happens before any tool runs), so they are
-spread across a few operations. No success fixture is invented.
+[`scripts/tests/fixtures/nexus/`](../../scripts/tests/fixtures/nexus/) are
+Edge Nexus's own bodies, recorded on 25 October from its code (Edge Nexus main
+`24fc444`, a local run of its MCP route against its test database, the way its
+`agent-village.db.test.ts` calls it):
+
+| Fixture | What | Body |
+|---|---|---|
+| `nexus.initialize/error-telegram-id-missing.json` | no identity header | 401 `{code: not_authorized, detail}` |
+| `nexus.initialize/error-username-malformed.json` | a malformed username header | 401 `{code: not_authorized, detail}` |
+| `nexus.search/error-revoked.json` | the Agent Village agent revoked | 403 `{code: not_authorized, detail}` |
+| `nexus.search/error-invalid-arguments.json` | no `q` | MCP `isError` result, `{code: invalid_arguments}` |
+| `nexus.get/error-not-found.json` | an unknown path | MCP `isError` result, `{code: not_found}` |
+| `nexus.source/error-not-found.json` | an unknown source id | MCP `isError` result, `{code: not_found}` |
+| `nexus.write/error-no-confidence.json` | a graph op without a confidence | MCP `isError` result, `{code: invalid_arguments}` |
+| `nexus.schema/error-rate-limited.json` | over 60 calls a minute | MCP `isError` result, `{code: rate_limited}` |
+
+The rate-limit body was recorded with the limit lowered for the run; its text
+says 60, as production does. Not a fixture: the unknown-token 401, because its
+body adds OAuth's `error` and `error_description` beside `{code, detail}`
+(conformance takes exactly `{code, detail}`); the app maps every 401 to
+`unavailable` anyway. No success fixture is invented.
 
 ```sh
 bun run conformance -- mini-apps/nexus/manifest.json \

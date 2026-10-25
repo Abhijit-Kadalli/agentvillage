@@ -80,6 +80,7 @@ test("the username header is sent only when given (without @), and a session id 
   calls.length = 0;
   await b.handle({ ownerTelegramId: OWNER, ownerTelegramUsername: null, operation: "nexus.schema" });
   await b.handle({ ownerTelegramId: OWNER, ownerTelegramUsername: "bad name!", operation: "nexus.schema" });
+  await b.handle({ ownerTelegramId: OWNER, ownerTelegramUsername: "abc", operation: "nexus.schema" });
   expect(calls.every(c => !("X-Agent-Village-Telegram-Username" in c.headers))).toBe(true);
   expect(b.logs).toContain("username_malformed_not_sent");
 });
@@ -104,10 +105,12 @@ test("the writes forward their arguments unchanged; a tool's refusal comes back 
 
 test("Edge Nexus's refusals before MCP map to the generic codes; 401 is a config error shown as unavailable", async () => {
   const cases: [Response, string][] = [
-    [Response.json({ code: "not_authorized", detail: "bad token" }, { status: 401 }), "unavailable"],
-    [Response.json({ code: "not_connected", detail: "username changed" }, { status: 403 }), "not_connected"],
-    [Response.json({ code: "not_found", detail: "no person" }, { status: 404 }), "not_found"],
-    [Response.json({ code: "not_authorized", detail: "revoked" }, { status: 403 }), "not_authorized"],
+    // Edge Nexus's own bodies (docs/MINIAPP.md; scripts/tests/fixtures/nexus): an unknown token, a missing id, the
+    // link revoked.
+    [Response.json({ error: "unauthorized", error_description: "Connect Edge Nexus", code: "not_authorized", detail: "Unknown Agent Village token." }, { status: 401 }), "unavailable"],
+    [Response.json({ code: "not_authorized", detail: "Send X-Agent-Village-Telegram-User-Id: the resident's numeric Telegram user id." }, { status: 401 }), "unavailable"],
+    [Response.json({ code: "not_authorized", detail: "Agent Village access to Edge Nexus is off." }, { status: 403 }), "not_authorized"],
+    [Response.json({ code: "not_found", detail: "no person" }, { status: 404 }), "connection_or_request_refused"],
     [Response.json({ code: "rate_limited", detail: "slow down" }, { status: 429 }), "rate_limited"],
     [Response.json({ code: "invalid_arguments", detail: "telegram id" }, { status: 400 }), "invalid_arguments"],
     [Response.json({ code: "unavailable", detail: "link off" }, { status: 503 }), "unavailable"],
@@ -123,6 +126,30 @@ test("Edge Nexus's refusals before MCP map to the generic codes; 401 is a config
     expect(JSON.stringify(answer)).not.toContain("detail");
     expect(b.logs.includes("config_error_token_refused")).toBe(response.status === 401);
   }
+});
+
+test("a tool's refusal: link codes (rate_limited, unavailable) go to the box as codes; the rest stay data with Edge Nexus's detail", async () => {
+  // Edge Nexus's own isError results (recorded in scripts/tests/fixtures/nexus).
+  const refusal = (code: string, detail: string, nexus: string) => ({ content: [{ type: "text", text: `${nexus}: ${detail}` }], structuredContent: { code, detail }, isError: true });
+  const cases: [object, unknown][] = [
+    [refusal("rate_limited", "Too many calls: at most 60 a minute for each resident. Try again in a minute.", "RATE_LIMITED"), { status: 429, body: { code: "rate_limited" } }],
+    [refusal("unavailable", "Something went wrong. Try again.", "INTERNAL"), { status: 503, body: { code: "unavailable" } }],
+    [refusal("not_found", "No such node.", "NOT_FOUND"), { status: 200, body: { text: "NOT_FOUND: No such node.", structured: { code: "not_found", detail: "No such node." }, isError: true } }],
+    [refusal("invalid_arguments", "op 0 (node.archive): agents must give a confidence between 0 and 1.", "INVALID"),
+      { status: 200, body: { text: "INVALID: op 0 (node.archive): agents must give a confidence between 0 and 1.", structured: { code: "invalid_arguments", detail: "op 0 (node.archive): agents must give a confidence between 0 and 1." }, isError: true } }],
+    [refusal("conflict", "The node changed since you read it.", "STALE_VERSION"), { status: 200, body: { text: "STALE_VERSION: The node changed since you read it.", structured: { code: "conflict", detail: "The node changed since you read it." }, isError: true } }],
+  ];
+  for (const [result, want] of cases) {
+    const { fetch } = fakeNexus(() => result);
+    expect(await bridge(fetch).handle({ ownerTelegramId: OWNER, operation: "nexus.get", arguments: { path: "no/such/node" } })).toEqual(want as any);
+  }
+});
+
+test("the owner's Telegram id must be one Edge Nexus accepts (1-16 digits, a safe integer); nothing is sent otherwise", async () => {
+  const { fetch, calls } = fakeNexus(() => nexusResult({}));
+  for (const id of ["0", "12345678901234567", "9007199254740993", "abc", ""])
+    expect((await bridge(fetch).handle({ ownerTelegramId: id, operation: "nexus.schema" })).body).toEqual({ code: "connection_or_request_refused" });
+  expect(calls).toEqual([]);
 });
 
 test("a refusal on the tools/call itself (not only initialize) is mapped the same way", async () => {
