@@ -75,7 +75,7 @@ def odin_mod(plugin, av):
 
 def test_description_leads_with_the_searchable_sentence(odin_mod):
     # Hermes's catalog listing shows the first sentence clipped to 60 chars: the intent leads it.
-    assert odin_mod.TOOL_DESCRIPTION[:60].startswith("ODIN, the village constitution agent: ask ODIN")
+    assert odin_mod.TOOL_DESCRIPTION[:60].startswith("Ask ODIN, the village's god agent, anything about the")
     assert odin_mod.TOOL_SCHEMA["description"] == odin_mod.TOOL_DESCRIPTION
     words = set(_tokenize(odin_mod.TOOL_DESCRIPTION))
     wanted = ("odin", "constitution", "ruling", "rule", "explain", "question")
