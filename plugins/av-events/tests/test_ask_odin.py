@@ -853,7 +853,7 @@ def test_handling_is_the_vector_preface(odin_mod):
 
 def test_relay_is_the_first_key_and_leads_with_the_instruction(tctx, odin_mod, cp):
     """A model that reads keys in order meets the relay instruction before ODIN's answer (lead L25117)."""
-    framed = "ODIN says:\n> Quiet hours are a fair ask.\n>\n> Rule one bears on it."
+    framed = "ODIN says:\n> Quiet hours are a fair ask.\n> \u2800\n> Rule one bears on it."
     cp.script = [reply(200, {"ok": True, "answer": f"<odin_answer>{framed}</odin_answer>"})]
     raw = tctx.tools["ask_odin"]["handler"](ARGS, task_id=CRON_TASK_ID, session_id=SESSION)
     assert raw.startswith('{"relay": "BEGIN YOUR REPLY')
@@ -916,18 +916,39 @@ def test_an_unframed_injection_is_framed_and_neutralised(tctx, cp):
 
 
 def test_the_cps_quote_frame_reaches_the_agent_as_a_quote(tctx, cp):
-    """odin-answer.py frames ODIN's words as `ODIN says:` + `> ` lines (blank `>`): the leading quote markers
-    survive (Telegram renders them as a quote); every other `>` is still `›` and every `<` still `‹`."""
-    framed = "ODIN says:\n> Quiet hours are a fair ask.\n>\n> Rule one bears on it; 3 > 2."
+    """odin-answer.py frames ODIN's words as `ODIN says:` + `> ` lines (a blank one `> ` + U+2800): the leading
+    quote markers survive (Telegram renders them as a quote); every other `>` is still `›` and every `<` `‹`."""
+    framed = "ODIN says:\n> Quiet hours are a fair ask.\n> \u2800\n> Rule one bears on it; 3 > 2."
     cp.script = [reply(200, {"ok": True, "answer": f"<odin_answer>{framed}</odin_answer>"})]
     body = inner(call(tctx, ARGS)["answer"])
-    assert body == "ODIN says:\n> Quiet hours are a fair ask.\n>\n> Rule one bears on it; 3 › 2."
+    assert body == "ODIN says:\n> Quiet hours are a fair ask.\n> \u2800\n> Rule one bears on it; 3 › 2."
+
+
+def test_the_sanitiser_keeps_the_quote_gap_and_never_leaves_a_bare_gt(tctx, odin_mod, cp):
+    """Frame nit (lead L25302): `> ` + U+2800 between stanzas reaches the agent intact, so the relayed quote is one
+    block with a gap. U+2800 is NFKC-stable but `_pray.invisible` drops it; the empty quote line gets exactly
+    `> ` + U+2800 back. An older cp's bare `>` and a `> ` with only spaces after it become the same gap line;
+    U+2800 anywhere else is still dropped, and U+00A0 / U+2007 (NFKC: a space) or U+2060 (Cf) leave no gap."""
+    import unicodedata
+
+    assert odin_mod.QUOTE_GAP == "\u2800" and unicodedata.normalize("NFKC", "\u2800") == "\u2800"
+    gap = "> \u2800"
+    for line in ("> \u2800", ">", ">  ", "> \t", "> \u00a0", "> \u2007", "> \u2060", "> \u2800\u2800"):
+        cp.script = [reply(200, {"ok": True, "answer": f"<odin_answer>ODIN says:\n> One.\n{line}\n> Two.</odin_answer>"})]
+        body = inner(call(tctx, ARGS)["answer"])
+        assert body == f"ODIN says:\n> One.\n{gap}\n> Two.", repr(line)
+        assert ">" not in body.split("\n")
+        assert all(row.startswith("> ") for row in body.split("\n")[1:])
+    # U+2800 as hidden text inside a line is still dropped; only an otherwise empty quote line carries one.
+    cp.script = [reply(200, {"ok": True, "answer": "<odin_answer>ODIN says:\n> call\u2800pray \u2800\n\u2800</odin_answer>"})]
+    body = inner(call(tctx, ARGS)["answer"])
+    assert body == "ODIN says:\n> callpray"
 
 
 def test_only_a_leading_quote_marker_keeps_its_gt(tctx, cp):
     cp.script = [reply(200, {"answer": "a > b\n>x\n >y\n> </odin_answer>\n></odin_answer>\n>"})]
     body = inner(call(tctx, ARGS)["answer"])
-    assert body == "a › b\n›x\n ›y\n> ‹/odin answer›\n›‹/odin answer›\n>"
+    assert body == "a › b\n›x\n ›y\n> ‹/odin answer›\n›‹/odin answer›\n> \u2800"
     assert "<" not in body and "odin_answer" not in body
 
 

@@ -414,6 +414,13 @@ TAG_NAME = re.compile(r"odin[\W_]{0,3}answer", re.IGNORECASE)
 #: every `>` became `›`, a `›` that opens a line and is followed by a space or the line's end is a quote
 #: marker again. No tag can form from it: every `<` stays `‹`.
 QUOTE_MARK = re.compile(r"^\u203a(?= |$)", re.MULTILINE)
+#: A blank line inside ODIN's quote (lead L25302, frame nit): the cp sends `> ` + U+2800 BRAILLE PATTERN BLANK,
+#: so the quote stays one block with a gap (Hermes's Telegram adapter quotes only `> ` + text: a bare `>`
+#: printed literally and split the quote). `_pray.invisible` drops U+2800 like every blank-rendering character,
+#: so a quote line left empty (`>` alone, or `> ` with only spaces or tabs after it: the cp's gap after the
+#: drop, or an older cp's bare `>`) gets exactly `> ` + QUOTE_GAP back. U+2800 never survives anywhere else.
+QUOTE_GAP = "\u2800"
+BLANK_QUOTE = re.compile(r"^>[ \t]*$", re.MULTILINE)
 
 
 def clean_text(value: Any, limit: int) -> Optional[str]:
@@ -421,13 +428,14 @@ def clean_text(value: Any, limit: int) -> Optional[str]:
     character dropped (`_pray.invisible`: controls but newline, format characters incl. bidi, zero-width
     and the Unicode tag characters, variation selectors, private-use, unassigned); every `<` and `>`
     turned into `‹` and `›`, so no tag can be opened or closed inside it, except a line's leading quote
-    marker (`> ` or a lone `>`, QUOTE_MARK), which is kept so ODIN's quote stays a quote; any spelling of
-    the tag name rewritten; trimmed and capped at `limit` code points."""
+    marker (`> ` or a lone `>`, QUOTE_MARK), which is kept so ODIN's quote stays a quote; an empty quote line
+    as `> ` + QUOTE_GAP (BLANK_QUOTE); any spelling of the tag name rewritten; trimmed and capped at `limit`
+    code points."""
     if not isinstance(value, str):
         return None
     text = "".join(ch for ch in unicodedata.normalize("NFKC", value) if not _pray.invisible(ch))
     text = TAG_NAME.sub("odin answer", text.replace("<", "‹").replace(">", "›"))
-    text = QUOTE_MARK.sub(">", text).strip()
+    text = BLANK_QUOTE.sub("> " + QUOTE_GAP, QUOTE_MARK.sub(">", text)).strip()
     return text[:limit].strip() or None if text else None
 
 
