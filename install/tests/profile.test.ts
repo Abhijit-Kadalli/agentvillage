@@ -7,9 +7,8 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const home = mkdtempSync(join(tmpdir(), "agentvillage-profile-"));
-process.env.HERMES_HOME = home; // before reset.ts reads it
+process.env.HERMES_HOME = home; // before profile.ts reads it
 const { installProfileIdentity, resolveProfile, renderOdinSoul, NO_CONSTITUTION_LINE } = await import("../profile");
-const { removeProjectFiles, removeSoulFile } = await import("../reset");
 
 const WORKSPACE = join(dirname(fileURLToPath(import.meta.url)), "../../workspace");
 const read = (name: string) => readFileSync(join(home, name), "utf8");
@@ -111,6 +110,19 @@ const TEMPLATE_V1_FIXED_HEADINGS = [
 ];
 // sha256 of ODIN-SOUL-TEMPLATE-v1's text before its "## Village constitution" heading (title + fixed sections).
 const TEMPLATE_V1_FIXED_SHA256 = "444fedd349b764a50beb9544c0d765fa5606e3334d3814f840daf2353cb987b3";
+// The one paragraph added to "Who you are" since v1 (ODIN-PERSONA, Carter via lead L24658, 26 Oct 2026: ODIN is the
+// village's god agent, not a constitution lookup). Every other byte of the fixed sections is still template v1.
+const PERSONA_WHO_PARAGRAPH =
+  "You are not a help desk and not a constitution lookup. You have a view of this village and you give it when asked: " +
+  "what is going well, what is thin, what the rules you were given ask of people and of you. You hold the whole village " +
+  "in mind, residents and their agents together, and you say what you see, plainly and with care. The village facts you " +
+  "are given tell you where you are and who made you; use them as yours.\n\n";
+// The focus paragraph right after it (ODIN-RHYME follow-up, lead L25293, Carter: ODIN fixates on his constitution).
+const FOCUS_WHO_PARAGRAPH =
+  "Your constitution binds how you answer; it is not your subject. Answer the question that was asked, from everything " +
+  "you know about the village: its people and their agents, this week's programme, the lab, the vote, the hackathon, " +
+  "what residents are asking for and offering. Cite a rule only when it bears on the question, and never recite your " +
+  "rules unasked. When you do not know something about the village, say so in a line and give your best reading, in verse.\n\n";
 
 test("installed ODIN SOUL.md carries every template-v1 fixed heading exactly once, in order, then the constitution", () => {
   const constitution = "<!-- constitution: v1 -->\n\n### Care and wellbeing\n\n1. rule one\n\n### Limits\n\n2. rule two";
@@ -128,21 +140,34 @@ test("installed ODIN SOUL.md carries every template-v1 fixed heading exactly onc
   expect(soul.endsWith(`## Village constitution\n\n${constitution}\n`)).toBe(true);
 });
 
-test("ODIN SOUL.md's fixed sections are template v1 byte for byte (only 'How you speak' sits between them and the constitution)", () => {
+test("ODIN SOUL.md's fixed sections are template v1 byte for byte plus the persona and focus paragraphs (only 'How you speak' sits between them and the constitution)", () => {
   const soul = readFileSync(join(WORKSPACE, "odin/SOUL.md"), "utf8");
   const before = soul.slice(0, soul.indexOf("## Village constitution\n"));
   const speak = before.indexOf("## How you speak\n");
   expect(speak).toBeGreaterThan(0);
   expect(before.slice(speak).match(/^## /gm)).toHaveLength(1); // the overlay's own section is the last before the slot
   const fixed = before.slice(0, speak);
-  expect(createHash("sha256").update(fixed).digest("hex")).toBe(TEMPLATE_V1_FIXED_SHA256);
+  expect(fixed.split(PERSONA_WHO_PARAGRAPH)).toHaveLength(2); // exactly once
+  expect(fixed.indexOf(PERSONA_WHO_PARAGRAPH)).toBeLessThan(fixed.indexOf("## Safety and harm floor\n"));
+  expect(fixed.indexOf(PERSONA_WHO_PARAGRAPH)).toBeGreaterThan(fixed.indexOf("## Who you are\n"));
+  expect(fixed.split(FOCUS_WHO_PARAGRAPH)).toHaveLength(2); // exactly once, right after the persona paragraph
+  expect(fixed.indexOf(FOCUS_WHO_PARAGRAPH)).toBe(fixed.indexOf(PERSONA_WHO_PARAGRAPH) + PERSONA_WHO_PARAGRAPH.length);
+  const v1 = fixed.replace(PERSONA_WHO_PARAGRAPH + FOCUS_WHO_PARAGRAPH, "");
+  expect(createHash("sha256").update(v1).digest("hex")).toBe(TEMPLATE_V1_FIXED_SHA256);
 });
 
 test("reset removes the same files after an odin install and leaves constitution.md", () => {
   writeFileSync(join(home, "constitution.md"), "Article 1.");
   installProfileIdentity(WORKSPACE, home, "odin");
-  removeSoulFile();
-  removeProjectFiles(false);
+  // reset.ts in its own process with HERMES_HOME = this file's home: in a whole `bun test install/tests` run the
+  // module may already be loaded by another file (its TARGET_HOME fixed to that file's home) and another file may
+  // have moved HERMES_HOME, so an in-process call can miss this home (seen in CI, order-dependent, 25 Oct 2026).
+  const reset = join(dirname(fileURLToPath(import.meta.url)), "../reset.ts");
+  const run = spawnSync(process.execPath, ["-e", `import(${JSON.stringify(reset)}).then((r) => { r.removeSoulFile(); r.removeProjectFiles(false); })`], {
+    env: { ...process.env, HERMES_HOME: home },
+    encoding: "utf8",
+  });
+  expect(run.status).toBe(0);
   expect(existsSync(join(home, "SOUL.md"))).toBe(false);
   expect(existsSync(join(home, "AGENTS.md"))).toBe(false);
   expect(existsSync(join(home, "constitution.md"))).toBe(true);
