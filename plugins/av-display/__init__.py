@@ -316,6 +316,9 @@ def apply_hygiene_notices(run_turn_module: Any) -> bool:
 VILLAGE_COMMAND = "village"
 #: Its line in Telegram's command menu and in /help.
 VILLAGE_DESCRIPTION = "What Agent Village can do"
+#: The approvals bot's chat (APPROVALS-CHAT-LINK, jmill 26 Oct): the one shared bot every resident pairs, the prod
+#: relay's Telegram getMe username. The same link as village-bridge's `_mini_apps.APPROVALS_CHAT_URL`.
+APPROVALS_CHAT_URL = "https://t.me/AgentVillageApprovalsBot"
 #: The reply. Fixed text: no LLM call, no network. Names as the app nav and the skills use them.
 VILLAGE_TEXT = "\n".join((
     "Agent Village, from here:",
@@ -325,7 +328,7 @@ VILLAGE_TEXT = "\n".join((
     "\u2022 Calendar: what's on, and your RSVPs.",
     "\u2022 Decisions: vote on the village's questions when a vote is open.",
     "\u2022 Gold Stars: thank someone (you approve each one first).",
-    "\u2022 Approvals: I check with you in the approval bot before I act for you.",
+    "\u2022 Approvals: I check with you in the approval bot before I act for you. Open approvals chat: " + APPROVALS_CHAT_URL,
     "More in the web app: https://agents.edgecity.live",
 ))
 

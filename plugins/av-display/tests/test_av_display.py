@@ -594,6 +594,10 @@ def test_the_village_text_names_the_features_as_the_app_does(plugin):
         "Intents", "Rolodex", "Ask the village", "Calendar", "Decisions", "Gold Stars", "Approvals",
     ]
     assert len(lines) == len(bullets) + 2
+    assert bullets[-1] == (
+        "\u2022 Approvals: I check with you in the approval bot before I act for you. "
+        "Open approvals chat: https://t.me/AgentVillageApprovalsBot"
+    )
     # Plain text: no dashes of any kind, no Markdown, ASCII but the bullets.
     assert not any(ch in text for ch in "\u2014\u2013*_`[]")
     assert all(ord(ch) < 128 for ch in text.replace("\u2022", ""))
