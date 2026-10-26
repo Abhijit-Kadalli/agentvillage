@@ -162,8 +162,10 @@ describe("mini-apps/: the published catalog", () => {
     expect(Object.entries(m.FIRST_PARTY).filter(([, grant]: [string, any]) => Object.hasOwn(grant, "none")).map(([id]) => id)).toEqual(["mosaic"]);
     const base = m.v1Entry(mosaic), context = m.v1Entry(mosaic, { person: true, context: true });
     expect([base.operations, context.operations]).toEqual([["mini-app.read"], ["mini-app.read", "mini-app.context.read", "mini-app.context.write"]]);
+    // MOSAIC FOR EVERYONE (review-a S3, cp#417): `"visibility": "everyone"`, so neither entry is restricted.
+    expect(mosaic.visibility).toBe("everyone");
     for (const entry of [base, context]) {
-      expect([entry.restricted, entry.staff, entry.data, Object.hasOwn(entry, "mcp")]).toEqual([true, true, { context: { maxEntries: 12 } }, false]);
+      expect([Object.hasOwn(entry, "restricted"), entry.staff, entry.data, Object.hasOwn(entry, "mcp")]).toEqual([false, true, { context: { maxEntries: 12 } }, false]);
       const projection = { version: 1, apps: [{ id: entry.id, version: entry.version, operations: entry.operations, skills: entry.skills }] };
       expect(validateProjection(projection)).toEqual(projection);
     }
