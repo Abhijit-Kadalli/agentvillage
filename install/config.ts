@@ -247,14 +247,15 @@ export function configureModelFallback(): void {
       console.log(`→ added ${route} to ${key} after ${n} existing ${n === 1 ? "entry" : "entries"}`);
     }
   }
-  const reasoningOffSet = ensureFallbackReasoningOff(doc);
-  if (!hasLuna || reasoningOffSet) writeConfig(doc);
+  const reasoningChanged = ensureFallbackReasoningOff(doc);
+  if (!hasLuna || reasoningChanged) writeConfig(doc);
 }
 
 /**
  * HOT-RASOOL (CLAIMS L26001): `agent.reasoning_overrides[FALLBACK_MODEL] = false` on `doc`, keeping
  * every other `agent` key and every other override. Returns true when `doc` changed; false when the
- * override was already `false`, when luna is the box's PRIMARY model (the override is per model,
+ * override was already `false`, when luna is the box's PRIMARY model and there was no `false` to
+ * remove (below) (the override is per model,
  * not per fallback: it would turn reasoning off for every turn, and a luna-primary box has no
  * mixed-provider history to poison; review-b ov#514 S1), or when a non-mapping (or merge-keyed)
  * `agent` / `reasoning_overrides` was left alone with a warning. "Luna is the primary" means EITHER
@@ -271,14 +272,19 @@ export function configureModelFallback(): void {
  * when they do not, a box with luna on either path is treated as luna-primary. The log line names
  * the source(s).
  *
+ * On a luna-primary box an override that is exactly `false` is REMOVED (returns true), whoever set
+ * it: it would turn reasoning off on every turn (the override is per model), the same capability
+ * limit whether this step or a human wrote it. Any other luna value (true, an effort string, a
+ * mapping) is left alone, as is a non-mapping or merge-keyed block; `reasoning_overrides` itself
+ * is dropped only when the luna key was its last entry, and every other `agent` key is kept.
+ *
  * Model switch after a run (ov#514 N2): the overlay has no step on the per-tenant model change.
  * PUT /tenants/:id/model runs the control plane's own commands (the .env HERMES_MODEL line and
  * `hermes config set model` / `cron.model`, tenants.js applyModelStep) and restarts the gateway;
  * the installer is not rerun. So a box switched to a luna primary AFTER this step wrote the
- * override keeps `reasoning_overrides[luna]: false`, which then turns reasoning off on every turn
- * (the override is per model). This step never removes the override, the next roll included (on a
- * luna-primary box it only skips the write); removing it is a control-plane model-step change or a
- * by-hand edit. A box switched FROM luna gets the override on the next roll. See
+ * override keeps `reasoning_overrides[luna]: false` (reasoning off on every turn) until the next
+ * roll reruns this step, which removes it; closing that gap at switch time is a control-plane
+ * model-step change. A box switched FROM luna gets the override back on the next roll. See
  * `configureModelFallback`.
  */
 function ensureFallbackReasoningOff(doc: Record<string, unknown>): boolean {
@@ -293,8 +299,20 @@ function ensureFallbackReasoningOff(doc: Record<string, unknown>): boolean {
     ...(isLuna(config) ? ["config.yaml model"] : []),
   ];
   if (lunaSources.length > 0) {
+    const sources = lunaSources.join(" and ");
+    const lunaAgent = doc.agent;
+    const lunaOverrides = isMapping(lunaAgent) && !("<<" in lunaAgent) ? lunaAgent.reasoning_overrides : undefined;
+    if (isMapping(lunaOverrides) && !("<<" in lunaOverrides) && lunaOverrides[FALLBACK_MODEL] === false) {
+      const { [FALLBACK_MODEL]: _removed, ...rest } = lunaOverrides;
+      const nextAgent: Record<string, unknown> = { ...lunaAgent };
+      if (Object.keys(rest).length > 0) nextAgent.reasoning_overrides = rest;
+      else delete nextAgent.reasoning_overrides;
+      doc.agent = nextAgent;
+      console.log(`→ removed luna reasoning override (luna is primary: ${sources})`);
+      return true;
+    }
     console.log(
-      `→ primary model is ${FALLBACK_MODEL} (${lunaSources.join(" and ")}); left ${path}[${FALLBACK_MODEL}] unset (nothing mixed to poison; HOT-RASOOL L26001)`,
+      `→ primary model is ${FALLBACK_MODEL} (${sources}); left ${path}[${FALLBACK_MODEL}] unset (nothing mixed to poison; HOT-RASOOL L26001)`,
     );
     return false;
   }
