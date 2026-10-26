@@ -253,13 +253,22 @@ export function configureModelFallback(): void {
 /**
  * HOT-RASOOL (CLAIMS L26001): `agent.reasoning_overrides[FALLBACK_MODEL] = false` on `doc`, keeping
  * every other `agent` key and every other override. Returns true when `doc` changed; false when the
- * override was already `false` or a non-mapping (or merge-keyed) `agent` / `reasoning_overrides`
- * was left alone with a warning. See `configureModelFallback`.
+ * override was already `false`, when luna is the box's PRIMARY model (the override is per model,
+ * not per fallback: it would turn reasoning off for every turn, and a luna-primary box has no
+ * mixed-provider history to poison; review-b ov#514 S1), or when a non-mapping (or merge-keyed)
+ * `agent` / `reasoning_overrides` was left alone with a warning. The primary model is what the
+ * gateway sees: `HERMES_MODEL` in `$HERMES_HOME/.env` first (the control plane writes it), else
+ * `model` / `model.default` / `model.model` in config.yaml. See `configureModelFallback`.
  */
 function ensureFallbackReasoningOff(doc: Record<string, unknown>): boolean {
   const path = "agent.reasoning_overrides";
   const byHand = `set ${path}[${FALLBACK_MODEL}]: false by hand`;
   const kind = (value: unknown): string => (Array.isArray(value) ? "list" : typeof value);
+  const primary = primaryModel(doc);
+  if (primary !== undefined && primary.trim().toLowerCase() === FALLBACK_MODEL.toLowerCase()) {
+    console.log(`→ primary model is ${FALLBACK_MODEL}; left ${path}[${FALLBACK_MODEL}] unset (nothing mixed to poison; HOT-RASOOL L26001)`);
+    return false;
+  }
   const agent = doc.agent;
   if (agent !== undefined && agent !== null && !isMapping(agent)) {
     console.log(`→ warning: agent is a ${kind(agent)}, not a mapping; left ${path} unset (${byHand})`);
@@ -281,6 +290,25 @@ function ensureFallbackReasoningOff(doc: Record<string, unknown>): boolean {
   };
   console.log(`→ set ${path}[${FALLBACK_MODEL}]: false (luna turns store no encrypted reasoning; HOT-RASOOL L26001)`);
   return true;
+}
+
+/**
+ * The box's primary model as the gateway resolves it: `HERMES_MODEL` from `$HERMES_HOME/.env`
+ * when set (last assignment wins, as python-dotenv does), else config.yaml `model` as a string or
+ * its `default` / `model` key when a mapping; `undefined` when none names a model.
+ */
+function primaryModel(doc: Record<string, unknown>): string | undefined {
+  const fromEnv = dotenvFileValue("HERMES_MODEL");
+  if (typeof fromEnv === "string" && fromEnv.trim()) return fromEnv;
+  const model = doc.model;
+  if (typeof model === "string" && model.trim()) return model;
+  if (isMapping(model)) {
+    for (const key of ["default", "model"]) {
+      const v = model[key];
+      if (typeof v === "string" && v.trim()) return v;
+    }
+  }
+  return undefined;
 }
 
 /**

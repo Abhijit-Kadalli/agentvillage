@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, expect, spyOn, test } from "bun:test";
 import YAML from "yaml";
@@ -846,19 +846,49 @@ test("LLM-429: configureModelFallback leaves model, model.context_length, model.
   expect(after).toEqual({ ...before, fallback_providers: [LUNA], agent: LUNA_REASONING_OFF });
 });
 
-test("LLM-429: written even when the primary model is already luna (Hermes skips a chain entry equal to the failing backend)", () => {
+test("LLM-429: written even when the primary model is already luna (Hermes skips a chain entry equal to the failing backend); HOT-RASOOL: no reasoning override then", () => {
   for (const model of ["openai/gpt-6-luna", { default: "openai/gpt-6-luna", max_tokens: 4096 }]) {
     const configPath = withConfig({ model, cron: { model: "openai/gpt-6-luna" } });
     const log = quietLog();
+    let lines: string[] = [];
     try {
       configureModelFallback();
+      lines = log.lines();
     } finally {
       log.restore();
     }
     const after = readConfig(configPath);
     expect(after.fallback_providers).toEqual([LUNA]);
     expect(after.model).toEqual(model);
+    expect(after.agent).toBeUndefined();
+    expect(lines.some((l) => l.includes("primary model is openai/gpt-6-luna; left agent.reasoning_overrides[openai/gpt-6-luna] unset"))).toBe(true);
   }
+});
+
+test("HOT-RASOOL: the primary model from $HERMES_HOME/.env HERMES_MODEL decides: luna there skips the override even when config.yaml names haiku; haiku there writes it even when config.yaml names luna", () => {
+  const configPath = withConfig({ model: "anthropic/claude-haiku-5.5" });
+  writeFileSync(join(dirname(configPath), ".env"), "HERMES_MODEL=anthropic/claude-sonnet-5.5\nHERMES_MODEL=openai/gpt-6-luna\n");
+  let log = quietLog();
+  try {
+    configureModelFallback();
+  } finally {
+    log.restore();
+  }
+  let after = readConfig(configPath);
+  expect(after.fallback_providers).toEqual([LUNA]);
+  expect(after.agent).toBeUndefined();
+
+  const configPath2 = withConfig({ model: { default: "openai/gpt-6-luna" } });
+  writeFileSync(join(dirname(configPath2), ".env"), "HERMES_MODEL=anthropic/claude-haiku-5.5\n");
+  log = quietLog();
+  try {
+    configureModelFallback();
+  } finally {
+    log.restore();
+  }
+  after = readConfig(configPath2);
+  expect(after.fallback_providers).toEqual([LUNA]);
+  expect((after.agent as Record<string, unknown>).reasoning_overrides).toEqual({ "openai/gpt-6-luna": false });
 });
 
 test("LLM-429: the dumped chain reads back as the same list under YAML 1.2, YAML 1.1 and PyYAML when present", () => {
