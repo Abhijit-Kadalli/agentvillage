@@ -861,34 +861,76 @@ test("LLM-429: written even when the primary model is already luna (Hermes skips
     expect(after.fallback_providers).toEqual([LUNA]);
     expect(after.model).toEqual(model);
     expect(after.agent).toBeUndefined();
-    expect(lines.some((l) => l.includes("primary model is openai/gpt-6-luna; left agent.reasoning_overrides[openai/gpt-6-luna] unset"))).toBe(true);
+    expect(lines).toContain(
+      "→ primary model is openai/gpt-6-luna (config.yaml model); left agent.reasoning_overrides[openai/gpt-6-luna] unset (nothing mixed to poison; HOT-RASOOL L26001)",
+    );
   }
 });
 
-test("HOT-RASOOL: the primary model from $HERMES_HOME/.env HERMES_MODEL decides: luna there skips the override even when config.yaml names haiku; haiku there writes it even when config.yaml names luna", () => {
-  const configPath = withConfig({ model: "anthropic/claude-haiku-5.5" });
-  writeFileSync(join(dirname(configPath), ".env"), "HERMES_MODEL=anthropic/claude-sonnet-5.5\nHERMES_MODEL=openai/gpt-6-luna\n");
-  let log = quietLog();
+// ov#514 N1: Hermes reads the primary from config.yaml on the messaging gateway and cron, and from the
+// .env HERMES_MODEL line on the dashboard's app chat, so luna in EITHER source skips the override.
+function runFallbackWith(config: Record<string, unknown>, dotenv: string | null): { after: Record<string, unknown>; lines: string[] } {
+  const configPath = withConfig(config);
+  if (dotenv !== null) writeFileSync(join(dirname(configPath), ".env"), dotenv);
+  const log = quietLog();
+  let lines: string[] = [];
   try {
     configureModelFallback();
+    lines = log.lines();
   } finally {
     log.restore();
   }
-  let after = readConfig(configPath);
+  return { after: readConfig(configPath), lines };
+}
+
+test("HOT-RASOOL N1: luna in $HERMES_HOME/.env HERMES_MODEL (last assignment wins) skips the override even when config.yaml names haiku; the log names the .env", () => {
+  const { after, lines } = runFallbackWith(
+    { model: "anthropic/claude-haiku-5.5" },
+    "HERMES_MODEL=anthropic/claude-sonnet-5.5\nHERMES_MODEL=openai/gpt-6-luna\n",
+  );
   expect(after.fallback_providers).toEqual([LUNA]);
   expect(after.agent).toBeUndefined();
+  expect(lines).toContain(
+    "→ primary model is openai/gpt-6-luna ($HERMES_HOME/.env HERMES_MODEL); left agent.reasoning_overrides[openai/gpt-6-luna] unset (nothing mixed to poison; HOT-RASOOL L26001)",
+  );
+  expect(lines).not.toContain(REASONING_OFF_LINE);
+});
 
-  const configPath2 = withConfig({ model: { default: "openai/gpt-6-luna" } });
-  writeFileSync(join(dirname(configPath2), ".env"), "HERMES_MODEL=anthropic/claude-haiku-5.5\n");
-  log = quietLog();
-  try {
-    configureModelFallback();
-  } finally {
-    log.restore();
+test("HOT-RASOOL N1: luna in config.yaml skips the override even when the .env HERMES_MODEL names haiku (model string, model.default, model.model); the log names config.yaml", () => {
+  for (const model of ["openai/gpt-6-luna", { default: "openai/gpt-6-luna" }, { model: "openai/gpt-6-luna" }]) {
+    const { after, lines } = runFallbackWith({ model }, "HERMES_MODEL=anthropic/claude-haiku-5.5\n");
+    expect(after.fallback_providers).toEqual([LUNA]);
+    expect(after.agent).toBeUndefined();
+    expect(after.model).toEqual(model);
+    expect(lines).toContain(
+      "→ primary model is openai/gpt-6-luna (config.yaml model); left agent.reasoning_overrides[openai/gpt-6-luna] unset (nothing mixed to poison; HOT-RASOOL L26001)",
+    );
   }
-  after = readConfig(configPath2);
-  expect(after.fallback_providers).toEqual([LUNA]);
-  expect((after.agent as Record<string, unknown>).reasoning_overrides).toEqual({ "openai/gpt-6-luna": false });
+});
+
+test("HOT-RASOOL N1: luna in both sources skips the override and the log names both", () => {
+  const { after, lines } = runFallbackWith({ model: { default: " OpenAI/GPT-6-Luna " } }, "HERMES_MODEL=openai/gpt-6-luna\n");
+  expect(after.agent).toBeUndefined();
+  expect(lines).toContain(
+    "→ primary model is openai/gpt-6-luna ($HERMES_HOME/.env HERMES_MODEL and config.yaml model); left agent.reasoning_overrides[openai/gpt-6-luna] unset (nothing mixed to poison; HOT-RASOOL L26001)",
+  );
+});
+
+test("HOT-RASOOL N1: neither source names luna writes the override (.env and config.yaml both non-luna, .env only, config.yaml only, neither set)", () => {
+  const cases: Array<[Record<string, unknown>, string | null]> = [
+    [{ model: "anthropic/claude-haiku-5.5" }, "HERMES_MODEL=anthropic/claude-sonnet-5.5\n"],
+    [{}, "HERMES_MODEL=anthropic/claude-haiku-5.5\n"],
+    [{ model: { default: "anthropic/claude-haiku-5.5", model: "openai/gpt-6-luna" } }, null],
+    [{}, null],
+    [{ model: "  " }, "HERMES_MODEL=\n"],
+  ];
+  for (const [config, dotenv] of cases) {
+    const { after, lines } = runFallbackWith(config, dotenv);
+    expect(after.fallback_providers).toEqual([LUNA]);
+    expect(after.agent).toEqual(LUNA_REASONING_OFF);
+    expect(lines).toContain(REASONING_OFF_LINE);
+    expect(lines.some((l) => l.startsWith("→ primary model is"))).toBe(false);
+  }
 });
 
 test("LLM-429: the dumped chain reads back as the same list under YAML 1.2, YAML 1.1 and PyYAML when present", () => {
