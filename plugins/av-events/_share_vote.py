@@ -1585,6 +1585,7 @@ REFUSALS: dict[str, str] = {
     "too_many_pending": (
         "Nothing was proposed: five digests are already waiting for the resident. Wait for their answers, "
         "or revoke one, before proposing another."
+        + _approval.APPROVALS_CHAT_LINE
     ),
     "digest_id_required": "Nothing was changed: this action needs the digest_id a share returned.",
     "digest_unknown": "Nothing was changed: this agent holds no digest with that digest_id.",
@@ -1649,7 +1650,7 @@ REFUSALS: dict[str, str] = {
 #: What each final or live state means, for the agent.
 STATE_MESSAGES: dict[str, str] = {
     "unfiled": "The approval service could not be reached; the request will be filed when it can. " + _NOT_APPROVAL,
-    "requested": "The resident has been asked in their approval channel. " + _NOT_APPROVAL,
+    "requested": "The resident has been asked in their approval channel. " + _NOT_APPROVAL + _approval.APPROVALS_CHAT_LINE,
     "cleared": "The resident's policy clears this; it is being done.",
     "starting": "It is being done now.",
     "emitting": "The resident approved it; it is being handed over now.",

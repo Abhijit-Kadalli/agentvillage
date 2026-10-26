@@ -801,6 +801,12 @@ shared by `digest.share` and `village.vote` later through `register_pass`) and
 parse it back, R21), the tool's returned id, and the `sourceId` Index stores (decision A, amending
 R20). A published entry keeps Index's id as `index_intent_id`; update and withdraw mirror to it.
 
+Pending intention approval replies (capture, confirm, and an update refused while its question
+is open) end with `Open approvals chat: https://t.me/AgentVillageApprovalsBot`.
+The same static line ends pending digest-share and vote replies, including the open-share cap
+reminder. It opens the shared bot's chat only; it does not approve anything or replace the
+tokenized **Connect approvals** onboarding button.
+
 **Where the held text lives (R16).** In the map entry's `approval.payload`
 (`$HERMES_HOME/av-events/intentions.json`, 0600, under its flock), from capture until the proposal
 ends. It is deleted on publish, on Index's 422, on an ambiguous or failed publish, on the

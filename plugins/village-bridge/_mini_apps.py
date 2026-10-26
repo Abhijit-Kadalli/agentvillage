@@ -77,15 +77,23 @@ def send_key(draft_id: str) -> str:
     return SEND_CLASS + ":" + draft_id
 
 
+# Public bot chat, confirmed against production NEXT_PUBLIC_APPROVALS_BOT_NAME.
+# This is navigation only, not a pairing or approval grant link.
+APPROVALS_CHAT_URL = "https://t.me/AgentVillageApprovalsBot"
+OPEN_APPROVALS_CHAT = "Open approvals chat: " + APPROVALS_CHAT_URL
+# Appended where the instruction asks the agent to send the owner to the bot.
+APPROVALS_CHAT_LINE = " End that message with this line on its own: \"" + OPEN_APPROVALS_CHAT + "\"."
+
 # HOT-01 (B-033): what the agent tells the owner when a send waits for the owner's tap. One wording
 # for the daemon's "not granted yet" and the app's 403 star_approval_required (__init__.py). With the
 # member row autonomous (the shipped template, B-133) the daemon answers "autonomous" and no card is
 # shown; a policy that still says manual for the member class (an older box) keeps the card and this text.
 APPROVE_IN_BOT = ("Ask the owner to approve this exact Gold Star on its card in the approvals bot, then retry "
                   "gold-stars.send with this SAME draftId. Never prepare a new preview to retry. Chat consent alone "
-                  "cannot authorize sending.")
+                  "cannot authorize sending." + APPROVALS_CHAT_LINE)
 ORDER_APPROVE_IN_BOT = ("Ask the owner to approve this exact For Kicks order on its card in the approvals bot, then retry "
-                        "forkicks.order.confirm with this SAME draftId. Never prepare another order to retry an uncertain confirm.")
+                        "forkicks.order.confirm with this SAME draftId. Never prepare another order to retry an uncertain "
+                        "confirm." + APPROVALS_CHAT_LINE)
 # FK-ON-GRANT (CLAIMS L17710/L17711/L17726): the daemon's "not granted yet" when this box will place the order
 # itself on the resident's tap (_forkicks_grant.py) and tell them in this chat. Product owns the quoted words.
 # FK-CARD-AT-PREPARE (CLAIMS L19913/L19916): the prepare answer carries it, since the bridge raises the card right
@@ -94,10 +102,10 @@ ORDER_APPROVE_IN_BOT = ("Ask the owner to approve this exact For Kicks order on 
 ORDER_PLACED_ON_APPROVAL = ("The approval card for this exact For Kicks order was handed to the owner's approvals bot (its "
                             "delivery is not confirmed). Show the preview, then tell the owner: \"I've sent your approval card "
                             "to your approvals bot; tap Approve there and I'll place it. If no card arrives within a minute, "
-                            "tell me and I'll check.\" When they approve, it is placed automatically and they get one message "
-                            "in this chat; do not announce it again. Never ask for a yes in chat, and never say it was placed "
-                            "before a receipt. To check, call forkicks.order.confirm with this SAME draftId (it never sends a "
-                            "second card); never prepare another order.")
+                            "tell me and I'll check.\"" + APPROVALS_CHAT_LINE + " When they approve, it is placed "
+                            "automatically and they get one message in this chat; do not announce it again. Never ask for a "
+                            "yes in chat, and never say it was placed before a receipt. To check, call forkicks.order.confirm "
+                            "with this SAME draftId (it never sends a second card); never prepare another order.")
 # FK-CARD-AT-PREPARE: the card could not be raised at prepare (refused, unavailable, or an error): the preview is
 # still returned, and the agent says plainly that nothing was ordered.
 ORDER_CARD_NOT_RAISED = ("The approval card for this order could not be raised, so nothing was ordered. Show the preview, "

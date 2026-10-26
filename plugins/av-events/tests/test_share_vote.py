@@ -521,6 +521,7 @@ def test_without_approval_the_tools_refuse_and_nothing_is_proposed(tctx, serve, 
 def test_a_share_proposes_exactly_the_contract_object_and_no_text_in_the_summary(tctx, serve, mods, av, plugin):
     out = share(tctx, scope="service:coordination", expires_in_hours=48)
     assert out["success"] is True and out["state"] == "requested"
+    assert out["message"].splitlines()[-1] == "Open approvals chat: https://t.me/AgentVillageApprovalsBot"
     digest_id = out["digest_id"]
     assert re.fullmatch(CONTRACT["patterns"]["digest_id"], digest_id)
     assert instant(out["expires_at"]) == pytest.approx(NOW + 48 * 3600, abs=0.001)
@@ -823,7 +824,9 @@ def test_a_scope_outside_the_contract_is_refused(tctx, serve, scope):
 def test_open_share_proposals_are_capped(tctx, serve):
     for _ in range(5):
         assert share(tctx)["state"] == "requested"
-    assert share(tctx)["error"] == "too_many_pending" and len(serve.proposals()) == 5
+    out = share(tctx)
+    assert out["error"] == "too_many_pending" and len(serve.proposals()) == 5
+    assert out["message"].splitlines()[-1] == "Open approvals chat: https://t.me/AgentVillageApprovalsBot"
 
 
 # ---- Revocation ---------------------------------------------------------------
@@ -922,6 +925,7 @@ def test_the_question_is_read_through_the_provider(tctx):
 def test_a_vote_proposes_question_and_answer_only_and_the_grant_emits_vote_cast(tctx, serve, mods, av, plugin):
     out = vote(tctx, rationale="They said at dinner they sleep early")
     assert out["success"] is True and out["state"] == "requested"
+    assert out["message"].splitlines()[-1] == "Open approvals chat: https://t.me/AgentVillageApprovalsBot"
     key = f"village.vote:{QUESTION_ID}:{TENANT}"
     [p] = serve.proposals()
     assert p["flags"]["--class"] == VOTE and p["flags"]["--key"] == key
