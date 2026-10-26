@@ -1,41 +1,41 @@
 {
   "manifest": 2,
-  "id": "nexus",
-  "name": "Edge Nexus",
+  "id": "library",
+  "name": "Edge Library",
   "version": "1.0.0",
   "description": "Search and read the Edge City India 2026 village knowledge graph: the people, projects, tools and topics of the village, linked to the sources they came from, with the history of every change. When you ask, add to it: a source to read, or facts and links, each with a confidence and a reason. Everything added is visible to the whole village.",
-  "homepage": "https://nexus.positivesumexperiments.com/",
+  "homepage": "https://library.positivesumexperiments.com/",
   "owner": {
     "github": "Nhajela",
-    "org": "Edge Nexus"
+    "org": "Edge Library"
   },
   "visibility": "sandbox",
   "permissions": [
     {
       "kind": "read",
       "label": "Search and read the village knowledge graph",
-      "description": "Your searches and the nodes, sources, history and proposals you open in Edge Nexus. Edge Nexus (nexus.positivesumexperiments.com) receives your Telegram user id with each request so it knows who you are, and keeps search words without who asked."
+      "description": "Your searches and the nodes, sources, history and proposals you open in Edge Library. Edge Library (library.positivesumexperiments.com) receives your Telegram user id with each request so it knows who you are, and keeps search words without who asked."
     },
     {
       "kind": "action",
       "label": "Add to the village knowledge graph when you ask",
-      "description": "Submit a source (text you give it), add or correct nodes and links, or propose a change for an Edge Nexus admin to review. Each change is recorded under your name in Edge Nexus's history, visible to the whole village, and can be reverted. Edge Nexus receives your Telegram user id and what you add."
+      "description": "Submit a source (text you give it), add or correct nodes and links, or propose a change for an Edge Library admin to review. Each change is recorded under your name in Edge Library's history, visible to the whole village, and can be reverted. Edge Library receives your Telegram user id and what you add."
     }
   ],
   "service": {
     "kind": "mcp",
-    "baseUrl": "https://nexus.positivesumexperiments.com/api/mcp",
+    "baseUrl": "https://library.positivesumexperiments.com/api/mcp",
     "auth": {
       "mode": "app-token",
-      "secretRef": "MINI_APP_NEXUS_TOKEN"
+      "secretRef": "MINI_APP_LIBRARY_TOKEN"
     }
   },
   "operations": [
     {
-      "name": "nexus.initialize",
+      "name": "library.initialize",
       "class": "read",
       "target": {
-        "tool": "nexus_initialize"
+        "tool": "library_initialize"
       },
       "input": {
         "type": "object",
@@ -48,10 +48,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.search",
+      "name": "library.search",
       "class": "read",
       "target": {
-        "tool": "nexus_search"
+        "tool": "library_search"
       },
       "input": {
         "type": "object",
@@ -108,10 +108,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.get",
+      "name": "library.get",
       "class": "read",
       "target": {
-        "tool": "nexus_get"
+        "tool": "library_get"
       },
       "input": {
         "type": "object",
@@ -143,10 +143,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.source",
+      "name": "library.source",
       "class": "read",
       "target": {
-        "tool": "nexus_source"
+        "tool": "library_source"
       },
       "input": {
         "type": "object",
@@ -177,10 +177,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.schema",
+      "name": "library.schema",
       "class": "read",
       "target": {
-        "tool": "nexus_schema"
+        "tool": "library_schema"
       },
       "input": {
         "type": "object",
@@ -193,10 +193,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.history",
+      "name": "library.history",
       "class": "read",
       "target": {
-        "tool": "nexus_history"
+        "tool": "library_history"
       },
       "input": {
         "type": "object",
@@ -239,10 +239,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.changes_since",
+      "name": "library.changes_since",
       "class": "read",
       "target": {
-        "tool": "nexus_changes_since"
+        "tool": "library_changes_since"
       },
       "input": {
         "type": "object",
@@ -269,10 +269,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.proposals",
+      "name": "library.proposals",
       "class": "read",
       "target": {
-        "tool": "nexus_proposals"
+        "tool": "library_proposals"
       },
       "input": {
         "type": "object",
@@ -304,10 +304,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.submit_source",
+      "name": "library.submit_source",
       "class": "write",
       "target": {
-        "tool": "nexus_submit_source"
+        "tool": "library_submit_source"
       },
       "input": {
         "type": "object",
@@ -339,10 +339,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.write",
+      "name": "library.write",
       "class": "write",
       "target": {
-        "tool": "nexus_write"
+        "tool": "library_write"
       },
       "input": {
         "type": "object",
@@ -1328,10 +1328,10 @@
       "framing": "data"
     },
     {
-      "name": "nexus.propose",
+      "name": "library.propose",
       "class": "write",
       "target": {
-        "tool": "nexus_propose"
+        "tool": "library_propose"
       },
       "input": {
         "type": "object",
@@ -2347,10 +2347,10 @@
   ],
   "skills": [
     {
-      "name": "nexus",
+      "name": "library",
       "version": "1.0.0",
-      "sha256": "07fc2fa510cc80dbe167dee3d9f66f262865e3d1b3ea59bb3698bcd764ca4edb",
-      "path": "skills/nexus/SKILL.md"
+      "sha256": "20eb2560b25b6fab96b55d00219bbd0b230e4196e296bbd68e469c7ddce66ba0",
+      "path": "skills/library/SKILL.md"
     }
   ]
 }

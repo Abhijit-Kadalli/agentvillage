@@ -1,19 +1,19 @@
 /**
- * Reference implementation: the Agent Village app server's half of the Edge Nexus mini-app
- * (mini-apps/nexus/README.md is the contract). Edge City's app and control-plane repos are private, so this
+ * Reference implementation: the Agent Village app server's half of the Edge Library mini-app
+ * (mini-apps/library/README.md is the contract). Edge City's app and control-plane repos are private, so this
  * shows, in code, what that contract asks for. It is reference code for Edge City's app server, not run on any
  * box, and nothing in this repo imports it. Its shape follows docs/reference/eci-volunteers/ (the same app-token
- * link), without the confirm rule: Edge Nexus's writes are single calls the owner asked for.
+ * link), without the confirm rule: Edge Library's writes are single calls the owner asked for.
  *
  * One call of `handle()` is one `village` operation from a box:
  *   1. the operation must be one of the manifest's eleven, and its arguments must pass that operation's `input`
  *      schema and `maxRequestBytes` (the box checked them too; the server never trusts the box);
  *   2. MCP over streamable HTTP (initialize, notifications/initialized, tools/call) with the one app token and
  *      the owner's Telegram id (and username, when known), inside the operation's timeout and response budget;
- *   3. Edge Nexus's refusals before MCP (401, 403) and JSON-RPC errors become the generic codes the box knows; a
+ *   3. Edge Library's refusals before MCP (401, 403) and JSON-RPC errors become the generic codes the box knows; a
  *      tool's own refusal (isError, structuredContent {code, detail}) is an operational code for the box when it
  *      is rate_limited, not_connected or unavailable, and otherwise data the agent can act on (invalid_arguments,
- *      not_found, not_authorized, conflict, with Edge Nexus's detail); a result becomes {text, structured, isError},
+ *      not_found, not_authorized, conflict, with Edge Library's detail); a result becomes {text, structured, isError},
  *      with `text` left empty when it is only the JSON of `structured`.
  * The answer is `{status, body}`: what the app route sends back to the box. Refusals are `{code}` only, never
  * upstream wording (the box shows its own text for each code).
@@ -23,12 +23,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const MANIFEST_PATH = join(import.meta.dir, "..", "..", "..", "mini-apps", "nexus", "manifest.json");
+export const MANIFEST_PATH = join(import.meta.dir, "..", "..", "..", "mini-apps", "library", "manifest.json");
 export const PROTOCOL_VERSION = "2025-06-18";
-// A refusal body Edge Nexus sends before MCP is tiny ({code, detail}); never read more of one than this.
+// A refusal body Edge Library sends before MCP is tiny ({code, detail}); never read more of one than this.
 const REFUSAL_BYTES = 4096;
 
-/** The codes the box knows for these operations (plugins/village-bridge/_nexus.py NEXUS_ERRORS), with their HTTP status. */
+/** The codes the box knows for these operations (plugins/village-bridge/_library.py LIBRARY_ERRORS), with their HTTP status. */
 export const CODES = {
   invalid_arguments: 422,
   not_connected: 403,
@@ -39,12 +39,12 @@ export const CODES = {
   response_too_large: 502,
 } as const;
 export type Code = keyof typeof CODES;
-// Edge Nexus's own pre-MCP codes passed through to the box as they are. 401 and 503 are handled before this; today
-// Edge Nexus sends only 403 not_authorized here (the Agent Village agent revoked: the whole link is off).
+// Edge Library's own pre-MCP codes passed through to the box as they are. 401 and 503 are handled before this; today
+// Edge Library sends only 403 not_authorized here (the Agent Village agent revoked: the whole link is off).
 const PASSED_THROUGH = new Set<string>(["not_authorized", "rate_limited", "invalid_arguments", "unavailable"]);
 // A tool refusal with one of these codes is about the link, not the arguments: the box shows its own text.
 const OPERATIONAL = new Set<string>(["rate_limited", "not_connected", "unavailable"]);
-// Edge Nexus's limits on the identity headers (services/mcp/agent-village.ts): a value outside them is a 401.
+// Edge Library's limits on the identity headers (services/mcp/agent-village.ts): a value outside them is a 401.
 const TELEGRAM_ID = /^[1-9][0-9]{0,15}$/;
 const USERNAME = /^[A-Za-z0-9_]{4,32}$/;
 
@@ -64,7 +64,7 @@ export function loadManifest(path = MANIFEST_PATH): Schema {
 }
 
 /**
- * The JSON Schema subset the manifest's input schemas use (Edge Nexus's zod schemas through z.toJSONSchema):
+ * The JSON Schema subset the manifest's input schemas use (Edge Library's zod schemas through z.toJSONSchema):
  * object/array/string/integer/number/boolean/null, const, enum, pattern, lengths, bounds, items, properties,
  * required, additionalProperties (false or a schema), propertyNames, anyOf and oneOf. A keyword it does not know
  * is refused, so a later manifest edit that uses one fails closed here instead of being silently ignored.
@@ -73,7 +73,7 @@ const KNOWN = new Set(["type", "properties", "required", "additionalProperties",
   "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems", "items", "anyOf", "oneOf"]);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 export function matches(schema: Schema, value: unknown): boolean {
-  for (const key of Object.keys(schema)) if (!KNOWN.has(key)) throw new Error(`nexus_schema_keyword:${key}`);
+  for (const key of Object.keys(schema)) if (!KNOWN.has(key)) throw new Error(`library_schema_keyword:${key}`);
   if ("const" in schema && value !== schema.const) return false;
   if (schema.enum && !schema.enum.includes(value)) return false;
   switch (schema.type) {
@@ -85,7 +85,7 @@ export function matches(schema: Schema, value: unknown): boolean {
     case "null": if (value !== null) return false; break;
     case "integer": if (!Number.isInteger(value)) return false; break;
     case "number": if (typeof value !== "number" || !Number.isFinite(value)) return false; break;
-    default: throw new Error(`nexus_schema_type:${schema.type}`);
+    default: throw new Error(`library_schema_type:${schema.type}`);
   }
   if (typeof value === "string") {
     const length = [...value].length; // code points, as JSON Schema counts them
@@ -153,19 +153,19 @@ function rpcMessage(contentType: string, body: string, id: number): any {
   throw new Refusal("connection_or_request_refused");
 }
 
-export function createNexusBridge(options: {
+export function createLibraryBridge(options: {
   token: string;
   fetch: typeof fetch;
   baseUrl?: string;
   manifest?: Schema;
-  /** Operational events only (never the token, arguments or Edge Nexus's answers). */
+  /** Operational events only (never the token, arguments or Edge Library's answers). */
   log?: (event: string, detail?: Record<string, unknown>) => void;
 }) {
   const manifest = options.manifest ?? loadManifest();
   const baseUrl = options.baseUrl ?? manifest.service.baseUrl;
-  const log = options.log ?? ((event, detail) => console.error(`nexus: ${event}`, detail ?? {}));
+  const log = options.log ?? ((event, detail) => console.error(`library: ${event}`, detail ?? {}));
   const operations = new Map<string, Operation>(manifest.operations.map((op: Operation) => [op.name, op]));
-  if (!options.token) throw new Error("MINI_APP_NEXUS_TOKEN is not set");
+  if (!options.token) throw new Error("MINI_APP_LIBRARY_TOKEN is not set");
 
   async function handle(request: Request): Promise<Answer> {
     try {
@@ -201,8 +201,8 @@ export function createNexusBridge(options: {
         Accept: "application/json, text/event-stream",
         "Content-Type": "application/json",
       };
-      // The username, when Agent Village knows it, refreshes Edge Nexus's record (pairing is the source of truth: a
-      // different username is accepted, never refused). A malformed one is left out: Edge Nexus answers it 401.
+      // The username, when Agent Village knows it, refreshes Edge Library's record (pairing is the source of truth: a
+      // different username is accepted, never refused). A malformed one is left out: Edge Library answers it 401.
       const name = typeof username === "string" ? username.replace(/^@/, "") : "";
       if (USERNAME.test(name)) headers["X-Agent-Village-Telegram-Username"] = name;
       else if (name) log("username_malformed_not_sent");
@@ -217,7 +217,7 @@ export function createNexusBridge(options: {
         params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "agent-village", version: manifest.version } } });
       const initMessage = rpcMessage(init.headers.get("content-type") ?? "", await readCapped(init, op.maxResponseBytes), 1);
       if (initMessage.error || !initMessage.result) throw new Refusal("connection_or_request_refused");
-      // Edge Nexus is stateless (one server per request) and returns no session today; carry one if it ever does.
+      // Edge Library is stateless (one server per request) and returns no session today; carry one if it ever does.
       const session = init.headers.get("mcp-session-id");
       if (session) headers["Mcp-Session-Id"] = session;
       headers["MCP-Protocol-Version"] = initMessage.result.protocolVersion ?? PROTOCOL_VERSION;
@@ -237,7 +237,7 @@ export function createNexusBridge(options: {
         .filter((part: any) => part && part.type === "text" && typeof part.text === "string")
         .map((part: any) => part.text)
         .join("\n\n");
-      // Edge Nexus writes most results only as JSON: its text is then JSON.stringify(structuredContent). Sent
+      // Edge Library writes most results only as JSON: its text is then JSON.stringify(structuredContent). Sent
       // once, as `structured`, so a large answer is not carried twice inside the box's byte limit.
       if (structured !== null && text === JSON.stringify(structured)) text = "";
       return { text, structured, isError: result.isError === true };
@@ -246,7 +246,7 @@ export function createNexusBridge(options: {
     }
   }
 
-  /** Edge Nexus's refusals before MCP, as the generic codes. Throws; never returns. */
+  /** Edge Library's refusals before MCP, as the generic codes. Throws; never returns. */
   async function refusalOf(response: Response): Promise<never> {
     if (response.status === 401) {
       // A wrong or missing token is Agent Village's configuration, not the resident's: the box says
