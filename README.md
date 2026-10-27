@@ -25,12 +25,13 @@ and stays inert until installed. The control plane owns reviewed versions
 and install intent; staging files is not proof the runtime loaded them.
 [Build a reviewed mini-app](mini-apps/README.md).
 
-For Kicks menu requests (“show me the menu”, “what's on the menu”, “what do
-you have”) request image boards by default. The native tool prepares private
-local PNGs and accessible text; the agent must preserve every raw `MEDIA:` line
-in its final reply for Hermes to attach the photos. Explicit text-only requests
-still use the structured menu read. Image failures are disclosed and fall back
-to current text, never a claim that a photo was sent.
+Questions about For Kicks or its menu always request the complete current image
+boards, including a general “tell me about For Kicks”. The native tool prepares
+private local PNGs and accessible text; the agent must preserve **every** raw
+`MEDIA:` line in its final reply before any item list or recommendation, not
+substitute selected drinks, the first board or a menu link. Internal structured
+reads for order preparation still omit image format. Image failures are
+disclosed and fall back to complete current text, never a photo-delivery claim.
 
 AgentVillage never names the plumbing in chat. You see AgentVillage and (when relevant) your community.
 
