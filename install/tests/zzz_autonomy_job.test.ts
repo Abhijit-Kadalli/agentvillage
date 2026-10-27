@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REVIEWED_MINI_APPS } from "../install_miniapps";
@@ -99,4 +99,15 @@ test("failed Hermes teardown still withdraws the gate and the owned executable",
   expect(existsSync(join(home,"scripts",AUTONOMY_JOB_SCRIPT))).toBe(false);
   // The stale job record is inert: the script and projection gate are gone.
   expect(jobs().map(job=>job.name)).toEqual([AUTONOMY_JOB_NAME]);
+});
+
+test("a dangling resident shim symlink never creates its outside target",()=>{
+  const {home,stage}=box();
+  mkdirSync(join(home,"scripts"));
+  const target=join(home,"outside-target");
+  symlinkSync(target,join(home,"scripts",AUTONOMY_JOB_SCRIPT));
+  expect(stage([zzzbot,autonomy]).status).toBe(1);
+  expect(existsSync(target)).toBe(false);
+  expect(JSON.parse(readFileSync(join(home,"mini-apps.json"),"utf8")).apps.map((app:{id:string})=>app.id))
+    .toEqual(["zzzbot"]);
 });

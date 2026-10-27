@@ -1,5 +1,5 @@
 /** Separate, projection-gated no-agent ZZZ event job. No pair-gate dependency. */
-import { chmodSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
@@ -17,7 +17,7 @@ const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "s
 
 /** First shipped version. Append old fixed digests before changing shipped files in a later release. */
 export const AUTONOMY_SHIPPED = {
-  "scripts/zzz_autonomy_runner.py": ["e037df8b8da9f62fe4336182390e8b87b698ff0317b7c7ab54147b6f4ad9d2fb"],
+  "scripts/zzz_autonomy_runner.py": ["a4943bc125c0792b57df0c4254977983226e37bf3864fde34b0f7c0bc9feb393"],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
 
@@ -180,11 +180,14 @@ export function reconcileAutonomyJob(home: string, installed: boolean): void {
   const script = source(AUTONOMY_FILES[0]);
   const schedule = autonomySchedule(bridgeToken(home));
   const dir = realDir(home, "scripts");
-  if (!dir && existsSync(join(home, "scripts"))) throw new Error("zzz_autonomy_scripts_invalid");
+  if (!dir) {
+    try { lstatSync(join(home,"scripts")); throw new Error("zzz_autonomy_scripts_invalid"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code!=="ENOENT") throw error; }
+  }
   const scripts = join(home, "scripts");
   mkdirSync(scripts, {recursive:true,mode:0o700});
   const shim = join(scripts, AUTONOMY_JOB_SCRIPT);
-  if (existsSync(shim) && ownedFile(shim, AUTONOMY_FILES[0]) === "not_ours") throw new Error("zzz_autonomy_shim_not_ours");
+  if (ownedFile(shim, AUTONOMY_FILES[0]) === "not_ours") throw new Error("zzz_autonomy_shim_not_ours");
   writeFileSync(shim, script, {mode:0o700}); chmodSync(shim,0o700);
   const id = jobs[0]?.id;
   if (id !== undefined && (typeof id !== "string" || !ID.test(id))) throw new Error("zzz_autonomy_job_invalid");

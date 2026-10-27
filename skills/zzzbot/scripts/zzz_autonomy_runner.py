@@ -12,6 +12,7 @@ if __name__ == "__main__" and not sys.flags.isolated:
 import fcntl
 import hashlib
 import json
+import logging
 import re
 import signal
 import stat
@@ -45,6 +46,13 @@ ENDPOINTS = {
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
     "openai-api": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
 }
+
+
+def _quiet_sdk():
+    # OpenAI's OPENAI_LOG=debug logs request options, including room text.
+    # This isolated child has no operator-visible diagnostic output by design.
+    os.environ.pop("OPENAI_LOG", None)
+    logging.disable(logging.CRITICAL)
 
 
 def _plain_json(path: Path, limit: int):
@@ -218,6 +226,7 @@ def _model_route(home: Path):
 
 
 def _output(context: dict, home: Path):
+    _quiet_sdk()
     if context.get("kind") not in KIND or not isinstance(context.get("candidate_id"), str):
         raise ValueError("context-shape")
     kind = context["kind"]
@@ -258,6 +267,7 @@ def _output(context: dict, home: Path):
 
 
 def run(home: Path):
+    _quiet_sdk()
     if not _installed(home):
         return
     cfg = _config(home)

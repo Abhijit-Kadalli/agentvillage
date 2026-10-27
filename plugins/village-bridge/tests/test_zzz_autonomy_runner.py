@@ -1,6 +1,8 @@
 """Synthetic, no-network contract tests for the installer-owned event turn."""
 import importlib.util
 import json
+import logging
+import os
 import sys
 import tempfile
 import unittest
@@ -151,6 +153,16 @@ class TestAutonomyRunner(unittest.TestCase):
         Response.data = [b"x" * 16385]
         with self.assertRaisesRegex(ValueError, "activity-size"):
             runner._activity(Http(), self.cfg, "claim")
+
+    def test_inherited_sdk_debug_cannot_log_room_context(self):
+        previous = logging.root.manager.disable
+        try:
+            with patch.dict(os.environ, {"OPENAI_LOG": "debug"}):
+                runner._quiet_sdk()
+                self.assertNotIn("OPENAI_LOG", os.environ)
+                self.assertGreaterEqual(logging.root.manager.disable, logging.CRITICAL)
+        finally:
+            logging.disable(previous)
 
 
 if __name__ == "__main__":
