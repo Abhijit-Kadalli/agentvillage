@@ -5,6 +5,8 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdi
 import { dirname, join, resolve, parse } from "node:path";
 import { EDGE_SKILL_NAMES, hermesHome, RETIRED_SKILL_DIRS } from "./paths";
 import { reconcileZzzManagedJob, verifyZzzManagedJob, zzzShippedFile, type ZzzShippedKind } from "./zzz_managed_job";
+import { AUTONOMY_FILES, AUTONOMY_GATE, autonomyMarkers, reconcileAutonomyJob, verifyAutonomyJob,
+  removeAutonomyFiles, removeAutonomyState, removeAutonomyShim } from "./zzz_autonomy_job";
 
 /**
  * ROLODEX.PERSON (rc42, CLAIMS 7799): the gold-stars entry also carries `rolodex.person` (a read of
@@ -29,6 +31,8 @@ export const REVIEWED_MINI_APPS = [
   // `zzz-bridge`: cp and app ids match ^[a-z0-9][a-z0-9-]{0,39}$ (no underscore; app#500 reads the same id).
   // Empty operations/skills: it grants no ordinary tool and stages no skill (_mini_apps.py ZZZ_BRIDGE, exact).
   { id: "zzz-bridge", version: "1.0.0", operations: [], skills: [] },
+  // Internal rollout gate for the separate event autonomy no-agent job. Absent by default.
+  { id: "zzz-autonomy-runner", version: "1.0.0", operations: [], skills: [] },
   { id: "slopfolio", version: "1.0.0", operations: ["slopfolio.prepare", "slopfolio.status"], skills: ["slopfolio"] },
   // MOSAIC (app#486, rides v2.1.9): restricted in the CP catalog (MINI_APPS_TENANT_ALLOWLIST key `mosaic`).
   // Dizko's shape: the public read first, then its own context namespace read and write, served per box.
@@ -73,6 +77,9 @@ const ZZZ_STAGE_FILES = ZZZ_MANAGED_FILES.filter(relative => relative !== `scrip
  */
 export function zzzParticipation(projection: { apps: readonly { id: string }[] }): boolean {
   return projection.apps.some(app => app.id === "zzzbot") && projection.apps.some(app => app.id === ZZZ_BRIDGE_ID);
+}
+export function zzzAutonomyParticipation(projection: { apps: readonly { id: string }[] }): boolean {
+  return projection.apps.some(app => app.id === "zzzbot") && projection.apps.some(app => app.id === AUTONOMY_GATE);
 }
 /**
  * ov#441 S4-r (lead RULING CLAIMS L17296): what marks a box this installer ever turned managed ZZZ on for. A stage
@@ -522,6 +529,26 @@ export function failClosedZzz(home: string): void {
   }
   try { removeZzzManagedState(home); } catch { /* refused path: left for the operator */ }
 }
+/** A failed stage cannot leave the event job running after its authority was withdrawn. */
+export function failClosedAutonomy(home: string): void {
+  // Withdraw only this internal gate first. An already running script rechecks it
+  // before inference and completion, even when Hermes job removal is unavailable.
+  const target=join(home,"mini-apps.json");
+  try {
+    regular(target);
+    if (exists(target)) {
+      const doc=JSON.parse(readFileSync(target,"utf8")) as {version?:unknown;apps?:unknown};
+      if (doc.version===1 && Array.isArray(doc.apps) && doc.apps.some((app:unknown)=>
+          !!app && typeof app==="object" && (app as {id?:unknown}).id===AUTONOMY_GATE))
+        atomic(target,JSON.stringify({version:1,apps:doc.apps.filter((app:unknown)=>
+          !app || typeof app!=="object" || (app as {id?:unknown}).id!==AUTONOMY_GATE)}));
+    }
+  } catch { /* unreadable authority is already refused by the runner */ }
+  if (!autonomyMarkers(home)) return;
+  try { reconcileAutonomyJob(home, false); } catch { /* keep disabling below */ }
+  try { removeAutonomyShim(home); } catch { /* next stage retries */ }
+  try { removeAutonomyFiles(home); removeAutonomyState(home); } catch { /* next stage retries */ }
+}
 /**
  * MINIAPPS v2 Phase 2, skill delivery (lanes-context/MINIAPPS-V2-SKILL-DELIVERY-design.md): the cp may
  * hand this installer each app's reviewed SKILL.md bytes BESIDE the projection, in two environment
@@ -599,7 +626,8 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
   for (const { app, generic } of staged) if (generic) regular(join(home, "skills", app.id, "SKILL.md"));
   // No desired apps and no mini-app state on the box (every non-cohort box): write nothing at all.
   const stateless = () => !exists(target) && !exists(credential) && !exists(state) &&
-    REVIEWED_MINI_APPS.every(app => !hasSkill(app) || !owned(app.id) || !exists(join(home, "skills", app.id, "SKILL.md")));
+    REVIEWED_MINI_APPS.every(app => !hasSkill(app) || !owned(app.id) || !exists(join(home, "skills", app.id, "SKILL.md"))) &&
+    !autonomyMarkers(home);
   const desired = staged.filter(({ app }) => hasSkill(app)).map(({ app, generic }) => {
     const entry = served.entries.get(app.id);
     let content: Buffer;
@@ -628,6 +656,8 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     return { app, content };
   });
   const zzzManaged = zzzParticipation(projection);
+  const autonomyManaged = zzzAutonomyParticipation(projection);
+  const autonomyTeardown = !autonomyManaged && autonomyMarkers(home);
   // S4-r: gate off and no marker on disk is the early return. Every ZZZ step below runs only for zzzManaged (install)
   // or zzzTeardown (a box that was on: remove the job, shim, files and state, loudly when that cannot be confirmed).
   const zzzTeardown = !zzzManaged && zzzMarkerOnDisk(home);
@@ -643,19 +673,34 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     files.push({ path, sha256: hash(content) });
     return { path: join(home, path), content };
   }) : [];
+  if (autonomyManaged) for (const relative of AUTONOMY_FILES) regular(join(home, "skills", "zzzbot", relative));
+  const autonomyFiles = autonomyManaged ? AUTONOMY_FILES.map(relative => {
+    const sourcePath = join(source, "zzzbot", relative);
+    regular(sourcePath);
+    const content = readFileSync(sourcePath);
+    const path = `skills/zzzbot/${relative}`;
+    files.push({path, sha256:hash(content)});
+    return {path:join(home,path),content};
+  }) : [];
   if (verify) {
     if (!(projection.apps.length === 0 && stateless()) && (!exists(target) || readFileSync(target, "utf8") !== bytes)) throw new Error("mini_apps_projection_mismatch");
     if (intentEmpty && exists(credential)) throw new Error("mini_apps_credential_removal_pending");
     for (const { app, content } of desired) if (!readFileSync(join(home, "skills", app.id, "SKILL.md")).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const { path, content } of zzzFiles) if (!readFileSync(path).equals(content)) throw new Error("mini_apps_skill_mismatch");
+    for (const { path, content } of autonomyFiles) if (!readFileSync(path).equals(content)) throw new Error("mini_apps_skill_mismatch");
     for (const app of REVIEWED_MINI_APPS) if (hasSkill(app) && owned(app.id) && !projection.apps.some(x => x.id === app.id) && exists(join(home, "skills", app.id, "SKILL.md"))) throw new Error("mini_apps_removal_pending");
     if (zzzTeardown && zzzManagedFiles.some(relative => zzzManagedAt(home, relative) === "ours")) throw new Error("mini_apps_removal_pending");
     if (zzzTeardown && hasZzzManagedState(home)) throw new Error("mini_apps_removal_pending");
+    if (autonomyTeardown && autonomyMarkers(home)) throw new Error("mini_apps_removal_pending");
     // review-b N3: the job record too (read-only, no Hermes call): exactly the installer's job while the pair is
     // projected, none once it is not. As every job step, only from the CLI (in-process callers never own a job).
     if (import.meta.main && (zzzManaged || zzzTeardown)) {
       const script = zzzFiles.find(({ path }) => path.endsWith(`/scripts/${ZZZ_SHIM}`))?.content ?? null;
       try { verifyZzzManagedJob(home, zzzManaged, script); } catch { throw new Error(zzzManaged ? "mini_apps_job_mismatch" : "mini_apps_removal_pending"); }
+    }
+    if (import.meta.main && (autonomyManaged || autonomyTeardown)) {
+      const script = autonomyFiles.find(({path}) => path.endsWith("/scripts/zzz_autonomy_runner.py"))?.content ?? null;
+      try { verifyAutonomyJob(home,autonomyManaged,script); } catch { throw new Error("mini_apps_autonomy_job_mismatch"); }
     }
     for (const id of leaving) if (ours(id) !== null) throw new Error("mini_apps_removal_pending");
   } else if (!(projection.apps.length === 0 && stateless())) {
@@ -682,6 +727,7 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
     }
     for (const { app, content } of desired) atomic(join(home, "skills", app.id, "SKILL.md"), content);
     for (const { path, content } of zzzFiles) atomic(path, content);
+    for (const { path, content } of autonomyFiles) atomic(path, content);
     // Publish desired authority, THEN install the job (review-b S3). A failed job install fails the stage and the CLI
     // tears down only the zzz-managed job, shim, files and state (failClosedZzz), so every other app (Gold Stars, For
     // Kicks, ...) keeps the authority just published. A projected pair with no exact job record runs nothing: every
@@ -693,11 +739,17 @@ export function reconcileMiniApps(value: unknown, home = hermesHome(), source = 
       const legacy = `scripts/${ZZZ_LEGACY_SHIM}` as const;
       if (zzzManagedAt(home, legacy) === "ours") unlinkSync(join(home, "skills", "zzzbot", legacy));
     }
+    if (import.meta.main && autonomyManaged) reconcileAutonomyJob(home,true);
     // On removal authority disappears before the job teardown; the managed files and state (markers) go only after it.
     if (zzzTeardown) {
       if (import.meta.main) reconcileZzzManagedJob(home, false);
       removeZzzManagedFiles(home);
       removeZzzManagedState(home);
+    }
+    if (autonomyTeardown) {
+      if (import.meta.main) reconcileAutonomyJob(home,false);
+      removeAutonomyFiles(home);
+      removeAutonomyState(home);
     }
     // The result: exactly the generic files this stage wrote (a leaving id's ownership ends with its file).
     if (before.size || recorded.size || dropped) record(new Map(staged.filter(x => x.generic).map(({ app, generic }) => [app.id, [hash(generic!)]])));
@@ -721,7 +773,7 @@ if (import.meta.main) {
     console.log(JSON.stringify(reconcileMiniApps(JSON.parse(input), hermesHome(), undefined, verify, delivery)));
   } catch {
     // S1: an unreadable or malformed projection (or any failed stage) is OFF for managed ZZZ participation.
-    if (!verify) failClosedZzz(hermesHome());
+    if (!verify) { failClosedZzz(hermesHome()); failClosedAutonomy(hermesHome()); }
     console.error(JSON.stringify({ error: "mini_apps_reconcile_failed" }));
     process.exitCode = 1;
   }

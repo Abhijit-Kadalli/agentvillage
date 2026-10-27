@@ -58,6 +58,8 @@ SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfo
 # skill and no operation, so it grants no tool by itself; an entry of any other shape refuses the whole file.
 ZZZ_BRIDGE_ID = "zzz-bridge"
 ZZZ_BRIDGE = {"version": "1.0.0", "skills": [], "operations": []}
+ZZZ_AUTONOMY_RUNNER_ID = "zzz-autonomy-runner"
+ZZZ_AUTONOMY_RUNNER = {"version": "1.0.0", "skills": [], "operations": []}
 # NEW-03 (rc44, P-013; context's design NEW-03-APP-NAMESPACES.md section 2, CLAIMS L8997): every operations
 # list this overlay accepts for a non-Gold-Stars app, each by exact equality (newest first): the reviewed
 # public read alone, or the read plus that app's own context namespace read and write. Order fixed, no
@@ -165,7 +167,8 @@ def _card_entry_ok(app) -> bool:
 # skipped and logged once (its id only), and every other app of the file stays installed, as the installer's checkApp
 # refuses per app (ov#455). What stays WHOLE-FILE is the structure: the doc shape, version 1, an app that is not an
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
-REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,), "slopfolio": (SLOPFOLIO,)}
+REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
+                    ZZZ_AUTONOMY_RUNNER_ID: (ZZZ_AUTONOMY_RUNNER,), "slopfolio": (SLOPFOLIO,)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")
 _REFUSED_LOGGED = set()
