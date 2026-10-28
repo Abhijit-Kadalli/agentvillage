@@ -155,8 +155,9 @@ test("ROLODEX.PERSON: gold-stars carries rolodex.person last; the 8-op and 6-op 
   expect(gold.operations).toEqual(["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel", "rolodex.meeting", "skylight.status", "rolodex.person"]);
   expect(gold.operations.slice(0, 8)).toEqual([...restored.operations]);
   expect(gold.operations.slice(0, 6)).toEqual([...previous.operations]);
-  // NEW-03: the third previous entry is dizko's public read alone, the fourth mosaic's (each asserted in its own test below).
-  expect(PREVIOUS_REVIEWED_MINI_APPS.length).toBe(4);
+  // NEW-03: the third previous entry is dizko's public read alone, the fourth mosaic's, the fifth zzzbot's five (1.0.0)
+  // (each asserted in its own test below).
+  expect(PREVIOUS_REVIEWED_MINI_APPS.length).toBe(5);
   expect(PREVIOUS_REVIEWED_MINI_APPS.filter((x) => x.id === "gold-stars").length).toBe(2);
   for (const entry of [gold, restored, previous]) expect([entry.id, entry.version, [...entry.skills]]).toEqual(["gold-stars", "1.1.0", ["gold-stars"]]);
   // Parity: the plugin's reviewed lists and the reviewed manifest carry exactly the same operations, in order.
@@ -242,11 +243,27 @@ test("verify is read-only and refuses an absent or removed projection", () => {
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
 });
 
-test("zzz.bot manifest and native allowlist pin exactly its five named operations and stage the author skill", () => {
+test("zzz.bot manifest and native allowlist pin exactly its named operations (1.1.0: seven; 1.0.0: five) and stage the author skill", () => {
   const app = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
-  const ops = ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"];
+  const five = ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"];
+  const ops = [...five, "zzz.tag_thread", "zzz.edit_post"];
   const manifest = reviewedManifest("zzzbot");
-  expect(app).toEqual({ id: "zzzbot", version: "1.0.0", operations: ops, skills: ["zzzbot"] });
+  expect(app).toEqual({ id: "zzzbot", version: "1.1.0", operations: ops, skills: ["zzzbot"] });
+  // 1.0.0 (the five alone) stays stageable, so this overlay rolls out before the CP catalog serves 1.1.0.
+  const previous = PREVIOUS_REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
+  expect(previous).toEqual({ id: "zzzbot", version: "1.0.0", operations: five, skills: ["zzzbot"] });
+  for (const entry of [app, previous]) {
+    const staged = { version: 1, apps: [{ id: entry.id, version: entry.version, operations: [...entry.operations], skills: [...entry.skills] }] };
+    expect(validateProjection(staged)).toEqual(staged);
+    const box = installedBox();
+    const receipt = reconcileMiniApps(staged, box);
+    expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(staged)).digest("hex"));
+    expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
+  }
+  // Neither version with the other's list, and no edit alone, is reviewed.
+  for (const changed of [{ ...app, version: "1.0.0" }, { ...previous, version: "1.1.0" }, { ...app, operations: [...five, "zzz.edit_post"] },
+    { ...app, operations: [...five, "zzz.edit_post", "zzz.tag_thread"] }])
+    expect(() => validateProjection({ version: 1, apps: [changed] })).toThrow("mini_apps_unreviewed_bundle");
   expect(manifest).toMatchObject({ ...app, homepage: "https://zzz.bot" });
   expect(Object.keys(manifest).sort()).toEqual(["auth", "description", "homepage", "id", "name", "operations", "permissions", "provenance", "restricted", "skills", "version"]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read", "action"]);
@@ -265,6 +282,10 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
   expect(plugin).toContain('ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")');
   expect(plugin).toContain('ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")');
+  expect(plugin).toContain('ZZZ_EDIT_OPERATIONS = ("zzz.tag_thread", "zzz.edit_post")');
+  expect(plugin).toContain('ZZZBOT = {"version": "1.1.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS, *ZZZ_EDIT_OPERATIONS]}');
+  expect(plugin).toContain('ZZZBOT_PREVIOUS = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}');
+  expect(plugin).toContain('ZZZBOT_ACCEPTED = (ZZZBOT, ZZZBOT_PREVIOUS)');
   const root = installedBox();
   const receipt = reconcileMiniApps(projection, root);
   expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
