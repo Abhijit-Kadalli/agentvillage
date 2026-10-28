@@ -72,6 +72,7 @@ const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).dige
 export const ZZZ_BRIDGE_ID = "zzz-bridge";
 const ZZZ_SHIM = "zzz_managed_runner.py";
 const ZZZ_LEGACY_SHIM = "agentvillage_zzz_pairs.sh";
+// cp#467: the control plane mirrors the receipt paths these give (mini-apps-skills.js ZZZ_STAGE_FILE_LISTS); change it first.
 const ZZZ_MANAGED_FILES = [`scripts/${ZZZ_LEGACY_SHIM}`, `scripts/${ZZZ_SHIM}`, "prompts/participate.md"] as const;
 const ZZZ_STAGE_FILES = ZZZ_MANAGED_FILES.filter(relative => relative !== `scripts/${ZZZ_LEGACY_SHIM}`);
 /**
