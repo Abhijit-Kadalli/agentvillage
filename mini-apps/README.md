@@ -505,8 +505,8 @@ named operations, each mapped by the app to one DreamStarter MCP tool: seven
 reads (`dreamstarter.dream_status`, `.workflows`, `.grant_requirements`,
 `.grant_status`, `.businesses`, `.business_brief`, `.business_status`) and two
 owner-asked writes, `dreamstarter.discover` (the lines the owner types for that
-request; DreamStarter keeps them in a discovery session and passes them to
-Google Gemini) and `dreamstarter.grant_prepare` (the owner's confirmed
+request; DreamStarter passes them to Google Gemini and keeps only the
+suggestions, never the lines) and `dreamstarter.grant_prepare` (the owner's confirmed
 application answers, a private 14-day draft that DreamStarter submits to
 ElevenLabs' live form only when the owner clicks Submit on its review page).
 `mini-app.read` refuses `dreamstarter`.

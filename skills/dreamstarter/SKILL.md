@@ -38,8 +38,8 @@ what will be sent and said yes in a later message.
 
 | Operation | What is sent | Where it goes |
 | --- | --- | --- |
-| `dreamstarter.discover` | Only the lines the owner types for this request | DreamStarter keeps them in a discovery session behind the returned links and passes them to Google Gemini to extract the dreams |
-| `dreamstarter.grant_prepare` | Exactly the application fields the owner confirmed | DreamStarter keeps them as a private draft for 14 days after its last edit; after the owner accepts the terms and clicks Submit on the review page, DreamStarter submits the application to ElevenLabs' live grant form |
+| `dreamstarter.discover` | Only the lines the owner types for this request | DreamStarter passes them to Google Gemini to suggest dreams (if Gemini fails, DreamStarter's own matcher answers instead); it does not store or log the lines, keeps only the suggestions, and deletes ones nobody claims after 14 days |
+| `dreamstarter.grant_prepare` | Exactly the application fields the owner confirmed | DreamStarter keeps them as a private draft (the owner can delete it at once on the review page; otherwise it is deleted 14 days after its last edit); after the owner accepts the terms and clicks Submit on the review page, DreamStarter submits the application to ElevenLabs' live grant form and keeps the submitted application and a proof-of-submission screenshot for 30 days |
 
 Every other operation is a read: a ref or a slug DreamStarter returned, or
 nothing at all.
@@ -54,8 +54,11 @@ a discovery call.
 
 1. **Ask for the lines.** Ask the owner to type, in this conversation, a few
    lines for DreamStarter: what they want to build or become, their interests,
-   their goals. Say what happens to them: "DreamStarter keeps what you send in
-   a discovery session and passes it to Google Gemini to find your dreams."
+   their goals. Say what happens to them: "DreamStarter passes them to Google
+   Gemini to suggest dreams (if Gemini fails, DreamStarter's own matcher
+   answers instead). DreamStarter does not store or log your lines; it keeps
+   only the suggestions, and deletes ones nobody claims after 14 days.
+   DreamStarter does not sell this or use it for training."
    Use only what they type for this request. Do not fill it in from their
    profile, from memory or from earlier messages, even if you know them well.
 2. **Show it and ask.** Put their words into the fields, unchanged apart from
@@ -98,11 +101,15 @@ Explain the grant only from what it returns; never from memory.
 3. **Show every field and ask.** Before calling `dreamstarter.grant_prepare`,
    show every field you will send, one per line with its value, including the
    eligibility answers and any `dream_ref`. Then say, in your own words:
-   "DreamStarter keeps these answers as a private draft for 14 days after the
-   last edit. Nothing goes to ElevenLabs until you accept the terms and click
-   Submit on the review page; then DreamStarter submits it to ElevenLabs' live
-   grant form for you. Send these to DreamStarter?" Send nothing until a later
-   message from the owner says yes, and then send exactly what they saw.
+   "DreamStarter keeps them as a private draft and returns a review link. You
+   can delete the draft there at once; otherwise it is deleted 14 days after
+   its last edit. Nothing reaches ElevenLabs until you accept the terms and
+   click Submit on that page. DreamStarter then submits the application to
+   ElevenLabs' live grant form for you, keeps the submitted application and a
+   proof-of-submission screenshot for 30 days, and ElevenLabs decides.
+   DreamStarter does not sell this or use it for training." Then ask: "Send
+   these to DreamStarter?" Send nothing until a later message from the owner
+   says yes, and then send exactly what they saw.
 4. **Prepare and hand over.** Call `dreamstarter.grant_prepare`. Give the owner
    the `review_url` privately and say plainly: nothing has been sent to
    ElevenLabs; on that page they check every answer, can fix any of them,

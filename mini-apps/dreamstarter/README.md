@@ -33,12 +33,30 @@ every operation `read`), served to the box as `mini-app.read`. Two DreamStarter
 tools are writes in substance, so the relay cannot carry them (the shared
 validator's `v1Entry` drops a relay app with any non-read op, `relay_non_read_op`):
 
-- `discover_dreams` sends the resident's text, which DreamStarter keeps in a
-  discovery session behind the returned links and passes to Google Gemini.
+- `discover_dreams` sends the resident's text, which DreamStarter passes to
+  Google Gemini (gemini-2.5-flash; if Gemini fails, a keyword matcher on
+  DreamStarter's own server answers). No resident text is kept: DreamStarter
+  does not store or log the lines, and keeps only the generated suggestions
+  (title, one-liner, why it fits, first week).
 - `grant_prepare` sends the resident's application answers (name, emails,
   phone, LinkedIn, company registration and address), which DreamStarter keeps as
-  a draft for 14 days after its last edit and submits to ElevenLabs on the
-  resident's click.
+  a private draft and submits to ElevenLabs only on the resident's own Submit
+  click on its review page.
+
+### Retention and privacy (DreamStarter's answers, 28 October 2026)
+
+- Suggestions nobody claims: deleted after 14 days. Each suggestion also makes
+  an unclaimed draft on dreamstarter.xyz (so the claim link has context); a
+  monthly cleanup removes those older than 30 days.
+- Grant drafts never submitted: deleted 14 days after the last change. The
+  resident can delete a draft at once from its review page, or by email.
+- Submitted applications and their proof-of-submission screenshot: deleted 30
+  days after submission.
+- Deletion runs hourly. Nothing is sold or used for training. ElevenLabs gets
+  the grant details only when the resident accepts the terms and presses
+  Submit.
+- Privacy policy: https://mcp.dreamstarter.xyz/privacy (this mini-app), which
+  links to https://www.dreamstarter.xyz/privacy for claimed dreams.
 
 So the whole app is reviewed, like Slopfolio, zzz.bot and the open Volunteers
 and Library apps: its own named operations on the box, an exact entry in the
@@ -57,7 +75,15 @@ returned to the resident's agent in their private chat.
 ## The call
 
 Standard MCP (streamable HTTP, JSON responses): `POST` to
-`https://mcp.dreamstarter.xyz/mcp` with
+`https://mcp.dreamstarter.xyz/mcp`. The key rides as `Authorization: Bearer`
+(the app server reads it from `MINI_APP_DREAMSTARTER_KEY`, the manifest's
+`auth.secretRef`; only the name is in this repo). DreamStarter's `/mcp` checks
+that header and stores only the key's SHA-256; a wrong key is a 401. A call
+with no key still works today, so the generic reads of cp#456 are unaffected;
+on the day the release carrying this bundle rolls, DreamStarter makes
+`discover_dreams` and `grant_prepare` require the key (DreamStarter needs that
+date). DreamStarter accepts several keys at once, so a rotation has no
+downtime. Headers:
 
 ```
 Authorization: Bearer <MINI_APP_DREAMSTARTER_KEY>
@@ -104,12 +130,16 @@ default; only a payment shows a card. No class, row or gate is added.
   while the approval gate is off or unverified, no card, no manual grant.
 - The resident's yes comes from the skill: before either send, the agent shows
   exactly what will be sent (every field, for the grant), says who keeps it and
-  for how long and who processes it (Google Gemini for discovery; the 14-day
-  draft and the live ElevenLabs submit for the grant), and waits for a later
-  owner message saying yes. This is a prompt rule, as in Edge Library's writes;
-  there is no server-side propose step (see "Open questions").
+  for how long and who processes it (Google Gemini for discovery, which keeps
+  only the suggestions; the 14-day draft and the live ElevenLabs submit for the
+  grant), and waits for a later owner message saying yes. This is a prompt
+  rule, as in Edge Library's writes.
 - Final submission to ElevenLabs is always the resident's own click on
-  DreamStarter's review page, never the agent's.
+  DreamStarter's review page, never the agent's. `grant_prepare` only saves a
+  draft; the send to ElevenLabs happens on DreamStarter's server after the
+  resident ticks the terms and clicks Submit in their own browser. That page is
+  the human step before anything leaves, so the box adds no confirm step of its
+  own (DreamStarter offered one; none is added: no new gates).
 
 ## Input rules
 
@@ -140,7 +170,7 @@ Budgets: `maxRequestBytes` 4096, except `discover` 8192 and `grant_prepare`
   with `MINI_APP_DREAMSTARTER_KEY`, and no identity header.
 - **Same-turn replay.** For a write, keep `sha256(owner, turnId, operation)`
   with the answer for 15 minutes and return the same answer for a retry in the
-  same turn, so an uncertain retry never makes a second discovery session or a
+  same turn, so an uncertain retry never makes a second set of suggestions or a
   second draft. Never store the arguments or the answer text beyond that.
 - **Results.** Return the MCP result as
   `{"text": <the text content parts joined by a blank line>, "structured": <structuredContent or null>, "isError": <bool>}`.
@@ -162,15 +192,30 @@ Budgets: `maxRequestBytes` 4096, except `discover` 8192 and `grant_prepare`
 - The output is not pinned: DreamStarter's server can change a tool's
   description or output after review (`tools.listChanged: true`). The box frames
   every answer as untrusted data and the skill tells the agent to ignore any
-  `note`, `message`, `how_it_works` or `next` text that tells it what to do
-  (live `grant_requirements` says "Collect the answers from the owner, call
-  grant_prepare, and give them the review_url", which skips the consent step).
+  `note`, `message`, `how_it_works` or `next` text that tells it what to do.
+  DreamStarter corrected that text on 28 October 2026: live
+  `grant_requirements` `how_it_works` now reads "The owner sees and approves
+  their answers before grant_prepare is called. grant_prepare saves a private
+  draft and returns a review_url. On that page the owner checks every answer,
+  accepts the ElevenLabs grant terms and clicks Submit. Nothing is sent to
+  ElevenLabs before that click.", and `grant_prepare`'s `next` no longer tells
+  the agent to collect answers and call `grant_prepare`. The skill's own
+  show-every-field-and-ask step is unchanged.
 - `dream_status` and `business_status` can carry timeline events with
   `simulated: true`; the skill and the box's handling text label them as a
   preview, not live activity.
 - Returned links (claim, overview, page, review, the ElevenLabs sign-up, form and
   terms links, businesses' public links) are not host-pinned on the box; the
-  skill says to share only links the tool returned, unchanged.
+  skill says to share only links the tool returned, unchanged. DreamStarter
+  names the full set of hosts it returns (28 October 2026), for a pin if one is
+  ever added:
+  - `mcp.dreamstarter.xyz`, `dreamstarter.xyz` (pages, review, claim);
+  - `elevenlabs.io` (sign-up, form, terms);
+  - `build.edgecity.live`;
+  - the local businesses' public links: `instagram.com`, `facebook.com`,
+    `x.com`, `youtube.com`, `linkedin.com`, `tripadvisor.in`,
+    `indiayogaschool.com`, `instacarex.in`, `inspirebyneha.com`,
+    `buklo.vercel.app`.
 
 ## Rollout
 
@@ -193,9 +238,10 @@ fixed, never the reverse:
 3. The fleet roll. A box carrying this bundle must never receive the generic
    entry: with `dreamstarter` in `REVIEWED_ENTRIES` that refuses the whole
    projection, Gold Stars included.
-4. The app routes (above), and the key: DreamStarter issues it and pins only its
-   hash; Edge City staff set `MINI_APP_DREAMSTARTER_KEY` on the cp. Never in a
-   pull request.
+4. The app routes (above), and the key: DreamStarter has issued it and pins
+   only its hash; Edge City staff set `MINI_APP_DREAMSTARTER_KEY` on the cp.
+   Never in a pull request. Tell DreamStarter the roll date: that day it makes
+   the two writes require the key.
 5. `MINI_APPS_TENANT_ALLOWLIST.dreamstarter` stays the author's own tenant
    (staff look it up by his Edge City account; never in a pull request) until
    Edge City rules on the brand and partner code and on the local businesses'
@@ -217,8 +263,5 @@ No success fixture is invented. The writes were never called.
 
 ## Open questions
 
-- A server-side "later reply" rule for `grant_prepare` (a propose step on
-  DreamStarter's side, as Edge City Volunteers has) would make the yes more than
-  a prompt rule. It needs DreamStarter's server; nothing here depends on it.
-- Pinning returned link hosts on the box, once DreamStarter confirms the hosts it
-  returns.
+- Pinning returned link hosts on the box. DreamStarter has named the hosts
+  (above); no pin is added here.

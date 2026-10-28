@@ -8,9 +8,10 @@ DreamStarter's server publishes (tools/list, serverInfo dreamstarter 1.1.0; byte
 a bad call is refused before anything is sent.
 
 Two operations are WRITES (owner-asked, gate_verified, no card, no manual grant): `dreamstarter.discover` sends the
-lines the owner typed for that request (DreamStarter keeps them in a discovery session and passes them to Google
-Gemini), and `dreamstarter.grant_prepare` stages the owner's grant answers as a 14-day draft that DreamStarter submits
-to ElevenLabs' live form only after the owner clicks Submit on its review page. Every other operation is a read.
+lines the owner typed for that request (DreamStarter passes them to Google Gemini, keeps only the suggestions and
+never the lines), and `dreamstarter.grant_prepare` stages the owner's grant answers as a 14-day draft that DreamStarter
+submits to ElevenLabs' live form only after the owner clicks Submit on its review page. Every other operation is a
+read.
 """
 from __future__ import annotations
 import json

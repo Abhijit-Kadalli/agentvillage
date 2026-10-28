@@ -57,10 +57,18 @@ describe("manifest (v2)", () => {
     expect(discover).toMatch(/lines you type for that\s+one request/);
     expect(discover).toMatch(/Google Gemini/);
     expect(discover).toMatch(/Nothing from your profile, memory or other chats is sent/);
-    expect(grant).toMatch(/private draft for 14 days after its last edit/);
+    expect(discover).toMatch(/DreamStarter does not store or log your lines; it keeps only the suggestions, and deletes ones nobody claims after 14 days/);
+    expect(discover).not.toMatch(/discovery session/);
+    expect(grant).toMatch(/You can delete the draft there at once; otherwise it is deleted 14 days after its last edit/);
     expect(grant).toMatch(/Nothing reaches ElevenLabs until you accept the terms and click Submit/);
     expect(grant).toMatch(/ElevenLabs' live grant form/);
+    expect(grant).toMatch(/proof-of-submission screenshot for 30 days/);
+    for (const text of [discover, grant, manifest.description]) {
+      expect(text).toMatch(/Privacy: https:\/\/mcp\.dreamstarter\.xyz\/privacy$/);
+    }
     expect(manifest.description).toMatch(/Google Gemini/);
+    expect(manifest.description).toMatch(/keeps only the suggestions, never the lines/);
+    expect(manifest.description).not.toMatch(/discovery session/);
     expect(manifest.description).not.toMatch(/Read-only|nothing is created/i);
   });
 
@@ -156,14 +164,17 @@ describe("skill", () => {
   test("M2: discovery sends only the lines typed for that request, names Gemini, and asks first", () => {
     expect(skill).toMatch(/Use only what they type for this request/);
     expect(skill).toMatch(/Do not fill it in from their\s+profile, from memory or from earlier messages/);
-    expect(skill).toMatch(/passes it to Google Gemini/);
+    expect(skill).toMatch(/passes them to Google\s+Gemini to suggest dreams/);
+    expect(skill).toMatch(/does not store or log your lines; it keeps\s+only the suggestions/);
+    expect(skill).not.toMatch(/discovery session/);
     expect(skill).toMatch(/Send nothing until a later message from the\s+owner says yes/);
   });
 
   test("M1: the grant shows every field, names the 14-day draft and the live ElevenLabs submit, and asks first", () => {
     expect(skill).toMatch(/show every field you will send, one per line with its value/);
-    expect(skill).toMatch(/private draft for 14 days after the\s+last edit/);
-    expect(skill).toMatch(/DreamStarter submits it to ElevenLabs' live\s+grant form/);
+    expect(skill).toMatch(/You\s+can delete the draft there at once; otherwise it is deleted 14 days after\s+its last edit/);
+    expect(skill).toMatch(/DreamStarter then submits the application to\s+ElevenLabs' live grant form/);
+    expect(skill).toMatch(/proof-of-submission screenshot for 30 days/);
     expect(skill).toMatch(/then send exactly what they saw/);
   });
 
