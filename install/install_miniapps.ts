@@ -545,7 +545,9 @@ export function failClosedAutonomy(home: string): void {
     }
   } catch { /* unreadable authority is already refused by the runner */ }
   if (!autonomyMarkers(home)) return;
-  try { reconcileAutonomyJob(home, false); } catch { /* keep disabling below */ }
+  // The gate is already withdrawn above, so a remaining job is inert (the runner self-gates on the projection).
+  // Files are removed only once the job is gone: while it remains, the markers stay and the next stage retries.
+  try { reconcileAutonomyJob(home, false); } catch { return; }
   try { removeAutonomyShim(home); } catch { /* next stage retries */ }
   try { removeAutonomyFiles(home); removeAutonomyState(home); } catch { /* next stage retries */ }
 }

@@ -88,7 +88,7 @@ test("failed stage withdraws only the autonomy gate before tearing down its job"
   expect(existsSync(join(home,"scripts",AUTONOMY_JOB_SCRIPT))).toBe(false);
 });
 
-test("failed Hermes teardown still withdraws the gate and the owned executable",()=>{
+test("failed Hermes teardown withdraws the gate, keeps the teardown pending, and the next stage removes the job",()=>{
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   const failing=join(home,"bin","fail-hermes");
@@ -96,9 +96,40 @@ test("failed Hermes teardown still withdraws the gate and the owned executable",
   expect(stage([zzzbot,{...autonomy,skills:["unreviewed"]}],[],{HERMES_BIN:failing}).status).toBe(1);
   expect(JSON.parse(readFileSync(join(home,"mini-apps.json"),"utf8")).apps.map((app:{id:string})=>app.id))
     .toEqual(["zzzbot"]);
-  expect(existsSync(join(home,"scripts",AUTONOMY_JOB_SCRIPT))).toBe(false);
-  // The stale job record is inert: the script and projection gate are gone.
+  // The job is inert (the projection gate is gone) but not forgotten: it stays a marker, and its files stay while it
+  // remains, so no stage can call the box clean.
   expect(jobs().map(job=>job.name)).toEqual([AUTONOMY_JOB_NAME]);
+  expect(autonomyMarkers(home)).toBe(true);
+  expect(existsSync(join(home,"scripts",AUTONOMY_JOB_SCRIPT))).toBe(true);
+  expect(stage([zzzbot],["--verify"]).status).toBe(1);
+  // The next normal stage retries the removal and finishes the teardown.
+  expect(stage([zzzbot]).status).toBe(0);
+  expect(jobs()).toEqual([]);
+  expect(existsSync(join(home,"scripts",AUTONOMY_JOB_SCRIPT))).toBe(false);
+  expect(autonomyMarkers(home)).toBe(false);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
+});
+
+test("a job under the reserved name with a drifted prompt or toolsets is still torn down, or updated in place",()=>{
+  const {home,stage,jobs}=box();
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  const path=join(home,"cron/jobs.json");
+  const drift=(change:Record<string,unknown>)=>{
+    const doc=JSON.parse(readFileSync(path,"utf8"));
+    doc.jobs=doc.jobs.map((job:Record<string,unknown>)=>job.name===AUTONOMY_JOB_NAME?{...job,...change}:job);
+    writeFileSync(path,JSON.stringify(doc));
+  };
+  // An older release's prompt (or a resident edit) is updated in place, never a name conflict.
+  drift({prompt:"an older prompt",enabled_toolsets:["web"]});
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  expect(jobs().filter(job=>job.name===AUTONOMY_JOB_NAME)).toHaveLength(1);
+  expect(stage([zzzbot,autonomy],["--verify"]).status).toBe(0);
+  // Drifted again, then the gate is removed: the job still goes.
+  drift({prompt:"an older prompt",enabled_toolsets:["web"]});
+  expect(autonomyMarkers(home)).toBe(true);
+  expect(stage([zzzbot]).status).toBe(0);
+  expect(jobs()).toEqual([]);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
 });
 
 test("a dangling resident shim symlink never creates its outside target",()=>{

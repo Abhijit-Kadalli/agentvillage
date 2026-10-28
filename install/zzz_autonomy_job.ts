@@ -17,7 +17,7 @@ const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "s
 
 /** First shipped version. Append old fixed digests before changing shipped files in a later release. */
 export const AUTONOMY_SHIPPED = {
-  "scripts/zzz_autonomy_runner.py": ["a4943bc125c0792b57df0c4254977983226e37bf3864fde34b0f7c0bc9feb393"],
+  "scripts/zzz_autonomy_runner.py": ["d356705940a04d8ea5a2a22782609cf28f080ced8c43125602f6fce387988484"],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
 
@@ -45,6 +45,12 @@ function realDir(home: string, ...parts: string[]): string | null {
 }
 
 export function autonomyMarkers(home: string): boolean {
+  // A job under the reserved name is a marker on its own: a failed Hermes removal keeps the teardown pending, so a
+  // later stage retries it instead of leaving an orphan cron. An unreadable store is not a marker here (it must not
+  // fail every stage of a box that never had autonomy); reconcile still refuses a named-but-unreadable store.
+  let named = false;
+  try { named = store(home).named; } catch { named = false; }
+  if (named) return true;
   const scripts = realDir(home, "scripts");
   const skill = realDir(home, "skills", "zzzbot");
   const state = realDir(home, "zzzbot");
@@ -56,12 +62,15 @@ export function autonomyMarkers(home: string): boolean {
     })));
 }
 
+export const AUTONOMY_STATE_FILES = ["autonomy-run.lock", "autonomy-backoff.json"] as const;
 export function removeAutonomyState(home: string): void {
   const state = realDir(home, "zzzbot");
   if (!state) return;
-  const path = join(state, "autonomy-run.lock");
-  try { if (lstatSync(path).isFile()) unlinkSync(path); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  for (const name of AUTONOMY_STATE_FILES) {
+    const path = join(state, name);
+    try { if (lstatSync(path).isFile()) unlinkSync(path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
 }
 
 export function removeAutonomyFiles(home: string): void {
@@ -99,12 +108,12 @@ function store(home: string) {
   const named = /Edge (?:—|\\u2014) zzz event autonomy/.test(raw);
   const parsed = parseHermesJobs(raw);
   if (!parsed) { if (named) throw new Error("zzz_autonomy_jobs_unreadable"); return { jobs: [] as Record<string, unknown>[], named: false }; }
-  const namedJobs=parsed.filter(job=>!!job && typeof job==="object" && job.name===AUTONOMY_JOB_NAME);
-  const jobs=namedJobs.filter((job): job is Record<string, unknown> => !!job && typeof job === "object" &&
-    job.name === AUTONOMY_JOB_NAME && job.script === AUTONOMY_JOB_SCRIPT &&
-    job.prompt === source(AUTONOMY_FILES[1]).toString("utf8").trimEnd() && job.no_agent === true &&
-    JSON.stringify(job.enabled_toolsets) === '["no_mcp"]');
-  return {jobs,named,conflict:namedJobs.length!==jobs.length};
+  // Every job under the reserved name is the installer's, whatever its prompt or toolsets (an older release's
+  // prompt, or a resident edit): install updates it in place, teardown removes it. verifyAutonomyJob still demands
+  // the exact current shape before a stage succeeds.
+  const jobs=parsed.filter((job): job is Record<string, unknown> => !!job && typeof job === "object" &&
+    job.name === AUTONOMY_JOB_NAME);
+  return {jobs,named:named||jobs.length>0};
 }
 
 export function autonomySchedule(token: string): string {
@@ -162,16 +171,19 @@ export function reconcileAutonomyJob(home: string, installed: boolean): void {
       const bin = hermesBin();
       if (!hermesAvailable(bin, 15000, hermesExecEnv())) throw new Error("zzz_autonomy_hermes_missing");
       const python = jobPython(bin);
-      for (const job of jobs) {
-        if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_autonomy_job_invalid");
-        jobApi(python, home, {action:"remove",id:job.id,name:AUTONOMY_JOB_NAME});
+      // Two passes: a transient Hermes failure on the first is retried once here, and any job still left keeps the
+      // markers (and the files) in place so the next stage retries again.
+      for (let pass = 0; pass < 2 && store(home).jobs.length; pass++) {
+        for (const job of store(home).jobs) {
+          if (typeof job.id !== "string" || !ID.test(job.id)) throw new Error("zzz_autonomy_job_invalid");
+          try { jobApi(python, home, {action:"remove",id:job.id,name:AUTONOMY_JOB_NAME}); } catch { /* checked below */ }
+        }
       }
       if (store(home).jobs.length) throw new Error("zzz_autonomy_removal_pending");
     }
     removeAutonomyShim(home);
     return;
   }
-  if (current.conflict) throw new Error("zzz_autonomy_job_name_conflict");
   if (jobs.length > 1) throw new Error("zzz_autonomy_duplicate_job");
   const bin = hermesBin();
   if (!hermesAvailable(bin, 15000, hermesExecEnv())) throw new Error("zzz_autonomy_hermes_missing");
