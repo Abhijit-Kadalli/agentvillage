@@ -17,7 +17,7 @@ const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "s
 
 /** First shipped version. Append old fixed digests before changing shipped files in a later release. */
 export const AUTONOMY_SHIPPED = {
-  "scripts/zzz_autonomy_runner.py": ["0b59cecbea3f48dce41ce3adcbb6fd2ff7d530567b255148e204941cddd2fd87"],
+  "scripts/zzz_autonomy_runner.py": ["f25327ecfb2781969d511c23c1c1c4e5e93e829f9abae1384d3b582174b3061e"],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
 
