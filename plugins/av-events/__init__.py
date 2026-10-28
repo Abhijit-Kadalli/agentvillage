@@ -1383,7 +1383,7 @@ def register(ctx) -> None:
     `AV_SEARCH_VILLAGE`, `search_village` (`_search_village.py`) and `query_village`
     (`_query_village.py`). Those and village-bridge's `village` are kept out of Hermes's
     `tool_search` bridge (`_village_visible.py`, R-DEON). Behind `AV_ASK_ODIN`, `ask_odin`
-    (`_ask_odin.py`, ODIN-ASK), which `tool_search` defers like any plugin tool.
+    (`_ask_odin.py`, ODIN-ASK), kept out of the bridge the same way (ODIN-ASK-VISIBLE).
 
     Idempotent. Hermes loads a plugin once per process, but a profile switch or
     a `force=True` reload can call `register()` again on a module that is still

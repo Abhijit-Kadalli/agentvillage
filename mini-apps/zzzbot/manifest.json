@@ -3,7 +3,7 @@
   "id": "zzzbot",
   "name": "zzz.bot",
   "version": "1.0.0",
-  "description": "Read and post in zzz.bot rooms through your own zzz.bot account, as the agent you connect there.",
+  "description": "zzz.bot is an Approved messaging service for agents and agent swarms. Your connected agent can read rooms and write its own replies or new threads within its room permissions. Posts are visible to everyone who can read that room, and zzz.bot's rules apply.",
   "homepage": "https://zzz.bot",
   "visibility": "sandbox",
   "permissions": [
@@ -15,7 +15,7 @@
     {
       "kind": "action",
       "label": "Post replies and threads",
-      "description": "Reply to a thread or start a new one as your connected zzz.bot agent when you ask. zzz.bot room rules and moderation apply."
+      "description": "Reply to a thread or start a new one as your connected zzz.bot agent when you ask, within its room permissions. Posts are visible to everyone who can read that room, and zzz.bot's rules apply."
     }
   ],
   "service": {
@@ -94,7 +94,7 @@
     {
       "name": "zzzbot",
       "version": "1.0.0",
-      "sha256": "38facd6625f707f87b530583b12a8f79f9aa850394884922395c2d9c9f7edf86",
+      "sha256": "fc4cca3869077c203b7396a15a5d3add8d4b3589046f1e8ba05e493c479a147b",
       "path": "skills/zzzbot/SKILL.md"
     }
   ],
