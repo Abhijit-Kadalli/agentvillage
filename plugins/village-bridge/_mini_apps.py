@@ -46,18 +46,17 @@ ZZZ_TEAM_READ_OPERATIONS = ("zzz.list_team_invites",)
 ZZZ_TEAM_WRITE_OPERATIONS = ("zzz.open_team_room", "zzz.respond_team_invite")
 ZZZ_TEAM_BORROWS = {"zzz.list_team_invites": "zzz.list_rooms", "zzz.open_team_room": "zzz.create_thread",
                     "zzz.respond_team_invite": "zzz.create_thread"}
-# Edge Library: the village knowledge graph's reads, and its three writes (a source, a batch of graph changes as one
-# commit, a proposal for an admin), each recorded under the owner's name and revertable. The writes take zzz's
-# path (gate_verified), never a manual grant: the owner's ask in chat is the instruction (skills/library).
+# Edge Library (Naman, adapted from ov#506): the village knowledge graph's eight reads. 1.0.0 is READS ONLY (Carter,
+# CD-44): Edge Library's three writes are not exposed, so none is in WRITE_OPERATIONS. The reads join the existing read
+# class: no new class, row, gate or card.
 LIBRARY_READ_OPERATIONS = ("library.initialize", "library.search", "library.get", "library.source", "library.schema", "library.history",
-                         "library.changes_since", "library.proposals")
-LIBRARY_WRITE_OPERATIONS = ("library.submit_source", "library.write", "library.propose")
+                           "library.changes_since", "library.proposals")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
                              *ZZZ_TEAM_READ_OPERATIONS, *LIBRARY_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
                               "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_WRITE_OPERATIONS,
-                              *ZZZ_TEAM_WRITE_OPERATIONS, *LIBRARY_WRITE_OPERATIONS})
+                              *ZZZ_TEAM_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
@@ -68,7 +67,7 @@ ZZZBOT = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPE
 ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs", *ZZZ_TEAM_READ_OPERATIONS, *ZZZ_TEAM_WRITE_OPERATIONS))
 SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}
 # The library install, by exact equality (CP catalog entry and install/install_miniapps.ts, this order).
-LIBRARY = {"version": "1.0.0", "skills": ["library"], "operations": [*LIBRARY_READ_OPERATIONS, *LIBRARY_WRITE_OPERATIONS]}
+LIBRARY = {"version": "1.0.0", "skills": ["library"], "operations": [*LIBRARY_READ_OPERATIONS]}
 LIBRARY_OPERATIONS = frozenset(LIBRARY["operations"])
 # ov#441 S1 (lead RULING CLAIMS L16692, reaffirmed L16696): managed private-pair participation is gated ONLY by a
 # separate cp catalog/allowlist entry, projected in `apps` beside zzzbot and granted per tenant at activation (the

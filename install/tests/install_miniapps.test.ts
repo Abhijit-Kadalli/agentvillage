@@ -285,22 +285,25 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(false);
 });
 
-test("Edge Library manifest and native allowlist pin exactly its eleven named operations and stage the skill", () => {
+test("Edge Library 1.0.0 manifest and native allowlist pin exactly its eight reads (no write) and stage the skill", () => {
   const app = REVIEWED_MINI_APPS.find(app => app.id === "library")!;
   const reads = ["library.initialize", "library.search", "library.get", "library.source", "library.schema", "library.history", "library.changes_since", "library.proposals"];
-  const writes = ["library.submit_source", "library.write", "library.propose"];
   const manifest = reviewedManifest("library");
-  expect(app).toEqual({ id: "library", version: "1.0.0", operations: [...reads, ...writes], skills: ["library"] });
+  expect(app).toEqual({ id: "library", version: "1.0.0", operations: reads, skills: ["library"] });
   expect(manifest).toMatchObject({ ...app, homepage: "https://library.positivesumexperiments.com/" });
   // app-token: no per-resident OAuth (`auth`), no relay (`mcp`); sandbox, so restricted.
   expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
-  expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read", "action"]);
+  expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read"]);
+  // CD-44: the numeric Telegram id only, never the username.
+  expect(manifest.permissions[0].description).toContain("numeric Telegram user id");
+  expect(manifest.permissions[0].description).toContain("never your Telegram username");
   expect(manifest).not.toHaveProperty("mcp");
   expect(manifest).not.toHaveProperty("auth");
   const v2 = JSON.parse(readFileSync(join(REPO, "mini-apps", "library", "manifest.json"), "utf8"));
-  expect(v2.service).toEqual({ kind: "mcp", baseUrl: "https://library.positivesumexperiments.com/api/mcp", auth: { mode: "app-token", secretRef: "MINI_APP_LIBRARY_TOKEN" } });
-  expect(v2.operations.map((op: { class: string }) => op.class)).toEqual([...reads.map(() => "read"), ...writes.map(() => "write")]);
-  expect(v2.operations.map((op: { target: { tool: string } }) => op.target.tool)).toEqual([...reads, ...writes].map(name => name.replace(".", "_")));
+  expect(v2.service).toEqual({ kind: "mcp", baseUrl: "https://library.positivesumexperiments.com/api/mcp", auth: { mode: "app-token", secretRef: "MINI_APP_LIBRARY_KEY" } });
+  expect(v2.operations.map((op: { class: string }) => op.class)).toEqual(reads.map(() => "read"));
+  expect(v2.operations.map((op: { target: { tool: string } }) => op.target.tool)).toEqual(reads.map(name => name.replace(".", "_")));
+  expect(JSON.stringify(v2)).not.toMatch(/library_(submit_source|write|propose|jobs_|queries)/);
   expect(EDGE_SKILL_NAMES).not.toContain("library");
   const projection = { version: 1, apps: [app] };
   expect(validateProjection(projection)).toEqual(projection);
@@ -308,12 +311,13 @@ test("Edge Library manifest and native allowlist pin exactly its eleven named op
     { ...app, operations: [...app.operations, "library.jobs_claim"] },
     { ...app, operations: [...app.operations].reverse() },
     { ...app, operations: ["mini-app.read"] },
-    { ...app, operations: reads },
+    { ...app, operations: [...reads, "library.submit_source", "library.write", "library.propose"] },
+    { ...app, operations: reads.slice(1) },
     { ...app, skills: ["other"] },
     { ...app, version: "1.0.1" },
   ]) expect(() => validateProjection({ version: 1, apps: [changed] })).toThrow("mini_apps_unreviewed_bundle");
   const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
-  expect(plugin).toContain('LIBRARY_WRITE_OPERATIONS = ("library.submit_source", "library.write", "library.propose")');
+  expect(plugin).not.toContain("LIBRARY_WRITE_OPERATIONS");
   const root = installedBox();
   const receipt = reconcileMiniApps(projection, root);
   expect(receipt.files.map(file => file.path)).toEqual(["skills/library/SKILL.md"]);
@@ -324,6 +328,7 @@ test("Edge Library manifest and native allowlist pin exactly its eleven named op
   const skill = readFileSync(join(REPO, "skills", "library", "SKILL.md"), "utf8");
   expect(skill).not.toMatch(/prompt\.txt|\.well-known|\/api\/mcp|curl|wget/);
   expect(skill).toMatch(/^name: library$/m);
+  expect(skill).not.toMatch(/library\.(submit_source|write|propose)\b/);
   reconcileMiniApps({ version: 1, apps: [] }, root);
   expect(existsSync(join(root, "skills", "library", "SKILL.md"))).toBe(false);
 });

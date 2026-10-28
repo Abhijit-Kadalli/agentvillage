@@ -28,9 +28,9 @@ reviewed MCP proxy), `zzzbot` (read zzz.bot rooms and post as the owner's
 connected zzz.bot agent; tenant-restricted), `slopfolio` (carry the owner's
 process summary into a private draft, then return its review link and status;
 the owner publishes on Slopfolio), `library` (search and read Edge Library, the
-village knowledge graph, and add sources, facts and links to it only when the
-owner asks, each with a confidence and a rationale; no sign-in: the app server
-links by the owner's Telegram account; tenant-restricted),
+village knowledge graph; read only; no sign-in: the app server names the owner
+to Edge Library by their numeric Telegram id, never the username;
+tenant-restricted),
 and `forkicks` (live café menu/schedule and exact-preview,
 manually approved orders with returned UPI links or card at pickup). UPI receipts
 name SWISSDESI (For Kicks' UPI), the exact amount and order note, and say the café
