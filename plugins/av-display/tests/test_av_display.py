@@ -764,3 +764,109 @@ def test_the_command_and_the_note_match_hermes_pinned_source(plugin):
     assert '"Briefly introduce yourself and mention that /help shows available commands. "' in run_turn
     onboarding = (HERMES_REF / "agent" / "onboarding.py").read_text(encoding="utf-8")
     assert re.search(r'\(mention /help "\n\s+"shows commands\)', onboarding)
+
+
+# ── HOT-RASOOL (28 Oct): the model-fallback notice, in words a resident can act on ──────────────────
+
+NOTICE = ("⚠️ Model fallback: anthropic/claude-haiku-4.5 via openrouter unavailable (bad request); "
+          "using openai/gpt-6-luna via openrouter.")
+
+
+class DiagnosticText(str):
+    """As gateway/warning_notifications.py:6 at v2026.9.24."""
+
+
+@pytest.fixture
+def fake_status_output(monkeypatch):
+    """agent.status_output with StatusOutputMixin's two delivery paths as at v2026.9.24 (status_output.py:94-229)."""
+    module = types.ModuleType("agent.status_output")
+
+    class StatusOutputMixin:
+        def __init__(self):
+            self.sent = []
+            self._pending_fallback_notice = None
+            self._retry_status_buffer = []
+
+        def _emit_status(self, message):
+            self.sent.append(message)
+
+        def _emit_diagnostic_status(self, message):
+            self._emit_status(DiagnosticText(message))
+
+        def _emit_pending_fallback_notice(self):
+            notice, self._pending_fallback_notice = self._pending_fallback_notice, None
+            for item in notice or []:
+                self._emit_diagnostic_status(item)
+
+        def _flush_status_buffer(self):
+            messages, self._retry_status_buffer = self._retry_status_buffer, []
+            for kind, msg in messages:
+                self._emit_status(msg)
+
+    module.StatusOutputMixin = StatusOutputMixin
+    monkeypatch.setitem(sys.modules, "agent.status_output", module)
+    return module
+
+
+def test_the_fallback_notice_reads_plainly_on_both_paths(plugin, fake_display, fake_runner, fake_status_output):
+    plugin.register(None)
+    agent = fake_status_output.StatusOutputMixin()
+    agent._pending_fallback_notice = [NOTICE + " Primary retry eligible in ~30 s; recovery is not guaranteed."]
+    agent._emit_pending_fallback_notice()
+    agent._retry_status_buffer = [("status", DiagnosticText(NOTICE))]
+    agent._flush_status_buffer()
+    assert agent.sent == [plugin.FALLBACK_TEXT, plugin.FALLBACK_TEXT]
+    assert all(type(m) is DiagnosticText for m in agent.sent)
+    for text in agent.sent:
+        assert "/new" in text and "luna" not in text and "openrouter" not in text and "via" not in text
+
+
+def test_every_other_status_goes_through_as_given(plugin, fake_display, fake_runner, fake_status_output):
+    plugin.register(None)
+    agent = fake_status_output.StatusOutputMixin()
+    for message in ("⚠️ Rate limited; retrying in 5 s", "Model fallback: no emoji", " ⚠️ Model fallback: x",
+                    DiagnosticText("🔄 Primary model restored"), None, 42):
+        agent._emit_status(message)
+    assert agent.sent == ["⚠️ Rate limited; retrying in 5 s", "Model fallback: no emoji", " ⚠️ Model fallback: x",
+                          "🔄 Primary model restored", None, 42]
+
+
+def test_the_fallback_wrap_is_idempotent_and_fails_open(plugin, fake_display, fake_runner, fake_status_output, monkeypatch):
+    plugin.register(None)
+    wrapped = fake_status_output.StatusOutputMixin._emit_status
+    plugin.register(None)
+    assert fake_status_output.StatusOutputMixin._emit_status is wrapped
+    assert wrapped.__wrapped__.__name__ == "_emit_status"
+    monkeypatch.setattr(plugin, "resident_status", lambda message: 1 / 0)
+    agent = fake_status_output.StatusOutputMixin()
+    agent._emit_status(NOTICE)
+    assert agent.sent == [NOTICE]
+
+
+def test_a_status_output_without_the_method_is_left_alone(plugin, fake_display, fake_runner, monkeypatch):
+    module = types.ModuleType("agent.status_output")
+
+    class StatusOutputMixin:
+        pass
+
+    module.StatusOutputMixin = StatusOutputMixin
+    monkeypatch.setitem(sys.modules, "agent.status_output", module)
+    plugin.register(None)
+    assert not hasattr(StatusOutputMixin, "_emit_status")
+    assert "terminal" in fake_display._TOOL_VERBS_NO_PREVIEW
+
+
+@pytest.mark.skipif(not (HERMES_REF / "agent" / "status_output.py").is_file(), reason="Hermes source not available")
+def test_the_fallback_notice_matches_hermes_pinned_source(plugin):
+    """The notice opens with FALLBACK_NOTICE_PREFIX; it is buffered for both paths; both paths emit through
+    _emit_status, which stays a plain method."""
+    helpers = (HERMES_REF / "agent" / "chat_completion_helpers.py").read_text(encoding="utf-8")
+    assert 'f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "' in helpers
+    assert plugin.FALLBACK_NOTICE_PREFIX == "⚠️ Model fallback:"
+    assert "    agent._buffer_diagnostic_status(notice)\n" in helpers
+    status = (HERMES_REF / "agent" / "status_output.py").read_text(encoding="utf-8")
+    assert "    def _emit_status(self, message: str) -> None:\n" in status
+    assert "        self._emit_status(DiagnosticText(message))\n" in status
+    assert 'replay = {"status": self._emit_status, "warn": self._emit_warning}' in status
+    assert "                self._emit_diagnostic_status(item)\n" in status
+    assert '        self._buffer_retry_message("status", message)\n' in status

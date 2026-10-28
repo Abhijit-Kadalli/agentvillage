@@ -1,5 +1,6 @@
 """Telegram tool-progress lines name the tool, never the command (RC28); Hermes's
-turn-hold and aux-fallback compaction notices stay out of the chat (rc42).
+turn-hold and aux-fallback compaction notices stay out of the chat (rc42); its
+model-fallback notice reads in plain words (HOT-RASOOL).
 
 Hermes v2026.9.24 composes each "new"/"all" progress line in
 ``gateway/run_turn_runner.py`` (``_progress_build_message``, 292-300) from
@@ -105,17 +106,29 @@ plugin extends them once, at ``register()``:
   ``FIRST_CONTACT_REWRITES`` replaced; any other text, a list it cannot find,
   or any error leaves the notes as Hermes wrote them.
 
+* The model-fallback notice reads plainly (HOT-RASOOL, 28 Oct). When the primary model fails and Hermes
+  switches provider, it posts "⚠️ Model fallback: <model> via <provider> unavailable (<reason>); using
+  <model> via <provider>." (agent/chat_completion_helpers.py:2103-2107) to the chat as a diagnostic status.
+  A resident cannot act on model ids or an error class, and a resident left on the backup model with a
+  poisoned history needs to know /new is the way out. ``display.suppress_warning_notifications`` would hide
+  it, with the failures above, so instead this plugin wraps ``StatusOutputMixin._emit_status``
+  (agent/status_output.py:99), the one method both delivery paths use (``_emit_pending_fallback_notice``
+  :193-207, ``_flush_status_buffer`` :209-229): a str message that starts with ``FALLBACK_NOTICE_PREFIX``
+  becomes ``FALLBACK_TEXT`` (same str subclass, so it stays a DiagnosticText); every other message, and any
+  error in that check, goes through as given. The box log keeps the model, provider and reason.
+
 ``web_search`` and ``web_extract`` keep their preview (the query or URL is the
 useful part). Verbose mode, which a resident can pick with ``/verbose``, still
 shows the full arguments (on Telegram as Hermes's JSON line rather than a code
-block). Only the three tables and those three methods are touched, and one command
+block). Only the three tables and those four methods are touched, and one command
 registered; tool execution and compaction are not. A Hermes without either
 verb table, or with a table of an unexpected type, or without
 ``_PREVIEW_BUILDERS`` (the verbs are still added; only the stop line keeps the
 raw name), or without
 ``TurnRunner._progress_terminal_blocks``,
 ``GatewayTurnMixin._hmwa_hygiene_notify`` or
-``GatewayTurnMixin._hmwa_first_contact_notes``, or a context without
+``GatewayTurnMixin._hmwa_first_contact_notes`` or
+``StatusOutputMixin._emit_status``, or a context without
 ``register_command``, has that part left alone with one log line, and a missing
 module never raises. Idempotent.
 """
@@ -401,8 +414,62 @@ def apply_first_contact_notes(run_turn_module: Any) -> bool:
     return True
 
 
+# ── HOT-RASOOL (28 Oct): the model-fallback notice, in words a resident can act on ──────────────────
+
+#: How Hermes v2026.9.24 opens its provider-switch notice (agent/chat_completion_helpers.py:2103-2107):
+#: "⚠️ Model fallback: <model> via <provider> unavailable (<reason>); using <model> via <provider>.", sometimes
+#: followed by " Primary retry eligible in ~<n> s; recovery is not guaranteed."
+FALLBACK_NOTICE_PREFIX = "\u26a0\ufe0f Model fallback:"
+#: What the resident reads instead. Model and provider names and the error reason stay in the box log
+#: (``_log_fallback_activated``); the resident gets what happened and the one thing they can do.
+FALLBACK_TEXT = (
+    "\u26a0\ufe0f My usual model couldn't answer just now, so I switched to a backup model. "
+    "If my replies seem off, send /new to start a fresh chat."
+)
+
+
+def resident_status(message: Any) -> Any:
+    """``FALLBACK_TEXT`` for Hermes's model-fallback notice, keeping its str subclass; anything else as given."""
+    if not isinstance(message, str) or not message.startswith(FALLBACK_NOTICE_PREFIX):
+        return message
+    try:
+        return type(message)(FALLBACK_TEXT)
+    except Exception:  # noqa: BLE001 - a str subclass that will not take one argument: plain text
+        return FALLBACK_TEXT
+
+
+def apply_fallback_notice(status_output_module: Any) -> bool:
+    """Wrap ``StatusOutputMixin._emit_status`` so the model-fallback notice reads plainly. Fail-open."""
+    mixin = getattr(status_output_module, "StatusOutputMixin", None)
+    original = getattr(mixin, "_emit_status", None) if mixin is not None else None
+    if not callable(original):
+        logger.info("av-display: agent.status_output has no StatusOutputMixin._emit_status; left as is")
+        return False
+    if getattr(original, _WRAPPED_MARK, False):
+        return True
+    if inspect.iscoroutinefunction(original):
+        logger.info("av-display: StatusOutputMixin._emit_status is a coroutine function; left as is")
+        return False
+
+    # Both ways the notice reaches the chat go through this one method: _emit_pending_fallback_notice after a
+    # successful fallback (via _emit_diagnostic_status, status_output.py:193-207) and _flush_status_buffer's
+    # replay on terminal failure (:209-229). Only the message is ever changed, and only for that notice.
+    def _emit_status(self: Any, message: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            message = resident_status(message)
+        except Exception:  # noqa: BLE001 - fail open: Hermes's text
+            pass
+        return original(self, message, *args, **kwargs)
+
+    setattr(_emit_status, _WRAPPED_MARK, True)
+    _emit_status.__wrapped__ = original  # type: ignore[attr-defined]
+    mixin._emit_status = _emit_status
+    logger.info("av-display: agent.status_output StatusOutputMixin._emit_status wrapped (model-fallback notice reads plainly)")
+    return True
+
+
 def register(ctx: Any) -> None:
-    """Hermes plugin entrypoint. No tools, no hooks: three display tables, three methods and /village, once."""
+    """Hermes plugin entrypoint. No tools, no hooks: three display tables, four methods and /village, once."""
     try:
         register_village_command(ctx)
     except Exception:  # noqa: BLE001 - a command must never stop the gateway
@@ -412,6 +479,7 @@ def register(ctx: Any) -> None:
         ("gateway.run_turn_runner", apply_terminal_blocks),
         ("gateway.run_turn", apply_hygiene_notices),
         ("gateway.run_turn", apply_first_contact_notes),
+        ("agent.status_output", apply_fallback_notice),
     ):
         try:
             module = importlib.import_module(name)
