@@ -2,48 +2,53 @@
   "manifest": 2,
   "id": "dreamstarter",
   "name": "DreamStarter",
-  "version": "1.1.0",
-  "description": "Turn what a resident wrote about themselves into their top 3 dreams with a claim link each; prepare their ElevenLabs Startup Grant application for them to review and submit; and show Goa's local businesses, each owner's problem, the solution designed with them and the link that starts DreamStarter's agents on it. Read-only; nothing is created or sent until the resident opens a link in their own browser.",
+  "version": "2.0.0",
+  "description": "Three things through one reviewed DreamStarter app, each only when the resident asks. Dreams: send a few lines the resident types for that request and get up to three suggested dreams with a claim link each; DreamStarter keeps the lines in a discovery session and passes them to Google Gemini to extract the dreams. Grant: stage the resident's ElevenLabs Startup Grant application as a private DreamStarter draft (kept 14 days after its last edit) with a review link; when the resident accepts the terms and clicks Submit there, DreamStarter submits it to ElevenLabs' live form. Local businesses: read the public write-ups of the Goa businesses in the program. The agent shows exactly what will be sent and waits for the resident's yes before either send.",
   "homepage": "https://dreamstarter.xyz",
+  "owner": {
+    "github": "arrfire",
+    "org": "DreamStarter"
+  },
   "visibility": "sandbox",
   "permissions": [
     {
-      "kind": "read",
-      "label": "Discover dreams from text the resident shares",
-      "description": "Send only the about-me, interests and goals text the resident agrees to share, and read back up to three suggested dreams with public claim links. No Edge City account, email, phone, Telegram handle or identifier is sent, and nothing is created on DreamStarter until the resident opens a claim link in their own browser."
+      "kind": "action",
+      "label": "Find dreams in lines you type for it",
+      "description": "Only when you ask, and only after you say yes to the exact text: sends the lines you type for that one request (what you want to build, your interests, your goals) to DreamStarter. DreamStarter keeps them in a discovery session behind the returned links and passes them to Google Gemini to extract the dreams. Nothing from your profile, memory or other chats is sent, and no name, email, phone, Telegram handle or Edge City id. A dream is yours only after you open its claim link and claim it on dreamstarter.xyz."
+    },
+    {
+      "kind": "action",
+      "label": "Stage your ElevenLabs Startup Grant application",
+      "description": "Only when you ask, and only after you say yes to every field shown to you: sends your application answers (name, job title, LinkedIn, work and ElevenLabs emails, phone; company name, legal name, registration number, website, address and product description; your eligibility answers) to DreamStarter, which keeps them as a private draft for 14 days after its last edit and returns a review link. Nothing reaches ElevenLabs until you accept the terms and click Submit on that page; DreamStarter then submits the application to ElevenLabs' live grant form for you, and ElevenLabs decides."
     },
     {
       "kind": "read",
-      "label": "Read a dream's or a business's execution status",
-      "description": "Read the public, coarse status of a dream or local business the resident's own ref or slug points to: unclaimed, claimed or executing, and which agent workflows have run. No dream content, drafts, credits or account data."
+      "label": "Read the status of your dream or application",
+      "description": "Read the coarse status of a dream or grant application by the ref DreamStarter returned to you: whether it is claimed or running and which agent workflows have run, or where the application stands. Never the application answers. Timeline events marked simulated are a labelled preview."
     },
     {
       "kind": "read",
-      "label": "Read the public workflow catalog and the grant's rules",
-      "description": "Static public content: what DreamStarter's agents do after a claim, and the ElevenLabs Startup Grant's eligibility rules, fields and Edge City referral code."
+      "label": "Read the workflow catalog and the grant's rules",
+      "description": "Static public content: what DreamStarter's agents do after a claim, and the ElevenLabs Startup Grant's eligibility rules, fields and referral code."
     },
     {
       "kind": "read",
-      "label": "Stage an ElevenLabs grant application the resident chose to share",
-      "description": "Send only the application answers the resident agreed to share (their name, work email, phone, LinkedIn and company details) to DreamStarter, which stages a private draft and returns a review link. Nothing reaches ElevenLabs until the resident accepts the terms and clicks Submit on that page in their own browser. Unsubmitted drafts are deleted after 14 days."
-    },
-    {
-      "kind": "read",
-      "label": "Read the local businesses and their problems",
-      "description": "Read the public write-ups of the Goa businesses in the program: what each does, the problem its owner named, the solution designed with them, a Buildathon build idea and a public claim link. No owner contact details."
+      "label": "Read the local businesses in the program",
+      "description": "Read DreamStarter's public write-ups of the Goa businesses in the program: what each does, the problem its owner named, the solution designed with them, a Buildathon build idea, a public claim link and its execution status. No owner contact details."
     }
   ],
   "service": {
     "kind": "mcp",
     "baseUrl": "https://mcp.dreamstarter.xyz/mcp",
     "auth": {
-      "mode": "none"
+      "mode": "app-token",
+      "secretRef": "MINI_APP_DREAMSTARTER_KEY"
     }
   },
   "operations": [
     {
       "name": "dreamstarter.discover",
-      "class": "read",
+      "class": "write",
       "target": {
         "tool": "discover_dreams"
       },
@@ -141,7 +146,7 @@
     },
     {
       "name": "dreamstarter.grant_prepare",
-      "class": "read",
+      "class": "write",
       "target": {
         "tool": "grant_prepare"
       },
@@ -364,8 +369,8 @@
   "skills": [
     {
       "name": "dreamstarter",
-      "version": "1.1.0",
-      "sha256": "fa491a6a54ef4a0bd3acf67035a601be78bcb6448fd2908ef0284a2ee54a4fa0",
+      "version": "2.0.0",
+      "sha256": "18f100115e127c84f3b55f01dc3fafb2398a0a7ddca24870c022723e6d45bae4",
       "path": "skills/dreamstarter/SKILL.md"
     }
   ]

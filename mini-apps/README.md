@@ -497,6 +497,37 @@ replies are exact-thread reservations and an empty newly enabled pair can receiv
 one fixed introduction per epoch. All writes share a two-per-UTC-day budget. The job does not
 deliver pair content to the resident or copy it into other surfaces.
 
+## DreamStarter: dreams, the grant draft, Goa's local businesses
+
+The [v2 manifest](dreamstarter/manifest.json) and the native bundle allowlist
+(`_mini_apps.py` `DREAMSTARTER`, exact equality, in this order) expose nine
+named operations, each mapped by the app to one DreamStarter MCP tool: seven
+reads (`dreamstarter.dream_status`, `.workflows`, `.grant_requirements`,
+`.grant_status`, `.businesses`, `.business_brief`, `.business_status`) and two
+owner-asked writes, `dreamstarter.discover` (the lines the owner types for that
+request; DreamStarter keeps them in a discovery session and passes them to
+Google Gemini) and `dreamstarter.grant_prepare` (the owner's confirmed
+application answers, a private 14-day draft that DreamStarter submits to
+ElevenLabs' live form only when the owner clicks Submit on its review page).
+`mini-app.read` refuses `dreamstarter`.
+
+The bundle is the DreamStarter team's
+([PR #393](https://github.com/Edge-City/agentvillage/pull/393), arrfire),
+adapted from a generic read relay to a reviewed app because those two
+operations send the owner's own words. The service is `app-token`: the app
+server holds one key (`MINI_APP_DREAMSTARTER_KEY`) and sends no resident
+identity. Input rides the existing `arguments` object and is checked in
+`plugins/village-bridge/_dreamstarter.py` against DreamStarter's published
+schemas; a discovery call holding an email address or a phone number is refused
+before transport. Both writes take the verified gate (`gate_verified`, zzz's
+path), no card and no manual grant, and carry the trusted `turnId`; the skill
+shows exactly what will be sent and waits for the owner's yes. Results are
+scrubbed and framed as untrusted.
+
+Overlay first, then the CP catalog row and sandbox allowlist, then the app
+routes, then Edge City staff set `MINI_APP_DREAMSTARTER_KEY`. The app-server
+contract is in [dreamstarter/README.md](dreamstarter/README.md).
+
 ## Slopfolio: connected private drafts
 
 The [reviewed manifest](slopfolio/manifest.json) and native bundle allowlist

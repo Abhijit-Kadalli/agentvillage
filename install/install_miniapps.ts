@@ -33,6 +33,9 @@ export const REVIEWED_MINI_APPS = [
   // MOSAIC (app#486, rides v2.1.9): restricted in the CP catalog (MINI_APPS_TENANT_ALLOWLIST key `mosaic`).
   // Dizko's shape: the public read first, then its own context namespace read and write, served per box.
   { id: "mosaic", version: "1.0.0", operations: ["mini-app.read", "mini-app.context.read", "mini-app.context.write"], skills: ["mosaic"] },
+  // DreamStarter (adapted from ov#393, arrfire): seven reads and two owner-asked writes, discover and grant_prepare
+  // (_mini_apps.py DREAMSTARTER, exact; the manifest's order).
+  { id: "dreamstarter", version: "2.0.0", operations: ["dreamstarter.discover", "dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_prepare", "dreamstarter.grant_status", "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status"], skills: ["dreamstarter"] },
 ] as const;
 /**
  * Earlier gold-stars entries, still staged byte for byte so this overlay can roll out BEFORE the CP
