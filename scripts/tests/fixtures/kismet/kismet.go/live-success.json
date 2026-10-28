@@ -2,6 +2,10 @@
   "content": [
     {
       "type": "text",
+      "text": "Your agent is on 2 new dates. Check back in a few minutes."
+    },
+    {
+      "type": "text",
       "text": "{\"ok\":true,\"started\":true,\"dateIds\":[\"d_test_0002\",\"d_test_0003\"],\"text\":\"Your agent is on 2 new dates. Check back in a few minutes.\"}"
     }
   ],

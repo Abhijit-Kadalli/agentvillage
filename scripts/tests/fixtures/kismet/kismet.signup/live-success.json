@@ -2,6 +2,10 @@
   "content": [
     {
       "type": "text",
+      "text": "You're in. Your agent's first dates start now; ask me for your Kismet summary later today."
+    },
+    {
+      "type": "text",
       "text": "{\"ok\":true,\"created\":true,\"text\":\"You're in. Your agent's first dates start now; ask me for your Kismet summary later today.\",\"message\":\"created\"}"
     }
   ],

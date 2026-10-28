@@ -2,8 +2,17 @@
   "content": [
     {
       "type": "text",
-      "text": "invalid_json: Kismet could not read the request."
+      "text": "Kismet could not read the request."
+    },
+    {
+      "type": "text",
+      "text": "{\"ok\":false,\"error\":\"invalid_json\",\"message\":\"Kismet could not read the request.\"}"
     }
   ],
+  "structuredContent": {
+    "ok": false,
+    "error": "invalid_json",
+    "message": "Kismet could not read the request."
+  },
   "isError": true
 }
