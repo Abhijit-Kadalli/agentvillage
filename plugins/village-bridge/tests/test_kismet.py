@@ -138,7 +138,7 @@ class KismetTest(unittest.TestCase):
         self.assertIn('kismet', bridge._mini_app_card.REVIEWED_APPS)
         enum = bridge.SCHEMA['parameters']['properties']['operation']['enum']
         # Kismet's eight sit before zzz.bot's five and zzz.pairs (ov#405's order; zzz keeps the enum's tail, ov#410).
-        self.assertEqual(enum[-14:-6], READS + WRITES); self.assertEqual(enum[-6:-1], mini.ZZZBOT['operations']); self.assertEqual(len(enum), len(set(enum)))
+        self.assertEqual(enum[-17:-9], READS + WRITES); self.assertEqual(enum[-9:-4], mini.ZZZBOT['operations']); self.assertEqual(len(enum), len(set(enum)))
         for op in mini.KISMET['operations']:
             self.assertTrue(mini.installed(self.home, 'kismet', op))
         self.assertFalse(mini.installed(self.home, 'kismet', 'mini-app.read'))
