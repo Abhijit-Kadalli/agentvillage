@@ -455,6 +455,7 @@ class BridgeTest(unittest.TestCase):
   self.assertTrue({'forkicks.menu','forkicks.schedule','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.status','forkicks.order.cancel'}<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
   self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write',
                                           'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare','zzz.reply','zzz.create_thread',
+                                          'zzz.open_team_room','zzz.respond_team_invite',
                                           'dreamstarter.discover','dreamstarter.grant_prepare'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
@@ -515,7 +516,8 @@ class BridgeTest(unittest.TestCase):
   # No new tool name: both operations go through `village`, the 36th gated tool (exact full-match matcher).
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status','zzz.pairs'}|set(mini.ZZZBOT['operations'])|set(mini.DREAMSTARTER['operations']))
+  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status','zzz.pairs'}|set(mini.ZZZBOT['operations'])
+                   |{'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'}|set(mini.DREAMSTARTER['operations']))
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()
@@ -1366,6 +1368,69 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(sent[1],{'operation':'zzz.create_thread','room':'general','title':'Lunch?','body':'Who is around?','turnId':self.zzz_turn('9')})
   # A later owner message is a new turn: a different idempotency input, never the earlier post's.
   self.assertEqual(sent[2]['turnId'],self.zzz_turn('10'));self.assertNotEqual(sent[2]['turnId'],sent[0]['turnId'])
+ # ---- Buildathon team rooms (zzz#32 + app#842): borrowed install permissions, owner-led, gated writes -----------
+ TEAM_OPEN={'operation':'zzz.open_team_room','arguments':{'title':'Buildathon team','with':['Asha Rao','att_123']}}
+ TEAM_ACCEPT={'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_0123abcd','decision':'accept'}}
+ TEAM_LIST={'operation':'zzz.list_team_invites','arguments':{}}
+ def test_team_ops_borrow_the_zzzbot_install_and_stay_out_of_the_catalog_entry(self):
+  self.assertEqual(mini.ZZZBOT['operations'],self.ZZZ_READS+self.ZZZ_WRITES)
+  self.assertIn('zzz.list_team_invites',mini.READ_OPERATIONS)
+  for op in ('zzz.open_team_room','zzz.respond_team_invite'):self.assertIn(op,mini.WRITE_OPERATIONS)
+  self.assertTrue({'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'}<=mini.ZZZ_OPERATIONS)
+  import importlib
+  managed=importlib.import_module('village_bridge._zzz_managed')
+  self.assertFalse(managed.CRON_OPS&{'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'})
+  with self.gate():
+   for args in (self.TEAM_OPEN,self.TEAM_ACCEPT,self.TEAM_LIST):
+    with self.subTest(op=args['operation']):self.assertEqual(self.call(args),{'error':'mini_app_not_installed'})
+   # A zzzbot entry without create_thread cannot open or answer; list borrows list_rooms only.
+   self.zzz_home(entry={'id':'zzzbot','version':'1.0.0','skills':['zzzbot'],'operations':['zzz.list_rooms']})
+   self.assertEqual(self.call(self.TEAM_OPEN),{'error':'mini_app_not_installed'})
+   self.zzz_home()
+   self.assertIn('data',self.call(self.TEAM_LIST));self.assertIn('data',self.call(self.TEAM_OPEN));self.assertIn('data',self.call(self.TEAM_ACCEPT))
+  sent=[c.args[1] for c in self.transport.call_args_list]
+  self.assertEqual(sent,[{'operation':'zzz.list_team_invites'},
+                         {'operation':'zzz.open_team_room','title':'Buildathon team','with':['Asha Rao','att_123']},
+                         {'operation':'zzz.respond_team_invite','group':'cxg_0123abcd','decision':'accept'}])
+ def test_team_writes_need_the_verified_gate_and_exact_bounded_arguments(self):
+  self.zzz_home()
+  with patch.object(bridge,'authorize_send',side_effect=AssertionError('no daemon grant for a team room')):
+   for switch,codes in (('off',()),('on',('hook-missing:village',))):
+    with self.gate(switch,codes),self.subTest(switch=switch):
+     for args in (self.TEAM_OPEN,self.TEAM_ACCEPT):
+      refused=self.call(args);self.assertEqual(refused['error'],'approval_unavailable');self.assertIn('Do not claim',refused['instruction'])
+   bad=[{'operation':'zzz.open_team_room','arguments':{'title':'t'}},{'operation':'zzz.open_team_room','arguments':{'with':['A']}},
+        {'operation':'zzz.open_team_room','arguments':{'title':'t'*101,'with':['A']}},{'operation':'zzz.open_team_room','arguments':{'title':'t','with':[]}},
+        {'operation':'zzz.open_team_room','arguments':{'title':'t','with':['p%d'%i for i in range(8)]}},
+        {'operation':'zzz.open_team_room','arguments':{'title':'t','with':['Asha','asha']}},{'operation':'zzz.open_team_room','arguments':{'title':'t','with':['  ']}},
+        {'operation':'zzz.open_team_room','arguments':{'title':'t','with':'Asha'}},{'operation':'zzz.open_team_room','arguments':{'title':'t','with':['x'*121]}},
+        {'operation':'zzz.open_team_room','arguments':{'title':'t','with':['A'],'turnId':'forged'}},
+        {'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1'}},{'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'yes'}},
+        {'operation':'zzz.respond_team_invite','arguments':{'group':'../x','decision':'accept'}},
+        {'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'accept','resident':'r'}},
+        {'operation':'zzz.list_team_invites','arguments':{'group':'cxg_1'}}]
+   with self.gate():
+    for args in bad:
+     with self.subTest(args=args):
+      refused=self.call(args);self.assertEqual(refused['error'],'invalid_zzz_arguments')
+      self.assertEqual(refused['instruction'],'Nothing was sent. '+bridge.ZZZ_TEAM_INPUT[args['operation']])
+    self.transport.assert_not_called()
+    self.assertIn('data',self.call({'operation':'zzz.open_team_room','arguments':{'title':'t'*100,'with':['p%d'%i for i in range(7)]}}))
+    self.assertIn('data',self.call({'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'decline'}}))
+  # No trusted turn id is forwarded for a team op: the app derives its own idempotency key.
+  for call in self.transport.call_args_list:self.assertNotIn('turnId',call.args[1])
+ def test_team_ops_are_refused_in_a_managed_run(self):
+  self.zzz_home()
+  with self.gate(),patch.object(bridge,'bound_context',side_effect=ValueError('private_owner_chat_required')):
+   # A cron or managed run: the managed context never admits a team op (not in CRON_OPS).
+   for args in (self.TEAM_OPEN,self.TEAM_ACCEPT,self.TEAM_LIST):
+    with self.subTest(op=args['operation']):self.assertEqual(self.call(args),{'error':'private_owner_chat_required'})
+   # Defence in depth: even a managed context that reached the bridge is refused before any request.
+   managed={'SESSION_KEY':'cron_x','MESSAGE_ID':'task_x','USER_ID':'42','MANAGED_ZZZ':True}
+   with patch.object(bridge,'managed_context',return_value=managed):
+    for args in (self.TEAM_OPEN,self.TEAM_ACCEPT,self.TEAM_LIST):
+     with self.subTest(managed=args['operation']):self.assertEqual(self.call(args)['error'],'zzz_write_not_authorized')
+  self.transport.assert_not_called()
  def test_zzz_refuses_groups_cron_children_and_another_owner(self):
   self.zzz_home()
   args={'operation':'zzz.changes','arguments':{'room':'general'}}
@@ -1574,8 +1639,9 @@ class BridgeTest(unittest.TestCase):
   # MINIAPP-PICKUP (v2.1.5): one fixed schema on every box; the feature-gated pairs read follows the five
   # properties are as before (no zzz text). Registration no longer depends on the projection.
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  # DreamStarter's nine follow zzzbot's five and the feature-gated zzz.pairs.
-  self.assertEqual(enum[-15:-10],mini.ZZZBOT['operations']);self.assertEqual(enum[-10],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
+  # Team rooms (zzz#32 + app#842) are appended after zzz.pairs, again written out; DreamStarter's nine follow them.
+  self.assertEqual(enum[-18:-13],mini.ZZZBOT['operations']);self.assertEqual(enum[-13],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
+  self.assertEqual(enum[-12:-9],['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
   self.assertEqual(enum[-9:],mini.DREAMSTARTER['operations'])
   self.assertNotIn('zzz',bridge.SCHEMA['description'].lower())
   self.assertFalse(hasattr(bridge,'schema_for'))

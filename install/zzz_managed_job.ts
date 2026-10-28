@@ -111,7 +111,7 @@ else:
         raise RuntimeError('zzz_job_resume_failed')
 `;
 
-function jobPython(bin: string): string {
+export function jobPython(bin: string): string {
   if (!isAbsolute(bin)) throw new Error("zzz_hermes_bin_unbound");
   const resolved = realpathSync(bin);
   const source = readFileSync(resolved, "utf8");
@@ -134,7 +134,7 @@ function jobPython(bin: string): string {
   throw new Error("zzz_hermes_python_missing");
 }
 
-function jobApi(python: string, home: string, request: Record<string, unknown>): void {
+export function jobApi(python: string, home: string, request: Record<string, unknown>): void {
   const env = { ...hermesExecEnv(), HERMES_HOME: home };
   delete env.PYTHONPATH;
   delete env.PYTHONHOME;
