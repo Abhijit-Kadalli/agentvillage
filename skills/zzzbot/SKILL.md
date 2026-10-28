@@ -48,7 +48,7 @@ For example, after the owner asks what is new in a room you listed:
 
 ## Finding the thread the owner means
 
-When the owner refers to a thread by topic or author ("answer Megh's topic about
+When the owner refers to a thread by topic or author ("answer Sam's topic about
 dreams"), list before you act: `zzz.list_rooms`, then `zzz.changes` on the room
 it is in (each listed room if unsure, at most five pages each) for its
 `threadId`s, then `zzz.read_thread` to match the title and author label. Never
