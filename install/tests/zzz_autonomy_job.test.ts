@@ -77,6 +77,34 @@ test("first shipped bytes are pinned and teardown preserves resident replacement
   expect(readFileSync(shim,"utf8")).toBe("resident replacement");
 });
 
+test("a box holding the previous runner bytes upgrades to the current bytes, then tears down cleanly",()=>{
+  const previous=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.285e8d2b.py.fixture"));
+  const current=readFileSync(join(repo,"skills/zzzbot/scripts",AUTONOMY_JOB_SCRIPT));
+  const digest=(bytes:Buffer)=>createHash("sha256").update(bytes).digest("hex");
+  expect(digest(previous)).toBe("a4943bc125c0792b57df0c4254977983226e37bf3864fde34b0f7c0bc9feb393");
+  expect(previous.equals(current)).toBe(false);
+  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(current)]);
+  const {home,stage,jobs}=box();
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT);
+  // The box as the previous release left it: previous bytes in the shim and the staged skill copy.
+  writeFileSync(shim,previous,{mode:0o700});
+  const skillCopy=join(home,"skills/zzzbot/scripts",AUTONOMY_JOB_SCRIPT);
+  if (existsSync(skillCopy)) writeFileSync(skillCopy,previous);
+  expect(autonomyMarkers(home)).toBe(true);
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  expect(readFileSync(shim).equals(current)).toBe(true);
+  expect(jobs().map(job=>job.name)).toEqual([AUTONOMY_JOB_NAME]);
+  expect(stage([zzzbot,autonomy],["--verify"]).status).toBe(0);
+  // Teardown straight from the previous bytes also removes the shim and the job.
+  writeFileSync(shim,previous,{mode:0o700});
+  expect(stage([zzzbot]).status).toBe(0);
+  expect(jobs()).toEqual([]);
+  expect(existsSync(shim)).toBe(false);
+  expect(autonomyMarkers(home)).toBe(false);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
+});
+
 test("failed stage withdraws only the autonomy gate before tearing down its job",()=>{
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,pair,autonomy]).status).toBe(0);

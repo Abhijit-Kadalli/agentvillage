@@ -15,9 +15,13 @@ const TOKEN = /^avb_[A-Za-z0-9_-]{43}$/;
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "skills", "zzzbot", relative));
 
-/** First shipped version. Append old fixed digests before changing shipped files in a later release. */
+/** Every runner/prompt byte sequence this installer has ever staged, oldest first. Keep old digests when changing
+ *  shipped files, so a box holding older bytes still upgrades and tears down as "ours". */
 export const AUTONOMY_SHIPPED = {
-  "scripts/zzz_autonomy_runner.py": ["d7ac567259b971483f71788e601a69113c3c49927748b67e58c83ab2dcc2f4cc"],
+  "scripts/zzz_autonomy_runner.py": [
+    "a4943bc125c0792b57df0c4254977983226e37bf3864fde34b0f7c0bc9feb393", // 285e8d2b, before event_brief
+    "bc8ead871782ee965c551d60fafe4ac836b262fa06d1c1cd67110c06b9afd138", // untrusted, sanitized event_brief
+  ],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
 
