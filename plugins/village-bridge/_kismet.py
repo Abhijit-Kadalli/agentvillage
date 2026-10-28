@@ -16,9 +16,13 @@ here ever logs it: the only log line is an error code.
 from __future__ import annotations
 import json
 import logging
+import os
 import re
+import stat
+import time
 import unicodedata
 import uuid
+from pathlib import Path
 
 LOG = logging.getLogger("village_bridge")
 
@@ -41,6 +45,7 @@ MAX_REQUEST_BYTES = 4096
 IDENTITY_KEYS = frozenset({"residentid", "subject", "userid", "telegramid", "xvillagesubject"})
 ID = re.compile(r"[A-Za-z0-9_-]{1,100}", re.ASCII)  # dateId / targetId (manifest: pattern, 1-100 characters)
 TELEGRAM = re.compile(r"@?[A-Za-z0-9_]{5,32}", re.ASCII)
+DRAFT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.ASCII)  # the manifest's (ov#405's)
 
 
 def _identity_key(key):
@@ -121,11 +126,12 @@ KISMET_INPUTS = {
     "kismet.village_stats": ((), {}),
     "kismet.public_board": ((), {"limit": lambda v: type(v) is int and 1 <= v <= 20}),
     "kismet.summary": ((), {}),
-    "kismet.signup": (("answers",), {"answers": _answers, "telegram": _string(5, 33, TELEGRAM),
-                                     "notes": _strings(0, 10, _text(1, 200))}),
+    # Step 1 (answers, optional telegram and notes) or step 2 (draftId ALONE): kismet_payload refuses a mix.
+    "kismet.signup": ((), {"answers": _answers, "telegram": _string(5, 33, TELEGRAM),
+                           "notes": _strings(0, 10, _text(1, 200)), "draftId": _string(36, 36, DRAFT_ID)}),
     "kismet.go": ((), {"targetId": _string(1, 100, ID)}),
     "kismet.decide": (("dateId", "decision"), {"dateId": _string(1, 100, ID), "decision": _enum("meet", "pass")}),
-    "kismet.delete": ((), {}),
+    "kismet.delete": ((), {"draftId": _string(36, 36, DRAFT_ID)}),
 }
 KISMET_WRITES = ("kismet.signup", "kismet.go", "kismet.decide", "kismet.delete")
 
@@ -143,11 +149,13 @@ OP_ARGUMENTS = {
     "kismet.village_stats": "arguments {} (nothing else)",
     "kismet.public_board": "arguments with an optional limit, a whole number from 1 to 20",
     "kismet.summary": "arguments {} (nothing else)",
-    "kismet.signup": ("arguments with answers (the kismet skill's sign-up answers, by their ids; openness only if single or "
-                      "complicated; gender and interestedIn only with romance), and optional telegram and notes; at most 12,000 bytes"),
+    "kismet.signup": ("arguments for step 1: answers (the kismet skill's sign-up answers, by their ids; openness only if "
+                      "single or complicated; gender and interestedIn only with romance), and optional telegram and notes, "
+                      "at most 12,000 bytes; or for step 2: draftId alone, never both"),
     "kismet.go": "arguments with an optional targetId, exactly as Kismet returned it",
-    "kismet.decide": "arguments with dateId, exactly as kismet.summary returned it, and decision \"meet\" or \"pass\"",
-    "kismet.delete": "arguments {} (nothing else)",
+    "kismet.decide": ("arguments with dateId, exactly as a kismet.summary shown to the owner in an earlier message returned "
+                      "it, and decision \"meet\" or \"pass\""),
+    "kismet.delete": "arguments {} for step 1, or for step 2 draftId alone",
 }
 
 
@@ -168,6 +176,9 @@ def kismet_payload(op, args, context):
     required, checks = KISMET_INPUTS[op]
     if not _fields(body, required, checks):
         raise KismetRefused()
+    # The manifest's anyOf [answers | draftId]: exactly one step per call, and step 2 is the draftId alone.
+    if op == "kismet.signup" and ("answers" in body) == ("draftId" in body) or "draftId" in body and len(body) != 1:
+        raise KismetRefused()
     out = {"operation": op, "arguments": dict(body)}
     if op in KISMET_WRITES:
         out["turnId"] = turn_id(context, op, body)
@@ -177,16 +188,252 @@ def kismet_payload(op, args, context):
     return out
 
 
-def kismet_write(home, op, payload, context, config):
-    """The one step every Kismet write takes after gate_verified() and before transport(): (payload to send, refusal).
+# ---- stage then send (lead L29897; ov#405's owner-turn boundary) ----------------------------------------------
+# kismet.signup and kismet.delete are two steps. Step 1 saves the exact request on this box (nothing is sent) and returns
+# a draftId and a preview; step 2 is that draftId alone, in a LATER owner message of the same conversation, within an
+# hour, and sends the SAVED request, never model-supplied answers. kismet.decide takes only a dateId that a
+# kismet.summary showed the owner in an earlier message. kismet.go is a plain gated write.
+DRAFTS = "kismet-drafts"
+SHOWN = "kismet-shown"
+DRAFT_TTL_SECONDS = 3600
+RECORD_MAX_BYTES = 32768
+# A staged draft is <id>.json; step 2 claims it by an atomic rename to <id>.sent1.json (one send), and an unclear
+# answer leaves it there so the SAME draftId may be retried once (<id>.sent2.json). A definite answer removes it.
+CLAIMS = (".json", ".sent1.json", ".sent2.json")
+SHOWN_MAX = 200
 
-    Today it sends the checked request as is (the build spec: the writes run on their own behind the gate). It is the
-    fold-in point if the lead rules for ov#405's owner-turn boundary: a signup or delete would be staged here (saved
-    under a draftId bound to the owner, the conversation and the turn, nothing sent, the preview returned as the
-    refusal) and sent only from a later owner message by that draftId, with the saved answers, never the model's; a
-    decide would be refused here unless an earlier kismet.summary showed that dateId. `home` and `config` are what
-    that step would need (this box's files and the owner it binds to)."""
-    return payload, None
+
+class KismetStep(Exception):
+    """A step refused on the box before anything was sent; `code` is one of __init__.py's KISMET_STEP_ERRORS."""
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _folder(home, folder):
+    path = Path(home) / folder
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise KismetStep("kismet_preview_unavailable")
+    return path
+
+
+def _create(path, record):
+    """Write once (O_EXCL, 0600 in a 0700 folder); False when the file already exists."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(_canonical(record).encode("utf-8"))
+    return True
+
+
+def _read(path, config):
+    """A record this box wrote for this owner and origin, or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > RECORD_MAX_BYTES:
+            return None
+        try:
+            record = json.loads(handle.read())
+        except ValueError:
+            return None
+    if not isinstance(record, dict) or record.get("owner") != config["ownerTelegramId"] or record.get("origin") != config["origin"]:
+        return None
+    return record
+
+
+def _later(record, context):
+    """The same conversation, and a later owner message than the one the record was made in."""
+    if record.get("session") != context["SESSION_KEY"] or record.get("chat") != context["CHAT_ID"]:
+        return False
+    then, now = record.get("message"), context["MESSAGE_ID"]
+    if not isinstance(then, str) or then == now:
+        return False
+    return int(now) > int(then) if then.isdigit() and now.isdigit() else True
+
+
+def _binding(context, config):
+    return {"owner": config["ownerTelegramId"], "origin": config["origin"], "session": context["SESSION_KEY"],
+            "chat": context["CHAT_ID"], "message": context["MESSAGE_ID"]}
+
+
+def signup_preview(body):
+    """Every field exactly as it will be sent; the private ones are marked, an unanswered one says so."""
+    answers = body["answers"]
+    def show(key, label, private=False, source=answers):
+        tag = " (private: used only for matching, never shown to anyone)" if private else ""
+        if key not in source:
+            return f"{label}{tag}: not given"
+        value = source[key]
+        if isinstance(value, bool):
+            value = "yes" if value else "no"
+        elif isinstance(value, list):
+            value = ", ".join(json.dumps(v, ensure_ascii=False) if key in ("interests", "notes") else v for v in value)
+        elif key in ("name", "about", "area", "agentProfile", "telegram"):
+            value = json.dumps(value, ensure_ascii=False)
+        return f"{label}{tag}: {value}"
+    lines = ["Kismet sign-up, exactly what will be sent:",
+             show("name", "Name other residents see"),
+             show("status", "Relationship status", True),
+             show("openness", "Openness", True),
+             show("lookingFor", "Looking for"),
+             show("gender", "Gender", True),
+             show("interestedIn", "Interested in", True),
+             show("interests", "Interests"),
+             show("about", "One line about you"),
+             show("availability", "When you are free"),
+             show("area", "Area in Goa"),
+             show("telegram", "Telegram username (shown only to a match)"),
+             show("agentProfile", "Profile your agent dates with"),
+             show("notes", "Notes for Kismet's agent", source=body)]
+    if "telegram" in body:
+        lines.append(show("telegram", "Telegram username for Kismet", source=body))
+    lines.append("18 or older: yes. Agrees to Kismet's terms (https://kismet-village.vercel.app/terms): yes.")
+    return "\n".join(lines)
+
+
+DELETE_PREVIEW = ("Delete your Kismet account, permanently and immediately: your account and profile, all your dates "
+                  "(also from the other person's side), recommendations, matches, match messages, photos, blocks and "
+                  "notes are erased. You can sign up again later as a fresh account.")
+STEP1_INSTRUCTION = ("Nothing was sent. Show the owner this preview in full and ask them to confirm. Only if their NEXT "
+                     "message is a clear yes, call {op} with arguments {{\"draftId\": \"<this draftId>\"}} alone. Any change "
+                     "means a new step 1 and a new yes. The preview lasts an hour.")
+
+
+def _stage(home, op, body, context, config):
+    kind = op.split(".", 1)[1]
+    draft = str(uuid.uuid4())
+    record = {"kind": kind, **_binding(context, config), "at": int(time.time())}
+    if kind == "signup":
+        record["arguments"] = body
+    if not _create(_folder(home, DRAFTS) / (draft + ".json"), record):
+        raise KismetStep("kismet_preview_unavailable")
+    preview = signup_preview(body) if kind == "signup" else DELETE_PREVIEW
+    return {"data": {"draftId": draft, "sent": False, "preview": preview}, "instruction": STEP1_INSTRUCTION.format(op=op)}
+
+
+def _claim(home, op, draft, context, config):
+    """Step 2: the saved request, claimed for one send (or the one retry after an unclear send), or KismetStep."""
+    folder = _folder(home, DRAFTS)
+    paths = [folder / (draft + suffix) for suffix in CLAIMS]
+    found = next(((i, path) for i, path in enumerate(paths) if path.is_file() and not path.is_symlink()), None)
+    if found is None or found[0] == len(paths) - 1:
+        raise KismetStep("kismet_preview_unavailable")  # unknown, already sent, or sent and retried once
+    index, path = found
+    record = _read(path, config)
+    kind = op.split(".", 1)[1]
+    if record is None or record.get("kind") != kind or (kind == "signup" and not isinstance(record.get("arguments"), dict)):
+        raise KismetStep("kismet_preview_unavailable")
+    if record.get("session") != context["SESSION_KEY"] or record.get("chat") != context["CHAT_ID"]:
+        raise KismetStep("kismet_preview_unavailable")  # another conversation's draft
+    if type(record.get("at")) is not int or not 0 <= time.time() - record["at"] <= DRAFT_TTL_SECONDS:
+        _discard(path)
+        raise KismetStep("kismet_preview_expired")
+    if not _later(record, context):
+        raise KismetStep("kismet_confirmation_required")  # the turn that staged it: wait for the owner's reply
+    claimed = paths[index + 1]
+    try:
+        os.rename(path, claimed)  # atomic: two concurrent step 2s never both send
+    except OSError:
+        raise KismetStep("kismet_preview_unavailable") from None
+    return record, claimed
+
+
+def _discard(path):
+    try:
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def forget_all(home):
+    """After the account is deleted: every saved Kismet draft and shown date on this box (this plugin's files only)."""
+    for folder in (DRAFTS, SHOWN):
+        try:
+            path = _folder(home, folder)
+        except KismetStep:
+            continue
+        if not path.is_dir():
+            continue
+        for item in path.iterdir():
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\.sent[12])?\.json", item.name, re.ASCII):
+                _discard(item)
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+
+def remember_shown(home, answer, context, config):
+    """kismet.summary: each dateId the owner is shown, with the FIRST message it was shown in (a re-read never moves it)."""
+    summary = answer.get("data", {}).get("summary") if isinstance(answer.get("data"), dict) else None
+    if not isinstance(summary, dict):
+        return
+    found = []
+    for item in [*(summary.get("recommendations") if isinstance(summary.get("recommendations"), list) else []),
+                 summary.get("topPick"), summary.get("weekly")]:
+        if isinstance(item, dict) and isinstance(item.get("dateId"), str) and ID.fullmatch(item["dateId"]):
+            found.append(item["dateId"])
+    try:
+        folder = _folder(home, SHOWN)
+        if folder.is_dir() and sum(1 for _ in folder.iterdir()) >= SHOWN_MAX:
+            return
+        for date_id in dict.fromkeys(found):
+            _create(folder / (date_id + ".json"), _binding(context, config))
+    except (OSError, KismetStep):
+        return  # nothing recorded: a decide on it is refused (fail closed)
+
+
+def _seen(home, date_id, context, config):
+    record = _read(_folder(home, SHOWN) / (date_id + ".json"), config)
+    return record is not None and _later(record, context)
+
+
+def kismet_write(home, op, payload, context, config):
+    """The one step every Kismet write takes after gate_verified() and before transport().
+
+    Returns (payload to send, early answer, settle). An early answer ends the call with nothing sent: step 1's draft and
+    preview, or {"error": <a KISMET_STEP_ERRORS code>}. `settle(answer)` runs on Kismet's answer to a step 2: a definite
+    answer removes the draft (and a deletion forgets every Kismet record on this box); an unclear one keeps it claimed
+    so the same draftId may be retried once, under the same Idempotency-Key."""
+    body = payload["arguments"]
+    try:
+        if op == "kismet.go":
+            return payload, None, None
+        if op == "kismet.decide":
+            if not _seen(home, body["dateId"], context, config):
+                raise KismetStep("date_not_found")  # never shown to the owner earlier: refused, never hinted at
+            return payload, None, None
+        if "draftId" not in body:
+            return None, _stage(home, op, body, context, config), None
+        record, claimed = _claim(home, op, body["draftId"], context, config)
+    except KismetStep as step:
+        return None, {"error": step.code}, None
+    except OSError:
+        return None, {"error": "kismet_preview_unavailable"}, None
+    sent = {"operation": op, "arguments": record["arguments"] if op == "kismet.signup" else {},
+            # Stable for this draft whatever turn retries it: the app's Idempotency-Key, so a retry is never a second send.
+            "turnId": str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["kismet-draft", body["draftId"]])))}
+
+    def settle(answer):
+        definite = "data" in answer or answer.get("error") in KISMET_CODES
+        if definite:
+            _discard(claimed)
+            if op == "kismet.delete" and "data" in answer:
+                forget_all(home)
+    return sent, None, settle
 
 
 # ---- the plugin's own words ------------------------------------------------------------------------------------

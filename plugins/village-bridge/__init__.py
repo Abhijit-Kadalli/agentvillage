@@ -26,7 +26,7 @@ from urllib.parse import unquote, urlsplit
 from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIONS, WRITE_OPERATIONS, APP_SCOPED_OPERATIONS, APPROVE_IN_BOT,
                          ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS, KISMET_OPERATIONS, KISMET_WRITE_OPERATIONS,
                          ORDER_CARD_NOT_RAISED, ORDER_APPROVAL_REFUSED, ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD)
-from ._kismet import (kismet_payload, kismet_answer, kismet_write, KismetRefused, KISMET_ERRORS, KISMET_GATE, KISMET_IDENTITY, KISMET_UNCLEAR, KISMET_UNAVAILABLE,
+from ._kismet import (kismet_payload, kismet_answer, kismet_write, remember_shown, KismetRefused, KISMET_ERRORS, KISMET_GATE, KISMET_IDENTITY, KISMET_UNCLEAR, KISMET_UNAVAILABLE,
                       OP_ARGUMENTS as KISMET_OP_ARGUMENTS)
 from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from . import _forkicks_grant
@@ -776,6 +776,21 @@ class NoRedirect(HTTPRedirectHandler):
 GENERIC_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
+# Kismet's two-step sign-up and delete, and its shown-date rule (lead L29897): the box's own refusals, before anything
+# is sent (_kismet.kismet_write). date_not_found is Kismet's own code, so a date the owner was never shown and someone
+# else's date get the same answer (never a hint that it exists); the skill's Errors section names each of these.
+KISMET_STEP_ERRORS = {
+    "kismet_preview_expired": ("That preview is over an hour old, so nothing was sent. Do step 1 again, show the new "
+                               "preview and wait for a new yes."),
+    "kismet_preview_unavailable": ("That draftId is not a saved preview this owner can send from this conversation (unknown, "
+                                   "already sent, or for another chat). Nothing was sent. Do step 1 again, show the new "
+                                   "preview and wait for a new yes; never claim it was sent."),
+    "kismet_confirmation_required": ("Nothing was sent: step 2 needs the owner's yes in a LATER message than the one that "
+                                     "saved the preview. Show the preview and wait for their reply; then send this same draftId."),
+    "date_not_found": KISMET_ERRORS["date_not_found"],
+}
+
+
 def transport(config, payload, flat_card=True, operation_class=None, *, timeout=None):
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if payload.get("operation", "").startswith("forkicks.") and len(data) > 65536:
@@ -884,6 +899,7 @@ def handle(args, **kwargs):
         context = managed_context(home, op, kwargs.get("session_id"), kwargs.get("task_id"))
         if context is None:
             return json.dumps({"error": "private_owner_chat_required"})
+    kismet_settle = None
     try:
         if not isinstance(args, dict):
             raise _InvalidArguments()
@@ -1107,10 +1123,15 @@ def handle(args, **kwargs):
                 gate_verified()
             except Exception:
                 return json.dumps({"error": "approval_unavailable", "instruction": KISMET_GATE})
-            # The one seam every Kismet write passes (signup, go, decide, delete): where a stage-then-send step folds in.
-            payload, refusal = kismet_write(home, op, payload, context, config)
-            if refusal is not None:
-                return json.dumps(refusal)
+            # The one seam every Kismet write passes (signup, go, decide, delete): stage then send (lead L29897).
+            payload, early, kismet_settle = kismet_write(home, op, payload, context, config)
+            if early is not None:
+                code = early.get("error")
+                if code is not None:
+                    # Refused on the box, nothing sent: only the plugin's own text.
+                    early = {"error": code if code in KISMET_STEP_ERRORS else "kismet_preview_unavailable",
+                             "instruction": KISMET_STEP_ERRORS.get(code, KISMET_STEP_ERRORS["kismet_preview_unavailable"])}
+                return json.dumps(early, ensure_ascii=False)
         if context.get("MANAGED_ZZZ") and op in ("zzz.changes", "zzz.read_thread"):
             target = payload["room"] if op == "zzz.changes" else payload["thread"]
             if not allow_managed_read(home, transport, config, op, target):
@@ -1235,7 +1256,12 @@ def handle(args, **kwargs):
             return json.dumps({"data": result, "handling": ZZZ_MANAGED_HANDLING if context.get("MANAGED_ZZZ") else ZZZ_HANDLING}, ensure_ascii=False)
         elif op in KISMET_OPERATIONS:
             # Kismet's answer as untrusted data (its text first), or the plugin's own error text; never raw bodies.
-            return json.dumps(kismet_answer(op, result, scrubbed_tree), ensure_ascii=False)
+            answer = kismet_answer(op, result, scrubbed_tree)
+            if op == "kismet.summary" and "data" in answer:
+                remember_shown(home, answer, context, config)  # the dateIds a later kismet.decide may answer
+            if kismet_settle is not None:
+                kismet_settle(answer)
+            return json.dumps(answer, ensure_ascii=False)
         elif op in ("slopfolio.prepare", "slopfolio.status"):
             result = scrubbed_tree(result)
             code = result.get("error") if isinstance(result, dict) else None
