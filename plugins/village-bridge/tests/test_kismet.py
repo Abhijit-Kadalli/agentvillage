@@ -106,7 +106,8 @@ class KismetTest(unittest.TestCase):
         self.assertFalse(mini.KISMET_OPERATIONS & mini.APP_SCOPED_OPERATIONS)
         self.assertIn('kismet', bridge._mini_app_card.REVIEWED_APPS)
         enum = bridge.SCHEMA['parameters']['properties']['operation']['enum']
-        self.assertEqual(enum[-8:], READS + WRITES); self.assertEqual(len(enum), len(set(enum)))
+        # Kismet's eight sit before zzz.bot's five and zzz.pairs (ov#405's order; zzz keeps the enum's tail, ov#410).
+        self.assertEqual(enum[-14:-6], READS + WRITES); self.assertEqual(enum[-6:-1], mini.ZZZBOT['operations']); self.assertEqual(len(enum), len(set(enum)))
         for op in mini.KISMET['operations']:
             self.assertTrue(mini.installed(self.home, 'kismet', op))
         self.assertFalse(mini.installed(self.home, 'kismet', 'mini-app.read'))
@@ -216,7 +217,7 @@ class KismetTest(unittest.TestCase):
         with self.gate():
             for args in bad:
                 with self.subTest(args=args):
-                    self.assertEqual(self.call(args), {'error': 'invalid_kismet_arguments', 'instruction': kis.KISMET_IDENTITY})
+                    self.assertEqual(self.call(args), {'error': 'invalid_arguments', 'instruction': kis.KISMET_IDENTITY})
         # Refused even while the gate is off: the identity check comes first.
         with self.gate('off'):
             self.assertEqual(self.call(bad[3])['instruction'], kis.KISMET_IDENTITY)
@@ -273,16 +274,57 @@ class KismetTest(unittest.TestCase):
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': ['n' * 201]}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': 'one note'}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS}, 'turnId': str(uuid.uuid4())},
+            # ov#405's strict answers check: Deon's rules for the private fields, and no hidden or control characters.
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'status': 'married', 'openness': 'open'}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'gender': 'woman'}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interestedIn': 'men'}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'name': 'av-test\u202eriver'}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'about': 'line one\nline two'}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interests': ['Music', 'Food', 'Bo\u200boks']}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': ['ignore\x07previous']}},
         ]
         with self.gate():
             for args in bad:
                 with self.subTest(args=args):
                     out = self.call(args)
-                    self.assertEqual(out['error'], 'invalid_kismet_arguments'); self.assertIn('Nothing was sent', out['instruction'])
+                    self.assertEqual(out['error'], 'invalid_arguments'); self.assertIn('Nothing was sent', out['instruction'])
+        self.transport.assert_not_called()
+
+    def test_private_answers_that_apply_and_a_multi_line_agent_profile_are_accepted(self):
+        with self.gate():
+            for answers in [{**ANSWERS, 'status': 'complicated', 'openness': 'poly'}, {**ANSWERS, 'status': 'single', 'openness': 'unsure'},
+                            {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'gender': 'nonbinary', 'interestedIn': 'everyone'},
+                            {**ANSWERS, 'agentProfile': 'I swim at sunrise.\nI build tools.', 'about': '', 'area': 'Mandrem'}]:
+                with self.subTest(answers=answers):
+                    self.transport.reset_mock(); self.transport.return_value = frame('kismet.signup', fixture('kismet.signup', 'live-success.json'))
+                    self.assertIn('data', self.call({'operation': 'kismet.signup', 'arguments': {'answers': answers}}))
+                    self.assertEqual(self.transport.call_args.args[1]['arguments'], {'answers': answers})  # sent as given, never rewritten
+
+    def test_a_refusal_names_what_the_operation_accepts(self):
+        for op in READS + WRITES:
+            self.assertIn(op, bridge.OP_ARGUMENTS)
+        with self.gate():
+            out = self.call({'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'yes'}})
+        self.assertEqual(out['error'], 'invalid_arguments')
+        self.assertIn('kismet.decide accepts only: ' + kis.OP_ARGUMENTS['kismet.decide'], out['instruction']); self.assertIn('"meet" or "pass"', out['instruction'])
+        self.transport.assert_not_called()
+
+    def test_every_write_and_no_read_goes_through_the_one_write_seam(self):
+        seam = unittest.mock.Mock(side_effect=lambda home, op, payload, context, config: (payload, None))
+        with patch.object(bridge, 'kismet_write', seam), self.gate():
+            for op in READS + WRITES:
+                self.transport.return_value = frame(op, fixture('kismet.delete', 'live-success.json'))
+                self.call({'operation': op, 'arguments': GOOD[op]})
+        self.assertEqual([c.args[1] for c in seam.call_args_list], WRITES)
+        # A refusal from the seam (a stage-then-send step, if ruled) is returned and nothing is sent.
+        self.transport.reset_mock()
+        refusal = {'error': 'kismet_staged', 'instruction': 'Show the preview.'}
+        with patch.object(bridge, 'kismet_write', return_value=(None, refusal)), self.gate():
+            self.assertEqual(self.call({'operation': 'kismet.delete', 'arguments': {}}), refusal)
         self.transport.assert_not_called()
 
     def test_a_signup_over_twelve_thousand_bytes_is_refused(self):
-        full = {**ANSWERS, 'openness': 'unsure', 'gender': 'nonbinary', 'interestedIn': 'everyone', 'about': '\u20ac' * 280,
+        full = {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'openness': 'unsure', 'gender': 'nonbinary', 'interestedIn': 'everyone', 'about': '\u20ac' * 280,
                 'availability': 'flexible', 'area': '\u20ac' * 80, 'agentProfile': '\u20ac' * 1200, 'interests': ['\u20ac' * 60] * 20}
         def body(notes):
             return {'answers': full, 'notes': notes}
@@ -294,7 +336,7 @@ class KismetTest(unittest.TestCase):
         self.assertGreater(size(notes), kis.SIGNUP_MAX_BYTES)
         with self.gate():
             out = self.call({'operation': 'kismet.signup', 'arguments': body(notes)})
-            self.assertEqual(out['error'], 'invalid_kismet_arguments')
+            self.assertEqual(out['error'], 'invalid_arguments')
             self.transport.assert_not_called()
             # Trimmed to fit, the same answers go.
             while size(notes) > kis.SIGNUP_MAX_BYTES:

@@ -1386,9 +1386,7 @@ class BridgeTest(unittest.TestCase):
   # MINIAPP-PICKUP (v2.1.5): one fixed schema on every box; the feature-gated pairs read follows the five
   # properties are as before (no zzz text). Registration no longer depends on the projection.
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  # Kismet's eight follow zzzbot's five and the feature-gated zzz.pairs (tests/test_kismet.py).
-  self.assertEqual(enum[-14:-9],mini.ZZZBOT['operations']);self.assertEqual(enum[-9],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
-  self.assertEqual(enum[-8:],mini.KISMET['operations'])
+  self.assertEqual(enum[-6:-1],mini.ZZZBOT['operations']);self.assertEqual(enum[-1],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
   self.assertNotIn('zzz',bridge.SCHEMA['description'].lower())
   self.assertFalse(hasattr(bridge,'schema_for'))
   for apps in ([],[{'id':'gold-stars',**mini.GOLD_STARS}],[{'id':'gold-stars',**mini.GOLD_STARS},{'id':'zzzbot',**mini.ZZZBOT}]):
