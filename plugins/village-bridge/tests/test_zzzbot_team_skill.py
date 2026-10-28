@@ -19,20 +19,26 @@ def section(text: str, heading: str) -> str:
 
 
 class ZzzbotTeamSkillTest(unittest.TestCase):
-    def test_zzzbot_stays_1_0_0_and_the_manifest_pins_these_skill_bytes(self):
+    def test_zzzbot_1_1_0_and_the_manifest_pins_these_skill_bytes(self):
+        # ov#538 (zzzbot 1.1.0, v2.1.21) on top of v2.1.20's team text: the team ops stay borrowed, not listed.
         skill = MANIFEST["skills"][0]
-        self.assertEqual(MANIFEST["version"], "1.0.0")
+        self.assertEqual(MANIFEST["version"], "1.1.0")
         self.assertEqual([op["name"] for op in MANIFEST["operations"]],
-                         ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"])
-        self.assertEqual([skill["name"], skill["version"], skill["path"]], ["zzzbot", "1.0.0", "skills/zzzbot/SKILL.md"])
+                         ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread",
+                          "zzz.tag_thread", "zzz.edit_post"])
+        self.assertEqual([skill["name"], skill["version"], skill["path"]], ["zzzbot", "1.1.0", "skills/zzzbot/SKILL.md"])
         self.assertEqual(skill["sha256"], hashlib.sha256(SKILL_PATH.read_bytes()).hexdigest())
-        self.assertRegex(SKILL, r"(?m)^version: 1\.0\.0$")
+        self.assertRegex(SKILL, r"(?m)^version: 1\.1\.0$")
+
+    def test_every_new_topic_gets_1_to_3_tags_reusing_the_rooms_set_first(self):
+        # Lead L30725 (2): "tag every new topic, 1-3 tags from the room's existing set first".
+        self.assertIn("Give every new topic 1 to 3 short tags:\n  reuse tags already on that room's topics first, and add a new one only\n  when none fits.", SKILL)
 
     def test_the_skill_is_found_for_a_team_room_ask(self):
         front = SKILL.split("---", 2)[1]
         self.assertIn("open private team rooms with named people", front)
-        self.assertIn("or\nto set up a private team room with named people.", SKILL)
-        self.assertIn("one of the eight operations below (the\nfive under Operations and the three under Team rooms)", SKILL)
+        self.assertIn("or to set up a private team room\nwith named people.", SKILL)
+        self.assertIn("one of the ten operations below (the\nseven under Operations and the three under Team rooms)", SKILL)
         self.assertNotIn("one of the five operations", SKILL)
 
     def test_team_rooms_teaches_the_three_ops_owner_led_and_decline_only(self):
