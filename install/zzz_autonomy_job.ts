@@ -19,8 +19,8 @@ const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "s
  *  shipped files, so a box holding older bytes still upgrades and tears down as "ours". */
 export const AUTONOMY_SHIPPED = {
   "scripts/zzz_autonomy_runner.py": [
-    "0b59cecbea3f48dce41ce3adcbb6fd2ff7d530567b255148e204941cddd2fd87", // ov#528 bda0f853 (the runner PR alone)
-    "600860b54449efef1bcf6b16d23a915e709d319cec15374526cc1ac9f065db7a", // + untrusted event_brief + ZZZ 0031 reuse (ov#526)
+    "f25327ecfb2781969d511c23c1c1c4e5e93e829f9abae1384d3b582174b3061e", // ov#528 9d80c106 (the runner PR alone)
+    "95b64ed6eef6d42897e7ad4f922266fbbf1320abeaeeee9f28e06ca9a1d51c9c", // + untrusted event_brief + ZZZ 0031 reuse (ov#526)
   ],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;

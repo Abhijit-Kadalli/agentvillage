@@ -497,6 +497,24 @@ class TestAutonomyRunner(unittest.TestCase):
                     runner._output(bad, self.home)
         self.assertEqual(len(calls), answered)
 
+    def test_only_an_earlier_stored_day_resets_the_turn_count(self):
+        # A clock stepped back across midnight leaves a FUTURE day stored: that must not grant a fresh 48.
+        day = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc).timestamp()
+        ops = []
+        self.write_state('{"failures": 0, "until": 0, "day": "2026-10-29", "turns": 0}')
+        self.turn(ops, now=day)
+        self.assertEqual(ops, [])
+        self.assertEqual(self.state()["day"], "2026-10-28")
+        self.assertEqual(self.state()["turns"], runner.DAILY_MODEL_TURNS)
+        self.assertEqual(self.state()["code"], runner.DAILY_CAP_CODE)
+        # A stored earlier day is a new UTC day: the count resets and the turn runs.
+        self.write_state('{"failures": 0, "until": 0, "day": "2026-10-27", "turns": 48}')
+        self.assertEqual(runner._state_read(self.home, day)["turns"], 0)
+        self.turn(ops, now=day)
+        self.assertEqual(ops, ["claim", "context", "model", "complete"])
+        self.assertEqual(self.state()["day"], "2026-10-28")
+        self.assertEqual(self.state()["turns"], 1)
+
     def test_fixed_bridge_route_and_response_size(self):
         calls = []
         class Response:

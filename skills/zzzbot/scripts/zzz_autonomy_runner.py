@@ -371,6 +371,7 @@ def _state_read(home: Path, now: float) -> dict:
     Oversized, unparsable or out of range values never disable a guard and never hang: a bad failure count or
     "until" (negative, not an int, NaN, Infinity, beyond the cap) reads as no backoff now with the next failure
     backing off; a bad day or turn count reads as today's cap reached (no model call today, reset tomorrow).
+    Only an earlier stored day resets the count; a future one (a clock stepped back) is a bad day, so the cap holds.
     """
     today = _utc_day(now)
     directory = _state_dir(home)
@@ -398,8 +399,8 @@ def _state_read(home: Path, now: float) -> dict:
         failures, until = FAILURE_THRESHOLD - 1, 0
     state = {"failures": min(failures, FAILURE_COUNT_MAX), "until": until}
     day, turns = data.get("day"), data.get("turns")
-    if isinstance(day, str) and DAY.fullmatch(day) and day != today:
-        state.update(day=today, turns=0)  # a new UTC day: the cap resets
+    if isinstance(day, str) and DAY.fullmatch(day) and day < today:
+        state.update(day=today, turns=0)  # a new UTC day: the cap resets (ISO days compare as strings)
     elif day == today and type(turns) is int and 0 <= turns <= DAILY_MODEL_TURNS:
         state.update(day=today, turns=turns)
         if data.get("code") == DAILY_CAP_CODE:

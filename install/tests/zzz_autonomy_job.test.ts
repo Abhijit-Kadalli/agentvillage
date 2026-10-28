@@ -81,7 +81,7 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   const previous=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.ov528.py.fixture"));
   const current=readFileSync(join(repo,"skills/zzzbot/scripts",AUTONOMY_JOB_SCRIPT));
   const digest=(bytes:Buffer)=>createHash("sha256").update(bytes).digest("hex");
-  expect(digest(previous)).toBe("0b59cecbea3f48dce41ce3adcbb6fd2ff7d530567b255148e204941cddd2fd87");
+  expect(digest(previous)).toBe("f25327ecfb2781969d511c23c1c1c4e5e93e829f9abae1384d3b582174b3061e");
   expect(previous.equals(current)).toBe(false);
   expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(current)]);
   const {home,stage,jobs}=box();
