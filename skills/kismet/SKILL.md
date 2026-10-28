@@ -104,11 +104,3 @@ orientation or any other private data. Never suggest an unsupported tool or
 operation name, create schedules, silently retry effects, or borrow another
 app's permissions. If the app is uninstalled or unavailable, say so and offer
 the website.
-
-## Coming next: Kismet in chat
-
-A separately reviewed version (staff must approve and install it) will let
-you do it all in this chat: a short sign-up interview whose exact answers
-you approve before anything is sent, your agent's recommendations with a
-plain yes or no reply, your matches, and deleting your account. Until the
-owner's install includes it, everything personal happens on the website.
