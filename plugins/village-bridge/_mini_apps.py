@@ -38,10 +38,20 @@ FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks
 # zzz agent). The writes take mini-app.context.write's path (gate_verified), never a manual grant.
 ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")
 ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")
+# Buildathon team rooms (zzz#32 + app#842, lead L28970): app-side feature-gated operations that, like zzz.pairs,
+# borrow an existing zzzbot install permission and are deliberately absent from the CP catalog and from ZZZBOT.
+# The read borrows zzz.list_rooms; the two writes borrow zzz.create_thread and take the same gated-write path.
+# They are owner-led only: the managed pair job's CRON_OPS (and any runner) never includes them.
+ZZZ_TEAM_READ_OPERATIONS = ("zzz.list_team_invites",)
+ZZZ_TEAM_WRITE_OPERATIONS = ("zzz.open_team_room", "zzz.respond_team_invite")
+ZZZ_TEAM_BORROWS = {"zzz.list_team_invites": "zzz.list_rooms", "zzz.open_team_room": "zzz.create_thread",
+                    "zzz.respond_team_invite": "zzz.create_thread"}
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
-                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS})
+                             "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
+                             *ZZZ_TEAM_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
-                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_WRITE_OPERATIONS})
+                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_WRITE_OPERATIONS,
+                              *ZZZ_TEAM_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
@@ -49,7 +59,7 @@ APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mi
 ZZZBOT = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}
 # zzz.pairs is an app-side feature-gated read which borrows the existing
 # list_rooms install permission; it is deliberately absent from the CP catalog.
-ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs"))
+ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs", *ZZZ_TEAM_READ_OPERATIONS, *ZZZ_TEAM_WRITE_OPERATIONS))
 SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}
 # ov#441 S1 (lead RULING CLAIMS L16692, reaffirmed L16696): managed private-pair participation is gated ONLY by a
 # separate cp catalog/allowlist entry, projected in `apps` beside zzzbot and granted per tenant at activation (the
