@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "partner_api_disabled: Kismet's village connection is switched off right now. Try again later."
+    }
+  ],
+  "isError": true
+}

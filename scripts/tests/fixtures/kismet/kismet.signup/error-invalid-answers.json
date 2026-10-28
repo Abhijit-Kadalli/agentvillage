@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "invalid_answers: interests needs at least 3 entries."
+    }
+  ],
+  "isError": true
+}

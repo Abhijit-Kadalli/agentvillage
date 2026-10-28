@@ -1,0 +1,13 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"ok\":true,\"started\":false,\"text\":\"You've met today's 3 new people. More tomorrow.\"}"
+    }
+  ],
+  "structuredContent": {
+    "ok": true,
+    "started": false,
+    "text": "You've met today's 3 new people. More tomorrow."
+  }
+}

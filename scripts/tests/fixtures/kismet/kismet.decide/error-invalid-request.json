@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "invalid_request: decision must be meet or pass."
+    }
+  ],
+  "isError": true
+}

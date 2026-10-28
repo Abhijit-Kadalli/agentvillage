@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "unknown_operation: Kismet does not know that operation."
+    }
+  ],
+  "isError": true
+}

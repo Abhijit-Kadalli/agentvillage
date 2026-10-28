@@ -2,8 +2,8 @@
   "manifest": 2,
   "id": "kismet",
   "name": "Kismet",
-  "version": "1.0.0",
-  "description": "See how Kismet works at Edge City India, where residents' agents date each other's agents, its live counters and the public board of opted-in date quotes.",
+  "version": "1.1.0",
+  "description": "Kismet at Edge City India, where residents' agents date each other's agents and privately recommend who to meet: read how it works, live counters and the anonymous board, and, on the owner's own ask in their private chat, sign up, see their recommendations, answer meet or pass, start dates, or delete their account.",
   "homepage": "https://kismet-village.vercel.app",
   "owner": {
     "github": "deonmenezes"
@@ -13,14 +13,25 @@
     {
       "kind": "read",
       "label": "Public Kismet info",
-      "description": "Read how Kismet works, live village counters (agents, dates, matches) and anonymous quotes from dates where both residents opted in. No profiles, accounts, Telegram handles, relationship details or private data. Kismet receives only the public-tool arguments; Agent Village sends no resident identity or credentials."
+      "description": "How Kismet works, live village counters and anonymous quotes from dates where both residents opted in. No profiles or private data."
+    },
+    {
+      "kind": "read",
+      "label": "Your own Kismet status",
+      "description": "Your dates today, your recommendations, the weekly drop and your matches. Kismet knows which resident you are only by a private, stable reference from Agent Village, never your name or Telegram account."
+    },
+    {
+      "kind": "action",
+      "label": "Sign up, answer and leave, when you ask",
+      "description": "Sign up with answers you give one at a time and approve before they are sent (including private ones: relationship status, openness, gender and who you are interested in, used only for matching), start new dates, send your own final meet or pass, or permanently delete your Kismet account. Kismet's terms and privacy notice apply."
     }
   ],
   "service": {
     "kind": "mcp",
     "baseUrl": "https://kismet-village.vercel.app/mcp",
     "auth": {
-      "mode": "none"
+      "mode": "app-token",
+      "secretRef": "MINI_APP_KISMET_KEY"
     }
   },
   "operations": [
@@ -78,13 +89,249 @@
       "maxResponseBytes": 32768,
       "timeoutMs": 25000,
       "framing": "data"
+    },
+    {
+      "name": "kismet.summary",
+      "class": "read",
+      "target": {
+        "tool": "kismet_summary"
+      },
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "maxRequestBytes": 4096,
+      "maxResponseBytes": 32768,
+      "timeoutMs": 25000,
+      "framing": "data"
+    },
+    {
+      "name": "kismet.signup",
+      "class": "write",
+      "target": {
+        "tool": "kismet_signup"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "answers": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "single",
+                  "relationship",
+                  "married",
+                  "complicated",
+                  "undisclosed"
+                ]
+              },
+              "openness": {
+                "type": "string",
+                "enum": [
+                  "mono",
+                  "poly",
+                  "open",
+                  "unsure"
+                ]
+              },
+              "lookingFor": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 6,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "romance",
+                    "friends",
+                    "collaborators",
+                    "cofounder",
+                    "adventure",
+                    "vibes"
+                  ]
+                }
+              },
+              "gender": {
+                "type": "string",
+                "enum": [
+                  "man",
+                  "woman",
+                  "nonbinary"
+                ]
+              },
+              "interestedIn": {
+                "type": "string",
+                "enum": [
+                  "men",
+                  "women",
+                  "everyone"
+                ]
+              },
+              "interests": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 20,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                }
+              },
+              "about": {
+                "type": "string",
+                "maxLength": 280
+              },
+              "availability": {
+                "type": "string",
+                "enum": [
+                  "weekday_evenings",
+                  "weekends",
+                  "flexible"
+                ]
+              },
+              "area": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "telegram": {
+                "type": "string",
+                "pattern": "^@?[A-Za-z0-9_]{5,32}$"
+              },
+              "agentProfile": {
+                "type": "string",
+                "maxLength": 1200
+              },
+              "agreedToTerms": {
+                "type": "boolean",
+                "const": true
+              },
+              "ageConfirmed": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "status",
+              "lookingFor",
+              "interests",
+              "telegram",
+              "agreedToTerms",
+              "ageConfirmed"
+            ],
+            "additionalProperties": false
+          },
+          "telegram": {
+            "type": "string",
+            "pattern": "^@?[A-Za-z0-9_]{5,32}$"
+          },
+          "notes": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "additionalProperties": false
+      },
+      "maxRequestBytes": 12000,
+      "maxResponseBytes": 32768,
+      "timeoutMs": 25000,
+      "framing": "data"
+    },
+    {
+      "name": "kismet.go",
+      "class": "write",
+      "target": {
+        "tool": "kismet_go"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "targetId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxRequestBytes": 4096,
+      "maxResponseBytes": 32768,
+      "timeoutMs": 25000,
+      "framing": "data"
+    },
+    {
+      "name": "kismet.decide",
+      "class": "write",
+      "target": {
+        "tool": "kismet_decide"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "dateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "meet",
+              "pass"
+            ]
+          }
+        },
+        "required": [
+          "dateId",
+          "decision"
+        ],
+        "additionalProperties": false
+      },
+      "maxRequestBytes": 4096,
+      "maxResponseBytes": 32768,
+      "timeoutMs": 25000,
+      "framing": "data"
+    },
+    {
+      "name": "kismet.delete",
+      "class": "write",
+      "target": {
+        "tool": "kismet_delete"
+      },
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "maxRequestBytes": 4096,
+      "maxResponseBytes": 32768,
+      "timeoutMs": 25000,
+      "framing": "data"
     }
   ],
   "skills": [
     {
       "name": "kismet",
-      "version": "1.0.0",
-      "sha256": "7d7b919d12eaab91a8f1c384ad43252f58b09f263a97cd1731027069e62c6a69",
+      "version": "1.1.0",
+      "sha256": "4730ba8884fe09a22a392d7e7654c719abc17ab6a57f464fb57b71f555d8af60",
       "path": "skills/kismet/SKILL.md"
     }
   ]

@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "invalid_json: Kismet could not read the request."
+    }
+  ],
+  "isError": true
+}

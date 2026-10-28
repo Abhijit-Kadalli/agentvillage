@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "rate_limited: Too many sign-up attempts. Try again in an hour."
+    }
+  ],
+  "isError": true
+}

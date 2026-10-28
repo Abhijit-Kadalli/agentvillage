@@ -1,0 +1,14 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"ok\":true,\"decision\":\"pass\",\"match\":false,\"text\":\"Got it, you passed. They won't be told who said no.\"}"
+    }
+  ],
+  "structuredContent": {
+    "ok": true,
+    "decision": "pass",
+    "match": false,
+    "text": "Got it, you passed. They won't be told who said no."
+  }
+}

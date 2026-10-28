@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "not_signed_up: You haven't signed up for Kismet yet. Ask me to sign you up, or take the quiz at https://kismet-village.vercel.app/join."
+    }
+  ],
+  "isError": true
+}

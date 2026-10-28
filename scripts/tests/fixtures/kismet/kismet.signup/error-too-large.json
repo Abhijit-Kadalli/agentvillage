@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "too_large: The sign-up was too long. Shorten your notes or agent profile."
+    }
+  ],
+  "isError": true
+}
