@@ -241,12 +241,25 @@
               "minLength": 1,
               "maxLength": 200
             }
+          },
+          "draftId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
           }
         },
-        "required": [
-          "answers"
-        ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "answers"
+            ]
+          },
+          {
+            "required": [
+              "draftId"
+            ]
+          }
+        ]
       },
       "maxRequestBytes": 12000,
       "maxResponseBytes": 32768,
@@ -318,7 +331,12 @@
       },
       "input": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "draftId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
         "additionalProperties": false
       },
       "maxRequestBytes": 4096,
@@ -331,7 +349,7 @@
     {
       "name": "kismet",
       "version": "1.1.0",
-      "sha256": "4730ba8884fe09a22a392d7e7654c719abc17ab6a57f464fb57b71f555d8af60",
+      "sha256": "b9553ee1d3297c94f7897faeb5e15b7e29f29cbd78e0812b3682f9746d010341",
       "path": "skills/kismet/SKILL.md"
     }
   ]
