@@ -1297,7 +1297,8 @@ def with_approvals_reminder(telemetry: Callable, collector_ref=_collector) -> Ca
 
 def with_skill_change_note(inner: Callable) -> Callable:
     """`pre_llm_call` = the inner chain, then SKILL-CHANGE-NOTE's one note (`_skill_change_note.py`),
-    staged only by this turn's MINIAPP-PICKUP rebuild of this session's prompt. Appended after
+    staged only by this turn's MINIAPP-PICKUP rebuild of this session's prompt, and given only in a
+    private chat (a group, channel or thread chat drops it). Appended after
     whatever the chain returns (`_approvals_reminder.compose`). Outside `guarded` like the reminder:
     it is not telemetry. Never raises into the turn; one info line, with the session and apps left out."""
 
@@ -1305,6 +1306,9 @@ def with_skill_change_note(inner: Callable) -> Callable:
         result = inner(*args, **kwargs)
         try:
             note = _skill_change_note.take(kwargs.get("session_id"))
+            # Only an owner's private chat (or one whose type Hermes does not say); taken either way.
+            if note and not _skill_change_note.gives_note(_session_chat_type()):
+                note = None
         except BaseException:  # noqa: BLE001 - a note never costs the turn
             note = None
         if not note:
