@@ -226,7 +226,8 @@ main's MCP tool names (`list_intents`, `get_intent`, `pause_intent`, `resume_int
 `*_my_profile` tools) under the category of the old tool each replaces, and keeps every older name. v4
 (HOT-RASOOL F1) adds the village-bridge plugin's `village` tool (every Gold Stars, Mosaic and other village
 mini-app operation goes through it; Hermes registers it by bare name) under a new category `village`; v3 left
-it as `tool_name: null`, `other`. A listed tool leaves by name and
+it as `tool_name: null`, `other`. v4 also names av-events' own village tools, `ask_village`, `search_village`,
+`query_village`, `ask_odin` and `pray`, all under `village`, so research can tell them apart by name. A listed tool leaves by name and
 category; anything else leaves as `tool_name: null`, `tool_category: "other"`, so a third-party MCP
 server's tool names never reach ingest. A missing or malformed seed lists nothing (everything
 `other`). It moves together with the `agentvillage-data` seed of the same purpose.
