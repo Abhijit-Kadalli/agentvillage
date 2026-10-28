@@ -427,7 +427,7 @@ class BridgeTest(unittest.TestCase):
   self.assertTrue(mini.ZZZ_OPERATIONS<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
   self.assertTrue({'forkicks.menu','forkicks.schedule','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.status','forkicks.order.cancel'}<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
   self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write',
-                                          'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare','zzz.reply','zzz.create_thread'})
+                                          'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare','zzz.reply','zzz.create_thread','zzz.tag_thread'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
   # The gate is off, unverified or absent: the write is refused before any network call.
@@ -1421,7 +1421,8 @@ class BridgeTest(unittest.TestCase):
   # MINIAPP-PICKUP (v2.1.5): one fixed schema on every box; the feature-gated pairs read follows the five
   # properties are as before (no zzz text). Registration no longer depends on the projection.
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(enum[-6:-1],mini.ZZZBOT['operations']);self.assertEqual(enum[-1],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
+  # zzz.tag_thread (v2.1.19) is appended after zzz.pairs: an op riding zzz.create_thread's install, never in ZZZBOT.
+  self.assertEqual(enum[-7:-2],mini.ZZZBOT['operations']);self.assertEqual(enum[-2:],['zzz.pairs','zzz.tag_thread']);self.assertEqual(len(enum),len(set(enum)))
   self.assertNotIn('zzz',bridge.SCHEMA['description'].lower())
   self.assertFalse(hasattr(bridge,'schema_for'))
   for apps in ([],[{'id':'gold-stars',**mini.GOLD_STARS}],[{'id':'gold-stars',**mini.GOLD_STARS},{'id':'zzzbot',**mini.ZZZBOT}]):
