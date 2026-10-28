@@ -18,7 +18,7 @@
     {
       "kind": "read",
       "label": "Your own Kismet status",
-      "description": "Your dates today, your recommendations, the weekly drop and your matches. Kismet knows which resident you are only by a private, stable reference from Agent Village, never your name or Telegram account."
+      "description": "Your dates today, your recommendations, the weekly drop and your matches. Agent Village tells Kismet which resident you are by a private, stable reference. Kismet has your name and Telegram username only if you send them when you sign up."
     },
     {
       "kind": "action",
@@ -232,16 +232,6 @@
             "type": "string",
             "pattern": "^@?[A-Za-z0-9_]{4,32}$"
           },
-          "notes": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 10,
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 280
-            }
-          },
           "draftId": {
             "type": "string",
             "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -368,16 +358,6 @@
               "telegram": {
                 "type": "string",
                 "pattern": "^@?[A-Za-z0-9_]{4,32}$"
-              },
-              "notes": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 10,
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 280
-                }
               }
             },
             "required": [
@@ -484,7 +464,7 @@
     {
       "name": "kismet",
       "version": "1.1.0",
-      "sha256": "5904f144422b5d1d5405a4f020357b471148e60ec0c2fcdb18fec093eb797fc9",
+      "sha256": "4a5d9df18a3ab5cf319e0f01c3841bc6bf3939ce704a83ff82010ee4ea5e41f3",
       "path": "skills/kismet/SKILL.md"
     }
   ]

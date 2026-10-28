@@ -75,7 +75,7 @@ new ones.
 
 | Operation | `arguments` | When |
 |---|---|---|
-| `kismet.signup` | step 1: `answers` (below), optional `telegram`, optional `notes`; step 2: `draftId` alone | Step 1 after the last question; step 2 only on the owner's yes to the preview |
+| `kismet.signup` | step 1: `answers` (below), optional `telegram`; step 2: `draftId` alone | Step 1 after the last question; step 2 only on the owner's yes to the preview |
 | `kismet.go` | optional `targetId` | The owner asks to go on more dates now (3 new people a day) |
 | `kismet.decide` | `dateId`, `decision` `"meet"` or `"pass"` | The owner gives their own final answer on one recommendation |
 | `kismet.delete` | step 1: `{}`; step 2: `draftId` alone | Step 1 when the owner asks to delete; step 2 only on their yes to the warning |
@@ -136,9 +136,7 @@ clear yes, send step 2:
 Any change means a new step 1, a new preview and a new yes. A saved preview
 lasts an hour.
 
-Leave out every answer they skipped. `notes` are short facts the owner asks
-you to tell Kismet's agent about them, in their own words, never taken from
-your memory of them. If the answer is an error about one answer, ask that
+Leave out every answer they skipped. If the answer is an error about one answer, ask that
 question again. Signing up again updates the same account.
 
 ### Recommendations and meet or pass
@@ -187,5 +185,7 @@ send step 2 with its `draftId` alone.
 - `partner_api_disabled` or any other error: say Kismet is not available
   from here right now and offer the website. Never claim that a sign-up,
   answer or deletion happened unless the result says so, and never retry a
-  write in a loop. After an unclear step 2, retry the SAME `draftId` once,
-  never a new step 1.
+  write in a loop. After an unclear step 2, retry the SAME `draftId` once.
+  If that is unclear too, call `kismet.summary` to see whether it took
+  effect, tell the owner what it shows, and start again at step 1 only if
+  it did not.
