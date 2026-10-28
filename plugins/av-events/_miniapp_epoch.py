@@ -207,9 +207,22 @@ def _hash12(value: Any) -> Optional[str]:
     return hashlib.sha256(canonical.encode("ascii")).hexdigest()[:12]
 
 
-def _surface(home: Optional[Path]) -> Optional[list]:
-    """The installed apps sorted by id, each `{"app": <entry>, "skill_files": [[skill, digest], ...]}`;
-    `[]` when none is installed or the file is absent; None when the file cannot be read."""
+def legacy_fingerprint(home: Optional[Path] = None) -> Optional[str]:
+    """The fingerprint without the `village` fold (what the overlay before SKILL-CHANGE-NOTE stamped)."""
+    try:
+        surface = _surface(home, fold=False)
+    except Exception:  # noqa: BLE001 - no verdict
+        return None
+    if surface is None:
+        return None
+    return _hash12(surface) if surface else ""
+
+
+def _surface(home: Optional[Path], *, fold: bool = True) -> Optional[list]:
+    """The installed apps sorted by id, each `{"app": <entry>, "skill_files": [[skill, digest], ...]}`
+    (plus `village_ops` under Hermes); `[]` when none is installed or the file is absent; None when
+    the file cannot be read, or Hermes's `village` tool cannot be read (review-b N-b: no verdict, never
+    a stamp change because the bridge did not register this restart)."""
     home = Path(home) if home is not None else Path(hermes_home())
     path = home / PROJECTION
     try:
@@ -228,7 +241,9 @@ def _surface(home: Optional[Path]) -> Optional[list]:
     if not isinstance(apps, list) or not all(isinstance(app, dict) and isinstance(app.get("id"), str) for app in apps):
         return None
     surface = []
-    village = _village_operations() if apps else None
+    village = _village_operations() if apps and fold else None
+    if village is UNREADABLE:
+        return None
     for app in sorted(apps, key=lambda entry: entry["id"]):
         skills = app.get("skills") if isinstance(app.get("skills"), list) else []
         item = {"app": app, "skill_files": [[str(name), _skill_digest(home, name)] for name in skills]}
@@ -241,17 +256,30 @@ def _surface(home: Optional[Path]) -> Optional[list]:
     return surface
 
 
-def _village_operations() -> Optional[list]:
-    """The `operation` enum of the `village` tool registered now (village-bridge's SCHEMA, through
-    Hermes's registry: `tools/registry.py` `get_entry`), sorted; None when there is no registry or no
-    such tool (not under Hermes, or village-bridge not loaded), so the fingerprint is today's."""
+#: `_village_operations` under Hermes when its `village` tool cannot be read: no verdict.
+UNREADABLE = object()
+
+
+def _village_operations() -> Any:
+    """The `operation` enum of the `village` tool as Hermes builds it now (`model_tools`
+    `get_toolset_for_tool` + `get_tool_definitions`, the public read the gated-tools scan accepts),
+    sorted. None when not under Hermes (no `model_tools`: the fingerprint is the unfolded one);
+    `UNREADABLE` under Hermes when the tool is not registered or has another shape."""
     try:
-        entry = importlib.import_module("tools.registry").registry.get_entry("village")
-        enum = entry.schema["parameters"]["properties"]["operation"]["enum"]
-    except Exception:  # noqa: BLE001 - no registry, no tool, another shape: not folded
+        tools = importlib.import_module("model_tools")
+    except Exception:  # noqa: BLE001 - not under Hermes
         return None
+    try:
+        toolset = tools.get_toolset_for_tool("village")
+        if not toolset:
+            return UNREADABLE
+        defs = tools.get_tool_definitions(enabled_toolsets=[toolset], quiet_mode=True, skip_tool_search_assembly=True)
+        village = [d for d in defs if (d.get("function") or {}).get("name") == "village"]
+        enum = village[0]["function"]["parameters"]["properties"]["operation"]["enum"]
+    except Exception:  # noqa: BLE001 - no tool, another shape: no verdict
+        return UNREADABLE
     if not isinstance(enum, list):
-        return None
+        return UNREADABLE
     return sorted({op for op in enum if isinstance(op, str)})
 
 
@@ -562,6 +590,7 @@ __all__ = [
     "enabled",
     "fingerprint",
     "front_matter",
+    "legacy_fingerprint",
     "note_key",
     "register_section",
     "remember",

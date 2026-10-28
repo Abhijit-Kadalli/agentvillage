@@ -17,7 +17,7 @@ tool bytes. Two things are added:
    so a chat begun before ov#531 still sends a `village` enum without `zzz.open_team_room`. Each of
    the village toolset's tools the chat sends (`_village_visible.VISIBLE_TOOLS`: `village`,
    `ask_village`, `search_village`, `query_village`, `ask_odin`, `elicitation_record`) whose bytes
-   differ from the registry's current definition (sanitized as Hermes builds it) is swapped in its slot
+   differ from Hermes's current build of it (`model_tools.get_tool_definitions`) is swapped in its slot
    (same name set), and the pin is persisted once (`persist_agent_tool_names`). Same bytes: nothing.
 
 2. **One note** on the user message of the turn a `miniapps` rebuild runs (Hermes `pre_llm_call`
@@ -78,8 +78,9 @@ UPDATED = "{app} was updated: {summary}."
 CLOSING = ("Anything said earlier in this chat about what {apps} can't do may be out of date, "
            "so check with the tool before answering.")
 #: A stamp with no record and no current `update_note`: which apps moved is unknown (review-b N1).
-UNNAMED = ("Mini-apps were updated. Anything said earlier in this chat about what a mini-app can't do may "
-           "be out of date, so check with the tool before answering.")
+#: True for every chat that reads it (review-b N-a); product to confirm the words.
+UNNAMED = ("Mini-apps may have changed since this chat began. Anything said earlier in this chat about what a "
+           "mini-app can't do may be out of date, so check with the tool before answering.")
 #: A generic app's line, or a reviewed skill with neither an `update_note` nor a `description`.
 NO_SUMMARY = "check the tool for what it can do now"
 
@@ -101,12 +102,15 @@ _LOCK = threading.Lock()
 _PENDING: "OrderedDict[str, str]" = OrderedDict()
 _NOTED: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
 _RESAVED: "OrderedDict[str, None]" = OrderedDict()
+#: Sessions whose saved tools were actually swapped in this process.
+_SWAPPED: "OrderedDict[str, None]" = OrderedDict()
 _LATCHED: set = set()
 _INTERRUPTS = (KeyboardInterrupt, SystemExit)
 
 _HEADING = re.compile(r"#[ \t]+(.+?)[ \t\r]*")
 _FENCE = re.compile(r"[ \t]{0,3}(```|~~~)")
-_LABEL_WORDS = re.compile(r"agent\s+village\s+note|not\s+from\s+the\s+resident", re.IGNORECASE)
+#: The label's words with anything but letters between them (hyphens, look-alike spaces), after NFKC.
+_LABEL_WORDS = re.compile(r"agent[\W_]*village[\W_]*note|not[\W_]*from[\W_]*the[\W_]*resident", re.IGNORECASE)
 
 
 # ---- what the SKILL.md says --------------------------------------------------------------------
@@ -118,6 +122,8 @@ def _clean(text: Any, cap: int) -> str:
     punctuation (the sentence adds its own full stop)."""
     if not isinstance(text, str):
         return ""
+    # NFKC first (review-b N-c): fullwidth brackets and letters fold to the ones stripped below.
+    text = unicodedata.normalize("NFKC", text)
     kept = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in text)
     kept = _LABEL_WORDS.sub(" ", kept.replace("[", " ").replace("]", " "))
     line = " ".join(kept.split())
@@ -193,9 +199,10 @@ def render(lines: List[Tuple[str, str]]) -> str:
     return f"{LABEL}{sentences} {CLOSING.format(apps=joined)}"
 
 
-def note_for(old_stamp: str, home: Optional[Path] = None) -> Optional[Tuple[str, str]]:
+def note_for(old_stamp: str, home: Optional[Path] = None, *, swapped: bool = False) -> Optional[Tuple[str, str]]:
     """(fingerprint now, the note) for a chat stamped `old_stamp`; None when no installed app with a
-    skill changed since (or the projection cannot be read)."""
+    skill changed since (or the projection cannot be read). `swapped`: this chat's saved tools were
+    re-saved in this process."""
     root = Path(home) if home is not None else Path(hermes_home())
     found = _miniapp_epoch.current_apps(root)
     if found is None or not found[0]:
@@ -214,6 +221,11 @@ def note_for(old_stamp: str, home: Optional[Path] = None) -> Optional[Tuple[str,
         if line is not None:
             lines[app_id] = line
     if before is None:
+        # review-b N-a: a stamp with no record that is exactly the unfolded fingerprint of the disk now
+        # (a chat begun after the last change, stamped by the overlay before this one), and no tool of
+        # its re-saved: nothing changed for this chat, so no note.
+        if not swapped and old_stamp and old_stamp == _miniapp_epoch.legacy_fingerprint(root):
+            return None
         chosen = [app_id for app_id, line in lines.items() if line[2]]
         if not chosen:
             return (current, LABEL + UNNAMED) if lines else None
@@ -240,7 +252,9 @@ def stage(session_id: str, old_stamp: str, home: Optional[Path] = None) -> bool:
     True when one was staged. At most once per (session, fingerprint) in this process."""
     if not isinstance(session_id, str) or not session_id:
         return False
-    found = note_for(old_stamp or "", home)
+    with _LOCK:
+        swapped = session_id in _SWAPPED
+    found = note_for(old_stamp or "", home, swapped=swapped)
     if found is None:
         return False
     current, note = found
@@ -281,24 +295,35 @@ def _latched_info(key: str, message: str, *args: Any) -> None:
 
 
 def _seams() -> Optional[tuple]:
-    """(registry, tools lock, persist) from Hermes, or None (one INFO line per process) when this
-    Hermes lacks one of them (review-b N5): the pin is then left exactly as Hermes restored it."""
+    """(model_tools, tools lock, persist) from Hermes, or None (one INFO line per process) when this
+    Hermes lacks one of them (review-b N5): the pin is then left exactly as Hermes restored it.
+    Definitions come from `model_tools` (`get_toolset_for_tool`, `get_tool_definitions`): Hermes's own
+    build (dynamic schemas, sanitizer), read-only, never its tool table directly."""
     try:
         pin = importlib.import_module("tools.mcp_tool_agent")
-        registry = importlib.import_module("tools.registry").registry
+        tools = importlib.import_module("model_tools")
         lock, persist = pin._agent_tools_lock, pin.persist_agent_tool_names
         if not callable(persist) or not callable(getattr(pin, "tool_pin_version", None)) \
-                or not callable(getattr(registry, "get_definitions", None)) or not hasattr(lock, "__enter__"):
+                or not callable(getattr(tools, "get_tool_definitions", None)) \
+                or not callable(getattr(tools, "get_toolset_for_tool", None)) or not hasattr(lock, "__enter__"):
             raise AttributeError("seam")
     except Exception:  # noqa: BLE001
         _latched_info("seams", "av-events: skill_change_note: Hermes has no tools pin seam; tools left as is")
         return None
-    return registry, lock, persist
+    return tools, lock, persist
+
+
+def _canonical(tool: Any) -> Optional[str]:
+    """The bytes a definition is sent as (review-b N-d: a tuple and a list are the same JSON)."""
+    try:
+        return json.dumps(tool, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
 
 
 def resave_tools(agent: Any) -> List[str]:
-    """Swap each `VISIBLE_TOOLS` definition the chat sends whose saved bytes differ from the registry's
-    current one, in its slot, and persist the pin once. The names swapped (empty: nothing changed or
+    """Swap each `VISIBLE_TOOLS` definition the chat sends whose saved bytes differ from Hermes's current
+    build of it, in its slot, and persist the pin once. The names swapped (empty: nothing changed or
     nothing to do). Never adds or drops a tool."""
     sent = {_def_name(tool) for tool in (getattr(agent, "tools", None) or [])} & set(VISIBLE_TOOLS)
     if not sent:
@@ -306,27 +331,31 @@ def resave_tools(agent: Any) -> List[str]:
     seams = _seams()
     if seams is None:
         return []
-    registry, lock, persist = seams
-    fresh_defs = registry.get_definitions(set(sent), quiet=True)
-    # Hermes's own build sanitizes what the registry gives (`model_tools._compute_tool_definitions`);
-    # none of these tools has a dynamic-schema rewriter. Without the sanitizer, the registry's bytes.
-    try:
-        fresh_defs = importlib.import_module("tools.schema_sanitizer").sanitize_tool_schemas(fresh_defs)
-    except Exception:  # noqa: BLE001
-        pass
+    tools_api, lock, persist = seams
+    toolsets = sorted({ts for ts in (tools_api.get_toolset_for_tool(name) for name in sent) if isinstance(ts, str) and ts})
+    if not toolsets:
+        return []
+    fresh_defs = tools_api.get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True,
+                                                skip_tool_search_assembly=True)
     fresh = {_def_name(tool): tool for tool in fresh_defs or [] if _def_name(tool) in sent}
     swapped = []
     with lock:
         tools = list(getattr(agent, "tools", None) or [])
         for index, tool in enumerate(tools):
             name = _def_name(tool)
-            if name in fresh and tool != fresh[name] and name not in swapped:
-                tools[index] = fresh[name]
-                swapped.append(name)
+            if name in fresh and name not in swapped:
+                current, wanted = _canonical(tool), _canonical(fresh[name])
+                if wanted is not None and current != wanted:
+                    tools[index] = fresh[name]
+                    swapped.append(name)
         if swapped:
             agent.tools = tools
     if swapped:
         persist(agent)
+        session_id = getattr(agent, "session_id", None)
+        if isinstance(session_id, str) and session_id:
+            with _LOCK:
+                _bounded_put(_SWAPPED, session_id, None)
     return sorted(swapped)
 
 
@@ -385,6 +414,7 @@ def reset() -> None:
         _PENDING.clear()
         _NOTED.clear()
         _RESAVED.clear()
+        _SWAPPED.clear()
         _LATCHED.clear()
 
 

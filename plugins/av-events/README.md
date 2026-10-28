@@ -2553,9 +2553,10 @@ tool bytes.
   (`tools/mcp_tool_agent.py:151-157, 194-215`; restored at `agent/conversation_loop.py:744`). An
   overlay roll never changes that sha.
 - So, on each continuing chat's first restored turn in a process, whatever changed: each tool of the
-  village toolset (`_village_visible.VISIBLE_TOOLS`) the chat sends whose bytes differ from the
-  registry's current definition is swapped in its slot. The definition is sanitized as Hermes builds
-  it, and the name set stays the same. The pin is then persisted (`persist_agent_tool_names`).
+  village toolset (`_village_visible.VISIBLE_TOOLS`) the chat sends whose bytes (compared as JSON)
+  differ from Hermes's current build of it is swapped in its slot. That build is read-only, through
+  `model_tools.get_tool_definitions`, never Hermes's tool table directly. The name set stays the same.
+  The pin is then persisted (`persist_agent_tool_names`).
 - This runs once per chat per process. A roll restarts the gateway, so every continuing chat passes
   through once.
 - Same bytes: nothing is written. A Hermes without these seams gets one INFO line, and its tools are
@@ -2576,8 +2577,9 @@ answering.`
   - its `mini-apps.json` entry;
   - its staged SKILL.md (a tag roll's zzzbot checkout copy included);
   - the `village` operations of its operation families (zzzbot: `zzz.*`). That last one is read
-    from Hermes's registry and folded into the fingerprint, so a bridge-only change also rebuilds
-    and names the app.
+    through `model_tools` and folded into the fingerprint, so a bridge-only change also rebuilds and
+    names the app. Under Hermes, a `village` tool that is not registered (or has another shape) is no
+    verdict, never a stamp change.
 - **Reviewed apps** (the installer's table, held equal by a test):
   - `<app>` is the SKILL.md front matter `display_name`, else its first `# ` heading outside code
     fences, else the id.
@@ -2586,17 +2588,20 @@ answering.`
     sentence of `description`.
   - Example front matter: `update_note: it can now ...` with `update_note_for: 1.1.0`.
 - **Any other app** (cp-offered generic, or not reviewed): `<id> was updated: check the tool for
-  what it can do now.` Its developer's text is never shown. All author text loses `[`, `]` and the
-  label's words.
+  what it can do now.` Its developer's text is never shown. All author text is NFKC-normalised and
+  loses `[`, `]` and the label's words, however they are spaced or hyphenated.
 - **Which apps:** each stamp is recorded once with its per-app digests and note keys in
   `$HERMES_HOME/av-events/miniapp-epochs.json` (0600, read with `O_NOFOLLOW`, the last 64, trimmed
   oldest first under 1 MiB; catalog data only).
   - Named: the apps with a skill whose digest moved since the chat's stamp.
   - No stamp: every app.
   - A stamp with no record (an older overlay's, so every open chat on the roll that ships this):
-    the reviewed apps with a current `update_note`. If there are none, one unnamed line: `Mini-apps
-    were updated. Anything said earlier in this chat about what a mini-app can't do may be out of
-    date, so check with the tool before answering.`
+    - no note when the stamp is exactly the unfolded fingerprint of the disk now and none of the
+      chat's tools was re-saved (a chat begun after the last change);
+    - otherwise, the reviewed apps with a current `update_note`;
+    - if there are none, one unnamed line: `Mini-apps may have changed since this chat began.
+      Anything said earlier in this chat about what a mini-app can't do may be out of date, so check
+      with the tool before answering.`
   - Removed apps and apps without a skill (zzz-bridge) are never named. If no app is left, there is
     no note.
 - **Once:** the rebuild persists the new stamp, so the next turn (a cached agent, a fresh agent, or
