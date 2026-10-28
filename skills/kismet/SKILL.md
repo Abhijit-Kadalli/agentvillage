@@ -54,6 +54,11 @@ scheduled job or on someone else's behalf.
 | `kismet.public_board` | optional `limit` (1-20, default 10) | Anonymous one-line quotes from dates where both residents opted in, newest first |
 | `kismet.summary` | `{}` | The owner's own Kismet status: dates today and left, recommendations (each with a `dateId`), the weekly drop, matches |
 
+If Kismet's own text says residents sign up on its website, that stays true:
+the owner may use https://kismet-village.vercel.app/join. You may also offer
+the sign-up below, where the owner gives every answer themselves and approves
+them before anything is sent.
+
 For `kismet.summary`, relay the answer's `text` and keep each `dateId` for
 `kismet.decide`. If the answer says the owner has not signed up, offer the
 sign-up below.
