@@ -131,6 +131,43 @@ class TestAutonomyRunner(unittest.TestCase):
             Choice.message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
             self.assertEqual(runner._output(context, self.home), {"silent": True})
 
+    def test_event_brief_reaches_the_one_model_call_and_bad_briefs_open_no_route(self):
+        calls = []
+        class Choice:
+            finish_reason = "stop"
+            message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
+        class Model:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(choices=[Choice()])
+        class OpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=Model())
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        brief = "Edge City India Buildathon, 28-30 Oct.\nAsk what people are building."
+        self.assertIn("event_brief", runner.SYSTEM)
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+                                      "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+                patch.object(runner, "_model_route", return_value=("https://api.openai.com/v1", "fixture", "model")):
+            reply = {"kind": "reply", "candidate_id": "x", "source": {"body": "A current point."}, "event_brief": brief}
+            self.assertEqual(runner._output(reply, self.home), {"silent": True})
+            topic = {"kind": "new_topic", "candidate_id": "x", "room_brief": "Edge City India 2026",
+                     "recent_topics": [], "event_brief": "é" * 300}
+            self.assertEqual(runner._output(topic, self.home), {"silent": True})
+            plain = {"kind": "reply", "candidate_id": "x", "source": {"body": "A current point."}}
+            self.assertEqual(runner._output(plain, self.home), {"silent": True})
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(json.loads(calls[0]["messages"][1]["content"])["event_brief"], brief)
+            self.assertEqual(json.loads(calls[1]["messages"][1]["content"])["event_brief"], "é" * 300)
+            self.assertNotIn("event_brief", json.loads(calls[2]["messages"][1]["content"]))
+        for bad in ("", "   ", "é" * 301, 7, ["x"]):
+            with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
+                with self.assertRaisesRegex(ValueError, "brief-context"):
+                    runner._output({**plain, "event_brief": bad}, self.home)
+
     def test_fixed_bridge_route_and_response_size(self):
         calls = []
         class Response:
