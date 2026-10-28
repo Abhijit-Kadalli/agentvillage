@@ -140,15 +140,17 @@ ZZZ_ARGUMENTS = {
     "zzz.respond_team_invite": (("group", "decision"), ()),
 }
 ZZZ_TEAM_TITLE_CHARS, ZZZ_TEAM_MAX, ZZZ_TEAM_NAME_CHARS = 100, 7, 120
-# Team rooms ride no skill text yet (the zzzbot SKILL.md is catalog-pinned): the plugin's own input rule for each
-# team operation, returned when a call's arguments are wrong. Only when the owner asks, in this private chat.
+# The plugin's own input rule for each team operation (the zzzbot skill's "Team rooms" carries the same), returned
+# when a call's arguments are wrong. Only when the owner asks, in this private chat. The agent may only decline an
+# invite (lead L29457/L29460; the app's TEAM_ACCEPT_OWNER_ONLY): accepting is the owner's, on the Messaging page.
 ZZZ_TEAM_INPUT = {
     "zzz.open_team_room": ("Only when the owner asks: arguments {title: the team room name, 1-100 characters; with: 1 to 7 "
                            "teammates, each a full name or an exact Rolodex attendee id}. The app resolves names in the "
                            "owner's village; it invites only people already on zzz.bot."),
     "zzz.list_team_invites": "arguments {}: the owner's pending team room invites.",
     "zzz.respond_team_invite": ("Only when the owner asks: arguments {group: the exact group id from zzz.list_team_invites; "
-                                "decision: accept or decline}."),
+                                "decision: decline}. Only your owner can accept a team room invite: ask them to accept it "
+                                "on the Messaging page, under Team rooms (https://agents.edgecity.live/messaging)."),
 }
 ZZZ_PAGE_LIMIT = {"zzz.read_thread": 25, "zzz.changes": 50}
 ZZZ_BODY_CHARS, ZZZ_BODY_BYTES, ZZZ_TITLE_CHARS = 8000, 16000, 200
