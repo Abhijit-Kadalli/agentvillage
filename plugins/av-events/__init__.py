@@ -30,6 +30,7 @@ from ._pray import register_pray_tool
 from ._collector import Collector, guarded, hermes_version, overlay_ref
 from ._clock import with_clock_line
 from . import _miniapp_epoch
+from . import _skill_change_note
 from . import _prompt_refresh
 from . import _village_visible
 from ._consent import TOOL_NAME as CONSENT_TOOL_NAME
@@ -1294,6 +1295,34 @@ def with_approvals_reminder(telemetry: Callable, collector_ref=_collector) -> Ca
     return pre_llm_call
 
 
+def with_skill_change_note(inner: Callable) -> Callable:
+    """`pre_llm_call` = the inner chain, then SKILL-CHANGE-NOTE's one note (`_skill_change_note.py`),
+    staged only by this turn's MINIAPP-PICKUP rebuild of this session's prompt. Appended after
+    whatever the chain returns (`_approvals_reminder.compose`). Outside `guarded` like the reminder:
+    it is not telemetry. Never raises into the turn; one info line, with the session and apps left out."""
+
+    def pre_llm_call(*args: Any, **kwargs: Any) -> Any:
+        result = inner(*args, **kwargs)
+        try:
+            note = _skill_change_note.take(kwargs.get("session_id"))
+        except BaseException:  # noqa: BLE001 - a note never costs the turn
+            note = None
+        if not note:
+            return result
+        try:
+            composed = _approvals_reminder.compose(result, note)
+        except BaseException:  # noqa: BLE001
+            return result
+        try:
+            logger.info("av-events: skill_change_note given")
+        except BaseException:  # noqa: BLE001 - a log line must not cost the note
+            pass
+        return composed
+
+    pre_llm_call.av_hook_name = getattr(inner, "av_hook_name", "pre_llm_call")  # type: ignore[attr-defined]
+    return pre_llm_call
+
+
 def build_hooks(collector_ref=_collector) -> dict:
     """Wrap every hook body in the fail-open guard. One decorator, no exceptions.
 
@@ -1322,7 +1351,9 @@ def build_hooks(collector_ref=_collector) -> dict:
         elif name == "pre_llm_call":
             # CLOCK-1 (`_clock.py`): the Now line on every turn, cron and subagents included,
             # between the telemetry return and the DATA-444 reminder; outside `guarded`.
-            wrapped = with_approvals_reminder(with_clock_line(wrapped, collector_ref), collector_ref)
+            # SKILL-CHANGE-NOTE (`_skill_change_note.py`): after them, on a mini-app change's rebuild turn only.
+            wrapped = with_skill_change_note(
+                with_approvals_reminder(with_clock_line(wrapped, collector_ref), collector_ref))
         hooks[name] = wrapped
     return hooks
 

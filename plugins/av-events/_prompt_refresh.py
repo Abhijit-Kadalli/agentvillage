@@ -117,7 +117,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import _miniapp_epoch
+from . import _miniapp_epoch, _skill_change_note
 from ._core import env
 
 logger = logging.getLogger("av-events")
@@ -701,6 +701,9 @@ def check_and_refresh(agent: Any, loop: Any, system_message: Any, history: Any, 
             _miniapp_epoch.confirm_rebuilt(agent._cached_system_prompt, apps_before)
         except Exception as exc:  # noqa: BLE001 - the rebuild landed; never fail the turn (fold round 1, S1)
             _warn("miniapps confirm", exc)
+        # SKILL-CHANGE-NOTE: this turn's one note naming the changed apps, and the chat's saved
+        # `village` tool re-saved (`_skill_change_note.py`); never raises.
+        _skill_change_note.after_rebuild(agent, prompt)
     _mark_unpersisted(session_id, not persisted)
     if persisted:
         _record(session_id, digests)

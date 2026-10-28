@@ -2540,6 +2540,40 @@ enum is therefore the same on every box, zzzbot's operations included (v2.1.5); 
 prompts carry no stamp; read at the next turn, no restart. Stamped prompts already persisted keep
 their one inert line until their next rebuild.
 
+### Skill-change note (SKILL-CHANGE-NOTE)
+
+**Why.** The rebuild above gives an open chat the new skill, but the chat's own history still holds
+what the agent said before: an earlier refusal wins over the new prompt (Carter's box, 28 Oct: team
+rooms refused in an old chat, called at once after `/new`).
+
+**What** (`_skill_change_note.py`), only on the turn a `miniapps` rebuild runs, never on any other:
+
+- **One note** on that turn's user message (`pre_llm_call` context, after CLOCK-1 and DATA-444):
+  `[Agent Village note, not from the resident] <app> was updated: <what it can do now>. Anything said
+  earlier in this chat about what <app> can't do may be out of date, so check with the tool before
+  answering.` Several apps: one "was updated" sentence each, one closing sentence naming them all.
+  `<app>` is the SKILL.md front matter `display_name`, else its first `# ` heading, else the id.
+  `<what it can do now>` is the front matter `update_note` (one plain line the change carries; the
+  release sets it with the change), else the first sentence of `description`. Read from the staged
+  `$HERMES_HOME/skills/<skill>/SKILL.md`, so a tag roll that changes zzzbot's checkout copy is
+  noticed like a control-plane delivery. Hermes persists the note in the turn's `api_content` and
+  replays it, so the prompt cache breaks only on that turn, which the rebuild already breaks.
+- **Which apps.** Each stamp is recorded once with its per-app digests in
+  `$HERMES_HOME/av-events/miniapp-epochs.json` (0600, the last 64; catalog digests only). Named: the
+  apps with a skill whose digest moved since the chat's stamp. No stamp: every app. A stamp with no
+  record (stamped by an older overlay): the apps carrying an `update_note`, else every app with a
+  skill. Removed apps and apps without a skill (zzz-bridge) are never named; nothing left, no note.
+- **Once.** The rebuild persists the new stamp, so the next turn (cached agent, fresh agent, or after a
+  gateway restart) neither rebuilds nor notes; in-process a (session, fingerprint) pair is noted once.
+- **The `village` tool.** Hermes keeps a continuing chat's saved tools[] bytes while its own sha is
+  unchanged (`tools/mcp_tool_agent.py:151-157, 194-215`; restored at `agent/conversation_loop.py:744`),
+  and an overlay roll never changes that sha. On the same turn the chat's `village` definition is
+  swapped in its slot for the registry's current one (sanitized as Hermes builds it) and the pin is
+  persisted (`persist_agent_tool_names`). Same bytes: nothing written.
+
+**Switch.** None of its own: it rides `AV_MINIAPP_REFRESH` / `miniapp_refresh` (read as it is now).
+It never raises into the turn and logs no content (`skill_change_note given`, `village tool re-saved`).
+
 ## Fail-open contract
 
 Implements `launch-guardrails-draft.md` §2 and spec scenario 25.

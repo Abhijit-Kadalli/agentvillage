@@ -48,6 +48,7 @@ import logging
 import os
 import re
 import stat
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -188,6 +189,26 @@ def fingerprint(home: Optional[Path] = None) -> Optional[str]:
 
 
 def _fingerprint(home: Optional[Path]) -> Optional[str]:
+    surface = _surface(home)
+    if surface is None:
+        return None
+    if not surface:
+        return ""
+    return _hash12(surface)
+
+
+def _hash12(value: Any) -> Optional[str]:
+    """12 hex of the canonical JSON of `value`; None when it does not serialise."""
+    try:
+        canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()[:12]
+
+
+def _surface(home: Optional[Path]) -> Optional[list]:
+    """The installed apps sorted by id, each `{"app": <entry>, "skill_files": [[skill, digest], ...]}`;
+    `[]` when none is installed or the file is absent; None when the file cannot be read."""
     home = Path(home) if home is not None else Path(hermes_home())
     path = home / PROJECTION
     try:
@@ -205,23 +226,115 @@ def _fingerprint(home: Optional[Path]) -> Optional[str]:
     apps = doc.get("apps") if isinstance(doc, dict) else None
     if not isinstance(apps, list) or not all(isinstance(app, dict) and isinstance(app.get("id"), str) for app in apps):
         return None
-    if not apps:
-        return ""
     surface = []
     for app in sorted(apps, key=lambda entry: entry["id"]):
         skills = app.get("skills") if isinstance(app.get("skills"), list) else []
         surface.append({"app": app, "skill_files": [[str(name), _skill_digest(home, name)] for name in skills]})
-    try:
-        canonical = json.dumps(surface, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    except (TypeError, ValueError):
-        return None
-    return hashlib.sha256(canonical.encode("ascii")).hexdigest()[:12]
+    return surface
 
 
 def digest() -> str:
     """The pre-filter's value: the fingerprint, `-` for none installed, `?` for unreadable."""
     current = fingerprint()
     return "?" if current is None else (current or "-")
+
+
+# ---- what each stamp meant (SKILL-CHANGE-NOTE) -----------------------------------------------------
+#
+# A stamp is a hash, so it cannot say which app changed. Each fingerprint a prompt is stamped with is
+# recorded once with its per-app digests (same surface, one app each), so a later rebuild can name the
+# apps that moved since the chat's stamp. Catalog digests only, no resident data. Bounded, oldest
+# first; an unreadable or foreign file is read as empty and replaced at the next new fingerprint.
+
+#: Relative to `$HERMES_HOME`, beside av-events' other state.
+EPOCHS_FILE = os.path.join("av-events", "miniapp-epochs.json")
+MAX_EPOCHS = 64
+MAX_EPOCHS_BYTES = 65536
+#: Fingerprints this process has recorded (or found recorded); a write happens once per new one.
+_KNOWN: set = set()
+
+
+def current_apps(home: Optional[Path] = None) -> Optional[tuple]:
+    """(fingerprint, {app id: {"digest": 12 hex, "skills": [names]}}) for the apps on disk now, the
+    fingerprint recorded with its per-app digests (`remember`). None when the projection cannot be read.
+    Never raises."""
+    try:
+        surface = _surface(home)
+        if surface is None:
+            return None
+        current = _hash12(surface) if surface else ""
+        if current is None:
+            return None
+        apps = {}
+        for item in surface:
+            app_digest = _hash12(item)
+            if app_digest is None:
+                return None
+            apps[item["app"]["id"]] = {"digest": app_digest, "skills": [name for name, _ in item["skill_files"]]}
+        if current:
+            remember(current, {app_id: info["digest"] for app_id, info in apps.items()}, home)
+        return current, apps
+    except Exception:  # noqa: BLE001 - no verdict
+        return None
+
+
+def _epochs_path(home: Optional[Path]) -> Path:
+    return (Path(home) if home is not None else Path(hermes_home())) / EPOCHS_FILE
+
+
+def _load_epochs(home: Optional[Path]) -> list:
+    """[[fingerprint, {app id: digest}], ...] oldest first; [] when absent or not ours."""
+    try:
+        raw = _read_nofollow(_epochs_path(home), MAX_EPOCHS_BYTES)
+        doc = json.loads(raw.decode("utf-8")) if raw is not None else None
+    except (OSError, ValueError, RecursionError):
+        return []
+    epochs = doc.get("epochs") if isinstance(doc, dict) else None
+    if not isinstance(epochs, list):
+        return []
+    return [item for item in epochs if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+            and isinstance(item[1], dict) and all(isinstance(v, str) for v in item[1].values())]
+
+
+def remember(current: str, apps: dict, home: Optional[Path] = None) -> None:
+    """Record `current` with its per-app digests unless this process already has. Temp file + rename,
+    0600; a failure only costs a later note its precision (`remembered` then returns None)."""
+    with _LOCK:
+        if current in _KNOWN:
+            return
+    epochs = _load_epochs(home)
+    if not any(item[0] == current for item in epochs):
+        epochs = [item for item in epochs if item[0] != current][-(MAX_EPOCHS - 1):] + [[current, dict(apps)]]
+        path = _epochs_path(home)
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=".miniapp-epochs.", dir=str(path.parent))
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump({"v": 1, "epochs": epochs}, handle, separators=(",", ":"), sort_keys=True)
+                os.replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            return
+    with _LOCK:
+        _KNOWN.add(current)
+
+
+def remembered(stamp: str, home: Optional[Path] = None) -> Optional[dict]:
+    """{app id: digest} recorded for `stamp`; `{}` for no stamp (no app installed); None when unknown
+    (a stamp from before this record existed, or one that fell off the end)."""
+    if not stamp:
+        return {}
+    for item in reversed(_load_epochs(home)):
+        if item[0] == stamp:
+            return dict(item[1])
+    return None
 
 
 # ---- the stamp -----------------------------------------------------------------------------------
@@ -232,7 +345,9 @@ def section_text(_session_info: Any = None) -> str:
     try:
         if not enabled(None):
             return ""
-        current = fingerprint()
+        # SKILL-CHANGE-NOTE: the stamp is recorded with its per-app digests as it is rendered.
+        found = current_apps()
+        current = found[0] if found is not None else None
     except Exception:  # noqa: BLE001 - an empty section is today's prompt
         return ""
     return f"{STAMP_PREFIX}{current}" if current else ""
@@ -323,6 +438,7 @@ def reset() -> None:
         _STATE["registered"] = False
         _STATE["broken"] = False
         _LATCHED.clear()
+        _KNOWN.clear()
 
 
 __all__ = [
@@ -331,10 +447,13 @@ __all__ = [
     "SWITCH",
     "active",
     "confirm_rebuilt",
+    "current_apps",
     "digest",
     "enabled",
     "fingerprint",
     "register_section",
+    "remember",
+    "remembered",
     "reset",
     "section_text",
     "stale",

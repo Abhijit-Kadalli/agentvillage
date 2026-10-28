@@ -1800,3 +1800,280 @@ def test_a_failure_after_the_stale_verdict_never_fails_the_turn(apps, monkeypatc
     monkeypatch.setattr(epoch, "fingerprint", lambda home=None: flaky(home))
     got = run_turn(apps.loop, second, "hi", HISTORY)
     assert "- zzzbot:" in got["system"] and calls["n"] >= 3
+
+
+# ---- SKILL-CHANGE-NOTE: no /new after a mini-app or its SKILL.md changes -------------------------------
+
+ZZZ_BRIDGE = {"id": "zzz-bridge", "version": "1.0.0", "skills": [], "operations": []}
+#: Product's words for zzzbot's v2.1.20 change (CLAIMS L30672).
+ZZZ_TEAM_NOTE = ("it can now open private team rooms with named people and decline team invites when the "
+                 "owner asks")
+LABEL = "[Agent Village note, not from the resident] "
+
+
+def note_module(plugin):
+    return sys.modules[f"{plugin.__name__}._skill_change_note"]
+
+
+def skill_md(app_id, heading, description, update_note=None, body="Use the village tool."):
+    """A SKILL.md as the overlay ships one: front matter, then the app's heading."""
+    lines = ["---", f"name: {app_id}", f"description: {description}"]
+    if update_note is not None:
+        lines.append(f"update_note: {update_note}")
+    lines += ["version: 1.0.0", "author: Edge City", "---", "", f"# {heading}", "", body, ""]
+    return "\n".join(lines)
+
+
+FORKICKS_MD = skill_md("forkicks", "For Kicks", "Always send the complete current For Kicks café menu as images "
+                       "when asked. Optional first-party mini-app.")
+ZZZBOT_MD = skill_md("zzzbot", "zzz.bot", "Read zzz.bot rooms and threads, see what changed, and post replies.")
+DIZKO = {"id": "dizko", "version": "1.0.0", "skills": ["dizko"], "operations": ["mini-app.read"]}
+DIZKO_MD = skill_md("dizko", "Dizko public discovery", "Discover public music events, artists, DJs and venues.")
+
+
+def stage_box(*entries):
+    """install_miniapps.ts's stage: each (app entry, SKILL.md text) staged, mini-apps.json last; an app not
+    listed loses its SKILL.md. The control plane restarts the gateway after it (`restart_all`)."""
+    keep = {app["id"] for app, _ in entries}
+    for path in (_home() / "skills").glob("*/SKILL.md"):
+        if path.parent.name not in keep and path.parent.name != "rolodex":
+            path.unlink()
+    for app, text in entries:
+        if text is not None:
+            write(f"skills/{app['id']}/SKILL.md", text)
+    write("mini-apps.json", json.dumps({"version": 1, "apps": [app for app, _ in entries]}))
+
+
+def restart_all(h):
+    """A gateway restart: every in-process memo goes, the epochs file on disk stays."""
+    restart(h)
+    note_module(h.plugin).reset()
+    epoch_module(h.plugin)._KNOWN.clear()
+
+
+def user_context(got):
+    """The turn's pre_llm_call context without CLOCK-1's Now line."""
+    return "\n\n".join(part for part in got["user_context"].split("\n\n") if not NOW_LINE.fullmatch(part))
+
+
+def notes_given(caplog):
+    return [r.getMessage() for r in caplog.records if r.getMessage() == "av-events: skill_change_note given"]
+
+
+@pytest.mark.parametrize("restarted", [True, False], ids=["gateway-restarted", "cached-agent-no-restart"])
+def test_note_once_per_chat_on_the_rebuild_turn_with_the_exact_text(apps, caplog, restarted):
+    stage_box((FORKICKS, FORKICKS_MD))
+    agent = started(apps)
+    other = started(apps, "tg-dm-9")  # a second chat open on the same box
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    if restarted:
+        restart_all(apps)
+        agent = FakeAgent(apps.db)
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        got = run_turn(apps.loop, agent, "open a team room with Sam", HISTORY)
+    assert user_context(got) == (
+        "[Agent Village note, not from the resident] zzz.bot was updated: it can now open private team rooms "
+        "with named people and decline team invites when the owner asks. Anything said earlier in this chat "
+        "about what zzz.bot can't do may be out of date, so check with the tool before answering.")
+    assert got["user_context"].startswith("Now: ")  # appended after CLOCK-1, not instead of it
+    # Never again in this chat: the cached agent, a fresh agent, another chat begun after the change.
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        for turn_agent in (agent, agent, FakeAgent(apps.db)):
+            assert user_context(run_turn(apps.loop, turn_agent, "and now?", HISTORY)) == ""
+        fresh = started(apps, "tg-dm-2")
+        assert user_context(run_turn(apps.loop, fresh, "hi", HISTORY)) == ""
+    assert notes_given(caplog) == ["av-events: skill_change_note given"]
+    # The other open chat gets its own one note at its own next turn, then none.
+    other = other if not restarted else FakeAgent(apps.db, "tg-dm-9")
+    assert user_context(run_turn(apps.loop, other, "hi", HISTORY)).startswith(LABEL + "zzz.bot was updated: ")
+    assert user_context(run_turn(apps.loop, other, "hi", HISTORY)) == ""
+
+
+def test_several_apps_at_once_are_one_note_one_sentence_each(apps):
+    stage_box((DIZKO, DIZKO_MD))
+    agent = started(apps)
+    stage_box((DIZKO, DIZKO_MD), (FORKICKS, FORKICKS_MD),
+              (ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    got = run_turn(apps.loop, agent, "hi", HISTORY)
+    assert user_context(got) == (
+        LABEL + "For Kicks was updated: always send the complete current For Kicks café menu as images when "
+        "asked. zzz.bot was updated: it can now open private team rooms with named people and decline team "
+        "invites when the owner asks. Anything said earlier in this chat about what For Kicks or zzz.bot can't "
+        "do may be out of date, so check with the tool before answering.")
+    assert "Dizko" not in user_context(got)  # unchanged: not named
+    # Three: commas, then "or".
+    note = note_module(apps.plugin).render([("A", "a"), ("B", "b"), ("C", "c")])
+    assert note == LABEL + ("A was updated: a. B was updated: b. C was updated: c. Anything said earlier in this "
+                            "chat about what A, B or C can't do may be out of date, so check with the tool before "
+                            "answering.")
+
+
+def test_a_gateway_restart_after_the_note_does_not_repeat_it(apps, caplog):
+    stage_box((ZZZBOT, ZZZBOT_MD))
+    started(apps)
+    stage_box((ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    restart_all(apps)
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        assert "zzz.bot was updated" in user_context(run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY))
+        for _ in range(2):
+            restart_all(apps)
+            for turn_agent in (FakeAgent(apps.db), FakeAgent(apps.db)):
+                assert user_context(run_turn(apps.loop, turn_agent, "hi", HISTORY)) == ""
+    assert notes_given(caplog) == ["av-events: skill_change_note given"]
+    assert reasons_logged(caplog) == ["miniapps"]
+
+
+def test_a_skill_change_from_the_overlay_checkout_alone_is_noticed(apps):
+    """A tag roll: mini-apps.json is byte-identical (zzzbot 1.0.0, same operations); only the staged
+    skills/zzzbot/SKILL.md moves, copied from the new checkout (install_miniapps.ts:646-657)."""
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, ZZZBOT_MD))
+    agent = started(apps)
+    projection = (_home() / "mini-apps.json").read_bytes()
+    write("skills/zzzbot/SKILL.md", skill_md("zzzbot", "zzz.bot", "Read rooms, threads and team rooms.",
+                                             ZZZ_TEAM_NOTE, body="Team rooms: open one when the owner asks."))
+    assert (_home() / "mini-apps.json").read_bytes() == projection
+    restart_all(apps)
+    got = run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)
+    assert user_context(got) == (
+        LABEL + "zzz.bot was updated: " + ZZZ_TEAM_NOTE + ". Anything said earlier in this chat about what "
+        "zzz.bot can't do may be out of date, so check with the tool before answering.")
+    del agent
+
+
+def test_no_note_when_nothing_a_resident_can_use_changed(apps, monkeypatch, caplog):
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, ZZZBOT_MD))
+    agent = started(apps)
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        # No change at all, across turns and a restart.
+        for turn_agent in (agent, FakeAgent(apps.db)):
+            assert user_context(run_turn(apps.loop, turn_agent, "hi", HISTORY)) == ""
+        restart_all(apps)
+        assert user_context(run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)) == ""
+        # zzz-bridge staged (no skill, no operation): a rebuild, no note.
+        stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, ZZZBOT_MD), (ZZZ_BRIDGE, None))
+        assert user_context(run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)) == ""
+        # A removal: a rebuild, nothing named for the app that left or the one that stayed.
+        stage_box((FORKICKS, FORKICKS_MD))
+        assert user_context(run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)) == ""
+        # A USER.md change on a team box (F1): its own rebuild, no note.
+        monkeypatch.setenv("AV_PROMPT_REFRESH", "1")
+        write("memories/USER.md", "Name: Test Resident\n§\nVote note: the weekly theme closes Friday")
+        assert user_context(run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)) == ""
+    assert reasons_logged(caplog) == ["miniapps", "miniapps", "user_md"]
+    assert notes_given(caplog) == []
+
+
+@pytest.mark.parametrize(("mode", "hooks_disabled"), [("0", ""), (None, "miniapp_refresh")])
+def test_mini_app_refresh_off_means_no_note(apps, monkeypatch, caplog, mode, hooks_disabled):
+    stage_box((ZZZBOT, ZZZBOT_MD))
+    agent = started(apps)
+    if mode is not None:
+        monkeypatch.setenv("AV_MINIAPP_REFRESH", mode)
+    monkeypatch.setenv("AV_HOOKS_DISABLED", hooks_disabled)
+    stage_box((ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        for turn_agent in (agent, FakeAgent(apps.db)):
+            assert user_context(run_turn(apps.loop, turn_agent, "hi", HISTORY)) == ""
+    # (With `miniapp_refresh` in AV_HOOKS_DISABLED the collector's copy lags to the next session boundary,
+    # so one rebuild can still run, as before this change; the note reads the switch as it is now.)
+    assert notes_given(caplog) == []
+    assert not refresh_lines(caplog) or hooks_disabled
+
+
+def test_a_stamp_from_before_the_record_names_the_apps_carrying_an_update_note(apps, monkeypatch):
+    """The first roll with this change: open chats carry a stamp no record names. The apps whose change
+    carries an update_note are named; with none, every app with a skill."""
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, ZZZBOT_MD))
+    started(apps)
+    (_home() / "av-events" / "miniapp-epochs.json").unlink()  # as if stamped by the overlay before this one
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    restart_all(apps)
+    got = run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)
+    assert user_context(got).startswith(LABEL + "zzz.bot was updated: " + ZZZ_TEAM_NOTE + ". Anything")
+    # No update_note anywhere: every app with a skill (no record to tell them apart).
+    started(apps, "tg-dm-2")
+    (_home() / "av-events" / "miniapp-epochs.json").unlink()
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, ZZZBOT_MD))
+    restart_all(apps)
+    got = run_turn(apps.loop, FakeAgent(apps.db, "tg-dm-2"), "hi", HISTORY)
+    assert user_context(got).startswith(LABEL + "For Kicks was updated: always send the complete current For "
+                                        "Kicks café menu as images when asked. zzz.bot was updated: read zzz.bot "
+                                        "rooms and threads, see what changed, and post replies. Anything said "
+                                        "earlier in this chat about what For Kicks or zzz.bot can't do")
+
+
+def test_the_skill_md_reading(apps):
+    note = note_module(apps.plugin)
+    fields, body = note.front_matter('﻿---\nname: x\ndescription: "Quoted: yes"\nupdate_note: >\n  folded\n'
+                                     "display_name: X Ray\n  indented: no\n---\n# Heading\n")
+    assert fields == {"name": "x", "description": "Quoted: yes", "display_name": "X Ray"} and body == "# Heading\n"
+    write("skills/abc/SKILL.md", "---\nname: abc\ndescription: UPI orders. More.\n---\nno heading\n")
+    assert note.app_line("abc", ["abc"]) == ("abc", "UPI orders", False)
+    write("skills/abc/SKILL.md", "---\nname: abc\n---\n# A\x07B  C\n")
+    assert note.app_line("abc", ["abc"]) == ("A B C", "check the tool for what it can do now", False)
+    write("skills/abc/SKILL.md", "---\nname: abc\nupdate_note: " + "word " * 80 + "\n---\n")
+    name, summary, carried = note.app_line("abc", ["abc"])
+    assert carried and len(summary) <= 241 and summary.endswith("word…")
+    assert note.app_line("abc", ["missing"]) is None
+
+
+def install_tool_pin(monkeypatch, fresh_village, persisted):
+    """tools.registry + tools.mcp_tool_agent as v2026.9.24 has them (registry.get_definitions,
+    `_agent_tools_lock`, `persist_agent_tool_names` writing the session row's tool_names)."""
+    import threading
+
+    class Registry:
+        def get_definitions(self, names, quiet=False):
+            return [fresh_village] if "village" in names and fresh_village is not None else []
+
+    def persist_agent_tool_names(agent):
+        persisted.append([dict(t) for t in agent.tools])
+        agent._session_db.rows[agent.session_id]["tool_names"] = json.dumps(agent.tools)
+
+    monkeypatch.setitem(sys.modules, "tools.registry", _module("tools.registry", registry=Registry()))
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool_agent", _module(
+        "tools.mcp_tool_agent", _agent_tools_lock=threading.Lock(), persist_agent_tool_names=persist_agent_tool_names))
+
+
+def village_def(ops):
+    return {"type": "function", "function": {"name": "village", "parameters": {"properties": {"op": {"enum": ops}}}}}
+
+
+def test_the_chats_saved_village_tool_is_re_saved_on_the_change(apps, monkeypatch, caplog):
+    """Hermes keeps a continuing chat's tools[] bytes while its own sha is unchanged (an overlay roll
+    never changes it), so a chat from before ov#531 sends a village enum without zzz.open_team_room."""
+    old, new = village_def(["zzz.reply"]), village_def(["zzz.reply", "zzz.open_team_room"])
+    persisted: list = []
+    install_tool_pin(monkeypatch, new, persisted)
+    stage_box((ZZZBOT, ZZZBOT_MD))
+    agent = FakeAgent(apps.db)
+    agent.tools = [{"type": "function", "function": {"name": "memory"}}, old, {"type": "function",
+                                                                               "function": {"name": "terminal"}}]
+    run_turn(apps.loop, agent, "hello", [])
+    assert json.loads(apps.db.rows["tg-dm-1"]["tool_names"])[1] == old
+    stage_box((ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    restart_all(apps)
+    fresh_agent = FakeAgent(apps.db)
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        run_turn(apps.loop, fresh_agent, "hi", HISTORY)
+    assert [t["function"]["name"] for t in fresh_agent.tools] == ["memory", "village", "terminal"]
+    assert fresh_agent.tools[1] == new and json.loads(apps.db.rows["tg-dm-1"]["tool_names"])[1] == new
+    assert len(persisted) == 1 and "av-events: skill_change_note village tool re-saved" in caplog.text
+    # Current bytes: no swap, no write; a chat without the village tool is left alone.
+    stage_box((ZZZBOT, ZZZBOT_MD))
+    run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)
+    assert len(persisted) == 1
+    note = note_module(apps.plugin)
+    bare = types.SimpleNamespace(tools=[{"type": "function", "function": {"name": "memory"}}])
+    assert note.repin_village(bare) is False and len(persisted) == 1
+
+
+def test_a_failing_re_save_or_note_never_costs_the_turn(apps, monkeypatch):
+    note = note_module(apps.plugin)
+    stage_box((ZZZBOT, ZZZBOT_MD))
+    agent = started(apps)
+    stage_box((ZZZBOT, skill_md("zzzbot", "zzz.bot", "Read rooms.", ZZZ_TEAM_NOTE)))
+    monkeypatch.setattr(note, "repin_village", lambda agent: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(note, "note_for", lambda *a, **k: (_ for _ in ()).throw(RecursionError()))
+    got = run_turn(apps.loop, agent, "hi", HISTORY)
+    assert "- zzzbot:" in got["system"] and user_context(got) == ""
