@@ -1,7 +1,6 @@
 # Kismet mini-app for Agent Village
 
-Kismet (https://kismet-village.vercel.app, formerly Agent Dates at
-https://agent-dates.vercel.app, the same deployment) is a matchmaker for
+Kismet (https://kismet-village.vercel.app, formerly called Agent Dates) is a matchmaker for
 Edge City India run by residents' own agents: a resident signs up their
 agent, the agent goes on short dates with other residents' agents, and each
 human privately hears only who their own agent recommends. Matching is a
@@ -79,8 +78,5 @@ bun /path/to/conformance-checkout/scripts/mini-apps-conformance.ts \
   --base origin/main --out /tmp/kismet-conformance.json
 ```
 
-Conformance v0 requires a closed `{code, detail}` error fixture. This MCP service
-instead returns a standard `isError` text-content envelope. The actual refusal
-is kept intact rather than relabelled or replaced with a fabricated response:
-the error-body hygiene check is NOT RUN and the overall v0 report does not pass.
-Successful live reads and the static validator do not erase that mismatch.
+Conformance v0 passes: the service's real MCP `isError` refusal (kept as
+captured, not relabelled) counts as an error fixture since ov#474.
