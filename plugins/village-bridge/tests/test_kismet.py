@@ -36,8 +36,8 @@ ANSWERS = {'name': 'av-test-river', 'status': 'single', 'lookingFor': ['friends'
            'interests': ['Music', 'Food', 'Books'], 'telegram': '@av_test_river', 'agreedToTerms': True, 'ageConfirmed': True}
 GOOD = {
     'kismet.how_it_works': {}, 'kismet.village_stats': {}, 'kismet.public_board': {'limit': 5}, 'kismet.summary': {},
-    'kismet.signup': {'answers': ANSWERS}, 'kismet.go': {'targetId': 'av-test-sky'},
-    'kismet.decide': {'dateId': 'd_test_0001', 'decision': 'meet'}, 'kismet.delete': {},
+    'kismet.signup': {'answers': ANSWERS}, 'kismet.go': {'targetId': '00000000-0000-4000-8000-0000000000aa'},
+    'kismet.decide': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet'}, 'kismet.delete': {},
 }
 
 
@@ -220,13 +220,13 @@ class KismetTest(unittest.TestCase):
             self.transport.assert_called_once_with(self.config, {'operation': 'kismet.go', 'arguments': GOOD['kismet.go'],
                                                                  'turnId': self.turn('kismet.go', GOOD['kismet.go'])})
             # decide: keyed on this request; a second date or the other answer in one turn is never a replay of the first.
-            self.show('d_test_0001', 'd_test_0002')
+            self.show('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002')
             sent = []
-            for body in [{'dateId': 'd_test_0001', 'decision': 'meet'}, {'dateId': 'd_test_0001', 'decision': 'meet'},
-                         {'dateId': 'd_test_0002', 'decision': 'meet'}, {'dateId': 'd_test_0001', 'decision': 'pass'}]:
+            for body in [{'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet'}, {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet'},
+                         {'dateId': '00000000-0000-4000-8000-000000000002', 'decision': 'meet'}, {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'pass'}]:
                 self.call({'operation': 'kismet.decide', 'arguments': body}); sent.append(self.transport.call_args.args[1]['turnId'])
             self.assertEqual(sent[0], sent[1]); self.assertEqual(len(set(sent)), 3)
-            self.assertEqual(sent[0], self.turn('kismet.decide', {'dateId': 'd_test_0001', 'decision': 'meet'}, '10'))
+            self.assertEqual(sent[0], self.turn('kismet.decide', {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet'}, '10'))
             # signup and delete step 2: keyed on the draft, whatever turn sends it.
             for op, body in [('kismet.signup', GOOD['kismet.signup']), ('kismet.delete', {})]:
                 with self.subTest(op=op):
@@ -340,15 +340,15 @@ class KismetTest(unittest.TestCase):
             self.assertEqual(self.call({'operation': 'kismet.signup', 'arguments': {'draftId': draft}})['error'], 'kismet_preview_unavailable')
 
     def test_decide_takes_only_a_date_the_owner_was_shown_in_an_earlier_message(self):
-        decide = {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'meet'}}
+        decide = {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet'}}
         refused = {'error': 'date_not_found', 'instruction': bridge.KISMET_STEP_ERRORS['date_not_found']}
         with self.gate():
             self.assertEqual(self.call(decide), refused)  # never shown
             self.transport.return_value = frame('kismet.summary', fixture('kismet.summary', 'live-success.json'))
-            self.call({'operation': 'kismet.summary', 'arguments': {}})  # shows d_test_0001 now, in message 9
+            self.call({'operation': 'kismet.summary', 'arguments': {}})  # shows 00000000-0000-4000-8000-000000000001 now, in message 9
             self.transport.reset_mock()
             self.assertEqual(self.call(decide), refused)  # the same message that showed it
-            self.assertEqual(self.call({**decide, 'arguments': {'dateId': 'd_test_0099', 'decision': 'pass'}}), refused)  # shown nowhere
+            self.assertEqual(self.call({**decide, 'arguments': {'dateId': '00000000-0000-4000-8000-000000000099', 'decision': 'pass'}}), refused)  # shown nowhere
             token = self.sc._VAR_MAP['HERMES_SESSION_KEY'].set('telegram:42:other'); self.next_message()
             self.assertEqual(self.call(decide), refused)  # another conversation
             self.sc._VAR_MAP['HERMES_SESSION_KEY'].reset(token)
@@ -358,9 +358,9 @@ class KismetTest(unittest.TestCase):
             self.call({'operation': 'kismet.summary', 'arguments': {}})
             self.transport.return_value = frame('kismet.decide', fixture('kismet.decide', 'live-success-pass.json'))
             self.assertIn('data', self.call(decide))
-            self.assertEqual(self.transport.call_args.args[1]['arguments'], {'dateId': 'd_test_0001', 'decision': 'meet'})
-            self.assertEqual(json.loads((self.home / kis.SHOWN / 'd_test_0001.json').read_text())['message'], '9')
-            self.assertEqual((self.home / kis.SHOWN / 'd_test_0001.json').stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.transport.call_args.args[1]['arguments'], {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet'})
+            self.assertEqual(json.loads((self.home / kis.SHOWN / '00000000-0000-4000-8000-000000000001.json').read_text())['message'], '9')
+            self.assertEqual((self.home / kis.SHOWN / '00000000-0000-4000-8000-000000000001.json').stat().st_mode & 0o777, 0o600)
             # Deleting the account forgets every saved draft and shown date on this box.
             self.stage('kismet.signup', GOOD['kismet.signup'])
             self.transport.return_value = frame('kismet.delete', fixture('kismet.delete', 'live-success.json'))
@@ -375,8 +375,8 @@ class KismetTest(unittest.TestCase):
             {'operation': 'kismet.summary', 'arguments': {'subject': 'av-test-river'}},
             {'operation': 'kismet.delete', 'arguments': {'userId': '42'}},
             {'operation': 'kismet.go', 'arguments': {'telegramId': '42'}},
-            {'operation': 'kismet.go', 'arguments': {'targetId': 'av-test-sky', 'resident_id': 'av-test-river'}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'meet', 'X-Village-Subject': 'x'}},
+            {'operation': 'kismet.go', 'arguments': {'targetId': '00000000-0000-4000-8000-0000000000aa', 'resident_id': 'av-test-river'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet', 'X-Village-Subject': 'x'}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'ResidentID': 'av-test-river'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': [{'telegram_id': '42'}]}},
             {'operation': 'kismet.public_board', 'arguments': {'limit': 3, 'USER_ID': '42'}},
@@ -399,16 +399,21 @@ class KismetTest(unittest.TestCase):
             {'operation': 'kismet.public_board', 'arguments': {'limit': 0}}, {'operation': 'kismet.public_board', 'arguments': {'limit': 21}},
             {'operation': 'kismet.public_board', 'arguments': {'limit': True}}, {'operation': 'kismet.public_board', 'arguments': {'limit': 5.0}},
             {'operation': 'kismet.public_board', 'arguments': {'limit': '5'}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'yes'}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'MEET'}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': None}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001'}}, {'operation': 'kismet.decide', 'arguments': {'decision': 'pass'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'yes'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'MEET'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': None}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001'}}, {'operation': 'kismet.decide', 'arguments': {'decision': 'pass'}},
             {'operation': 'kismet.decide', 'arguments': {'dateId': 'd/../x', 'decision': 'pass'}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001\n', 'decision': 'pass'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001\n', 'decision': 'pass'}},
             {'operation': 'kismet.decide', 'arguments': {'dateId': 'x' * 101, 'decision': 'pass'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'pass'}},  # not a uuid (Deon's format: uuid)
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-00000000000g', 'decision': 'pass'}},
+            {'operation': 'kismet.go', 'arguments': {'targetId': 'av-test-sky'}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'publicQuotes': True}}},  # not in v1
+            {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': []}},
             {'operation': 'kismet.decide', 'arguments': {'dateId': '', 'decision': 'pass'}},
             {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_tést', 'decision': 'pass'}},
-            {'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'meet', 'matchWith': 'x'}},
+            {'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'meet', 'matchWith': 'x'}},
             {'operation': 'kismet.go', 'arguments': {'targetId': 'a b'}}, {'operation': 'kismet.go', 'arguments': {'targetId': 7}},
             {'operation': 'kismet.go', 'arguments': {'count': 3}}, {'operation': 'kismet.delete', 'arguments': {'confirm': True}},
             {'operation': 'kismet.signup', 'arguments': {}}, {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'extra': 1}},
@@ -416,9 +421,8 @@ class KismetTest(unittest.TestCase):
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'agreedToTerms': False}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'ageConfirmed': 1}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {k: v for k, v in ANSWERS.items() if k != 'ageConfirmed'}}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': {k: v for k, v in ANSWERS.items() if k != 'telegram'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'name': ''}}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'name': 'n' * 81}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'name': 'n' * 41}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'status': 'dating'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'openness': 'maybe'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'lookingFor': []}}},
@@ -428,17 +432,17 @@ class KismetTest(unittest.TestCase):
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interestedIn': 'both'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interests': ['Music', 'Food']}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interests': ['Music', 'Food', '']}}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interests': ['i'] * 21}}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'about': 'a' * 281}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'interests': ['i'] * 16}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'about': 'a' * 161}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'availability': 'nights'}}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'area': 'a' * 81}}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'agentProfile': 'a' * 1201}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'area': 'a' * 41}}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'agentProfile': 'a' * 1501}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'telegram': '@abc'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'telegram': 'av_test_river\n'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': {**ANSWERS, 'telegram': 'https://t.me/x'}}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'telegram': '@ab'}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': ['n'] * 11}},
-            {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': ['n' * 201]}},
+            {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': ['n' * 281]}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': 'one note'}},
             {'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS}, 'turnId': str(uuid.uuid4())},
             # ov#405's strict answers check: Deon's rules for the private fields, and no hidden or control characters.
@@ -467,7 +471,10 @@ class KismetTest(unittest.TestCase):
         with self.gate():
             for answers in [{**ANSWERS, 'status': 'complicated', 'openness': 'poly'}, {**ANSWERS, 'status': 'single', 'openness': 'unsure'},
                             {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'gender': 'nonbinary', 'interestedIn': 'everyone'},
-                            {**ANSWERS, 'agentProfile': 'I swim at sunrise.\nI build tools.', 'about': '', 'area': 'Mandrem'}]:
+                            {**ANSWERS, 'agentProfile': 'I swim at sunrise.\nI build tools.', 'about': '', 'area': 'Mandrem'},
+                            # Deon's live schema: status optional (Kismet's default undisclosed), telegram here or top level, a 4-character username.
+                            {k: v for k, v in ANSWERS.items() if k not in ('status', 'telegram')}, {**ANSWERS, 'telegram': 'abcd', 'interests': ['i' * 30] * 15},
+                            {**ANSWERS, 'status': 'single', 'openness': 'undisclosed', 'name': 'n' * 40, 'about': 'a' * 160, 'area': 'a' * 40}]:
                 with self.subTest(answers=answers):
                     self.transport.reset_mock(); self.transport.return_value = frame('kismet.signup', fixture('kismet.signup', 'live-success.json'))
                     self.assertIn('data', self.send('kismet.signup', {'answers': answers}))
@@ -477,7 +484,7 @@ class KismetTest(unittest.TestCase):
         for op in READS + WRITES:
             self.assertIn(op, bridge.OP_ARGUMENTS)
         with self.gate():
-            out = self.call({'operation': 'kismet.decide', 'arguments': {'dateId': 'd_test_0001', 'decision': 'yes'}})
+            out = self.call({'operation': 'kismet.decide', 'arguments': {'dateId': '00000000-0000-4000-8000-000000000001', 'decision': 'yes'}})
         self.assertEqual(out['error'], 'invalid_arguments')
         self.assertIn('kismet.decide accepts only: ' + kis.OP_ARGUMENTS['kismet.decide'], out['instruction']); self.assertIn('"meet" or "pass"', out['instruction'])
         self.transport.assert_not_called()
@@ -501,15 +508,15 @@ class KismetTest(unittest.TestCase):
             self.assertIn(code + ': "kismet"', conformance)
 
     def test_a_signup_over_twelve_thousand_bytes_is_refused(self):
-        full = {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'openness': 'unsure', 'gender': 'nonbinary', 'interestedIn': 'everyone', 'about': '\u20ac' * 280,
-                'availability': 'flexible', 'area': '\u20ac' * 80, 'agentProfile': '\u20ac' * 1200, 'interests': ['\u20ac' * 60] * 20}
+        full = {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'openness': 'unsure', 'gender': 'nonbinary', 'interestedIn': 'everyone', 'about': '\u20ac' * 160,
+                'availability': 'flexible', 'area': '\u20ac' * 40, 'agentProfile': '\u20ac' * 1500, 'interests': ['\u20ac' * 30] * 15}
         def body(notes):
             return {'answers': full, 'notes': notes}
         def size(notes):
             out = {'operation': 'kismet.signup', 'arguments': body(notes), 'turnId': self.turn('kismet.signup', body(notes))}
             return len(json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
         # Each answer within its own limit, but the whole request (as transport() sends it) over 12,000 bytes.
-        notes = ['\u20ac' * 200] * 10
+        notes = ['\u20ac' * 280] * 10
         self.assertGreater(size(notes), kis.SIGNUP_MAX_BYTES)
         with self.gate():
             out = self.call({'operation': 'kismet.signup', 'arguments': body(notes)})
@@ -593,7 +600,7 @@ class KismetTest(unittest.TestCase):
                     self.assertEqual(out['data']['text'], result['structuredContent']['text'])
                     self.assertNotIn('content', out['data'])
         out = self.call({'operation': 'kismet.summary', 'arguments': {}})
-        self.assertEqual([r['dateId'] for r in out['data']['summary']['recommendations']], ['d_test_0001'])
+        self.assertEqual([r['dateId'] for r in out['data']['summary']['recommendations']], ['00000000-0000-4000-8000-000000000001'])
 
     def test_match_with_reaches_only_the_owners_own_decide_and_is_never_logged(self):
         match = fixture('kismet.decide', 'live-success-match.json')
@@ -603,7 +610,7 @@ class KismetTest(unittest.TestCase):
         self.assertEqual(out['data']['matchWith'], {'name': 'Another Tester', 'telegram': '@av_test_match'})
         # Anywhere else (another operation, or nested anywhere) it is dropped.
         planted = {'ok': True, 'text': 'av-test summary', 'matchWith': {'telegram': '@av_test_leak'},
-                   'summary': {'recommendations': [{'dateId': 'd_test_0009', 'matchWith': {'telegram': '@av_test_leak'}}]}}
+                   'summary': {'recommendations': [{'dateId': '00000000-0000-4000-8000-000000000009', 'matchWith': {'telegram': '@av_test_leak'}}]}}
         for op in ['kismet.summary', 'kismet.go', 'kismet.signup', 'kismet.delete']:
             with self.subTest(op=op), self.gate():
                 self.transport.return_value = frame(op, {'structuredContent': planted, 'content': [{'type': 'text', 'text': '@av_test_leak'}]})
@@ -661,7 +668,7 @@ class KismetTest(unittest.TestCase):
     def test_deons_live_answer_shape_relays_content_zero_and_reads_the_code_from_structured_content(self):
         with self.gate():
             # Success: content[0] the text, content[1] the JSON body, structuredContent the same JSON (here without text).
-            body = {'ok': True, 'started': True, 'dateIds': ['d_test_0005']}
+            body = {'ok': True, 'started': True, 'dateIds': ['00000000-0000-4000-8000-000000000005']}
             self.transport.return_value = frame('kismet.go', {'content': [{'type': 'text', 'text': 'Your agent is on 1 new date.'},
                                                                           {'type': 'text', 'text': json.dumps(body)}], 'structuredContent': body})
             out = self.call({'operation': 'kismet.go', 'arguments': {}})

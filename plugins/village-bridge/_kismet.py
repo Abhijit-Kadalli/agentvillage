@@ -46,8 +46,9 @@ MAX_REQUEST_BYTES = 4096
 
 # Keys that name a resident. Kismet knows the owner only by the app server's subject: never sent from here.
 IDENTITY_KEYS = frozenset({"residentid", "subject", "userid", "telegramid", "xvillagesubject"})
-ID = re.compile(r"[A-Za-z0-9_-]{1,100}", re.ASCII)  # dateId / targetId (manifest: pattern, 1-100 characters)
-TELEGRAM = re.compile(r"@?[A-Za-z0-9_]{5,32}", re.ASCII)
+# dateId / targetId: Deon's "format: uuid", as the manifest pins it (any case).
+ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", re.ASCII)
+TELEGRAM = re.compile(r"@?[A-Za-z0-9_]{4,32}", re.ASCII)
 DRAFT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.ASCII)  # the manifest's (ov#405's)
 
 
@@ -91,22 +92,24 @@ def _strings(lo, hi, item, unique=False):
 
 
 ANSWERS = {
-    "name": _text(1, 80),
+    "name": _text(1, 40),
     "status": _enum("single", "relationship", "married", "complicated", "undisclosed"),
-    "openness": _enum("mono", "poly", "open", "unsure"),
+    "openness": _enum("mono", "poly", "open", "unsure", "undisclosed"),
     "lookingFor": _strings(1, 6, _enum("romance", "friends", "collaborators", "cofounder", "adventure", "vibes"), unique=True),
     "gender": _enum("man", "woman", "nonbinary"),
     "interestedIn": _enum("men", "women", "everyone"),
-    "interests": _strings(3, 20, _text(1, 60)),
-    "about": _text(0, 280),
+    "interests": _strings(3, 15, _text(1, 30)),
+    "about": _text(0, 160),
     "availability": _enum("weekday_evenings", "weekends", "flexible"),
-    "area": _text(0, 80),
-    "telegram": _string(5, 33, TELEGRAM),
-    "agentProfile": _text(0, 1200, newlines=True),
+    "area": _text(0, 40),
+    "telegram": _string(4, 33, TELEGRAM),
+    "agentProfile": _text(0, 1500, newlines=True),
     "agreedToTerms": _true,
     "ageConfirmed": _true,
 }
-ANSWERS_REQUIRED = ("name", "status", "lookingFor", "interests", "telegram", "agreedToTerms", "ageConfirmed")
+# Deon's live schema (kismet_tools.json 2707b58f), as the manifest pins it: status is optional (Kismet defaults it to
+# undisclosed) and the telegram may be in answers or top level. answers.publicQuotes is not in v1: refused (unknown key).
+ANSWERS_REQUIRED = ("name", "lookingFor", "interests", "agreedToTerms", "ageConfirmed")
 
 
 def _fields(body, required, checks):
@@ -119,7 +122,7 @@ def _answers(v):
     check had them): openness only if single or complicated; gender and interestedIn only with romance. A private
     answer that does not apply is refused, never sent."""
     return (_fields(v, ANSWERS_REQUIRED, ANSWERS)
-            and ("openness" not in v or v["status"] in ("single", "complicated"))
+            and ("openness" not in v or v.get("status") in ("single", "complicated"))
             and (not {"gender", "interestedIn"} & set(v) or "romance" in v["lookingFor"]))
 
 
@@ -130,10 +133,10 @@ KISMET_INPUTS = {
     "kismet.public_board": ((), {"limit": lambda v: type(v) is int and 1 <= v <= 20}),
     "kismet.summary": ((), {}),
     # Step 1 (answers, optional telegram and notes) or step 2 (draftId ALONE): kismet_payload refuses a mix.
-    "kismet.signup": ((), {"answers": _answers, "telegram": _string(5, 33, TELEGRAM),
-                           "notes": _strings(0, 10, _text(1, 200)), "draftId": _string(36, 36, DRAFT_ID)}),
-    "kismet.go": ((), {"targetId": _string(1, 100, ID)}),
-    "kismet.decide": (("dateId", "decision"), {"dateId": _string(1, 100, ID), "decision": _enum("meet", "pass")}),
+    "kismet.signup": ((), {"answers": _answers, "telegram": _string(4, 33, TELEGRAM),
+                           "notes": _strings(1, 10, _text(1, 280)), "draftId": _string(36, 36, DRAFT_ID)}),
+    "kismet.go": ((), {"targetId": _string(36, 36, ID)}),
+    "kismet.decide": (("dateId", "decision"), {"dateId": _string(36, 36, ID), "decision": _enum("meet", "pass")}),
     "kismet.delete": ((), {"draftId": _string(36, 36, DRAFT_ID)}),
 }
 KISMET_WRITES = ("kismet.signup", "kismet.go", "kismet.decide", "kismet.delete")
@@ -388,7 +391,7 @@ def remember_shown(home, answer, context, config):
     for item in [*(summary.get("recommendations") if isinstance(summary.get("recommendations"), list) else []),
                  summary.get("topPick"), summary.get("weekly")]:
         if isinstance(item, dict) and isinstance(item.get("dateId"), str) and ID.fullmatch(item["dateId"]):
-            found.append(item["dateId"])
+            found.append(item["dateId"].lower())  # one record per date, whatever the case (a uuid)
     try:
         folder = _folder(home, SHOWN)
         if folder.is_dir() and sum(1 for _ in folder.iterdir()) >= SHOWN_MAX:
@@ -400,7 +403,7 @@ def remember_shown(home, answer, context, config):
 
 
 def _seen(home, date_id, context, config):
-    record = _read(_folder(home, SHOWN) / (date_id + ".json"), config)
+    record = _read(_folder(home, SHOWN) / (date_id.lower() + ".json"), config)
     return record is not None and _later(record, context)
 
 
