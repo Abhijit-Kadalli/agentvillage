@@ -1856,6 +1856,7 @@ def restart_all(h):
     restart(h)
     note_module(h.plugin).reset()
     epoch_module(h.plugin)._KNOWN.clear()
+    epoch_module(h.plugin)._FOLD_MEMO.update(key=None, value=None)
 
 
 def user_context(got):
@@ -2187,6 +2188,8 @@ class Tools:
         self.village = village
         self.others = {}
         self.calls = 0
+        self.fold_calls = 0
+        self.module = None
 
     def defs(self):
         return {name: tool for name, tool in {"village": self.village, **self.others}.items() if tool is not None}
@@ -2201,8 +2204,16 @@ class Tools:
         assert quiet_mode and skip_tool_search_assembly
         if enabled_toolsets != ["village"]:
             self.calls += 1
-        return [tool for name, tool in sorted(self.defs().items())
-                if self.get_toolset_for_tool(name) in (enabled_toolsets or [])]
+        else:
+            self.fold_calls += 1
+        built = [tool for name, tool in sorted(self.defs().items())
+                 if self.get_toolset_for_tool(name) in (enabled_toolsets or [])]
+        self.module._last_resolved_tool_names = [t["function"]["name"] for t in built]  # model_tools.py:248, :514
+        return built
+
+    def generation(self):
+        """toolsets._registry_generation: moves with every (de)registration, i.e. with these definitions."""
+        return (1, hash(json.dumps(self.defs(), sort_keys=True)))
 
 
 def install_tool_pin(monkeypatch, village, persisted):
@@ -2216,8 +2227,11 @@ def install_tool_pin(monkeypatch, village, persisted):
         persisted.append([dict(t) for t in agent.tools])
         agent._session_db.rows[agent.session_id]["tool_names"] = json.dumps(agent.tools)
 
-    monkeypatch.setitem(sys.modules, "model_tools", _module(
-        "model_tools", get_toolset_for_tool=api.get_toolset_for_tool, get_tool_definitions=api.get_tool_definitions))
+    api.module = _module("model_tools", get_toolset_for_tool=api.get_toolset_for_tool,
+                         get_tool_definitions=api.get_tool_definitions, _last_resolved_tool_names=["the-session-tools"])
+    monkeypatch.setitem(sys.modules, "model_tools", api.module)
+    monkeypatch.setitem(sys.modules, "toolsets", _module(
+        "toolsets", _registry_generation=api.generation, _registry_call=lambda method, default: "default"))
     monkeypatch.setitem(sys.modules, "tools.mcp_tool_agent", _module(
         "tools.mcp_tool_agent", _agent_tools_lock=threading.Lock(), persist_agent_tool_names=persist_agent_tool_names,
         tool_pin_version=lambda: "f97608f"))
@@ -2434,3 +2448,57 @@ def test_a_saved_tool_with_the_same_json_is_not_re_saved(apps, monkeypatch):
         run_turn(apps.loop, agent, "hi", HISTORY)
         assert agent.tools[1] == as_list
     assert persisted == []
+
+
+# ---- review-b delta (a4996939): N-e, N-g ---------------------------------------------------------------
+
+
+def test_reading_hermes_tools_leaves_no_trace_and_the_fold_is_read_once_per_generation(apps, monkeypatch):
+    """N-e: every get_tool_definitions call rebinds model_tools._last_resolved_tool_names (execute_code's
+    fallback list): it is put back. The fold is read once per tool-table generation, not per turn."""
+    persisted: list = []
+    api = install_tool_pin(monkeypatch, village_def(["zzz.reply"]), persisted)
+    api.others = {"ask_village": plain("ask_village", "Old.")}
+    session_tools = api.module._last_resolved_tool_names
+    stage_box((ZZZBOT, ZZZBOT_MD))
+    pinned_agent(apps, village_def(["zzz.reply"]), extra=[plain("ask_village", "Old.")])
+    api.others = {"ask_village": plain("ask_village", "New.")}
+    restart_all(apps)
+    api.fold_calls = 0
+    for _ in range(4):
+        run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)
+    assert api.calls == 1 and len(persisted) == 1  # the re-save read Hermes's build once
+    assert api.module._last_resolved_tool_names is session_tools
+    assert api.fold_calls == 1
+    api.village = village_def(["zzz.reply", "zzz.open_team_room"])  # a registration: a new generation
+    run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)
+    assert api.fold_calls == 2 and api.module._last_resolved_tool_names is session_tools
+    # A raising build still puts the list back.
+    def boom(**kwargs):
+        api.module._last_resolved_tool_names = ["leaked"]
+        raise RuntimeError("x")
+    monkeypatch.setattr(api.module, "get_tool_definitions", boom)
+    with pytest.raises(RuntimeError):
+        epoch_module(apps.plugin).hermes_tool_definitions(api.module, ["village"])
+    assert api.module._last_resolved_tool_names is session_tools
+
+
+def test_a_chat_begun_while_the_bridge_was_absent_is_not_told_every_app_changed(apps, monkeypatch, caplog):
+    """N-g (review-b E4): with the fold unreadable, a new prompt carries the unfolded stamp, not none, so
+    when the bridge is back the one rebuild finds nothing changed for it: no note."""
+    persisted: list = []
+    api = install_tool_pin(monkeypatch, None, persisted)  # village-bridge did not register this restart
+    epoch = epoch_module(apps.plugin)
+    stage_box((FORKICKS, FORKICKS_MD), (ZZZBOT, ZZZBOT_MD))
+    agent = FakeAgent(apps.db)
+    agent.tools = [plain("memory"), plain("terminal")]
+    run_turn(apps.loop, agent, "hello", [])
+    assert epoch.fingerprint() is None
+    assert apps_stamp(apps.db.rows["tg-dm-1"]["system_prompt"]) == epoch.legacy_fingerprint()
+    api.village = village_def(["zzz.reply"])
+    restart_all(apps)
+    with caplog.at_level(logging.INFO, logger="av-events"):
+        got = run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)
+        assert user_context(run_turn(apps.loop, FakeAgent(apps.db), "hi", HISTORY)) == ""
+    assert user_context(got) == "" and apps_stamp(got["system"]) == epoch.fingerprint()
+    assert reasons_logged(caplog) == ["miniapps"] and notes_given(caplog) == [] and persisted == []
