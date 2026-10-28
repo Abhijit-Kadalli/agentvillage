@@ -1343,6 +1343,7 @@ class BridgeTest(unittest.TestCase):
  # ---- Buildathon team rooms (zzz#32 + app#842): borrowed install permissions, owner-led, gated writes -----------
  TEAM_OPEN={'operation':'zzz.open_team_room','arguments':{'title':'Buildathon team','with':['Asha Rao','att_123']}}
  TEAM_ACCEPT={'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_0123abcd','decision':'accept'}}
+ TEAM_DECLINE={'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_0123abcd','decision':'decline'}}
  TEAM_LIST={'operation':'zzz.list_team_invites','arguments':{}}
  def test_team_ops_borrow_the_zzzbot_install_and_stay_out_of_the_catalog_entry(self):
   self.assertEqual(mini.ZZZBOT['operations'],self.ZZZ_READS+self.ZZZ_WRITES)
@@ -1353,23 +1354,23 @@ class BridgeTest(unittest.TestCase):
   managed=importlib.import_module('village_bridge._zzz_managed')
   self.assertFalse(managed.CRON_OPS&{'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'})
   with self.gate():
-   for args in (self.TEAM_OPEN,self.TEAM_ACCEPT,self.TEAM_LIST):
+   for args in (self.TEAM_OPEN,self.TEAM_DECLINE,self.TEAM_LIST):
     with self.subTest(op=args['operation']):self.assertEqual(self.call(args),{'error':'mini_app_not_installed'})
    # A zzzbot entry without create_thread cannot open or answer; list borrows list_rooms only.
    self.zzz_home(entry={'id':'zzzbot','version':'1.0.0','skills':['zzzbot'],'operations':['zzz.list_rooms']})
    self.assertEqual(self.call(self.TEAM_OPEN),{'error':'mini_app_not_installed'})
    self.zzz_home()
-   self.assertIn('data',self.call(self.TEAM_LIST));self.assertIn('data',self.call(self.TEAM_OPEN));self.assertIn('data',self.call(self.TEAM_ACCEPT))
+   self.assertIn('data',self.call(self.TEAM_LIST));self.assertIn('data',self.call(self.TEAM_OPEN));self.assertIn('data',self.call(self.TEAM_DECLINE))
   sent=[c.args[1] for c in self.transport.call_args_list]
   self.assertEqual(sent,[{'operation':'zzz.list_team_invites'},
                          {'operation':'zzz.open_team_room','title':'Buildathon team','with':['Asha Rao','att_123']},
-                         {'operation':'zzz.respond_team_invite','group':'cxg_0123abcd','decision':'accept'}])
+                         {'operation':'zzz.respond_team_invite','group':'cxg_0123abcd','decision':'decline'}])
  def test_team_writes_need_the_verified_gate_and_exact_bounded_arguments(self):
   self.zzz_home()
   with patch.object(bridge,'authorize_send',side_effect=AssertionError('no daemon grant for a team room')):
    for switch,codes in (('off',()),('on',('hook-missing:village',))):
     with self.gate(switch,codes),self.subTest(switch=switch):
-     for args in (self.TEAM_OPEN,self.TEAM_ACCEPT):
+     for args in (self.TEAM_OPEN,self.TEAM_DECLINE):
       refused=self.call(args);self.assertEqual(refused['error'],'approval_unavailable');self.assertIn('Do not claim',refused['instruction'])
    bad=[{'operation':'zzz.open_team_room','arguments':{'title':'t'}},{'operation':'zzz.open_team_room','arguments':{'with':['A']}},
         {'operation':'zzz.open_team_room','arguments':{'title':'t'*101,'with':['A']}},{'operation':'zzz.open_team_room','arguments':{'title':'t','with':[]}},
@@ -1380,6 +1381,8 @@ class BridgeTest(unittest.TestCase):
         {'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1'}},{'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'yes'}},
         {'operation':'zzz.respond_team_invite','arguments':{'group':'../x','decision':'accept'}},
         {'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'accept','resident':'r'}},
+        {'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'accept'}},
+        {'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'Decline'}},
         {'operation':'zzz.list_team_invites','arguments':{'group':'cxg_1'}}]
    with self.gate():
     for args in bad:
@@ -1391,16 +1394,31 @@ class BridgeTest(unittest.TestCase):
     self.assertIn('data',self.call({'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_1','decision':'decline'}}))
   # No trusted turn id is forwarded for a team op: the app derives its own idempotency key.
   for call in self.transport.call_args_list:self.assertNotIn('turnId',call.args[1])
+ def test_an_agent_accept_is_refused_with_the_decline_only_rule_before_anything_is_sent(self):
+  # Lead L29457/L29460 + the app's TEAM_ACCEPT_OWNER_ONLY: the agent may only decline; accepting is the owner's, on the
+  # Messaging page. Before this, an accept reached the app's 422 and came back as the generic "retry is safe" text.
+  rule=bridge.ZZZ_TEAM_INPUT['zzz.respond_team_invite']
+  self.assertIn('decision: decline}',rule);self.assertNotIn('accept or decline',rule)
+  self.assertIn('Only your owner can accept a team room invite',rule)
+  self.assertIn('Messaging page, under Team rooms (https://agents.edgecity.live/messaging)',rule)
+  # The exact 1.0.0 entry, as every box on v2.1.19 holds it.
+  self.zzz_home(entry={'id':'zzzbot',**mini.ZZZBOT})
+  self.assertEqual(mini.ZZZBOT['version'],'1.0.0')
+  with self.gate():
+   refused=self.call(self.TEAM_ACCEPT)
+  self.assertEqual(refused,{'error':'invalid_zzz_arguments','instruction':'Nothing was sent. '+rule})
+  self.assertNotEqual(refused['instruction'],bridge.ZZZ_UNCLEAR)
+  self.transport.assert_not_called()
  def test_team_ops_are_refused_in_a_managed_run(self):
   self.zzz_home()
   with self.gate(),patch.object(bridge,'bound_context',side_effect=ValueError('private_owner_chat_required')):
    # A cron or managed run: the managed context never admits a team op (not in CRON_OPS).
-   for args in (self.TEAM_OPEN,self.TEAM_ACCEPT,self.TEAM_LIST):
+   for args in (self.TEAM_OPEN,self.TEAM_DECLINE,self.TEAM_LIST):
     with self.subTest(op=args['operation']):self.assertEqual(self.call(args),{'error':'private_owner_chat_required'})
    # Defence in depth: even a managed context that reached the bridge is refused before any request.
    managed={'SESSION_KEY':'cron_x','MESSAGE_ID':'task_x','USER_ID':'42','MANAGED_ZZZ':True}
    with patch.object(bridge,'managed_context',return_value=managed):
-    for args in (self.TEAM_OPEN,self.TEAM_ACCEPT,self.TEAM_LIST):
+    for args in (self.TEAM_OPEN,self.TEAM_DECLINE,self.TEAM_LIST):
      with self.subTest(managed=args['operation']):self.assertEqual(self.call(args)['error'],'zzz_write_not_authorized')
   self.transport.assert_not_called()
  def test_zzz_refuses_groups_cron_children_and_another_owner(self):

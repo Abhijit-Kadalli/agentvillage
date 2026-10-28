@@ -192,7 +192,7 @@ def zzz_payload(op, args, context):
         if key in ("thread", "room", "group"):
             ok = isinstance(value, str) and ZZZ_ID.fullmatch(value) is not None
         elif key == "decision":
-            ok = value in ("accept", "decline")
+            ok = value == "decline"  # decline only: accepting is the owner's, on the Messaging page
         elif key == "with":
             # Teammates by full name or exact Rolodex attendee id; the app resolves them in the owner's village.
             ok = (isinstance(value, list) and 1 <= len(value) <= ZZZ_TEAM_MAX
