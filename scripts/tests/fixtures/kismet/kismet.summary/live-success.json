@@ -6,7 +6,7 @@
     },
     {
       "type": "text",
-      "text": "{\"ok\":true,\"text\":\"You had 2 dates today and have 1 left. Top pick: a fellow builder who also loves early swims. Say meet or pass when you're ready.\",\"summary\":{\"profile\":{\"name\":\"Test Resident\",\"lookingFor\":[\"friends\",\"collaborators\"]},\"datesToday\":2,\"datesLeftToday\":1,\"running\":false,\"topPick\":{\"dateId\":\"d_test_0001\",\"name\":\"Another Tester\",\"reason\":\"Both of you build tools and swim at sunrise.\"},\"recommendations\":[{\"dateId\":\"d_test_0001\",\"name\":\"Another Tester\",\"reason\":\"Both of you build tools and swim at sunrise.\"}],\"recommendationCount\":1,\"weekly\":null,\"matches\":[],\"worldId\":\"w_test\"}}"
+      "text": "{\"ok\":true,\"text\":\"You had 2 dates today and have 1 left. Top pick: a fellow builder who also loves early swims. Say meet or pass when you're ready.\",\"summary\":{\"profile\":{\"name\":\"Test Resident\",\"lookingFor\":[\"friends\",\"collaborators\"]},\"datesToday\":2,\"datesLeftToday\":1,\"running\":false,\"topPick\":{\"dateId\":\"00000000-0000-4000-8000-000000000001\",\"name\":\"Another Tester\",\"reason\":\"Both of you build tools and swim at sunrise.\"},\"recommendations\":[{\"dateId\":\"00000000-0000-4000-8000-000000000001\",\"name\":\"Another Tester\",\"reason\":\"Both of you build tools and swim at sunrise.\"}],\"recommendationCount\":1,\"weekly\":null,\"matches\":[],\"worldId\":\"w_test\"}}"
     }
   ],
   "structuredContent": {
@@ -24,13 +24,13 @@
       "datesLeftToday": 1,
       "running": false,
       "topPick": {
-        "dateId": "d_test_0001",
+        "dateId": "00000000-0000-4000-8000-000000000001",
         "name": "Another Tester",
         "reason": "Both of you build tools and swim at sunrise."
       },
       "recommendations": [
         {
-          "dateId": "d_test_0001",
+          "dateId": "00000000-0000-4000-8000-000000000001",
           "name": "Another Tester",
           "reason": "Both of you build tools and swim at sunrise."
         }
