@@ -174,18 +174,32 @@ Budgets: `maxRequestBytes` 4096, except `discover` 8192 and `grant_prepare`
 
 ## Rollout
 
-1. This overlay roll (box side: allowlist, bridge, skill). Older boxes refuse a
-   projection that names `dreamstarter`, Gold Stars included, so it comes first.
-   It rides v2.1.20.
-2. The CP catalog row (`dreamstarter` 2.0.0, the nine operations in this order,
-   `restricted`) and the `MINI_APPS_TENANT_ALLOWLIST` entry for the sandbox
-   tenant: the author's own (staff look it up by his Edge City account; never in
-   a pull request).
-3. The app routes (above).
-4. The key. DreamStarter issues it and pins only its hash; Edge City staff set
-   `MINI_APP_DREAMSTARTER_KEY` on the cp. Never in a pull request.
-5. Test on the author's tenant, then widen after Edge City's rulings on the
-   brand and partner code and on the local businesses' consent.
+The id starts GENERIC: the three no-argument reads ship first as a cp-only app
+(Edge-City/agentvillage-controlplane#456, `dreamstarter` 1.2.0,
+`["mini-app.read"]`, restricted). This bundle moves the same id to reviewed. A
+generic and a reviewed app with one id cannot coexist on a box, so the order is
+fixed, never the reverse:
+
+1. The overlay release that carries this bundle (v2.1.20) is tagged.
+2. One cp PR, deployed **before** that release's fleet roll starts:
+   - it removes the generic manifest and skill;
+   - it adds this reviewed manifest (`dreamstarter` 2.0.0, the nine operations
+     in this order, `restricted`), vendored at the tag;
+   - it adds `dreamstarter` to the cp's reviewed ids and `overlay.json`, and
+     re-vendors.
+
+   An older box then refuses `dreamstarter` alone (an unknown id with named
+   operations fails the generic check for that app only); every other app stays.
+3. The fleet roll. A box carrying this bundle must never receive the generic
+   entry: with `dreamstarter` in `REVIEWED_ENTRIES` that refuses the whole
+   projection, Gold Stars included.
+4. The app routes (above), and the key: DreamStarter issues it and pins only its
+   hash; Edge City staff set `MINI_APP_DREAMSTARTER_KEY` on the cp. Never in a
+   pull request.
+5. `MINI_APPS_TENANT_ALLOWLIST.dreamstarter` stays the author's own tenant
+   (staff look it up by his Edge City account; never in a pull request) until
+   Edge City rules on the brand and partner code and on the local businesses'
+   consent.
 
 ## V0 conformance evidence
 
