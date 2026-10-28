@@ -260,20 +260,64 @@ def _surface(home: Optional[Path], *, fold: bool = True) -> Optional[list]:
 UNREADABLE = object()
 
 
+def hermes_tool_definitions(tools: Any, toolsets: list) -> list:
+    """`model_tools.get_tool_definitions` for these toolsets as Hermes builds them (quiet, memoised, no
+    tool-search assembly), leaving no trace: every call also rebinds the process-global
+    `model_tools._last_resolved_tool_names` (`execute_code`'s fallback tool list), so it is put back
+    as it was, the way Hermes guards it around a child build (`tools/delegate_tool_results.py:300-311`;
+    review-b N-e)."""
+    had = hasattr(tools, "_last_resolved_tool_names")
+    saved = getattr(tools, "_last_resolved_tool_names", None)
+    try:
+        return tools.get_tool_definitions(enabled_toolsets=list(toolsets), quiet_mode=True,
+                                          skip_tool_search_assembly=True)
+    finally:
+        if had:
+            tools._last_resolved_tool_names = saved
+
+
+#: The fold's last read and the Hermes tool-table generation it was read at (review-b N-e: once per
+#: registration change, not several times per turn).
+_FOLD_MEMO: dict = {"key": None, "value": None}
+
+
+def _generation() -> Optional[tuple]:
+    """Hermes's tool-table generation and scope (`toolsets._registry_generation`, `_registry_call`), the
+    key `model_tools` memoises on; None when this Hermes has no such helpers (then no memo)."""
+    try:
+        toolsets = importlib.import_module("toolsets")
+        return (tuple(toolsets._registry_generation()), toolsets._registry_call("current_scope_key", ""))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _village_operations() -> Any:
     """The `operation` enum of the `village` tool as Hermes builds it now (`model_tools`
     `get_toolset_for_tool` + `get_tool_definitions`, the public read the gated-tools scan accepts),
-    sorted. None when not under Hermes (no `model_tools`: the fingerprint is the unfolded one);
-    `UNREADABLE` under Hermes when the tool is not registered or has another shape."""
+    sorted, memoised per tool-table generation. None when not under Hermes (no `model_tools`: the
+    fingerprint is the unfolded one); `UNREADABLE` under Hermes when the tool is not registered or has
+    another shape."""
     try:
         tools = importlib.import_module("model_tools")
     except Exception:  # noqa: BLE001 - not under Hermes
         return None
+    key = _generation()
+    with _LOCK:
+        if key is not None and _FOLD_MEMO["key"] == key:
+            return _FOLD_MEMO["value"]
+    value = _read_village_operations(tools)
+    if key is not None:
+        with _LOCK:
+            _FOLD_MEMO["key"], _FOLD_MEMO["value"] = key, value
+    return value
+
+
+def _read_village_operations(tools: Any) -> Any:
     try:
         toolset = tools.get_toolset_for_tool("village")
         if not toolset:
             return UNREADABLE
-        defs = tools.get_tool_definitions(enabled_toolsets=[toolset], quiet_mode=True, skip_tool_search_assembly=True)
+        defs = hermes_tool_definitions(tools, [toolset])
         village = [d for d in defs if (d.get("function") or {}).get("name") == "village"]
         enum = village[0]["function"]["parameters"]["properties"]["operation"]["enum"]
     except Exception:  # noqa: BLE001 - no tool, another shape: no verdict
@@ -486,6 +530,11 @@ def section_text(_session_info: Any = None) -> str:
         # SKILL-CHANGE-NOTE: the stamp is recorded with its per-app digests as it is rendered.
         found = current_apps()
         current = found[0] if found is not None else None
+        if current is None:
+            # review-b N-g: the `village` fold unreadable (the bridge did not register this restart) but
+            # the projection readable: the unfolded stamp, so the chat is not later read as stampless
+            # ("every app is new") once the bridge is back.
+            current = legacy_fingerprint()
     except Exception:  # noqa: BLE001 - an empty section is today's prompt
         return ""
     return f"{STAMP_PREFIX}{current}" if current else ""
@@ -577,6 +626,7 @@ def reset() -> None:
         _STATE["broken"] = False
         _LATCHED.clear()
         _KNOWN.clear()
+        _FOLD_MEMO["key"] = _FOLD_MEMO["value"] = None
 
 
 __all__ = [

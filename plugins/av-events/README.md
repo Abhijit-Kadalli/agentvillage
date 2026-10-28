@@ -2579,7 +2579,9 @@ answering.`
   - the `village` operations of its operation families (zzzbot: `zzz.*`). That last one is read
     through `model_tools` and folded into the fingerprint, so a bridge-only change also rebuilds and
     names the app. Under Hermes, a `village` tool that is not registered (or has another shape) is no
-    verdict, never a stamp change.
+    verdict, never a stamp change, and a prompt built meanwhile carries the unfolded stamp.
+  - Each read of Hermes's build puts the process-global `model_tools._last_resolved_tool_names` back
+    as it was. The fold is read once per Hermes tool-table generation, not on every turn.
 - **Reviewed apps** (the installer's table, held equal by a test):
   - `<app>` is the SKILL.md front matter `display_name`, else its first `# ` heading outside code
     fences, else the id.

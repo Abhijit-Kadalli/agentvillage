@@ -335,8 +335,7 @@ def resave_tools(agent: Any) -> List[str]:
     toolsets = sorted({ts for ts in (tools_api.get_toolset_for_tool(name) for name in sent) if isinstance(ts, str) and ts})
     if not toolsets:
         return []
-    fresh_defs = tools_api.get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True,
-                                                skip_tool_search_assembly=True)
+    fresh_defs = _miniapp_epoch.hermes_tool_definitions(tools_api, toolsets)
     fresh = {_def_name(tool): tool for tool in fresh_defs or [] if _def_name(tool) in sent}
     swapped = []
     with lock:
