@@ -486,7 +486,38 @@ class TestAutonomyRunner(unittest.TestCase):
             answer({"existing_thread_id": "thread_1", "body": "x"})
             with self.assertRaisesRegex(ValueError, "model-output"):
                 runner._output(legacy, self.home)
+            # Topic tags (lead L30725 (3)): only when the context carries room_tags (the app accepts tags). Without it,
+            # a tags key is refused and the system text never offers tags, so an older app never sees one.
+            self.assertNotIn("room_tags", calls[-1]["messages"][0]["content"])
+            answer({"title": "Hiring", "body": "x", "tags": ["hiring"]})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(topic, self.home)
+            tagged = {**topic, "room_tags": [" Hiring ", "buildathon"]}
+            answer({"title": " Team up ", "body": " Who needs a designer? ", "tags": [" Hiring", "design", "hiring"]})
+            self.assertEqual(runner._output(tagged, self.home), {"title": "Team up", "body": "Who needs a designer?",
+                                                                 "tags": ["hiring", "design"]})
+            self.assertIn("room_tags first", calls[-1]["messages"][0]["content"])
+            self.assertEqual(json.loads(calls[-1]["messages"][1]["content"])["room_tags"], ["hiring", "buildathon"])
+            # Tags stay optional; a reuse never takes tags; bad tag lists are refused before the service sees them.
+            answer({"title": "Untagged", "body": "x"})
+            self.assertEqual(runner._output(tagged, self.home), {"title": "Untagged", "body": "x"})
+            answer({"existing_thread_id": "thread_1", "body": "x", "tags": ["a"]})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(tagged, self.home)
+            for bad in ([], ["a", "b", "c", "d"], ["x" * 41], [" "], [7], "hiring", ["zero\u200bwidth"]):
+                answer({"title": "t", "body": "x", "tags": bad})
+                with self.assertRaisesRegex(ValueError, "model-tags"):
+                    runner._output(tagged, self.home)
+            # A capped room never offers tags (no title path).
+            answer({"existing_thread_id": "thread_2", "body": "x"})
+            runner._output({**tagged, "can_create_topic": False}, self.home)
+            self.assertNotIn("room_tags first", calls[-1]["messages"][0]["content"])
             answered = len(calls)
+        # Malformed room_tags is refused before any model route.
+        with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
+            for bad in ("hiring", ["x" * 41], [None], ["t"] * 21):
+                with self.assertRaisesRegex(ValueError, "topic-context"):
+                    runner._output({**topic, "room_tags": bad}, self.home)
         # Malformed or capped-and-empty topic context never opens a model route.
         with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
             with self.assertRaisesRegex(ValueError, "topic-capacity"):
