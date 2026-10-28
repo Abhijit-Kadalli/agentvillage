@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import re
 import signal
 import stat
@@ -41,12 +42,24 @@ SYSTEM = (
     "Avoid generic praise and repeating the same point. A new topic may seed one interesting question even in "
     "an empty room. Never disclose private context."
 )
-# Local spend guard: after FAILURE_THRESHOLD consecutive failed turns that held a claim (each may have made a paid
-# model call), skip turns with doubling backoff, capped, so a broken box cannot burn a call every due tick.
-FAILURE_THRESHOLD = 3
-BACKOFF_BASE_SECONDS = 300
+# Local spend guards, both kept in the runner's own state file zzzbot/BACKOFF_FILE (the installer removes it on
+# teardown):
+# - Failure backoff: from the FAILURE_THRESHOLD-th consecutive failed turn that held a claim (each may have made a paid
+#   model call), skip turns for BACKOFF_BASE_SECONDS * 2 ** (failures - FAILURE_THRESHOLD), the exponent clamped to
+#   BACKOFF_MAX_EXPONENT and the wait capped at BACKOFF_MAX_SECONDS. The first step (10 minutes) is two cron intervals,
+#   so the second failure in a row already skips the next tick.
+# - Daily cap: at most DAILY_MODEL_TURNS model turns per UTC day (posted, silent or failed alike), counted before the
+#   call. At the cap a tick skips before claiming, makes no model call and records the code "daily-cap".
+FAILURE_THRESHOLD = 2
+BACKOFF_BASE_SECONDS = 600
+BACKOFF_MAX_EXPONENT = 7
 BACKOFF_MAX_SECONDS = 6 * 3600
+FAILURE_COUNT_MAX = 1000
+DAILY_MODEL_TURNS = 48
+DAILY_CAP_CODE = "daily-cap"
 BACKOFF_FILE = "autonomy-backoff.json"
+STATE_MAX_BYTES = 256
+DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 FENCED = re.compile(r"\A```(?:json)?\s*(.*?)\s*```\Z", re.DOTALL)
 ENDPOINTS = {
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
@@ -286,49 +299,81 @@ def _state_dir(home: Path):
     return os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 
 
-def _backoff_read(home: Path) -> dict:
+def _now() -> float:
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _utc_day(now: float) -> str:
+    return datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+
+
+def _state_read(home: Path, now: float) -> dict:
+    """The runner's own state: {failures, until, day, turns[, code]}, always normalized and in range.
+
+    Missing: a clean state. Not a regular file (a FIFO, a socket, a symlink): refused before any claim, so no spend.
+    Oversized, unparsable or out of range values never disable a guard and never hang: a bad failure count or
+    "until" (negative, not an int, NaN, Infinity, beyond the cap) reads as no backoff now with the next failure
+    backing off; a bad day or turn count reads as today's cap reached (no model call today, reset tomorrow).
+    """
+    today = _utc_day(now)
     directory = _state_dir(home)
     try:
         fd = os.open(BACKOFF_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except FileNotFoundError:
-        return {}
+        return {"failures": 0, "until": 0, "day": today, "turns": 0}
     finally:
         os.close(directory)
     with os.fdopen(fd, "rb") as source:
-        meta = os.fstat(source.fileno())
-        if not stat.S_ISREG(meta.st_mode) or meta.st_size > 256:
-            return {"failures": FAILURE_THRESHOLD, "until": 0}
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("state-file")
+        raw = source.read(STATE_MAX_BYTES + 1)
+    data = None
+    if len(raw) <= STATE_MAX_BYTES:
         try:
-            data = json.load(source)
+            data = json.loads(raw)
         except ValueError:
             data = None
-    if not isinstance(data, dict) or not isinstance(data.get("failures"), int) or not isinstance(data.get("until"), (int, float)):
-        return {"failures": FAILURE_THRESHOLD, "until": 0}
-    return data
+    if not isinstance(data, dict):
+        data = {}
+    failures, until = data.get("failures"), data.get("until")
+    if (type(failures) is not int or failures < 0 or type(until) not in (int, float) or
+            (type(until) is float and not math.isfinite(until)) or until > now + BACKOFF_MAX_SECONDS):
+        failures, until = FAILURE_THRESHOLD - 1, 0
+    state = {"failures": min(failures, FAILURE_COUNT_MAX), "until": until}
+    day, turns = data.get("day"), data.get("turns")
+    if isinstance(day, str) and DAY.fullmatch(day) and day != today:
+        state.update(day=today, turns=0)  # a new UTC day: the cap resets
+    elif day == today and type(turns) is int and 0 <= turns <= DAILY_MODEL_TURNS:
+        state.update(day=today, turns=turns)
+        if data.get("code") == DAILY_CAP_CODE:
+            state["code"] = DAILY_CAP_CODE
+    else:
+        state.update(day=today, turns=DAILY_MODEL_TURNS)
+    return state
 
 
-def _backoff_write(home: Path, data):
+def _state_write(home: Path, state: dict):
+    """Rewrite the state file in place: never follows a link, never blocks on a FIFO, regular single-link files only."""
     directory = _state_dir(home)
     try:
-        if data is None:
-            try:
-                os.unlink(BACKOFF_FILE, dir_fd=directory)
-            except FileNotFoundError:
-                pass
-            return
-        fd = os.open(BACKOFF_FILE, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-        with os.fdopen(fd, "w") as target:
-            json.dump(data, target)
+        fd = os.open(BACKOFF_FILE, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
     finally:
         os.close(directory)
+    with os.fdopen(fd, "w") as target:
+        meta = os.fstat(target.fileno())
+        if not stat.S_ISREG(meta.st_mode) or meta.st_nlink != 1:
+            raise ValueError("state-file")
+        target.truncate(0)
+        target.write(json.dumps(state))
 
 
-def _record_failure(home: Path, now: float):
-    failures = int(_backoff_read(home).get("failures", 0)) + 1
+def _record_failure(home: Path, now: float, state: dict):
+    failures = min(state["failures"] + 1, FAILURE_COUNT_MAX)
     until = 0
     if failures >= FAILURE_THRESHOLD:
-        until = now + min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (failures - FAILURE_THRESHOLD))
-    _backoff_write(home, {"failures": failures, "until": until})
+        exponent = min(BACKOFF_MAX_EXPONENT, failures - FAILURE_THRESHOLD)
+        until = now + min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** exponent)
+    _state_write(home, {**state, "failures": failures, "until": until})
 
 
 def run(home: Path):
@@ -342,8 +387,15 @@ def run(home: Path):
     with _turn_lock(home) as acquired:
         if not acquired:
             return
-        now = datetime.now(timezone.utc).timestamp()
-        if _backoff_read(home).get("until", 0) > now:
+        now = _now()
+        state = _state_read(home, now)
+        if state["until"] > now:
+            return
+        if state["turns"] >= DAILY_MODEL_TURNS:
+            # Today's local cap is reached: no claim, no model call. The code is the only record (stdout would
+            # reach the resident).
+            if state.get("code") != DAILY_CAP_CODE:
+                _state_write(home, {**state, "code": DAILY_CAP_CODE})
             return
         import httpx
         with httpx.Client(trust_env=False, timeout=10) as http:
@@ -352,14 +404,14 @@ def run(home: Path):
             if candidate is None:
                 return
             try:
-                _claimed_turn(home, cfg, http, candidate)
+                _claimed_turn(home, cfg, http, candidate, state)
             except BaseException:
-                _record_failure(home, now)
+                _record_failure(home, now, state)
                 raise
-            _backoff_write(home, None)
+            _state_write(home, {**state, "failures": 0, "until": 0})
 
 
-def _claimed_turn(home: Path, cfg: dict, http, candidate):
+def _claimed_turn(home: Path, cfg: dict, http, candidate, state: dict):
     """One claimed candidate: context, one model call, complete. Any failure here counts toward the backoff."""
     if not isinstance(candidate, dict) or not UUID.fullmatch(str(candidate.get("id", ""))) or not HEX.fullmatch(str(candidate.get("lease_token", ""))) or candidate.get("kind") not in KIND:
         raise ValueError("claim-shape")
@@ -369,6 +421,9 @@ def _claimed_turn(home: Path, cfg: dict, http, candidate):
         raise ValueError("context-mismatch")
     if not _installed(home) or _job(home, cfg) is None:
         raise ValueError("authority-changed")
+    # The daily cap counts the turn before the model call: a turn that times out or fails after it still counts.
+    state["turns"] += 1
+    _state_write(home, state)
     output = _output(context, home)
     if not _installed(home) or _job(home, cfg) is None:
         raise ValueError("authority-changed")
