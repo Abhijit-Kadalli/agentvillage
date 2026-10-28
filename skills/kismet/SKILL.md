@@ -180,6 +180,9 @@ send step 2 with its `draftId` alone.
 - `date_not_found`: call `kismet.summary` again for current dates.
 - `kismet_preview_expired` or `kismet_preview_unavailable`: do step 1 again,
   show the new preview and wait for a new yes.
+- `kismet_confirmation_required`: step 2 was sent in the same turn as the
+  preview. Wait for the owner's yes in their next message, then send the
+  same `draftId`.
 - `rate_limited`: say Kismet is busy for this owner right now and stop.
 - `partner_api_disabled` or any other error: say Kismet is not available
   from here right now and offer the website. Never claim that a sign-up,

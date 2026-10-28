@@ -484,7 +484,7 @@
     {
       "name": "kismet",
       "version": "1.1.0",
-      "sha256": "d359871afde7969af188bb73d5d27177beefc836503b0d83e1a2e4923d07d1e8",
+      "sha256": "5904f144422b5d1d5405a4f020357b471148e60ec0c2fcdb18fec093eb797fc9",
       "path": "skills/kismet/SKILL.md"
     }
   ]
