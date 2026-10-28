@@ -194,8 +194,9 @@ function seedState(home: string) {
 
 test("S1 teardown scope (nonav L17033): a failed stage removes ONLY the zzz job, shim, managed files and state", () => {
   const { home, stage, jobs } = fakeBox();
-  const full = { version: 1, apps: REVIEWED_MINI_APPS };
-  const unknown = { version: 1, apps: [...REVIEWED_MINI_APPS, { id: "unknown_app", version: "1.0.0", operations: ["mini-app.read"], skills: ["unknown_app"] }] };
+  const legacyReviewed = REVIEWED_MINI_APPS.filter(app=>app.id!=="zzz-autonomy-runner");
+  const full = { version: 1, apps: legacyReviewed };
+  const unknown = { version: 1, apps: [...legacyReviewed, { id: "unknown_app", version: "1.0.0", operations: ["mini-app.read"], skills: ["unknown_app"] }] };
   for (const failure of [{ input: "not json" as unknown, args: [] as string[] }, { input: unknown, args: [] }, { input: full, args: ["--force"] }]) {
     expect(stage(full).status).toBe(0);
     expect(jobs()).toHaveLength(1);
