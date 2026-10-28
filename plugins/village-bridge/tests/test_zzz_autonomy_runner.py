@@ -28,8 +28,8 @@ class FakeHttp:
 
 class TestAutonomyRunner(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir="/private/tmp")
-        self.home = Path(self.temp.name)
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name).resolve()  # macOS /var is a symlink; the runner refuses linked parents
         (self.home / "cron").mkdir()
         self.cfg = {"origin": "https://agents.edgecity.live", "token": TOKEN,
                     "expiresAt": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
@@ -56,6 +56,7 @@ class TestAutonomyRunner(unittest.TestCase):
             ops.append(operation)
             return {"candidate": None, "next_check_at": "2026-10-28T00:00:00Z"}
         with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+                patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "model")), \
                 patch.object(runner, "_activity", side_effect=activity), \
                 patch.object(runner, "_output", side_effect=AssertionError("model called")):
             runner.run(self.home)
@@ -69,6 +70,7 @@ class TestAutonomyRunner(unittest.TestCase):
                 return {"candidate": {"id": "12345678-1234-1234-1234-123456789abc", "kind": "comment", "lease_token": "a" * 64}}
             raise ValueError("current policy paused")
         with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+                patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "model")), \
                 patch.object(runner, "_activity", side_effect=activity), \
                 patch.object(runner, "_output", side_effect=AssertionError("model called")):
             with self.assertRaisesRegex(ValueError, "paused"):
@@ -130,6 +132,92 @@ class TestAutonomyRunner(unittest.TestCase):
                 runner._output(context, self.home)
             Choice.message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
             self.assertEqual(runner._output(context, self.home), {"silent": True})
+            # N1: a non-boolean silent is not silence (1 == True in Python); it is refused, never forwarded.
+            Choice.message = SimpleNamespace(content='{"silent":1}', tool_calls=None, function_call=None)
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(context, self.home)
+            # S2: a fenced JSON answer and a "length" stop are accepted when the JSON itself is complete.
+            Choice.message = SimpleNamespace(content='```json\n{"body":"Fenced answer."}\n```', tool_calls=None, function_call=None)
+            self.assertEqual(runner._output(context, self.home), {"body": "Fenced answer."})
+            Choice.finish_reason = "length"
+            Choice.message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
+            self.assertEqual(runner._output(context, self.home), {"silent": True})
+            Choice.message = SimpleNamespace(content='{"body":"cut sho', tool_calls=None, function_call=None)
+            with self.assertRaises(ValueError):
+                runner._output(context, self.home)
+            Choice.finish_reason = "content_filter"
+            Choice.message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
+            with self.assertRaisesRegex(ValueError, "model-response"):
+                runner._output(context, self.home)
+            Choice.finish_reason = "stop"
+            # N2: OpenAI-direct takes max_completion_tokens; OpenRouter takes max_tokens. Both cap at 700.
+            self.assertEqual(calls[0].get("max_completion_tokens"), 700)
+            self.assertNotIn("max_tokens", calls[0])
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+                                      "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+                patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "model")):
+            runner._output(context, self.home)
+            self.assertEqual(calls[-1].get("max_tokens"), 700)
+            self.assertNotIn("max_completion_tokens", calls[-1])
+
+    def test_unusable_model_route_never_claims(self):
+        ops = []
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+                patch.object(runner, "_model_route", side_effect=ValueError("model-provider")), \
+                patch.object(runner, "_activity", side_effect=lambda *_a, **_k: ops.append("called")):
+            with self.assertRaisesRegex(ValueError, "model-provider"):
+                runner.run(self.home)
+        self.assertEqual(ops, [])
+
+    def test_consecutive_claimed_failures_back_off_locally_and_success_resets(self):
+        ops = []
+        outcome = {"fail": True}
+        def activity(_http, _cfg, operation, **_args):
+            ops.append(operation)
+            if operation == "claim":
+                return {"candidate": {"id": "12345678-1234-1234-1234-123456789abc", "kind": "comment", "lease_token": "a" * 64}}
+            if operation == "context":
+                return {"candidate_id": "12345678-1234-1234-1234-123456789abc", "kind": "comment",
+                        "source": {"body": "A current point."}}
+            return {"state": "silent", "post_id": None, "thread_id": None, "replayed": False}
+        def output(_context, _home):
+            ops.append("model")
+            if outcome["fail"]:
+                raise ValueError("model-response")
+            return {"silent": True}
+        def turn():
+            with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+                    patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "k", "m")), \
+                    patch.object(runner, "_activity", side_effect=activity), \
+                    patch.object(runner, "_output", side_effect=output):
+                runner.run(self.home)
+        for _ in range(runner.FAILURE_THRESHOLD):
+            with self.assertRaises(ValueError):
+                turn()
+        self.assertEqual(ops.count("model"), runner.FAILURE_THRESHOLD)
+        state = json.loads((self.home / "zzzbot" / runner.BACKOFF_FILE).read_text())
+        self.assertEqual(state["failures"], runner.FAILURE_THRESHOLD)
+        self.assertGreater(state["until"], datetime.now(timezone.utc).timestamp() + runner.BACKOFF_BASE_SECONDS - 60)
+        # Backing off: no claim, no model call.
+        before = len(ops)
+        turn()
+        self.assertEqual(len(ops), before)
+        # Backoff elapsed: the next failure doubles it, capped.
+        state["until"] = 0
+        (self.home / "zzzbot" / runner.BACKOFF_FILE).write_text(json.dumps(state))
+        with self.assertRaises(ValueError):
+            turn()
+        again = json.loads((self.home / "zzzbot" / runner.BACKOFF_FILE).read_text())
+        self.assertGreater(again["until"], datetime.now(timezone.utc).timestamp() + 2 * runner.BACKOFF_BASE_SECONDS - 60)
+        self.assertLessEqual(again["until"], datetime.now(timezone.utc).timestamp() + runner.BACKOFF_MAX_SECONDS)
+        # A success clears the counter.
+        again["until"] = 0
+        (self.home / "zzzbot" / runner.BACKOFF_FILE).write_text(json.dumps(again))
+        outcome["fail"] = False
+        turn()
+        self.assertFalse((self.home / "zzzbot" / runner.BACKOFF_FILE).exists())
+        # A null claim neither counts nor clears.
+        self.assertEqual(ops[-3:], ["context", "model", "complete"])
 
     def test_event_brief_is_untrusted_sanitized_capped_and_reaches_the_one_model_call(self):
         calls = []

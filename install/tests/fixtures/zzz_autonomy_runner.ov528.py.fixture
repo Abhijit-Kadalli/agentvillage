@@ -41,6 +41,13 @@ SYSTEM = (
     "Avoid generic praise and repeating the same point. A new topic may seed one interesting question even in "
     "an empty room. Never disclose private context."
 )
+# Local spend guard: after FAILURE_THRESHOLD consecutive failed turns that held a claim (each may have made a paid
+# model call), skip turns with doubling backoff, capped, so a broken box cannot burn a call every due tick.
+FAILURE_THRESHOLD = 3
+BACKOFF_BASE_SECONDS = 300
+BACKOFF_MAX_SECONDS = 6 * 3600
+BACKOFF_FILE = "autonomy-backoff.json"
+FENCED = re.compile(r"\A```(?:json)?\s*(.*?)\s*```\Z", re.DOTALL)
 ENDPOINTS = {
     "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
@@ -242,20 +249,26 @@ def _output(context: dict, home: Path):
     endpoint, key, model = _model_route(home)
     import httpx
     from openai import OpenAI
+    # OpenAI-direct reasoning models refuse max_tokens; they take max_completion_tokens (same 700 cap).
+    limit = {"max_tokens": 700} if endpoint == ENDPOINTS["openrouter"][0] else {"max_completion_tokens": 700}
     with httpx.Client(trust_env=False, timeout=30) as client_http:
         with OpenAI(api_key=key, base_url=endpoint, http_client=client_http, max_retries=0) as client:
             response = client.chat.completions.create(model=model, messages=[
                 {"role": "system", "content": SYSTEM},
                 {"role": "user", "content": json.dumps({"kind": kind, **data}, ensure_ascii=False)[:10000]}],
-                max_tokens=700, timeout=30)
-    if not isinstance(response.choices, list) or len(response.choices) != 1 or response.choices[0].finish_reason not in ("stop", "end_turn"):
+                timeout=30, **limit)
+    # "length" is accepted only if the text still parses as the strict JSON below.
+    if not isinstance(response.choices, list) or len(response.choices) != 1 or \
+            response.choices[0].finish_reason not in ("stop", "end_turn", "length"):
         raise ValueError("model-response")
     message = response.choices[0].message
     if getattr(message, "tool_calls", None) or getattr(message, "function_call", None) or not isinstance(message.content, str):
         raise ValueError("model-tools")
-    result = json.loads(message.content)
-    if result == {"silent": True}:
-        return result
+    text = message.content.strip()
+    fenced = FENCED.match(text)
+    result = json.loads(fenced.group(1) if fenced else text)
+    if isinstance(result, dict) and len(result) == 1 and result.get("silent") is True:
+        return {"silent": True}
     if not isinstance(result, dict) or set(result) != ({"body", "title"} if kind == "new_topic" else {"body"}):
         raise ValueError("model-output")
     body = result.get("body")
@@ -266,14 +279,71 @@ def _output(context: dict, home: Path):
     return {key: value.strip() for key, value in result.items()}
 
 
+def _state_dir(home: Path):
+    folder = home / "zzzbot"
+    if any(part.is_symlink() for part in (folder, *folder.parents)):
+        raise ValueError("state-link")
+    return os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def _backoff_read(home: Path) -> dict:
+    directory = _state_dir(home)
+    try:
+        fd = os.open(BACKOFF_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    except FileNotFoundError:
+        return {}
+    finally:
+        os.close(directory)
+    with os.fdopen(fd, "rb") as source:
+        meta = os.fstat(source.fileno())
+        if not stat.S_ISREG(meta.st_mode) or meta.st_size > 256:
+            return {"failures": FAILURE_THRESHOLD, "until": 0}
+        try:
+            data = json.load(source)
+        except ValueError:
+            data = None
+    if not isinstance(data, dict) or not isinstance(data.get("failures"), int) or not isinstance(data.get("until"), (int, float)):
+        return {"failures": FAILURE_THRESHOLD, "until": 0}
+    return data
+
+
+def _backoff_write(home: Path, data):
+    directory = _state_dir(home)
+    try:
+        if data is None:
+            try:
+                os.unlink(BACKOFF_FILE, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            return
+        fd = os.open(BACKOFF_FILE, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(fd, "w") as target:
+            json.dump(data, target)
+    finally:
+        os.close(directory)
+
+
+def _record_failure(home: Path, now: float):
+    failures = int(_backoff_read(home).get("failures", 0)) + 1
+    until = 0
+    if failures >= FAILURE_THRESHOLD:
+        until = now + min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (failures - FAILURE_THRESHOLD))
+    _backoff_write(home, {"failures": failures, "until": until})
+
+
 def run(home: Path):
     _quiet_sdk()
     if not _installed(home):
         return
     cfg = _config(home)
     _job(home, cfg)
+    # A box whose model route cannot work never claims: no lease taken, no room text read, no paid call.
+    _model_route(home)
     with _turn_lock(home) as acquired:
         if not acquired:
+            return
+        now = datetime.now(timezone.utc).timestamp()
+        if _backoff_read(home).get("until", 0) > now:
             return
         import httpx
         with httpx.Client(trust_env=False, timeout=10) as http:
@@ -281,24 +351,37 @@ def run(home: Path):
             candidate = claim.get("candidate")
             if candidate is None:
                 return
-            if not isinstance(candidate, dict) or not UUID.fullmatch(str(candidate.get("id", ""))) or not HEX.fullmatch(str(candidate.get("lease_token", ""))) or candidate.get("kind") not in KIND:
-                raise ValueError("claim-shape")
-            fields = {"candidate_id": candidate["id"], "lease_token": candidate["lease_token"]}
-            context = _activity(http, cfg, "context", **fields)
-            if context.get("candidate_id") != candidate["id"] or context.get("kind") != candidate["kind"]:
-                raise ValueError("context-mismatch")
-            if not _installed(home) or _job(home, cfg) is None:
-                raise ValueError("authority-changed")
-            output = _output(context, home)
-            if not _installed(home) or _job(home, cfg) is None:
-                raise ValueError("authority-changed")
-            receipt = _activity(http, cfg, "complete", **fields, output=output)
-            if receipt.get("state") not in ("posted", "silent") or not isinstance(receipt.get("replayed"), bool):
-                raise ValueError("receipt-shape")
+            try:
+                _claimed_turn(home, cfg, http, candidate)
+            except BaseException:
+                _record_failure(home, now)
+                raise
+            _backoff_write(home, None)
+
+
+def _claimed_turn(home: Path, cfg: dict, http, candidate):
+    """One claimed candidate: context, one model call, complete. Any failure here counts toward the backoff."""
+    if not isinstance(candidate, dict) or not UUID.fullmatch(str(candidate.get("id", ""))) or not HEX.fullmatch(str(candidate.get("lease_token", ""))) or candidate.get("kind") not in KIND:
+        raise ValueError("claim-shape")
+    fields = {"candidate_id": candidate["id"], "lease_token": candidate["lease_token"]}
+    context = _activity(http, cfg, "context", **fields)
+    if context.get("candidate_id") != candidate["id"] or context.get("kind") != candidate["kind"]:
+        raise ValueError("context-mismatch")
+    if not _installed(home) or _job(home, cfg) is None:
+        raise ValueError("authority-changed")
+    output = _output(context, home)
+    if not _installed(home) or _job(home, cfg) is None:
+        raise ValueError("authority-changed")
+    receipt = _activity(http, cfg, "complete", **fields, output=output)
+    if receipt.get("state") not in ("posted", "silent") or not isinstance(receipt.get("replayed"), bool):
+        raise ValueError("receipt-shape")
 
 
 def main():
     try:
+        def _deadline(*_):
+            raise TimeoutError("deadline")
+        signal.signal(signal.SIGALRM, _deadline)
         signal.alarm(DEADLINE_SECONDS)
         home = Path(__file__).resolve(strict=True).parent.parent
         if os.environ.get("HERMES_HOME") and Path(os.environ["HERMES_HOME"]).resolve(strict=True) != home:
