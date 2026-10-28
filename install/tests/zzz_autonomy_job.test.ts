@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REVIEWED_MINI_APPS } from "../install_miniapps";
@@ -141,4 +141,44 @@ test("a dangling resident shim symlink never creates its outside target",()=>{
   expect(existsSync(target)).toBe(false);
   expect(JSON.parse(readFileSync(join(home,"mini-apps.json"),"utf8")).apps.map((app:{id:string})=>app.id))
     .toEqual(["zzzbot"]);
+});
+
+test("a resident job that only mentions the reserved name is not a marker; the real job still is",()=>{
+  const {home,stage,jobs}=box();
+  mkdirSync(join(home,"cron"),{recursive:true});
+  const resident=[
+    {id:"bbbbbbbbbbbb",name:"Daily digest",prompt:`Summarise what ${AUTONOMY_JOB_NAME} posted today.`,enabled:true},
+    {id:"cccccccccccc",name:`${AUTONOMY_JOB_NAME} (my notes)`,prompt:"notes",enabled:true},
+  ];
+  // The escaped spelling (—) too: the substring test over the raw store must not decide the marker.
+  writeFileSync(join(home,"cron/jobs.json"),JSON.stringify({jobs:resident}).replaceAll("—","\\u2014"));
+  expect(autonomyMarkers(home)).toBe(false);
+  expect(stage([zzzbot]).status).toBe(0);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
+  expect(jobs()).toEqual(resident);
+  // The real job (exact name) is a marker, installs beside the resident jobs, and its teardown leaves them alone.
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  expect(autonomyMarkers(home)).toBe(true);
+  expect(stage([zzzbot,autonomy],["--verify"]).status).toBe(0);
+  expect(jobs().map(job=>job.name)).toEqual([...resident.map(job=>job.name),AUTONOMY_JOB_NAME]);
+  expect(stage([zzzbot]).status).toBe(0);
+  expect(jobs()).toEqual(resident);
+  expect(autonomyMarkers(home)).toBe(false);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
+});
+
+test("teardown removes a FIFO (or any non-regular file) at the runner's state names",()=>{
+  const {home,stage}=box();
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  const state=join(home,"zzzbot");
+  mkdirSync(state,{recursive:true,mode:0o700});
+  const fifo=join(state,"autonomy-backoff.json"), lock=join(state,"autonomy-run.lock");
+  expect(spawnSync("mkfifo",[fifo]).status).toBe(0);
+  symlinkSync(join(home,"village-bridge.json"),lock);
+  expect(stage([zzzbot]).status).toBe(0);
+  for (const path of [fifo,lock]) expect(()=>lstatSync(path)).toThrow();
+  // The symlink's target is untouched.
+  expect(existsSync(join(home,"village-bridge.json"))).toBe(true);
+  expect(stage([zzzbot],["--verify"]).status).toBe(0);
 });

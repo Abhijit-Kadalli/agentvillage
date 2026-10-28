@@ -1,5 +1,5 @@
 /** Separate, projection-gated no-agent ZZZ event job. No pair-gate dependency. */
-import { chmodSync, constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
@@ -17,7 +17,7 @@ const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "s
 
 /** First shipped version. Append old fixed digests before changing shipped files in a later release. */
 export const AUTONOMY_SHIPPED = {
-  "scripts/zzz_autonomy_runner.py": ["d356705940a04d8ea5a2a22782609cf28f080ced8c43125602f6fce387988484"],
+  "scripts/zzz_autonomy_runner.py": ["0b59cecbea3f48dce41ce3adcbb6fd2ff7d530567b255148e204941cddd2fd87"],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
 
@@ -46,10 +46,12 @@ function realDir(home: string, ...parts: string[]): string | null {
 
 export function autonomyMarkers(home: string): boolean {
   // A job under the reserved name is a marker on its own: a failed Hermes removal keeps the teardown pending, so a
-  // later stage retries it instead of leaving an orphan cron. An unreadable store is not a marker here (it must not
-  // fail every stage of a box that never had autonomy); reconcile still refuses a named-but-unreadable store.
+  // later stage retries it instead of leaving an orphan cron. Only a job whose name IS the reserved name counts: a
+  // resident or agent job that merely mentions it (in its name or prompt) is not ours. An unreadable store is not a
+  // marker here (it must not fail every stage of a box that never had autonomy); reconcile still refuses a store
+  // that mentions the reserved name but cannot be parsed.
   let named = false;
-  try { named = store(home).named; } catch { named = false; }
+  try { named = store(home).jobs.length > 0; } catch { named = false; }
   if (named) return true;
   const scripts = realDir(home, "scripts");
   const skill = realDir(home, "skills", "zzzbot");
@@ -66,10 +68,13 @@ export const AUTONOMY_STATE_FILES = ["autonomy-run.lock", "autonomy-backoff.json
 export function removeAutonomyState(home: string): void {
   const state = realDir(home, "zzzbot");
   if (!state) return;
+  // The reserved names are the runner's own: whatever sits there (a regular file, a FIFO, a socket, a symlink, which
+  // unlink removes without following) goes. Only a non-empty directory is left, never emptied: it is not a file the
+  // runner could have made.
   for (const name of AUTONOMY_STATE_FILES) {
     const path = join(state, name);
-    try { if (lstatSync(path).isFile()) unlinkSync(path); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    try { if (lstatSync(path).isDirectory()) rmdirSync(path); else unlinkSync(path); }
+    catch (error) { if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
   }
 }
 
@@ -91,7 +96,7 @@ export function removeAutonomyShim(home: string): void {
 
 function store(home: string) {
   const folder = realDir(home, "cron");
-  if (!folder) return { jobs: [] as Record<string, unknown>[], named: false };
+  if (!folder) return { jobs: [] as Record<string, unknown>[] };
   const path = join(folder, "jobs.json");
   let raw: string;
   let fd: number | undefined;
@@ -103,17 +108,19 @@ function store(home: string) {
     if (!actual.isFile() || actual.ino!==meta.ino || actual.dev!==meta.dev) throw new Error("zzz_autonomy_jobs_shape");
     raw = readFileSync(fd,"utf8");
   }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { jobs: [] as Record<string, unknown>[], named: false }; throw error; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { jobs: [] as Record<string, unknown>[] }; throw error; }
   finally { if (fd!==undefined) closeSync(fd); }
-  const named = /Edge (?:—|\\u2014) zzz event autonomy/.test(raw);
+  // The substring test only decides whether an UNPARSABLE store is refused (it may hide our job); a parsed store's
+  // jobs are matched by exact name below.
+  const mentioned = /Edge (?:—|\\u2014) zzz event autonomy/.test(raw);
   const parsed = parseHermesJobs(raw);
-  if (!parsed) { if (named) throw new Error("zzz_autonomy_jobs_unreadable"); return { jobs: [] as Record<string, unknown>[], named: false }; }
+  if (!parsed) { if (mentioned) throw new Error("zzz_autonomy_jobs_unreadable"); return { jobs: [] as Record<string, unknown>[] }; }
   // Every job under the reserved name is the installer's, whatever its prompt or toolsets (an older release's
   // prompt, or a resident edit): install updates it in place, teardown removes it. verifyAutonomyJob still demands
   // the exact current shape before a stage succeeds.
   const jobs=parsed.filter((job): job is Record<string, unknown> => !!job && typeof job === "object" &&
     job.name === AUTONOMY_JOB_NAME);
-  return {jobs,named:named||jobs.length>0};
+  return {jobs};
 }
 
 export function autonomySchedule(token: string): string {
