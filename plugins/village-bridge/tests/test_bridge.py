@@ -106,7 +106,7 @@ class TransportTest(unittest.TestCase):
   opener=unittest.mock.Mock();opener.open.return_value=response
   config={'origin':'https://agents.edgecity.live','token':'not-logged'}
   with patch.object(bridge,'build_opener',return_value=opener):
-   for operation,header in [('zzz.reply','zzz.reply'),('zzz.create_thread','zzz.create_thread'),('zzz.read_thread',None),('zzz.list_rooms',None),('gold-stars.quota',None)]:
+   for operation,header in [('zzz.reply','zzz.reply'),('zzz.create_thread','zzz.create_thread'),('zzz.tag_thread','zzz.tag_thread'),('zzz.read_thread',None),('zzz.list_rooms',None),('gold-stars.quota',None)]:
     real_transport(config,{'operation':operation,'body':'café'})
     request=opener.open.call_args.args[0]
     self.assertEqual(request.get_header('X-village-operation'),header)
@@ -487,7 +487,7 @@ class BridgeTest(unittest.TestCase):
   # No new tool name: both operations go through `village`, the 36th gated tool (exact full-match matcher).
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status','zzz.pairs'}|set(mini.ZZZBOT['operations']))
+  self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status','zzz.pairs','zzz.tag_thread'}|set(mini.ZZZBOT['operations']))
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()
@@ -1338,6 +1338,42 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(sent[1],{'operation':'zzz.create_thread','room':'general','title':'Lunch?','body':'Who is around?','turnId':self.zzz_turn('9')})
   # A later owner message is a new turn: a different idempotency input, never the earlier post's.
   self.assertEqual(sent[2]['turnId'],self.zzz_turn('10'));self.assertNotEqual(sent[2]['turnId'],sent[0]['turnId'])
+ def test_zzz_tags_on_new_threads_and_tag_thread_ride_create_thread(self):
+  # zzz.tag_thread is in the every-box enum, a gated write, and never in ZZZBOT's catalog list (which equals the CP entry).
+  self.assertIn('zzz.tag_thread',bridge.SCHEMA['parameters']['properties']['operation']['enum'])
+  self.assertIn('zzz.tag_thread',mini.WRITE_OPERATIONS);self.assertNotIn('zzz.tag_thread',mini.ZZZBOT['operations'])
+  self.zzz_home()
+  tagged={'operation':'zzz.create_thread','arguments':{'room':'general','title':'Team','body':'Join us','tags':['buildathon','India 2026']}}
+  retag={'operation':'zzz.tag_thread','arguments':{'thread':'thr_1','tags':['buildathon']}}
+  clear={'operation':'zzz.tag_thread','arguments':{'thread':'thr_1','tags':[]}}
+  with self.gate('off'):
+   self.assertEqual(self.call(retag)['error'],'approval_unavailable')
+  self.transport.assert_not_called()
+  bad=[{'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':'buildathon'}},
+       {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':[str(n) for n in range(11)]}},
+       {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':['x'*41]}},
+       {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':['\U0001F600'*21]}},
+       {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':['  ']}},
+       {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':['a\nb']}},
+       {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':[7]}},
+       {'operation':'zzz.tag_thread','arguments':{'thread':'thr_1'}},{'operation':'zzz.tag_thread','arguments':{'tags':['x']}},
+       {'operation':'zzz.tag_thread','arguments':{'thread':'thr_1','tags':['x'],'body':'new text'}},
+       {'operation':'zzz.tag_thread','arguments':{'thread':'https://zzz.bot/t/1','tags':['x']}}]
+  with self.gate():
+   for args in bad:
+    with self.subTest(args=args):self.assertEqual(self.call(args)['error'],'invalid_zzz_arguments')
+   self.transport.assert_not_called()
+   for args in (tagged,retag,clear,{'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':['x'*40,'\U0001F600'*20]}}):
+    with self.subTest(args=args):self.assertIn('data',self.call(args))
+  sent=[c.args[1] for c in self.transport.call_args_list]
+  self.assertEqual(sent[0],{'operation':'zzz.create_thread','room':'general','title':'Team','body':'Join us','tags':['buildathon','India 2026'],'turnId':self.zzz_turn('9')})
+  self.assertEqual(sent[1],{'operation':'zzz.tag_thread','thread':'thr_1','tags':['buildathon'],'turnId':self.zzz_turn('9')})
+  self.assertEqual(sent[2],{'operation':'zzz.tag_thread','thread':'thr_1','tags':[],'turnId':self.zzz_turn('9')})
+  # Without zzz.create_thread in the installed entry, tag_thread is not installed either.
+  self.transport.reset_mock()
+  self.zzz_home(entry={'id':'zzzbot','version':'1.0.0','skills':['zzzbot'],'operations':['zzz.list_rooms','zzz.read_thread','zzz.changes','zzz.reply']})
+  with self.gate():self.assertEqual(self.call(retag)['error'],'mini_app_not_installed')
+  self.transport.assert_not_called()
  def test_zzz_refuses_groups_cron_children_and_another_owner(self):
   self.zzz_home()
   args={'operation':'zzz.changes','arguments':{'room':'general'}}
