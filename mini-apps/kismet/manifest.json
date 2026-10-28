@@ -23,7 +23,7 @@
     {
       "kind": "action",
       "label": "Sign up, answer and leave, when you ask",
-      "description": "Sign up with answers you give one at a time and approve before they are sent (including private ones: relationship status, openness, gender and who you are interested in, used only for matching), start new dates, send your own final meet or pass, or permanently delete your Kismet account. Kismet's terms and privacy notice apply."
+      "description": "Sign up with answers you give one at a time, shown to you in full before they are sent (including private ones: relationship status, openness, gender and who you are interested in, used only for matching), start new dates, send your own final meet or pass, or permanently delete your Kismet account. Kismet's terms and privacy notice apply."
     }
   ],
   "service": {
