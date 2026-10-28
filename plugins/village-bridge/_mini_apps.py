@@ -38,6 +38,12 @@ FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks
 # zzz agent). The writes take mini-app.context.write's path (gate_verified), never a manual grant.
 ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")
 ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")
+# zzzbot 1.1.0 (Carter's ask, lead L30481): the agent retags a topic it started, or edits a post it wrote. Both are
+# writes on the same gated-write path as zzz.reply (gate_verified; no card, class or consent step of their own). The
+# app reads the post and refuses another author's before any edit; zzz.bot allows only the post's author too.
+ZZZ_EDIT_OPERATIONS = ("zzz.tag_thread", "zzz.edit_post")
+# Every zzz post write this box gates and gives a trusted turn id (the managed pair job's CRON_OPS never edits).
+ZZZ_POST_WRITES = (*ZZZ_WRITE_OPERATIONS, *ZZZ_EDIT_OPERATIONS)
 # Buildathon team rooms (zzz#32 + app#842, lead L28970): app-side feature-gated operations that, like zzz.pairs,
 # borrow an existing zzzbot install permission and are deliberately absent from the CP catalog and from ZZZBOT.
 # The read borrows zzz.list_rooms; the two writes borrow zzz.create_thread and take the same gated-write path.
@@ -50,13 +56,19 @@ READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quo
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
                              *ZZZ_TEAM_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
-                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_WRITE_OPERATIONS,
+                              "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_POST_WRITES,
                               *ZZZ_TEAM_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
 # list in this order. Its operations name their app; a caller never supplies an appId for them.
-ZZZBOT = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}
+# 1.1.0: the five, then zzz.tag_thread and zzz.edit_post. 1.0.0 (the five alone) is still accepted, so this overlay rolls
+# out BEFORE the CP catalog serves 1.1.0 (overlay first, then the catalog; never the reverse: an older overlay refuses a
+# 1.1.0 entry, and with it the whole projection). Under 1.0.0 the two edits stay refused (mini_app_not_installed).
+ZZZBOT = {"version": "1.1.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS, *ZZZ_EDIT_OPERATIONS]}
+ZZZBOT_PREVIOUS = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}
+# Every zzzbot entry this overlay accepts, each by exact equality (newest first).
+ZZZBOT_ACCEPTED = (ZZZBOT, ZZZBOT_PREVIOUS)
 # zzz.pairs is an app-side feature-gated read which borrows the existing
 # list_rooms install permission; it is deliberately absent from the CP catalog.
 ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs", *ZZZ_TEAM_READ_OPERATIONS, *ZZZ_TEAM_WRITE_OPERATIONS))
@@ -177,7 +189,7 @@ def _card_entry_ok(app) -> bool:
 # skipped and logged once (its id only), and every other app of the file stays installed, as the installer's checkApp
 # refuses per app (ov#455). What stays WHOLE-FILE is the structure: the doc shape, version 1, an app that is not an
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
-REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
+REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": ZZZBOT_ACCEPTED, ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
                     ZZZ_AUTONOMY_RUNNER_ID: (ZZZ_AUTONOMY_RUNNER,), "slopfolio": (SLOPFOLIO,)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")

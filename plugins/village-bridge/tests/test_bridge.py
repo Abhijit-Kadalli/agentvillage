@@ -428,7 +428,7 @@ class BridgeTest(unittest.TestCase):
   self.assertTrue({'forkicks.menu','forkicks.schedule','forkicks.order.prepare','forkicks.order.confirm','forkicks.order.status','forkicks.order.cancel'}<=set(bridge.SCHEMA['parameters']['properties']['operation']['enum']))
   self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write',
                                           'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare','zzz.reply','zzz.create_thread',
-                                          'zzz.open_team_room','zzz.respond_team_invite'})
+                                          'zzz.open_team_room','zzz.respond_team_invite','zzz.tag_thread','zzz.edit_post'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
   # The gate is off, unverified or absent: the write is refused before any network call.
@@ -1238,7 +1238,7 @@ class BridgeTest(unittest.TestCase):
   self.transport.return_value={'error':'connection_or_request_refused','status':429,'settingsUrl':bridge.SETTINGS,'instruction':'i'}
   self.assertEqual(self.call({'operation':'rolodex.person','id':self.PERSON})['data']['error'],'connection_or_request_refused')
  # ---- P-6 ZZZ-MINIAPP: zzz.bot's five named operations -----------------------------------------------
- ZZZ_READS=['zzz.list_rooms','zzz.read_thread','zzz.changes'];ZZZ_WRITES=['zzz.reply','zzz.create_thread']
+ ZZZ_READS=['zzz.list_rooms','zzz.read_thread','zzz.changes'];ZZZ_WRITES=['zzz.reply','zzz.create_thread'];ZZZ_EDITS=['zzz.tag_thread','zzz.edit_post']
  def zzz_home(self,*extra,entry=None):
   apps=[{'id':'gold-stars',**mini.GOLD_STARS},entry or {'id':'zzzbot',**mini.ZZZBOT},*extra]
   Path(self.tmp.name,'mini-apps.json').write_text(json.dumps({'version':1,'apps':apps}))
@@ -1247,16 +1247,21 @@ class BridgeTest(unittest.TestCase):
  def zzz_turn(self,message='9'):
   return str(bridge.uuid.uuid5(bridge.uuid.NAMESPACE_URL,json.dumps(['zzz-turn','telegram:42',message])))
  def test_zzz_operations_are_classified_and_the_install_is_exact(self):
-  self.assertEqual(mini.ZZZBOT,{'version':'1.0.0','skills':['zzzbot'],'operations':self.ZZZ_READS+self.ZZZ_WRITES})
+  self.assertEqual(mini.ZZZBOT,{'version':'1.1.0','skills':['zzzbot'],'operations':self.ZZZ_READS+self.ZZZ_WRITES+self.ZZZ_EDITS})
+  self.assertEqual(mini.ZZZBOT_PREVIOUS,{'version':'1.0.0','skills':['zzzbot'],'operations':self.ZZZ_READS+self.ZZZ_WRITES})
+  self.assertEqual(mini.REVIEWED_ENTRIES['zzzbot'],(mini.ZZZBOT,mini.ZZZBOT_PREVIOUS))
   for op in self.ZZZ_READS:self.assertIn(op,mini.READ_OPERATIONS);self.assertNotIn(op,mini.WRITE_OPERATIONS)
-  for op in self.ZZZ_WRITES:self.assertIn(op,mini.WRITE_OPERATIONS);self.assertNotIn(op,mini.READ_OPERATIONS)
+  for op in self.ZZZ_WRITES+self.ZZZ_EDITS:self.assertIn(op,mini.WRITE_OPERATIONS);self.assertNotIn(op,mini.READ_OPERATIONS)
   self.assertFalse(mini.ZZZ_OPERATIONS&mini.APP_SCOPED_OPERATIONS)
   home=Path(self.tmp.name);self.zzz_home()
   for op in mini.ZZZBOT['operations']:self.assertTrue(mini.installed(home,'zzzbot',op))
   self.assertFalse(mini.installed(home,'zzzbot','mini-app.read'))
   base={'id':'zzzbot',**mini.ZZZBOT}
   for changed in [{**base,'operations':base['operations']+['zzz.set_thread_state']},{**base,'operations':list(reversed(base['operations']))},
-                  {**base,'operations':['mini-app.read']},{**base,'operations':base['operations'][:4]},{**base,'version':'1.0.1'},{**base,'skills':['other']}]:
+                  {**base,'operations':['mini-app.read']},{**base,'operations':base['operations'][:4]},{**base,'version':'1.0.1'},{**base,'skills':['other']},
+                  # 1.1.0's version with 1.0.0's list, 1.0.0's version with 1.1.0's list, or one edit alone: refused.
+                  {**base,'operations':base['operations'][:5]},{**base,'version':'1.0.0'},{**base,'operations':base['operations'][:6]},
+                  {**base,'operations':self.ZZZ_READS+self.ZZZ_WRITES+['zzz.edit_post','zzz.tag_thread']}]:
    with self.subTest(changed=changed):
     self.zzz_home(entry=changed)
     # A planted or reordered list refuses the whole projection, Gold Stars included.
@@ -1264,7 +1269,8 @@ class BridgeTest(unittest.TestCase):
  def test_zzz_operations_refused_without_the_zzzbot_install(self):
   calls=[{'operation':'zzz.list_rooms','arguments':{}},{'operation':'zzz.changes','arguments':{'room':'general'}},
          {'operation':'zzz.read_thread','arguments':{'thread':'thr_1'}},{'operation':'zzz.reply','arguments':{'thread':'thr_1','body':'hi'}},
-         {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi'}}]
+         {'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi'}},
+         {'operation':'zzz.tag_thread','arguments':{'thread':'thr_1','tags':['x']}},{'operation':'zzz.edit_post','arguments':{'post':'pst_1','body':'hi'}}]
   dizko={'id':'dizko','version':'1.0.0','skills':['dizko'],'operations':['mini-app.read']}
   with self.gate():
    for apps in ([{'id':'gold-stars',**mini.GOLD_STARS},dizko],[],[{'id':'zzzbot','version':'1.0.0','skills':['zzzbot'],'operations':['mini-app.read']}]):
@@ -1340,12 +1346,107 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(sent[1],{'operation':'zzz.create_thread','room':'general','title':'Lunch?','body':'Who is around?','turnId':self.zzz_turn('9')})
   # A later owner message is a new turn: a different idempotency input, never the earlier post's.
   self.assertEqual(sent[2]['turnId'],self.zzz_turn('10'));self.assertNotEqual(sent[2]['turnId'],sent[0]['turnId'])
+ # ---- zzzbot 1.1.0 (lead L30481): the agent's own retag and edit; 1.0.0 still accepted --------------------------------
+ TAG={'operation':'zzz.tag_thread','arguments':{'thread':'thr_1','tags':['buildathon','lunch']}}
+ EDIT={'operation':'zzz.edit_post','arguments':{'post':'pst_1','body':'See you at 7pm.'}}
+ def test_zzzbot_1_0_0_stays_accepted_with_exactly_five_and_1_1_0_takes_seven(self):
+  home=Path(self.tmp.name)
+  old={'id':'zzzbot',**mini.ZZZBOT_PREVIOUS}
+  self.zzz_home(entry=old)
+  self.assertEqual(mini.projection(home),[{'id':'gold-stars',**mini.GOLD_STARS},old])
+  for op in self.ZZZ_READS+self.ZZZ_WRITES:self.assertTrue(mini.installed(home,'zzzbot',op))
+  for op in self.ZZZ_EDITS:self.assertFalse(mini.installed(home,'zzzbot',op))
+  self.assertEqual(len(old['operations']),5)
+  self.zzz_home()
+  for op in self.ZZZ_READS+self.ZZZ_WRITES+self.ZZZ_EDITS:self.assertTrue(mini.installed(home,'zzzbot',op))
+  self.assertEqual(len(mini.ZZZBOT['operations']),7)
+  # Managed participation and Gold Stars ride either entry unchanged.
+  for entry in (old,{'id':'zzzbot',**mini.ZZZBOT}):
+   self.zzz_home({'id':mini.ZZZ_BRIDGE_ID,**mini.ZZZ_BRIDGE},entry=entry)
+   self.assertTrue(mini.zzz_participation(home));self.assertTrue(mini.installed(home,'gold-stars','gold-stars.quota'))
+  # Never a scheduled run: the managed pair job's CRON_OPS carries no edit.
+  managed=importlib.import_module('village_bridge._zzz_managed')
+  self.assertFalse(managed.CRON_OPS&set(self.ZZZ_EDITS))
+ def test_edits_are_refused_under_a_1_0_0_install_before_any_network(self):
+  self.zzz_home(entry={'id':'zzzbot',**mini.ZZZBOT_PREVIOUS})
+  with self.gate():
+   for args in (self.TAG,self.EDIT):
+    with self.subTest(op=args['operation']):self.assertEqual(self.call(args),{'error':'mini_app_not_installed'})
+   # The five still work under 1.0.0.
+   self.assertIn('data',self.call({'operation':'zzz.reply','arguments':{'thread':'thr_1','body':'hi'}}))
+  self.assertEqual([c.args[1]['operation'] for c in self.transport.call_args_list],['zzz.reply'])
+ def test_edits_are_gated_writes_like_reply_and_carry_only_the_trusted_turn(self):
+  self.zzz_home()
+  with patch.object(bridge,'authorize_send',side_effect=AssertionError('no daemon grant for a zzz edit')):
+   for switch,codes in (('off',()),('unset',()),('on',('hook-missing:village',))):
+    with self.gate(switch,codes),self.subTest(switch=switch,codes=codes):
+     for args in (self.TAG,self.EDIT):
+      refused=self.call(args);self.assertEqual(refused['error'],'approval_unavailable');self.assertIn('Do not claim',refused['instruction'])
+   with patch.object(mini.importlib,'import_module',side_effect=ImportError('no av-approval')):
+    self.assertEqual(self.call(self.EDIT)['error'],'approval_unavailable')
+   self.transport.assert_not_called()
+   with self.gate():
+    self.assertIn('data',self.call(self.TAG));self.assertIn('data',self.call(self.EDIT))
+    self.assertIn('data',self.call({'operation':'zzz.edit_post','arguments':{'post':'pst_1','title':'Lunch on Thursday?','body':'Who is around?'}}))
+  sent=[c.args[1] for c in self.transport.call_args_list]
+  self.assertEqual(sent,[{'operation':'zzz.tag_thread','thread':'thr_1','tags':['buildathon','lunch'],'turnId':self.zzz_turn('9')},
+                         {'operation':'zzz.edit_post','post':'pst_1','body':'See you at 7pm.','turnId':self.zzz_turn('9')},
+                         {'operation':'zzz.edit_post','post':'pst_1','title':'Lunch on Thursday?','body':'Who is around?','turnId':self.zzz_turn('9')}])
+  # The same gate as zzz.reply, and nothing more: no new class, card or consent step, only the gated-write header.
+  self.assertTrue(set(self.ZZZ_EDITS)<=set(bridge.ZZZ_POST_WRITES))
+ def test_edits_declare_their_operation_and_map_their_own_codes(self):
+  import io
+  from urllib.error import HTTPError
+  response=unittest.mock.MagicMock();response.__enter__.return_value=response;response.read.return_value=b'{}'
+  opener=unittest.mock.Mock();opener.open.return_value=response
+  config={'origin':'https://agents.edgecity.live','token':'not-logged'}
+  with patch.object(bridge,'build_opener',return_value=opener):
+   for operation in self.ZZZ_EDITS:
+    real_transport(config,{'operation':operation,'body':'café'})
+    self.assertEqual(opener.open.call_args.args[0].get_header('X-village-operation'),operation)
+   for code in ('zzz_not_own_post','zzz_post_changed','zzz_write_not_authorized','zzz_invalid','zzz_rate_limited'):
+    opener.open.side_effect=HTTPError('https://agents.edgecity.live/api/v1/village-bridge/tool',403,'refused',{},
+                                      io.BytesIO(json.dumps({'code':code,'detail':'upstream text not shown'}).encode()))
+    result=real_transport(config,{'operation':'zzz.edit_post'})
+    self.assertEqual(result,{'error':code,'instruction':bridge.ZZZ_ERRORS[code]})
+  self.assertIn('Nothing was changed',bridge.ZZZ_ERRORS['zzz_not_own_post']);self.assertIn('never retry in a loop',bridge.ZZZ_ERRORS['zzz_post_changed'])
+ def test_edit_arguments_are_exact_and_bounded_before_any_network(self):
+  self.zzz_home()
+  tag=lambda **a:{'operation':'zzz.tag_thread','arguments':{'thread':'thr_1','tags':['x'],**a}}
+  edit=lambda **a:{'operation':'zzz.edit_post','arguments':{'post':'pst_1',**a}}
+  bad=[{'operation':'zzz.tag_thread','arguments':{'thread':'thr_1'}},{'operation':'zzz.tag_thread','arguments':{'tags':['x']}},
+       tag(tags='buildathon'),tag(tags=['x']*11),tag(tags=['']),tag(tags=['  ']),tag(tags=['x'*41]),tag(tags=['\U0001F600'*21]),tag(tags=[7]),
+       tag(tags=['a\nb']),tag(tags=['build\u200bathon']),tag(tags=['\u202eabc']),tag(tags=['\ue000']),tag(tags=['a\u2028b']),
+       tag(thread='https://zzz.bot/t/1'),tag(body='x'),tag(turnId='forged'),tag(idempotency_key='forged-key'),
+       edit(),edit(body='   '),edit(body='x'*8001),edit(body='\U0001F600'*4001),edit(title=''),edit(title='t'*201),
+       edit(body='x',tags=['x']),edit(body='x',expected_revision=3),edit(body='x',references=[]),edit(body='x',turnId='forged'),
+       {'operation':'zzz.edit_post','arguments':{'body':'x'}},{'operation':'zzz.edit_post','arguments':{'post':'../x','body':'x'}},
+       {'operation':'zzz.edit_post','arguments':{'post':'pst_1','body':'x'},'post':'pst_2'},{'operation':'zzz.edit_post','arguments':'post=pst_1'}]
+  with self.gate():
+   for args in bad:
+    with self.subTest(args=args):
+     refused=self.call(args);self.assertEqual(refused['error'],'invalid_zzz_arguments')
+     self.assertEqual(refused['instruction'],'Nothing was sent. '+bridge.ZZZ_EDIT_INPUT[args['operation']])
+   self.transport.assert_not_called()
+   # The bounds themselves pass: ten 40-unit tags, an empty list (clears them), 8,000 characters, a 200-character title.
+   for args in [tag(tags=['x'*40]*10),tag(tags=[]),tag(tags=['Café','東京','\U0001F680'*20]),edit(body='x'*8000),edit(title='t'*200),edit(body='é'*8000,title='t')]:
+    with self.subTest(args=args):self.assertIn('data',self.call(args))
+  for op in self.ZZZ_EDITS:self.assertIn('own',bridge.ZZZ_EDIT_INPUT[op]);self.assertIn('never',bridge.ZZZ_EDIT_INPUT[op].lower())
+ def test_create_thread_takes_optional_bounded_tags(self):
+  self.zzz_home()
+  with self.gate():
+   self.assertIn('data',self.call({'operation':'zzz.create_thread','arguments':{'room':'general','title':'Team','body':'Join us','tags':['buildathon']}}))
+   for tags in (['x']*11,[''],['x'*41],'buildathon',['a\x7fb']):
+    with self.subTest(tags=tags):
+     self.assertEqual(self.call({'operation':'zzz.create_thread','arguments':{'room':'general','title':'t','body':'hi','tags':tags}})['error'],'invalid_zzz_arguments')
+  self.assertEqual([c.args[1] for c in self.transport.call_args_list],
+                   [{'operation':'zzz.create_thread','room':'general','title':'Team','body':'Join us','tags':['buildathon'],'turnId':self.zzz_turn('9')}])
  # ---- Buildathon team rooms (zzz#32 + app#842): borrowed install permissions, owner-led, gated writes -----------
  TEAM_OPEN={'operation':'zzz.open_team_room','arguments':{'title':'Buildathon team','with':['Asha Rao','att_123']}}
  TEAM_ACCEPT={'operation':'zzz.respond_team_invite','arguments':{'group':'cxg_0123abcd','decision':'accept'}}
  TEAM_LIST={'operation':'zzz.list_team_invites','arguments':{}}
  def test_team_ops_borrow_the_zzzbot_install_and_stay_out_of_the_catalog_entry(self):
-  self.assertEqual(mini.ZZZBOT['operations'],self.ZZZ_READS+self.ZZZ_WRITES)
+  self.assertEqual(mini.ZZZBOT['operations'],self.ZZZ_READS+self.ZZZ_WRITES+self.ZZZ_EDITS)
   self.assertIn('zzz.list_team_invites',mini.READ_OPERATIONS)
   for op in ('zzz.open_team_room','zzz.respond_team_invite'):self.assertIn(op,mini.WRITE_OPERATIONS)
   self.assertTrue({'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'}<=mini.ZZZ_OPERATIONS)
@@ -1451,8 +1552,10 @@ class BridgeTest(unittest.TestCase):
   # properties are as before (no zzz text). Registration no longer depends on the projection.
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
   # Team rooms (zzz#32 + app#842) are appended after zzz.pairs, again written out.
-  self.assertEqual(enum[-9:-4],mini.ZZZBOT['operations']);self.assertEqual(enum[-4],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
-  self.assertEqual(enum[-3:],['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
+  self.assertEqual(enum[-11:-6],mini.ZZZBOT_PREVIOUS['operations']);self.assertEqual(enum[-6],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
+  self.assertEqual(enum[-5:-2],['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
+  # zzzbot 1.1.0's two edits are appended last, written out (an open chat keeps its pinned tools[]; the enum is fixed).
+  self.assertEqual(enum[-2:],['zzz.tag_thread','zzz.edit_post'])
   self.assertNotIn('zzz',bridge.SCHEMA['description'].lower())
   self.assertFalse(hasattr(bridge,'schema_for'))
   for apps in ([],[{'id':'gold-stars',**mini.GOLD_STARS}],[{'id':'gold-stars',**mini.GOLD_STARS},{'id':'zzzbot',**mini.ZZZBOT}]):
