@@ -317,8 +317,22 @@ STEP1_INSTRUCTION = ("Nothing was sent. Show the owner this preview in full and 
                      "means a new step 1 and a new yes. The preview lasts an hour.")
 
 
+def _sweep(folder, config):
+    """Drafts (private answers) and unclear claims older than their hour leave the disk at the next step 1 (review-b N4)."""
+    try:
+        paths = [p for p in folder.iterdir() if p.name.endswith(".json")]
+    except OSError:
+        return
+    now = time.time()
+    for path in paths:
+        record = _read(path, config)
+        if record is not None and (type(record.get("at")) is not int or now - record["at"] > DRAFT_TTL_SECONDS):
+            _discard(path)
+
+
 def _stage(home, op, body, context, config):
     kind = op.split(".", 1)[1]
+    _sweep(_folder(home, DRAFTS), config)
     draft = str(uuid.uuid4())
     record = {"kind": kind, **_binding(context, config), "at": int(time.time())}
     if kind == "signup":
@@ -462,8 +476,11 @@ KISMET_UNAVAILABLE = UNAVAILABLE = ("Tell the owner Kismet is not available from
 # Kismet's own codes (Deon's answers, 28 Oct): the bridge's mapped answer. `True`: Kismet's text is relayed with it.
 KISMET_CODES = {
     "not_signed_up": (True, "The owner has not signed up for Kismet. Relay Kismet's text and offer the sign-up."),
-    "date_not_found": (False, "Tell the owner: \"That date isn't one of yours.\" Never hint that it exists. Call "
-                              "kismet.summary again for their current dates."),
+    # One text for Kismet's answer and the box's own refusal (a date not shown in an earlier message), so the two never
+    # differ; neutral, because the box's case is usually a same-turn decide on the owner's own date (review-b N3).
+    "date_not_found": (False, "Nothing was sent. A meet or pass works only on a date the owner saw in a kismet.summary in "
+                              "an earlier message. Call kismet.summary, show the owner their current dates and wait for "
+                              "their answer in their next message. Never say whether a date exists or whose it is."),
     "invalid_answers": (True, "Kismet refused an answer. Relay Kismet's text and ask that one question again; never "
                               "fix an answer yourself."),
     "invalid_request": (True, "Kismet refused this request. Relay Kismet's text; nothing changed."),

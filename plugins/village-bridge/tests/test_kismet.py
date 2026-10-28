@@ -322,6 +322,18 @@ class KismetTest(unittest.TestCase):
             self.assertEqual(self.call({'operation': 'kismet.signup', 'arguments': {'draftId': draft}})['error'], 'kismet_preview_unavailable')
         self.transport.assert_not_called()
 
+    def test_a_new_step_one_sweeps_drafts_older_than_an_hour_off_the_disk(self):
+        drafts = self.home / kis.DRAFTS
+        with self.gate():
+            old = self.stage('kismet.signup', GOOD['kismet.signup'])
+            later = kis.time.time() + kis.DRAFT_TTL_SECONDS + 5
+            with patch.object(kis.time, 'time', return_value=later):
+                fresh = self.stage('kismet.delete', {})
+            names = sorted(p.name for p in drafts.iterdir())
+            self.assertEqual(names, [fresh + '.json'])  # the old private answers are gone; the new draft stays
+            self.assertNotEqual(old, fresh)
+        self.transport.assert_not_called()
+
     def test_an_unclear_step_two_may_be_retried_once_with_the_same_draft(self):
         with self.gate():
             draft = self.stage('kismet.signup', GOOD['kismet.signup']); self.next_message()
@@ -535,7 +547,7 @@ class KismetTest(unittest.TestCase):
     def test_each_kismet_error_code_maps_to_its_line(self):
         lines = {
             'not_signed_up': None, 'invalid_answers': None, 'invalid_request': None, 'invalid_json': None, 'rate_limited': None,
-            'date_not_found': "That date isn't one of yours.", 'subject_mismatch': 'Something went wrong on our side. Nothing was sent.',
+            'date_not_found': "Never say whether a date exists or whose it is.", 'subject_mismatch': 'Something went wrong on our side. Nothing was sent.',
             'unauthorized': "Kismet isn't connected right now.", 'unknown_operation': "Kismet isn't connected right now.",
             'too_large': 'That was too long. Shorten your notes or agent profile.',
             'partner_api_disabled': "Kismet's village connection is off right now. Try again later.",
