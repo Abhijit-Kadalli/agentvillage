@@ -241,8 +241,7 @@ class KismetTest(unittest.TestCase):
     # ---- stage then send (lead L29897) -----------------------------------------------------------------------------
     def test_step_one_saves_a_private_draft_and_sends_nothing(self):
         with self.gate():
-            for op, body in [('kismet.signup', {'answers': {**ANSWERS, 'lookingFor': ['romance'], 'gender': 'woman', 'interestedIn': 'men'},
-                                                'notes': ['I like early swims.']}), ('kismet.delete', {})]:
+            for op, body in [('kismet.signup', {'answers': {**ANSWERS, 'lookingFor': ['romance'], 'gender': 'woman', 'interestedIn': 'men'}}), ('kismet.delete', {})]:
                 with self.subTest(op=op):
                     out = self.call({'operation': op, 'arguments': body})
                     draft = out['data']['draftId']
@@ -257,8 +256,9 @@ class KismetTest(unittest.TestCase):
                         self.assertEqual(record['arguments'], body)
                         preview = out['data']['preview']
                         for line in ('Name other residents see: "av-test-river"', 'Gender (private', 'Interested in (private', 'Interests: "Music", "Food", "Books"',
-                                     'Notes for Kismet\'s agent: "I like early swims."', '18 or older: yes'):
+                                     '18 or older: yes'):
                             self.assertIn(line, preview)
+                        self.assertNotIn('Notes', preview)
                     else:
                         self.assertNotIn('arguments', record); self.assertIn('permanently', out['data']['preview'])
         self.transport.assert_not_called()
@@ -520,28 +520,31 @@ class KismetTest(unittest.TestCase):
             self.assertIn(code + ': "kismet"', conformance)
 
     def test_a_signup_over_twelve_thousand_bytes_is_refused(self):
-        full = {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'openness': 'unsure', 'gender': 'nonbinary', 'interestedIn': 'everyone', 'about': '\u20ac' * 160,
-                'availability': 'flexible', 'area': '\u20ac' * 40, 'agentProfile': '\u20ac' * 1500, 'interests': ['\u20ac' * 30] * 15}
-        def body(notes):
-            return {'answers': full, 'notes': notes}
-        def size(notes):
-            out = {'operation': 'kismet.signup', 'arguments': body(notes), 'turnId': self.turn('kismet.signup', body(notes))}
-            return len(json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-        # Each answer within its own limit, but the whole request (as transport() sends it) over 12,000 bytes.
-        notes = ['\u20ac' * 280] * 10
-        self.assertGreater(size(notes), kis.SIGNUP_MAX_BYTES)
+        # Every answer at its own limit in 4-byte characters (no `notes` since lead L30135): the largest sign-up a
+        # resident can give still fits under the cap and goes; the cap itself still refuses before any call.
+        wide = '\U0001F30A'
+        full = {**ANSWERS, 'lookingFor': ['romance', 'friends'], 'openness': 'unsure', 'gender': 'nonbinary', 'interestedIn': 'everyone', 'about': wide * 160,
+                'availability': 'flexible', 'area': wide * 40, 'agentProfile': wide * 1500, 'interests': [wide * 30] * 15}
+        body = {'answers': full}
+        out = {'operation': 'kismet.signup', 'arguments': body, 'turnId': self.turn('kismet.signup', body)}
+        size = len(json.dumps(out, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+        self.assertLess(size, kis.SIGNUP_MAX_BYTES); self.assertGreater(size, 4096)
         with self.gate():
-            out = self.call({'operation': 'kismet.signup', 'arguments': body(notes)})
-            self.assertEqual(out['error'], 'invalid_arguments')
+            with patch.object(kis, 'SIGNUP_MAX_BYTES', size - 1):
+                self.assertEqual(self.call({'operation': 'kismet.signup', 'arguments': body})['error'], 'invalid_arguments')
             self.transport.assert_not_called()
-            # Trimmed to fit, the same answers go.
-            while size(notes) > kis.SIGNUP_MAX_BYTES:
-                notes = notes[:-1]
-            self.assertGreater(size(notes), 4096)
             self.transport.return_value = frame('kismet.signup', fixture('kismet.signup', 'live-success.json'))
-            self.assertIn('data', self.send('kismet.signup', body(notes)))
+            self.assertIn('data', self.send('kismet.signup', body))
             self.transport.assert_called_once()
-            self.assertEqual(self.transport.call_args.args[1]['arguments'], body(notes))
+            self.assertEqual(self.transport.call_args.args[1]['arguments'], body)
+
+    def test_signup_notes_are_refused_before_anything_is_saved(self):
+        # lead L30135: notes write a Kismet store v1 can neither list nor delete, so the bridge never accepts them.
+        with self.gate():
+            out = self.call({'operation': 'kismet.signup', 'arguments': {'answers': ANSWERS, 'notes': ['I like early swims.']}})
+            self.assertEqual(out['error'], 'invalid_arguments')
+            self.assertFalse((self.home / kis.DRAFTS).exists() and any((self.home / kis.DRAFTS).iterdir()))
+        self.transport.assert_not_called()
 
     # ---- answers -----------------------------------------------------------------------------------------------------
     def test_each_kismet_error_code_maps_to_its_line(self):
@@ -549,7 +552,7 @@ class KismetTest(unittest.TestCase):
             'not_signed_up': None, 'invalid_answers': None, 'invalid_request': None, 'invalid_json': None, 'rate_limited': None,
             'date_not_found': "Never say whether a date exists or whose it is.", 'subject_mismatch': 'Something went wrong on our side. Nothing was sent.',
             'unauthorized': "Kismet isn't connected right now.", 'unknown_operation': "Kismet isn't connected right now.",
-            'too_large': 'That was too long. Shorten your notes or agent profile.',
+            'too_large': 'That was too long. Shorten your agent profile.',
             'partner_api_disabled': "Kismet's village connection is off right now. Try again later.",
         }
         self.assertEqual(set(lines), set(kis.KISMET_CODES))

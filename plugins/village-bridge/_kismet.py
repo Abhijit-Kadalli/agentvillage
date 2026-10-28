@@ -132,9 +132,10 @@ KISMET_INPUTS = {
     "kismet.village_stats": ((), {}),
     "kismet.public_board": ((), {"limit": lambda v: type(v) is int and 1 <= v <= 20}),
     "kismet.summary": ((), {}),
-    # Step 1 (answers, optional telegram and notes) or step 2 (draftId ALONE): kismet_payload refuses a mix.
+    # Step 1 (answers, optional telegram) or step 2 (draftId ALONE): kismet_payload refuses a mix. No `notes`: they
+    # write a Kismet store v1 can neither list nor delete (lead L30135).
     "kismet.signup": ((), {"answers": _answers, "telegram": _string(4, 33, TELEGRAM),
-                           "notes": _strings(1, 10, _text(1, 280)), "draftId": _string(36, 36, DRAFT_ID)}),
+                           "draftId": _string(36, 36, DRAFT_ID)}),
     "kismet.go": ((), {"targetId": _string(36, 36, ID)}),
     "kismet.decide": (("dateId", "decision"), {"dateId": _string(36, 36, ID), "decision": _enum("meet", "pass")}),
     "kismet.delete": ((), {"draftId": _string(36, 36, DRAFT_ID)}),
@@ -156,7 +157,7 @@ OP_ARGUMENTS = {
     "kismet.public_board": "arguments with an optional limit, a whole number from 1 to 20",
     "kismet.summary": "arguments {} (nothing else)",
     "kismet.signup": ("arguments for step 1: answers (the kismet skill's sign-up answers, by their ids; openness only if "
-                      "single or complicated; gender and interestedIn only with romance), and optional telegram and notes, "
+                      "single or complicated; gender and interestedIn only with romance), and an optional telegram, "
                       "at most 12,000 bytes; or for step 2: draftId alone, never both"),
     "kismet.go": "arguments with an optional targetId, exactly as Kismet returned it",
     "kismet.decide": ("arguments with dateId, exactly as a kismet.summary shown to the owner in an earlier message returned "
@@ -285,7 +286,7 @@ def signup_preview(body):
         if isinstance(value, bool):
             value = "yes" if value else "no"
         elif isinstance(value, list):
-            value = ", ".join(json.dumps(v, ensure_ascii=False) if key in ("interests", "notes") else v for v in value)
+            value = ", ".join(json.dumps(v, ensure_ascii=False) if key == "interests" else v for v in value)
         elif key in ("name", "about", "area", "agentProfile", "telegram"):
             value = json.dumps(value, ensure_ascii=False)
         return f"{label}{tag}: {value}"
@@ -301,8 +302,7 @@ def signup_preview(body):
              show("availability", "When you are free"),
              show("area", "Area in Goa"),
              show("telegram", "Telegram username (shown only to a match)"),
-             show("agentProfile", "Profile your agent dates with"),
-             show("notes", "Notes for Kismet's agent", source=body)]
+             show("agentProfile", "Profile your agent dates with")]
     if "telegram" in body:
         lines.append(show("telegram", "Telegram username for Kismet", source=body))
     lines.append("18 or older: yes. Agrees to Kismet's terms (https://kismet-village.vercel.app/terms): yes.")
@@ -488,7 +488,7 @@ KISMET_CODES = {
     "subject_mismatch": (False, "Tell the owner: \"Something went wrong on our side. Nothing was sent.\" Do not retry."),
     "unauthorized": (False, NOT_CONNECTED),
     "unknown_operation": (False, NOT_CONNECTED),
-    "too_large": (False, "Tell the owner: \"That was too long. Shorten your notes or agent profile.\""),
+    "too_large": (False, "Tell the owner: \"That was too long. Shorten your agent profile.\""),
     "rate_limited": (True, "Kismet is busy for this owner right now. Relay Kismet's text and stop; do not retry now."),
     "partner_api_disabled": (False, "Tell the owner: \"Kismet's village connection is off right now. Try again later.\""),
 }
