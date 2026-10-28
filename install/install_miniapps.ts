@@ -33,7 +33,9 @@ export const REVIEWED_MINI_APPS = [
   // MOSAIC (app#486, rides v2.1.9): restricted in the CP catalog (MINI_APPS_TENANT_ALLOWLIST key `mosaic`).
   // Dizko's shape: the public read first, then its own context namespace read and write, served per box.
   { id: "mosaic", version: "1.0.0", operations: ["mini-app.read", "mini-app.context.read", "mini-app.context.write"], skills: ["mosaic"] },
-  { id: "kismet", version: "1.0.0", operations: ["mini-app.read"], skills: ["kismet"] },
+  // Kismet Part 2 (lead L29830): its three public reads and the owner's own summary, then the owner's own sign-up, new
+  // dates, meet or pass and deletion (gated writes); _mini_apps.py KISMET, exact. Part 1's read alone is below.
+  { id: "kismet", version: "1.1.0", operations: ["kismet.how_it_works", "kismet.village_stats", "kismet.public_board", "kismet.summary", "kismet.signup", "kismet.go", "kismet.decide", "kismet.delete"], skills: ["kismet"] },
 ] as const;
 /**
  * Earlier gold-stars entries, still staged byte for byte so this overlay can roll out BEFORE the CP
@@ -41,7 +43,7 @@ export const REVIEWED_MINI_APPS = [
  * eight-op entry (ov#350, _mini_apps.py GOLD_STARS_RESTORED; the CP's current entry, rolodex.person
  * refused under it) and the six-op entry before the restore (ov#343, GOLD_STARS_PREVIOUS; no meeting,
  * Skylight or person operation), and dizko's public read alone (NEW-03: the CP's entry until it
- * projects the context operations), and mosaic's the same way. Remove each after the CP catalog serves a newer
+ * projects the context operations), and mosaic's the same way, and kismet's Part 1 read (ov#533). Remove each after the CP catalog serves a newer
  * list everywhere.
  */
 export const PREVIOUS_REVIEWED_MINI_APPS = [
@@ -50,6 +52,8 @@ export const PREVIOUS_REVIEWED_MINI_APPS = [
   { id: "dizko", version: "1.0.0", operations: ["mini-app.read"], skills: ["dizko"] },
   // MOSAIC: its read alone, the CP's entry for a box that does not take the context entry (as dizko's).
   { id: "mosaic", version: "1.0.0", operations: ["mini-app.read"], skills: ["mosaic"] },
+  // KISMET: Part 1's public relay read alone (ov#533), the CP's entry until its catalog serves 1.1.0 (_mini_apps.py KISMET_PUBLIC).
+  { id: "kismet", version: "1.0.0", operations: ["mini-app.read"], skills: ["kismet"] },
 ] as const;
 type ReviewedApp = typeof REVIEWED_MINI_APPS[number] | typeof PREVIOUS_REVIEWED_MINI_APPS[number];
 /**
