@@ -38,6 +38,14 @@ FORKICKS = {"version": "1.0.0", "skills": ["forkicks"], "operations": ["forkicks
 # zzz agent). The writes take mini-app.context.write's path (gate_verified), never a manual grant.
 ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")
 ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")
+# Buildathon team rooms (zzz#32 + app#842, lead L28970): app-side feature-gated operations that, like zzz.pairs,
+# borrow an existing zzzbot install permission and are deliberately absent from the CP catalog and from ZZZBOT.
+# The read borrows zzz.list_rooms; the two writes borrow zzz.create_thread and take the same gated-write path.
+# They are owner-led only: the managed pair job's CRON_OPS (and any runner) never includes them.
+ZZZ_TEAM_READ_OPERATIONS = ("zzz.list_team_invites",)
+ZZZ_TEAM_WRITE_OPERATIONS = ("zzz.open_team_room", "zzz.respond_team_invite")
+ZZZ_TEAM_BORROWS = {"zzz.list_team_invites": "zzz.list_rooms", "zzz.open_team_room": "zzz.create_thread",
+                    "zzz.respond_team_invite": "zzz.create_thread"}
 # Kismet Part 2 (lead L29830, product's build spec): its three public reads and the owner's own summary (reads), and
 # the owner's own sign-up, new dates, meet or pass and account deletion (writes). The writes take zzz's path
 # (gate_verified), never a manual grant, a card or a new class: each happens only on the owner's own ask in this chat.
@@ -45,10 +53,10 @@ KISMET_READ_OPERATIONS = ("kismet.how_it_works", "kismet.village_stats", "kismet
 KISMET_WRITE_OPERATIONS = ("kismet.signup", "kismet.go", "kismet.decide", "kismet.delete")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
-                             *KISMET_READ_OPERATIONS})
+                             *ZZZ_TEAM_READ_OPERATIONS, *KISMET_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
                               "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_WRITE_OPERATIONS,
-                              *KISMET_WRITE_OPERATIONS})
+                              *ZZZ_TEAM_WRITE_OPERATIONS, *KISMET_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
@@ -56,7 +64,7 @@ APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mi
 ZZZBOT = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}
 # zzz.pairs is an app-side feature-gated read which borrows the existing
 # list_rooms install permission; it is deliberately absent from the CP catalog.
-ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs"))
+ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs", *ZZZ_TEAM_READ_OPERATIONS, *ZZZ_TEAM_WRITE_OPERATIONS))
 # The kismet install, by exact equality (CP catalog entry and install/install_miniapps.ts, this order), and Part 1's
 # public read alone (ov#533), still accepted while the CP catalog serves it. Under 1.0.0 the named operations stay
 # refused (mini_app_not_installed); under 1.1.0 mini-app.read is refused for kismet.
@@ -71,6 +79,8 @@ SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfo
 # skill and no operation, so it grants no tool by itself; an entry of any other shape refuses the whole file.
 ZZZ_BRIDGE_ID = "zzz-bridge"
 ZZZ_BRIDGE = {"version": "1.0.0", "skills": [], "operations": []}
+ZZZ_AUTONOMY_RUNNER_ID = "zzz-autonomy-runner"
+ZZZ_AUTONOMY_RUNNER = {"version": "1.0.0", "skills": [], "operations": []}
 # NEW-03 (rc44, P-013; context's design NEW-03-APP-NAMESPACES.md section 2, CLAIMS L8997): every operations
 # list this overlay accepts for a non-Gold-Stars app, each by exact equality (newest first): the reviewed
 # public read alone, or the read plus that app's own context namespace read and write. Order fixed, no
@@ -178,7 +188,8 @@ def _card_entry_ok(app) -> bool:
 # skipped and logged once (its id only), and every other app of the file stays installed, as the installer's checkApp
 # refuses per app (ov#455). What stays WHOLE-FILE is the structure: the doc shape, version 1, an app that is not an
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
-REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,), "slopfolio": (SLOPFOLIO,),
+REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": (ZZZBOT,), ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
+                    ZZZ_AUTONOMY_RUNNER_ID: (ZZZ_AUTONOMY_RUNNER,), "slopfolio": (SLOPFOLIO,),
                     "kismet": (KISMET, KISMET_PUBLIC)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")
