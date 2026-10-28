@@ -37,6 +37,9 @@ KISMET_TOOLS = {
     "kismet.decide": "kismet_decide",
     "kismet.delete": "kismet_delete",
 }
+# The three public tools a Part 1 install (1.0.0) may read through mini-app.read; never a resident tool. kismet_notes
+# (live on Deon's /mcp since 28 Oct) is not reviewed for Part 2 (lead L29967): no operation, tool or path reaches it.
+PUBLIC_TOOLS = ("how_it_works", "village_stats", "public_board")
 # The manifest's maxRequestBytes: the whole request the box sends (compact UTF-8 JSON, as transport() writes it).
 SIGNUP_MAX_BYTES = 12000
 MAX_REQUEST_BYTES = 4096
@@ -521,9 +524,14 @@ def kismet_answer(op, answer, scrub):
     structured = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else None
     blocks = _text_blocks(result)
     if result.get("isError") is True or (structured is not None and structured.get("ok") is False):
+        # Deon's live shape (28 Oct): structuredContent {ok: false, error, message} and the text to relay in content[0].
+        # The code comes from structuredContent.error first; a "code: message" content[0] is only the fallback.
         code, text = None, None
         if structured is not None and isinstance(structured.get("error"), str):
-            code, text = structured["error"], structured.get("text")
+            code = structured["error"]
+            text = structured.get("text") if isinstance(structured.get("text"), str) else blocks[0] if blocks else None
+            if isinstance(text, str) and text.startswith(code + ": "):
+                text = text[len(code) + 2:]
         elif blocks:
             found = CODE_PREFIX.fullmatch(blocks[0])
             if found:
@@ -543,6 +551,8 @@ def kismet_answer(op, answer, scrub):
         # matchWith only at the top of the owner's own decide answer; anywhere else it is dropped.
         data = {k: (v if k == "matchWith" and op == "kismet.decide" else _no_match_with(v))
                 for k, v in structured.items() if k != "matchWith" or op == "kismet.decide"}
+        if not isinstance(data.get("text"), str) and blocks:
+            data["text"] = blocks[0]  # content[0] is the text to relay (Deon's live shape); never the JSON in content[1]
         data = scrub(data)
     else:
         data = {"text": scrub("\n\n".join(blocks))[:TEXT_MAX * 4]}

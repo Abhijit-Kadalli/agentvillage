@@ -634,6 +634,52 @@ class KismetTest(unittest.TestCase):
         out = self.call({'operation': 'kismet.summary', 'arguments': {}})
         self.assertEqual(out, {'error': 'village_unavailable', 'instruction': kis.UNAVAILABLE})
 
+    def test_kismet_notes_is_not_reviewed_and_never_reachable(self):
+        # Live on Deon's /mcp since 28 Oct, not in Part 2 v1 (lead L29967): no operation, enum value, tool or install.
+        enum = bridge.SCHEMA['parameters']['properties']['operation']['enum']
+        self.assertNotIn('kismet.notes', enum); self.assertNotIn('kismet.notes', mini.READ_OPERATIONS | mini.WRITE_OPERATIONS)
+        self.assertNotIn('kismet_notes', kis.KISMET_TOOLS.values()); self.assertNotIn('kismet_notes', kis.PUBLIC_TOOLS)
+        self.assertNotIn('kismet_notes', json.dumps(MANIFEST))
+        with self.gate():
+            for args in [{'operation': 'kismet.notes', 'arguments': {}}, {'operation': 'kismet.notes', 'arguments': {'notes': ['x']}},
+                         {'operation': 'kismet.note'}, {'operation': 'kismet.status'}]:
+                with self.subTest(args=args):
+                    self.assertEqual(self.call(args)['error'], 'invalid_arguments')
+            # Not through the generic relay either: under Part 1's install only the three public tools are read.
+            self.install({'id': 'kismet', **mini.KISMET_PUBLIC})
+            for tool in ('kismet_notes', 'kismet_summary', 'kismet_signup', 'kismet_delete'):
+                with self.subTest(tool=tool):
+                    out = self.call({'operation': 'mini-app.read', 'appId': 'kismet', 'tool': tool, 'arguments': {}})
+                    self.assertEqual(out['error'], 'invalid_arguments')
+            self.transport.assert_not_called()
+            self.transport.return_value = {'ok': True}
+            self.assertIn('data', self.call({'operation': 'mini-app.read', 'appId': 'kismet', 'tool': 'public_board', 'arguments': {}}))
+            # And a projection planting it is refused whole.
+            self.install({'id': 'kismet', **{**mini.KISMET, 'operations': mini.KISMET['operations'] + ['kismet.notes']}})
+            self.assertFalse(mini.installed(self.home, 'kismet', 'kismet.notes')); self.assertFalse(mini.installed(self.home, 'gold-stars', 'gold-stars.quota'))
+
+    def test_deons_live_answer_shape_relays_content_zero_and_reads_the_code_from_structured_content(self):
+        with self.gate():
+            # Success: content[0] the text, content[1] the JSON body, structuredContent the same JSON (here without text).
+            body = {'ok': True, 'started': True, 'dateIds': ['d_test_0005']}
+            self.transport.return_value = frame('kismet.go', {'content': [{'type': 'text', 'text': 'Your agent is on 1 new date.'},
+                                                                          {'type': 'text', 'text': json.dumps(body)}], 'structuredContent': body})
+            out = self.call({'operation': 'kismet.go', 'arguments': {}})
+            self.assertEqual(out['data'], {**body, 'text': 'Your agent is on 1 new date.'})
+            # Errors: isError with structuredContent {ok:false, error, message}; the code from there, the text from content[0].
+            for code, first in [('rate_limited', 'Too many tries. Try again in an hour.'), ('not_signed_up', 'not_signed_up: Sign up first.'),
+                                ('date_not_found', 'Someone else: av-test-other said no')]:
+                with self.subTest(code=code):
+                    self.transport.return_value = frame('kismet.go', {'isError': True, 'content': [{'type': 'text', 'text': first},
+                        {'type': 'text', 'text': json.dumps({'ok': False, 'error': 'invalid_json', 'message': 'internal'})}],
+                        'structuredContent': {'ok': False, 'error': code, 'message': 'internal detail'}})
+                    out = self.call({'operation': 'kismet.go', 'arguments': {}})
+                    self.assertEqual(out['error'], code); self.assertNotIn('internal', json.dumps(out))
+                    if code == 'date_not_found':
+                        self.assertNotIn('text', out); self.assertNotIn('av-test-other', json.dumps(out))
+                    else:
+                        self.assertEqual(out['text'], first.split(': ', 1)[1] if first.startswith(code + ': ') else first)
+
     def test_refused_in_groups_cron_children_another_owner_and_without_the_install(self):
         for key, value in [('CHAT_TYPE', 'group'), ('CHAT_ID', '-12'), ('USER_ID', '99')]:
             var = self.sc._VAR_MAP['HERMES_SESSION_' + key]; token = var.set(value)

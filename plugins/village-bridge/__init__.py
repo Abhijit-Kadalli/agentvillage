@@ -27,7 +27,7 @@ from ._mini_apps import (installed, authorize_send, gate_verified, READ_OPERATIO
                          ZZZBOT, ZZZ_OPERATIONS, ZZZ_WRITE_OPERATIONS, KISMET_OPERATIONS, KISMET_WRITE_OPERATIONS,
                          ORDER_CARD_NOT_RAISED, ORDER_APPROVAL_REFUSED, ORDER_APPROVAL_UNAVAILABLE, ORDER_ALREADY_TOLD)
 from ._kismet import (kismet_payload, kismet_answer, kismet_write, remember_shown, KismetRefused, KISMET_ERRORS, KISMET_GATE, KISMET_IDENTITY, KISMET_UNCLEAR, KISMET_UNAVAILABLE,
-                      OP_ARGUMENTS as KISMET_OP_ARGUMENTS)
+                      OP_ARGUMENTS as KISMET_OP_ARGUMENTS, PUBLIC_TOOLS as KISMET_PUBLIC_TOOLS)
 from ._forkicks import save_preview, load_preview, authorize_order, is_flat, CARD_FALLBACK_ERRORS, ORDER_APPROVE_IN_BOT
 from . import _forkicks_grant
 from . import _mini_app_card, _mini_app_grant
@@ -971,6 +971,8 @@ def handle(args, **kwargs):
         elif op == "mini-app.read" and set(args) == {"operation", "appId", "tool", "arguments"}:
             if not isinstance(args["tool"], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", args["tool"]) or not isinstance(args["arguments"], dict):
                 raise _InvalidArguments(op)
+            if app_id == "kismet" and args["tool"] not in KISMET_PUBLIC_TOOLS:
+                raise _InvalidArguments(op)  # Part 1's relay reads only Kismet's three public tools (lead L29967)
             payload.update(appId=app_id, tool=args["tool"], arguments=args["arguments"])
         elif op in ("mini-app.context.read", "mini-app.context.write") and set(args) == {"operation", "appId", "arguments"}:
             # NEW-03 (rc44): the app's own context namespace, forwarded unchanged like mini-app.read (appId,

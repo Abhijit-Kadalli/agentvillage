@@ -508,7 +508,8 @@ test("kismet 1.1.0: the eight named operations (Part 2) and Part 1's public read
   }
   // Any other list is refused: a planted or unknown op, a reorder, a duplicate, a subset or none.
   const all8 = [...kismet.operations];
-  for (const operations of [[...all8, "kismet.status"], [...all8, "mini-app.context.write"], [...all8, "mini-app.read"], [...all8].reverse(),
+  // kismet.notes (live on Kismet's /mcp, not reviewed for Part 2, lead L29967) is refused like any unreviewed op.
+  for (const operations of [[...all8, "kismet.status"], [...all8, "kismet.notes"], ["mini-app.read", "kismet.notes"], [...all8, "mini-app.context.write"], [...all8, "mini-app.read"], [...all8].reverse(),
     [...all8, "kismet.delete"], all8.slice(0, 7), reads, writes, ["mini-app.read", "kismet.signup"], ["mini-app.read", "mini-app.context.read"],
     ["mini-app.read", "mini-app.read"], ["kismet.decide"], []]) {
     expect(() => validateProjection({ version: 1, apps: [{ ...kismet, operations }] })).toThrow("mini_apps_unreviewed_bundle");
