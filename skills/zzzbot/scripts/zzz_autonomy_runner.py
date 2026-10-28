@@ -64,28 +64,35 @@ TAG_GUIDANCE = (
 ROOM_TAGS_MAX, TOPIC_TAGS_MAX, TAG_CHARS = 20, 3, 40
 
 
+def _clean_tag(value):
+    """One tag made safe, or None: NFKC, every BRIEF_STRIP_CATEGORIES character removed, trimmed, lowercased, 1-40 chars."""
+    if not isinstance(value, str):
+        return None
+    tag = "".join(c for c in unicodedata.normalize("NFKC", value) if unicodedata.category(c) not in BRIEF_STRIP_CATEGORIES)
+    tag = tag.strip().casefold()
+    return tag if 1 <= len(tag) <= TAG_CHARS else None
+
+
+def _tag_list(values, limit):
+    """Best effort (review-b #543 S1/S2): drop entries that are not usable tags, de-duplicate, keep the first `limit`."""
+    out = []
+    for value in values if isinstance(values, list) else []:
+        tag = _clean_tag(value)
+        if tag is not None and tag not in out:
+            out.append(tag)
+        if len(out) == limit:
+            break
+    return out
+
+
 def _room_tags(value):
-    """The room's existing tags from the claim context: a list of at most 20 short strings, else refused."""
-    if not isinstance(value, list) or len(value) > ROOM_TAGS_MAX or not all(
-            isinstance(tag, str) and 1 <= len(tag.strip()) <= TAG_CHARS for tag in value):
-        raise ValueError("topic-context")
-    return [tag.strip().lower() for tag in value]
+    """The room's existing tags from the claim context, filtered (never a refusal: room tags are written by anyone)."""
+    return _tag_list(value, ROOM_TAGS_MAX)
 
 
 def _topic_tags(value):
-    """The model's tags for a new topic: 1 to 3 strings of 1-40 visible characters, lowercased, de-duplicated."""
-    if not isinstance(value, list) or not 1 <= len(value) <= TOPIC_TAGS_MAX:
-        raise ValueError("model-tags")
-    out = []
-    for tag in value:
-        if not isinstance(tag, str):
-            raise ValueError("model-tags")
-        tag = tag.strip().lower()
-        if not 1 <= len(tag) <= TAG_CHARS or any(unicodedata.category(c) in BRIEF_STRIP_CATEGORIES for c in tag):
-            raise ValueError("model-tags")
-        if tag not in out:
-            out.append(tag)
-    return out
+    """The model's tags for a new topic, filtered: up to 3 usable tags; none usable means the topic posts untagged."""
+    return _tag_list(value, TOPIC_TAGS_MAX)
 # Every control (Cc), format (Cf: bidi, zero-width, soft hyphen, U+E0000-E007F tag characters), private-use (Co),
 # unassigned (Cn) and line/paragraph separator (Zl, Zp) character becomes a space, so no invisible text reaches the model.
 BRIEF_STRIP_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cn", "Zl", "Zp"})
@@ -384,7 +391,8 @@ def _output(context: dict, home: Path):
     if "existing_thread_id" in result and result["existing_thread_id"] not in targets:
         raise ValueError("model-target")
     if "tags" in result:
-        result = {**result, "tags": _topic_tags(result["tags"])}
+        tags = _topic_tags(result["tags"])
+        result = {**result, "tags": tags} if tags else {key: value for key, value in result.items() if key != "tags"}
     return {key: value if key == "tags" else value.strip() for key, value in result.items()}
 
 

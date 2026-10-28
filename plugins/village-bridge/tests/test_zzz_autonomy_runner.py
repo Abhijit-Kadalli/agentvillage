@@ -504,20 +504,24 @@ class TestAutonomyRunner(unittest.TestCase):
             answer({"existing_thread_id": "thread_1", "body": "x", "tags": ["a"]})
             with self.assertRaisesRegex(ValueError, "model-output"):
                 runner._output(tagged, self.home)
-            for bad in ([], ["a", "b", "c", "d"], ["x" * 41], [" "], [7], "hiring", ["zero\u200bwidth"]):
-                answer({"title": "t", "body": "x", "tags": bad})
-                with self.assertRaisesRegex(ValueError, "model-tags"):
-                    runner._output(tagged, self.home)
+            # Best effort (review-b S1): unusable entries are dropped, the first 3 kept; nothing usable posts untagged.
+            for given, kept in (([], None), (["a", "b", "c", "d"], ["a", "b", "c"]), (["x" * 41, "ok"], ["ok"]), ([" "], None),
+                                ([7, "seven"], ["seven"]), ("hiring", None), (["zero\u200bwidth"], ["zerowidth"]),
+                                (["A", "a", "b", "B"], ["a", "b"])):
+                answer({"title": "t", "body": "x", "tags": given})
+                expected = {"title": "t", "body": "x", **({"tags": kept} if kept else {})}
+                self.assertEqual(runner._output(tagged, self.home), expected)
             # A capped room never offers tags (no title path).
             answer({"existing_thread_id": "thread_2", "body": "x"})
             runner._output({**tagged, "can_create_topic": False}, self.home)
             self.assertNotIn("room_tags first", calls[-1]["messages"][0]["content"])
             answered = len(calls)
-        # Malformed room_tags is refused before any model route.
-        with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
-            for bad in ("hiring", ["x" * 41], [None], ["t"] * 21):
-                with self.assertRaisesRegex(ValueError, "topic-context"):
-                    runner._output({**topic, "room_tags": bad}, self.home)
+        # room_tags is filtered, never a refusal (review-b S2: any member writes room tags): junk is dropped, 20 kept.
+        self.assertEqual(runner._room_tags(["ok", " ", "\u00a0", None, "x" * 41, "Z\u200bed", "OK"] + ["t%d" % i for i in range(30)])[:3],
+                         ["ok", "zed", "t0"])
+        self.assertEqual(len(runner._room_tags(["t%d" % i for i in range(30)])), 20)
+        self.assertEqual(runner._room_tags(None), [])
+        self.assertEqual(runner._room_tags("hiring"), [])
         # Malformed or capped-and-empty topic context never opens a model route.
         with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
             with self.assertRaisesRegex(ValueError, "topic-capacity"):
