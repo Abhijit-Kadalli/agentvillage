@@ -20,7 +20,7 @@ const source = (relative: string) => readFileSync(join(import.meta.dir, "..", "s
 export const AUTONOMY_SHIPPED = {
   "scripts/zzz_autonomy_runner.py": [
     "a4943bc125c0792b57df0c4254977983226e37bf3864fde34b0f7c0bc9feb393", // 285e8d2b, before event_brief
-    "bc8ead871782ee965c551d60fafe4ac836b262fa06d1c1cd67110c06b9afd138", // untrusted, sanitized event_brief
+    "432cb086354f8618331dcf8eacc1b920d9a0d2c3cf2a69239e0e1f023347142c", // untrusted event_brief + ZZZ 0031 reuse (replaces unshipped fef10721)
   ],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;

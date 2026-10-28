@@ -184,6 +184,86 @@ class TestAutonomyRunner(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "brief-context"):
                     runner._output({**plain, "event_brief": bad}, self.home)
 
+    def test_0031_topic_contract_create_reuse_and_capacity(self):
+        calls = []
+        class Choice:
+            finish_reason = "stop"
+            message = None
+        class Model:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(choices=[Choice()])
+        class OpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=Model())
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        def answer(value):
+            Choice.message = SimpleNamespace(content=json.dumps(value), tool_calls=None, function_call=None)
+        topics = [{"thread_id": "thread_1", "title": "Buildathon: what are you building?", "opener_excerpt": "One line each."},
+                  {"thread_id": "thread_2", "title": "Looking for teammates", "opener_excerpt": "Skills wanted."}]
+        topic = {"kind": "new_topic", "candidate_id": "x", "room_brief": "Edge City India 2026",
+                 "can_create_topic": True, "recent_topics": topics}
+        capped = {**topic, "can_create_topic": False}
+        self.assertIn("existing_thread_id", runner.SYSTEM)
+        self.assertIn("can_create_topic", runner.SYSTEM)
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+                                      "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+                patch.object(runner, "_model_route", return_value=("https://api.openai.com/v1", "fixture", "model")):
+            # Create a topic while creation is open; the model sees the advisory flag and the issued targets.
+            answer({"title": " New topic ", "body": " Opening question. "})
+            self.assertEqual(runner._output(topic, self.home), {"title": "New topic", "body": "Opening question."})
+            sent = json.loads(calls[-1]["messages"][1]["content"])
+            self.assertIs(sent["can_create_topic"], True)
+            self.assertEqual(sent["recent_topics"], topics)
+            # Continue an issued topic instead (allowed whether or not creation is open).
+            answer({"existing_thread_id": "thread_2", "body": "I can pair on the frontend."})
+            for context in (topic, capped):
+                self.assertEqual(runner._output(context, self.home),
+                                 {"existing_thread_id": "thread_2", "body": "I can pair on the frontend."})
+            # Capped room: a title is refused, so the service never sees a create it would reject.
+            answer({"title": "Another topic", "body": "x"})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(capped, self.home)
+            # Only an issued thread id can be continued; title and target together are refused.
+            answer({"existing_thread_id": "thread_9", "body": "x"})
+            with self.assertRaisesRegex(ValueError, "model-target"):
+                runner._output(topic, self.home)
+            answer({"existing_thread_id": "thread_1", "title": "t", "body": "x"})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(topic, self.home)
+            # An empty room offers no reuse target; comments and replies never take a target or a title.
+            answer({"existing_thread_id": "thread_1", "body": "x"})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output({**topic, "recent_topics": []}, self.home)
+            reply = {"kind": "reply", "candidate_id": "x", "source": {"body": "A current point."}}
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(reply, self.home)
+            # A title over 200 UTF-8 bytes is refused before the service sees it.
+            answer({"title": "é" * 101, "body": "x"})
+            with self.assertRaisesRegex(ValueError, "model-title"):
+                runner._output(topic, self.home)
+            # A pre-0031 service (no can_create_topic) keeps the old create-only behaviour.
+            answer({"title": "Old service topic", "body": "x"})
+            legacy = {k: v for k, v in topic.items() if k != "can_create_topic"}
+            legacy["recent_topics"] = [{"thread_id": "thread_1", "title": "t"}]
+            self.assertEqual(runner._output(legacy, self.home), {"title": "Old service topic", "body": "x"})
+            answer({"existing_thread_id": "thread_1", "body": "x"})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(legacy, self.home)
+            answered = len(calls)
+        # Malformed or capped-and-empty topic context never opens a model route.
+        with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
+            with self.assertRaisesRegex(ValueError, "topic-capacity"):
+                runner._output({**capped, "recent_topics": []}, self.home)
+            for bad in ({**topic, "can_create_topic": "yes"}, {**topic, "recent_topics": [{"title": "no id"}]},
+                        {**topic, "recent_topics": ["thread_1"]}, {**topic, "recent_topics": [{"thread_id": ""}]}):
+                with self.assertRaisesRegex(ValueError, "topic-context"):
+                    runner._output(bad, self.home)
+        self.assertEqual(len(calls), answered)
+
     def test_fixed_bridge_route_and_response_size(self):
         calls = []
         class Response:
