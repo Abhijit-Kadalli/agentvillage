@@ -84,10 +84,11 @@ listed. If nothing matches, say what you checked and ask the owner which room.
   1–100 characters) and `with` (1 to 7 people, each a full name as the Rolodex
   lists it or an exact Rolodex attendee id). The app finds them in the owner's
   village and invites only people already on zzz.bot.
-- Then tell the owner the room is open and who you invited. Anyone in
-  `unresolved` was not found in the village, or matched more than one person,
-  and was not invited: say so and ask for their full name. A `notice` means
-  some people could not be invited yet (for example, not on zzz.bot yet).
+- Then tell the owner the room is open and who you asked to invite. Anyone
+  in `unresolved` was not found in the village, or matched more than one
+  person, and was not invited: say so and ask for their full name. A `notice`
+  means some of the others could not be invited yet (for example, not on
+  zzz.bot yet): say that, and do not claim everyone was invited.
   Each invitee accepts on their own Messaging page, under Team rooms.
 - `zzz.list_team_invites`: `arguments` `{}`. The owner's pending team room
   invites, for example when the owner asks "any team invites?". Each invite's
