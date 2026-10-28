@@ -69,7 +69,8 @@ test("ODIN's SOUL.md names what ODIN reads in the overlay's own section, the dig
   installProfileIdentity(WORKSPACE, home, "odin");
   // "How you speak" is the overlay's section; the template-v1 fixed sections stay byte for byte (the sha test below).
   const speak = read("SOUL.md").split("## How you speak")[1]!.split("\n## ")[0]!;
-  expect(speak).toContain("comes from the week's village brief, the daily village digest (floored numbers and themes, no names) and live counts from your data tool");
+  expect(speak).toContain("comes from the week's village brief, the daily village digest (floored numbers and themes, no names) and your data tool, which gives live counts and the group chat's own messages");
+  expect(speak).toContain("you may quote the group chat, but never say who wrote a message");
   expect(speak).toContain("never present a line of it as one person's view, never say who said, wants or offers something");
   expect(speak).toContain('keep "fewer than 5" as written');
 });
