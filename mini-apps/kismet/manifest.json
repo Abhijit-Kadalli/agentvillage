@@ -121,7 +121,7 @@
               "name": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 80
+                "maxLength": 40
               },
               "status": {
                 "type": "string",
@@ -139,7 +139,8 @@
                   "mono",
                   "poly",
                   "open",
-                  "unsure"
+                  "unsure",
+                  "undisclosed"
                 ]
               },
               "lookingFor": {
@@ -178,16 +179,16 @@
               "interests": {
                 "type": "array",
                 "minItems": 3,
-                "maxItems": 20,
+                "maxItems": 15,
                 "items": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 60
+                  "maxLength": 30
                 }
               },
               "about": {
                 "type": "string",
-                "maxLength": 280
+                "maxLength": 160
               },
               "availability": {
                 "type": "string",
@@ -199,15 +200,15 @@
               },
               "area": {
                 "type": "string",
-                "maxLength": 80
+                "maxLength": 40
               },
               "telegram": {
                 "type": "string",
-                "pattern": "^@?[A-Za-z0-9_]{5,32}$"
+                "pattern": "^@?[A-Za-z0-9_]{4,32}$"
               },
               "agentProfile": {
                 "type": "string",
-                "maxLength": 1200
+                "maxLength": 1500
               },
               "agreedToTerms": {
                 "type": "boolean",
@@ -220,10 +221,8 @@
             },
             "required": [
               "name",
-              "status",
               "lookingFor",
               "interests",
-              "telegram",
               "agreedToTerms",
               "ageConfirmed"
             ],
@@ -231,15 +230,16 @@
           },
           "telegram": {
             "type": "string",
-            "pattern": "^@?[A-Za-z0-9_]{5,32}$"
+            "pattern": "^@?[A-Za-z0-9_]{4,32}$"
           },
           "notes": {
             "type": "array",
+            "minItems": 1,
             "maxItems": 10,
             "items": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 200
+              "maxLength": 280
             }
           },
           "draftId": {
@@ -258,7 +258,7 @@
                   "name": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 80
+                    "maxLength": 40
                   },
                   "status": {
                     "type": "string",
@@ -276,7 +276,8 @@
                       "mono",
                       "poly",
                       "open",
-                      "unsure"
+                      "unsure",
+                      "undisclosed"
                     ]
                   },
                   "lookingFor": {
@@ -315,16 +316,16 @@
                   "interests": {
                     "type": "array",
                     "minItems": 3,
-                    "maxItems": 20,
+                    "maxItems": 15,
                     "items": {
                       "type": "string",
                       "minLength": 1,
-                      "maxLength": 60
+                      "maxLength": 30
                     }
                   },
                   "about": {
                     "type": "string",
-                    "maxLength": 280
+                    "maxLength": 160
                   },
                   "availability": {
                     "type": "string",
@@ -336,15 +337,15 @@
                   },
                   "area": {
                     "type": "string",
-                    "maxLength": 80
+                    "maxLength": 40
                   },
                   "telegram": {
                     "type": "string",
-                    "pattern": "^@?[A-Za-z0-9_]{5,32}$"
+                    "pattern": "^@?[A-Za-z0-9_]{4,32}$"
                   },
                   "agentProfile": {
                     "type": "string",
-                    "maxLength": 1200
+                    "maxLength": 1500
                   },
                   "agreedToTerms": {
                     "type": "boolean",
@@ -357,10 +358,8 @@
                 },
                 "required": [
                   "name",
-                  "status",
                   "lookingFor",
                   "interests",
-                  "telegram",
                   "agreedToTerms",
                   "ageConfirmed"
                 ],
@@ -368,15 +367,16 @@
               },
               "telegram": {
                 "type": "string",
-                "pattern": "^@?[A-Za-z0-9_]{5,32}$"
+                "pattern": "^@?[A-Za-z0-9_]{4,32}$"
               },
               "notes": {
                 "type": "array",
+                "minItems": 1,
                 "maxItems": 10,
                 "items": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 200
+                  "maxLength": 280
                 }
               }
             },
@@ -416,9 +416,7 @@
         "properties": {
           "targetId": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 100,
-            "pattern": "^[A-Za-z0-9_-]+$"
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
           }
         },
         "additionalProperties": false
@@ -439,9 +437,7 @@
         "properties": {
           "dateId": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 100,
-            "pattern": "^[A-Za-z0-9_-]+$"
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
           },
           "decision": {
             "type": "string",
