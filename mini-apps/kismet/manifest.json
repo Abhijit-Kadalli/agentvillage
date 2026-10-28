@@ -18,7 +18,7 @@
     {
       "kind": "read",
       "label": "Your own Kismet status",
-      "description": "Your dates today, your recommendations, the weekly drop and your matches. Kismet knows which resident you are only by a private, stable reference from Agent Village, never your name or Telegram account."
+      "description": "Your dates today, your recommendations, the weekly drop and your matches. Agent Village tells Kismet which resident you are by a private, stable reference. Kismet has your name and Telegram username only if you send them when you sign up."
     },
     {
       "kind": "action",
@@ -484,7 +484,7 @@
     {
       "name": "kismet",
       "version": "1.1.0",
-      "sha256": "5904f144422b5d1d5405a4f020357b471148e60ec0c2fcdb18fec093eb797fc9",
+      "sha256": "76aa4c2883f42aac4cb78389c9d697e9cd475cdbd7b01178f5b9bd683de81f29",
       "path": "skills/kismet/SKILL.md"
     }
   ]

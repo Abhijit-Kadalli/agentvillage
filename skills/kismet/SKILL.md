@@ -187,5 +187,7 @@ send step 2 with its `draftId` alone.
 - `partner_api_disabled` or any other error: say Kismet is not available
   from here right now and offer the website. Never claim that a sign-up,
   answer or deletion happened unless the result says so, and never retry a
-  write in a loop. After an unclear step 2, retry the SAME `draftId` once,
-  never a new step 1.
+  write in a loop. After an unclear step 2, retry the SAME `draftId` once.
+  If that is unclear too, call `kismet.summary` to see whether it took
+  effect, tell the owner what it shows, and start again at step 1 only if
+  it did not.
