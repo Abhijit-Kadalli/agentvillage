@@ -1,6 +1,7 @@
 """Telegram tool-progress lines name the tool, never the command (RC28); Hermes's
 turn-hold and aux-fallback compaction notices stay out of the chat (rc42); its
-model-fallback notice reads in plain words (HOT-RASOOL).
+model-fallback notice reads in plain words (HOT-RASOOL); a reply line that is only an
+ask_odin frame tag is dropped.
 
 Hermes v2026.9.24 composes each "new"/"all" progress line in
 ``gateway/run_turn_runner.py`` (``_progress_build_message``, 292-300) from
@@ -117,11 +118,18 @@ plugin extends them once, at ``register()``:
   becomes ``FALLBACK_TEXT`` (same str subclass, so it stays a DiagnosticText); every other message, and any
   error in that check, goes through as given. The box log keeps the model, provider and reason.
 
+* A reply line that is only an ask_odin frame tag is dropped (lead L28908). ``ask_odin`` frames ODIN's answer
+  in ``<odin_answer>`` ... ``</odin_answer>`` and tells the agent to copy what is between them; some models
+  copied the tags into the chat too. The one hook this plugin registers, ``transform_llm_output``
+  (agent/turn_finalizer.py ``apply_llm_output_transform``: the first string a hook returns wins), drops
+  each line that is exactly ``<odin_answer>`` or ``</odin_answer>`` after trimming whitespace
+  (``ODIN_TAG_LINES``) and returns None for every other reply, so the text goes out as written.
+
 ``web_search`` and ``web_extract`` keep their preview (the query or URL is the
 useful part). Verbose mode, which a resident can pick with ``/verbose``, still
 shows the full arguments (on Telegram as Hermes's JSON line rather than a code
-block). Only the three tables and those four methods are touched, and one command
-registered; tool execution and compaction are not. A Hermes without either
+block). Only the three tables and those four methods are touched, one command and one
+hook registered; tool execution and compaction are not. A Hermes without either
 verb table, or with a table of an unexpected type, or without
 ``_PREVIEW_BUILDERS`` (the verbs are still added; only the stop line keeps the
 raw name), or without
@@ -129,7 +137,7 @@ raw name), or without
 ``GatewayTurnMixin._hmwa_hygiene_notify`` or
 ``GatewayTurnMixin._hmwa_first_contact_notes`` or
 ``StatusOutputMixin._emit_status``, or a context without
-``register_command``, has that part left alone with one log line, and a missing
+``register_command`` or ``register_hook``, has that part left alone with one log line, and a missing
 module never raises. Idempotent.
 """
 
@@ -468,12 +476,54 @@ def apply_fallback_notice(status_output_module: Any) -> bool:
     return True
 
 
+# ── ODIN tag leak (lead L28908): a reply line that is only an ask_odin frame tag never reaches the chat ─────
+
+#: plugins/av-events/_ask_odin.py OPEN_TAG and CLOSE_TAG. Only a line that is exactly one of them (whitespace
+#: trimmed) is dropped; a tag inside a line of text is left alone.
+ODIN_TAG_LINES: FrozenSet[str] = frozenset({"<odin_answer>", "</odin_answer>"})
+
+
+def drop_odin_tag_lines(text: Any) -> Any:
+    """``text`` without its lines that are exactly an ODIN frame tag; None when there is none to drop (or
+    nothing else would be left), so Hermes keeps the reply as written."""
+    if not isinstance(text, str) or "odin_answer>" not in text:
+        return None
+    lines = text.splitlines(keepends=True)
+    kept = [line for line in lines if line.strip() not in ODIN_TAG_LINES]
+    if len(kept) == len(lines):
+        return None
+    out = "".join(kept)
+    return out if out.strip() else None
+
+
+def transform_llm_output(response_text: Any = None, **_kwargs: Any) -> Any:
+    """Hermes ``transform_llm_output`` hook: the reply without ODIN frame-tag lines, else None. Fail-open."""
+    try:
+        return drop_odin_tag_lines(response_text)
+    except Exception:  # noqa: BLE001 - fail open: the reply as written
+        return None
+
+
+def register_odin_tag_hook(ctx: Any) -> bool:
+    """Register ``transform_llm_output``. False when the context cannot register hooks."""
+    register_hook = getattr(ctx, "register_hook", None)
+    if not callable(register_hook):
+        logger.info("av-display: no register_hook on the plugin context; ODIN tag lines not filtered")
+        return False
+    register_hook("transform_llm_output", transform_llm_output)
+    return True
+
+
 def register(ctx: Any) -> None:
-    """Hermes plugin entrypoint. No tools, no hooks: three display tables, four methods and /village, once."""
+    """Hermes plugin entrypoint. No tools: three display tables, four methods, /village and one output hook."""
     try:
         register_village_command(ctx)
     except Exception:  # noqa: BLE001 - a command must never stop the gateway
         logger.warning("av-display: could not register /%s", VILLAGE_COMMAND, exc_info=True)
+    try:
+        register_odin_tag_hook(ctx)
+    except Exception:  # noqa: BLE001 - a hook must never stop the gateway
+        logger.warning("av-display: could not register transform_llm_output", exc_info=True)
     for name, patch in (
         ("agent.display", apply),
         ("gateway.run_turn_runner", apply_terminal_blocks),
