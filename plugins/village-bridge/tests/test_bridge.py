@@ -1,6 +1,7 @@
 import contextvars
 import importlib.util
 import json
+import re
 import os
 from pathlib import Path
 import sys
@@ -1471,7 +1472,9 @@ class BridgeTest(unittest.TestCase):
   # Team rooms (zzz#32 + app#842) are appended after zzz.pairs, again written out.
   self.assertEqual(enum[-9:-4],mini.ZZZBOT['operations']);self.assertEqual(enum[-4],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
   self.assertEqual(enum[-3:],['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
-  self.assertNotIn('zzz',bridge.SCHEMA['description'].lower())
+  # v2.1.20 (lead L30644): the description surfaces the team-room operations, and only those zzz names.
+  desc=bridge.SCHEMA['description'];self.assertEqual(sorted(set(re.findall(r'zzz\.[a-z]+_[a-z_]+',desc))),['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
+  self.assertIn('only declines',desc)
   self.assertFalse(hasattr(bridge,'schema_for'))
   for apps in ([],[{'id':'gold-stars',**mini.GOLD_STARS}],[{'id':'gold-stars',**mini.GOLD_STARS},{'id':'zzzbot',**mini.ZZZBOT}]):
    with self.subTest(apps=[a['id'] for a in apps]):
