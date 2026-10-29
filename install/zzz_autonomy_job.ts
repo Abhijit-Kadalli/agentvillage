@@ -1,14 +1,15 @@
 /** Separate, projection-gated no-agent ZZZ event job. No pair-gate dependency. */
-import { chmodSync, constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, rmdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
 import { hermesAvailable } from "../skills/index-network/scripts/hermes-cli";
-import { jobApi, jobPython, parseHermesJobs } from "./zzz_managed_job";
+import { jobApi, jobPython, parseHermesJobs, replaceFileNoFollow } from "./zzz_managed_job";
 
 export const AUTONOMY_GATE = "zzz-autonomy-runner";
 export const AUTONOMY_JOB_NAME = "Edge — zzz event autonomy";
 export const AUTONOMY_JOB_SCRIPT = "zzz_autonomy_runner.py";
+// cp#467: the control plane mirrors these receipt paths (mini-apps-skills.js ZZZ_AUTONOMY_FILE_LISTS); change it first.
 export const AUTONOMY_FILES = ["scripts/zzz_autonomy_runner.py", "prompts/autonomy.md"] as const;
 const ID = /^[0-9a-f]{12}$/;
 const TOKEN = /^avb_[A-Za-z0-9_-]{43}$/;
@@ -213,7 +214,7 @@ export function reconcileAutonomyJob(home: string, installed: boolean): void {
   mkdirSync(scripts, {recursive:true,mode:0o700});
   const shim = join(scripts, AUTONOMY_JOB_SCRIPT);
   if (ownedFile(shim, AUTONOMY_FILES[0]) === "not_ours") throw new Error("zzz_autonomy_shim_not_ours");
-  writeFileSync(shim, script, {mode:0o700}); chmodSync(shim,0o700);
+  replaceFileNoFollow(scripts, AUTONOMY_JOB_SCRIPT, script);
   const id = jobs[0]?.id;
   if (id !== undefined && (typeof id !== "string" || !ID.test(id))) throw new Error("zzz_autonomy_job_invalid");
   jobApi(python, home, {action:"install",...(id?{id}:{}),name:AUTONOMY_JOB_NAME,prompt,
