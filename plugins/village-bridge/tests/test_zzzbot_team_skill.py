@@ -85,6 +85,18 @@ class ZzzbotTeamSkillTest(unittest.TestCase):
                       "nothing was changed. Tell the owner plainly. Do\n  not retry, and never open a new room to add someone.", fails)
         self.assertIn("- `zzz_team_add_not_ready`: adding people to an existing team room isn't\n  available yet.", fails)
 
+    def test_the_add_covers_the_notice_a_name_miss_and_names_itself_in_the_skill_change_note(self):
+        # review-b ov#547 N3 / S1 / N7.
+        team = section(SKILL, "## Team rooms")
+        self.assertIn("- If an add's answer has a `notice`, tell the owner some people could not be\n  invited yet, and do not "
+                      "claim everyone was added. Do not retry.", team)
+        fails = section(SKILL, "## When something fails")
+        self.assertIn("- `zzz_team_invalid`: those people were not found in the village. Ask the\n  owner for each person's full "
+                      "name as the Rolodex lists it. Do not retry the\n  same request.", fails)
+        front = SKILL.split("---", 2)[1]
+        # av-events _skill_change_note: a one-line update_note bound to the projection version 1.1.0.
+        self.assertIn("\nupdate_note: it can now add people to a team room the owner already has\nupdate_note_for: 1.1.0\n", front)
+
     def test_the_section_sits_with_the_owner_led_writes_before_reading(self):
         self.assertLess(SKILL.index("## Posting"), SKILL.index("## Team rooms"))
         self.assertLess(SKILL.index("## Team rooms"), SKILL.index("## Reading"))
