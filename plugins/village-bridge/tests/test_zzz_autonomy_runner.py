@@ -499,6 +499,18 @@ class TestAutonomyRunner(unittest.TestCase):
                 self.assertEqual(complete["output"]["body"].encode(), text.encode())
         self.assertEqual(self.state()["failures"], 0)
 
+    def test_seat_text_on_a_new_topic_completes_silent_with_its_code(self):
+        # review-b ov#554 N4: ZZZ refuses a body-only new_topic complete, so the text is never sent there.
+        with self.assertRaisesRegex(ValueError, "^seat-answer-topic$"):
+            self.seat_turn({"text": self.SEAT_TEXT}, kind="new_topic", receipt="silent")
+        self.assertEqual(self.last_complete[0]["output"], {"silent": True})
+        self.assertEqual((self.state()["turns"], self.state()["failures"]), (1, 1))
+        # A null answer on a new_topic is an ordinary silence; a bad shape keeps its own code.
+        ops, complete = self.seat_turn(None, kind="new_topic", receipt="silent")
+        self.assertEqual((ops, complete["output"]), (["claim", "context", "complete"], {"silent": True}))
+        with self.assertRaisesRegex(ValueError, "^seat-answer-shape$"):
+            self.seat_turn({"text": ""}, kind="new_topic", receipt="silent")
+
     def test_seat_null_completes_silent_with_no_model_call(self):
         ops, complete = self.seat_turn(None, receipt="silent")
         self.assertEqual(ops, ["claim", "context", "complete"])
@@ -991,6 +1003,17 @@ class TestAutonomyRunner(unittest.TestCase):
         ops, _, completed = self.deadline_turn(seat=self.SEAT, spend={"claim": 0, "context": 60})
         self.assertEqual((ops, completed), (["claim", "context", "complete"], [{"body": self.SEAT["text"]}]))
 
+    def test_the_complete_is_cut_to_the_time_left_and_never_started_past_it(self):
+        # review-b ov#554 N2: a model call that overran its read leaves the complete what is left of the deadline.
+        ops, timeouts, completed = self.deadline_turn(spend={"claim": 0, "context": 0}, model_seconds=78)
+        self.assertEqual((ops, completed), (["claim", "context", "model", "complete"], [{"silent": True}]))
+        self.assertEqual(timeouts["complete"].read, runner.RUN_BUDGET_SECONDS - 78)
+        self.assertEqual(timeouts["complete"].connect, runner.RUN_BUDGET_SECONDS - 78)
+        # Under a second left: the complete is not started and the run fails with run-budget.
+        with self.assertRaisesRegex(ValueError, "^run-budget$"):
+            self.deadline_turn(spend={"claim": 0, "context": 0}, model_seconds=runner.RUN_BUDGET_SECONDS - 0.5)
+        self.assertEqual(self.state()["failures"], 1)
+
     def test_inherited_sdk_debug_cannot_log_room_context(self):
         previous = logging.root.manager.disable
         try:
@@ -1138,12 +1161,70 @@ class TestResidentBrief(unittest.TestCase):
         self.assertIsNone(code)
         self.assertEqual(block.split("\n")[3:], ["[offer] Lends a soldering kit."] * (len(bad) + 1))
         # At the limits a snippet is kept.
-        block, _ = runner._resident_brief(self.brief([{"source": "s" * 40, "text": "t" * 2000}]))
-        self.assertEqual(block.split("\n")[3], "[" + "s" * 40 + "] " + "t" * 2000)
+        block, _ = runner._resident_brief(self.brief([{"source": "rolodex", "text": "t" * 2000}]))
+        self.assertEqual(block.split("\n")[3], "[rolodex] " + "t" * 2000)
+        # Only the agreed source set (data L32269; review-b ov#554 N5): any other source is dropped, fail closed.
+        self.assertEqual(runner.RESIDENT_SOURCES, frozenset(SOURCES))
+        for source in ("s" * 40, "private", "Claim", "claim ", "mosaic2"):
+            with self.subTest(source=source):
+                block, code = runner._resident_brief(self.brief([{"source": source, "text": "x"}, good]))
+                self.assertEqual((block.split("\n")[3:], code), (["[offer] Lends a soldering kit."], None))
         # No usable snippet still sends the name and voice.
         block, code = runner._resident_brief(self.brief([]))
         self.assertEqual((block.split("\n"), code), ([runner.RESIDENT_HEADER, "agent_name: Juniper",
                                                        "voice: warm, brief, curious"], None))
+
+    # review-b ov#554 S1: the app (app#935 resident-brief-live.ts) always sends voice null, and agent_name is null when
+    # the pack read fails; data L32269 agreed "voice <= 600 (or null)".
+    def test_the_apps_shape_with_a_null_voice_reaches_the_prompt(self):
+        claim = {"source": "claim", "text": "Building a solar rig for the north camp."}
+        app = {"agent_name": "Juno", "voice": None, "snippets": [claim]}
+        self.assertEqual(runner._resident_brief(app), ("\n".join(
+            [runner.RESIDENT_HEADER, "agent_name: Juno", "[claim] " + claim["text"]]), None))
+        for base in (self.REPLY, self.TOPIC):
+            with self.subTest(kind=base["kind"]):
+                (today,), _ = self.calls(ov553, [base])
+                (messages,), written = self.calls(runner, [{**base, "resident_brief": app}])
+                self.assertEqual(written, [])
+                self.assertEqual(messages[0]["content"], today[0]["content"] + runner.RESIDENT_GUIDANCE)
+                room, _, block = messages[1]["content"].partition("\n\n")
+                self.assertEqual(room, today[1]["content"])
+                self.assertEqual(block.split("\n"), [runner.RESIDENT_HEADER, "agent_name: Juno", "[claim] " + claim["text"]])
+                self.assertNotIn("voice:", block)
+
+    def test_null_name_and_voice_render_the_snippets_only(self):
+        claim, offer = {"source": "claim", "text": "Solar rig."}, {"source": "offer", "text": "Lends a soldering kit."}
+        snippets_only = [runner.RESIDENT_HEADER, "[claim] Solar rig.", "[offer] Lends a soldering kit."]
+        # An empty or blank name or voice is treated as null: its line is left out.
+        for name, voice in ((None, None), ("", None), (None, ""), (" \n\u200b ", "\t")):
+            with self.subTest(name=name, voice=voice):
+                block, code = runner._resident_brief({"agent_name": name, "voice": voice, "snippets": [claim, offer]})
+                self.assertEqual((block.split("\n"), code), (snippets_only, None))
+        block, _ = runner._resident_brief({"agent_name": None, "voice": "warm", "snippets": [claim]})
+        self.assertEqual(block.split("\n"), [runner.RESIDENT_HEADER, "voice: warm", "[claim] Solar rig."])
+        # Nothing to render (no name, no voice, no usable snippet): today's prompt byte for byte, and no code.
+        before, _ = self.calls(ov553, [self.REPLY])
+        for empty in ({"agent_name": None, "voice": None, "snippets": []},
+                      {"agent_name": "", "voice": " ", "snippets": [{"source": "private", "text": "x"}, "bad"]}):
+            with self.subTest(empty=empty):
+                self.assertEqual(runner._resident_brief(empty), (None, None))
+                after, written = self.calls(runner, [{**self.REPLY, "resident_brief": empty}])
+                self.assertEqual(json.dumps(after).encode(), json.dumps(before).encode())
+                self.assertEqual(written, [])
+
+    def test_a_wrong_type_other_than_null_is_still_malformed(self):
+        for field in ("agent_name", "voice"):
+            for wrong in (5, 0, False, True, [], ["x"], {}, 1.5):
+                with self.subTest(field=field, wrong=wrong):
+                    self.assertEqual(runner._resident_brief(self.brief(**{field: wrong})),
+                                     (None, runner.RESIDENT_BRIEF_CODE))
+                    self.assertEqual(runner._resident_brief({"agent_name": None, "voice": None, "snippets": [],
+                                                             field: wrong}), (None, runner.RESIDENT_BRIEF_CODE))
+        # The caps and the NUL rule still hold for a string.
+        self.assertEqual(runner._resident_brief(self.brief(voice="v" * 601)), (None, runner.RESIDENT_BRIEF_CODE))
+        self.assertEqual(runner._resident_brief(self.brief(agent_name=None, voice="\0")), (None, runner.RESIDENT_BRIEF_CODE))
+        self.assertEqual(runner._resident_brief({"agent_name": None, "voice": None, "snippets": None}),
+                         (None, runner.RESIDENT_BRIEF_CODE))
 
     def test_a_malformed_brief_falls_back_to_todays_prompt_with_a_code(self):
         malformed = {

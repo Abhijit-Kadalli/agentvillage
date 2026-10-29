@@ -32,8 +32,10 @@ DEADLINE_SECONDS = 85  # Below the service's 90-second claim lease.
 # The run deadline (review-b S1 on app#932): one time.monotonic() budget for the whole run, measured when run() starts
 # and 2 s under the alarm above, so it also sits under ZZZ's 90 s claim lease (a complete after it is refused) and
 # Hermes's 120 s cron.script_timeout_seconds. Each bridge call and the model call gets its own default timeout cut to
-# the time left; the context and model calls also leave COMPLETE_SECONDS for the complete. A call that would get less
-# than its floor is never started: the run fails with code `run-budget` (counted toward the backoff) instead.
+# the time left; the context and model calls also leave COMPLETE_SECONDS for the complete. An httpx timeout bounds each
+# phase and each read (the gap between two received chunks), not the whole call, so the alarm stays the hard bound. A
+# call that would get less than its floor is never started: the run fails with code `run-budget` (counted toward the
+# backoff) instead.
 RUN_BUDGET_SECONDS = DEADLINE_SECONDS - 2
 BUDGET_CODE = "run-budget"
 CONNECT_SECONDS = 10  # connect, write and pool; only the read is long
@@ -92,6 +94,8 @@ RESIDENT_HEADER = ("Your resident's own village context (shared; use it to groun
                    "things):")
 RESIDENT_BRIEF_BYTES, RESIDENT_SNIPPETS_MAX = 12288, 50
 RESIDENT_NAME_CHARS, RESIDENT_VOICE_CHARS, RESIDENT_SOURCE_CHARS, RESIDENT_TEXT_CHARS = 200, 600, 40, 2000
+# The agreed source set (data L32269); a snippet from any other source is dropped (review-b ov#554 N5).
+RESIDENT_SOURCES = frozenset({"claim", "mosaic", "intent", "offer", "gift", "rolodex", "digest"})
 RESIDENT_BRIEF_CODE = "resident-brief-shape"
 
 
@@ -148,28 +152,34 @@ def _one_line(value: str) -> str:
 
 def _resident_brief(value):
     """The app's resident_brief rendered as the delimited block the model call appends after the room data:
-    (block, None), (None, None) when absent or null, or (None, RESIDENT_BRIEF_CODE) when the brief itself is malformed
-    (not exactly {agent_name, voice, snippets}, a name over 200 or voice over 600 code points or holding a NUL, or
-    snippets not a list of at most 50). A snippet that is not exactly {source <= 40, text <= 2000 code points}, holds a
-    NUL or is blank once made one line is dropped. Snippets keep the app's order; the block stops before the first one
-    that would take it past RESIDENT_BRIEF_BYTES UTF-8 bytes. Never logged."""
+    (block, None), (None, None) when absent or null or when nothing renders (no name, no voice, no usable snippet), or
+    (None, RESIDENT_BRIEF_CODE) when the brief itself is malformed (not exactly {agent_name, voice, snippets}, a name or
+    voice that is neither null nor a string, a name over 200 or voice over 600 code points or holding a NUL, or snippets
+    not a list of at most 50). A null, empty or blank name or voice leaves its line out (the app sends voice null; data
+    L32269 "voice <= 600 (or null)"; review-b ov#554 S1). A snippet that is not exactly {source in RESIDENT_SOURCES,
+    text <= 2000 code points}, holds a NUL or is blank once made one line is dropped. Snippets keep the app's order; the
+    block stops before the first one that would take it past RESIDENT_BRIEF_BYTES UTF-8 bytes. Never logged."""
     if value is None:
         return None, None
     if not isinstance(value, dict) or set(value) != {"agent_name", "voice", "snippets"}:
         return None, RESIDENT_BRIEF_CODE
     name, voice, snippets = value["agent_name"], value["voice"], value["snippets"]
-    if (not isinstance(name, str) or len(name) > RESIDENT_NAME_CHARS or not isinstance(voice, str) or
-            len(voice) > RESIDENT_VOICE_CHARS or "\0" in name or "\0" in voice or not isinstance(snippets, list) or
-            len(snippets) > RESIDENT_SNIPPETS_MAX):
+    for field, cap in ((name, RESIDENT_NAME_CHARS), (voice, RESIDENT_VOICE_CHARS)):
+        if field is not None and (not isinstance(field, str) or len(field) > cap or "\0" in field):
+            return None, RESIDENT_BRIEF_CODE
+    if not isinstance(snippets, list) or len(snippets) > RESIDENT_SNIPPETS_MAX:
         return None, RESIDENT_BRIEF_CODE
-    lines = [RESIDENT_HEADER, "agent_name: " + _one_line(name), "voice: " + _one_line(voice)]
+    lines = [RESIDENT_HEADER]
+    for label, field in (("agent_name: ", name), ("voice: ", voice)):
+        if field is not None and _one_line(field):
+            lines.append(label + _one_line(field))
     size = len("\n".join(lines).encode("utf-8", "replace"))
     for snippet in snippets:
         if not isinstance(snippet, dict) or set(snippet) != {"source", "text"}:
             continue
         source, text = snippet["source"], snippet["text"]
         if (not isinstance(source, str) or not isinstance(text, str) or len(source) > RESIDENT_SOURCE_CHARS or
-                len(text) > RESIDENT_TEXT_CHARS or "\0" in source or "\0" in text):
+                source not in RESIDENT_SOURCES or len(text) > RESIDENT_TEXT_CHARS or "\0" in source or "\0" in text):
             continue
         source, text = _one_line(source), _one_line(text)
         if not source or not text:
@@ -183,6 +193,8 @@ def _resident_brief(value):
             break
         lines.append(line)
         size += line_size
+    if len(lines) == 1:
+        return None, None  # nothing to ground in: today's prompt, no code
     block = "\n".join(lines)
     try:
         block.encode("utf-8")
@@ -813,6 +825,9 @@ def _output(context: dict, home: Path):
 # posted and the code alone reaches stderr. Every other box's reply has no such key and takes the model path unchanged.
 SEAT_ANSWER_CHARS = 2000
 SEAT_ANSWER_CODE = "seat-answer-shape"
+# ZZZ refuses a body-only complete for a new_topic (it needs a title or an existing_thread_id), so a seat text on a
+# new_topic candidate completes silent and the run fails with this code (review-b ov#554 N4).
+SEAT_TOPIC_CODE = "seat-answer-topic"
 
 
 def _seat_output(answer):
@@ -1026,6 +1041,8 @@ def _claimed_turn(home: Path, cfg: dict, http, candidate, state: dict):
     # A seat turn counts toward the cap just above, like a model turn, but reads no model route and calls no model.
     if "seat_answer" in context:
         output, code = _seat_output(context["seat_answer"])
+        if candidate["kind"] == "new_topic" and "body" in output:
+            output, code = {"silent": True}, SEAT_TOPIC_CODE
     else:
         output, code = _output(context, home), None
     if not _installed(home) or _job(home, cfg) is None:
