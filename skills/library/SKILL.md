@@ -21,12 +21,12 @@ or Edge Library's own Librarian agent.
 
 Call the native `village` tool with one of the operations below and its input
 in `arguments`. There is nothing to connect or sign in to: Agent Village's app
-server tells Edge Library which member the owner is by their numeric Telegram
-user id (never their username), and selects the fixed endpoint and tool. The
-owner's first call creates their member entry in Edge Library if they have
-none. Never call Edge Library by URL, shell, browser or MCP yourself, never
-send a Telegram id, username or any other id for the owner, and never ask for
-or accept a token or code. This works only in the paired owner's private
+server holds Edge Library's key, tells Edge Library which resident this is
+with a private, stable reference, and selects the fixed endpoint and tool.
+Reading does not create a member entry in Edge Library. Never call Edge
+Library by URL, shell, browser or MCP yourself, never send a Telegram id,
+username or any other id for the owner, and never ask for or accept a token or
+code. This works only in the paired owner's private
 conversation.
 
 ## Read only

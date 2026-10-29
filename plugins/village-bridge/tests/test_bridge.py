@@ -143,7 +143,7 @@ class TransportTest(unittest.TestCase):
     request=opener.open.call_args.args[0]
     self.assertEqual(request.get_header('X-village-operation'),header)
     self.assertEqual(opener.open.call_args.kwargs['timeout'],25)
-    # The box never sends an identity header of its own: the app adds the Telegram id.
+    # The box never sends an identity header of its own: the app adds the subject.
     self.assertFalse({k.lower() for k in request.headers}&{'x-agent-village-telegram-user-id','x-agent-village-telegram-username','x-village-subject'})
   def refuse(code,status=403):
    return HTTPError('https://agents.edgecity.live/api/v1/village-bridge/tool',status,'refused',{},io.BytesIO(json.dumps({'code':code,'detail':'upstream text not shown'}).encode()))

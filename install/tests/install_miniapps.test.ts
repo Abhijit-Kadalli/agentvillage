@@ -315,9 +315,10 @@ test("Edge Library 1.0.0 manifest and native allowlist pin exactly its eight rea
   // app-token: no per-resident OAuth (`auth`), no relay (`mcp`); sandbox, so restricted.
   expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read"]);
-  // CD-44: the numeric Telegram id only, never the username.
-  expect(manifest.permissions[0].description).toContain("numeric Telegram user id");
-  expect(manifest.permissions[0].description).toContain("never your Telegram username");
+  // Lead L31582 (Q5/Q6): the app's private per-app subject, never a Telegram id or username; a read creates no entry.
+  expect(manifest.permissions[0].description).toContain("by a private, stable reference, never your Telegram id or username");
+  expect(manifest.permissions[0].description).toContain("Reading does not create a member entry");
+  expect(manifest.permissions[0].description).not.toMatch(/Telegram user id|creates your member entry/);
   expect(manifest).not.toHaveProperty("mcp");
   expect(manifest).not.toHaveProperty("auth");
   const v2 = JSON.parse(readFileSync(join(REPO, "mini-apps", "library", "manifest.json"), "utf8"));

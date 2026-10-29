@@ -514,12 +514,13 @@ card.
 
 There is no per-resident sign-in. The service is `app-token`: the app server
 holds one token for Edge Library (`MINI_APP_LIBRARY_KEY`, by `secretRef`) and,
-through the generic dispatcher, sends `X-Agent-Village-Telegram-User-Id`: the
-owner's numeric Telegram user id from the bridge connection's live pairing.
-Never the username, never from the box, and only for a resident who installed
-`library`, only to the manifest's origin. Edge Library acts as its Agent Village
-agent on behalf of that member (an unknown Telegram id creates the member's
-entry; 60 tool calls a minute per resident). The id is `library` because the
+through the generic dispatcher, sends `X-Village-Subject`: the app's private,
+stable, per-app reference for the owner (the existing `subject` separation
+mode, as Kismet's). Never a Telegram id or username, never from the box, and
+only for a resident who installed `library`, only to the manifest's origin.
+Edge Library acts as its Agent Village agent on behalf of that resident, with
+a member's role (a read never creates a member entry; 60 tool calls a minute
+per resident). The id is `library` because the
 validator reserves `edge-`.
 
 Input rides the existing `arguments` object and is checked in
@@ -536,7 +537,7 @@ these operations only.
 
 Overlay tag first, then the one cp switch PR (vendored manifest, reviewed id,
 catalog row `restricted`) deployed before that tag's roll, then the app half
-(the Telegram-id header mode and the vendored manifest), then Edge City staff
+(the `subject` separation entry and the vendored manifest), then Edge City staff
 set `MINI_APP_LIBRARY_KEY` on the app service. The app-server contract and the
 prerequisites are in [library/README.md](library/README.md).
 

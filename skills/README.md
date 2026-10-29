@@ -29,7 +29,8 @@ connected zzz.bot agent; tenant-restricted), `slopfolio` (carry the owner's
 process summary into a private draft, then return its review link and status;
 the owner publishes on Slopfolio), `library` (search and read Edge Library, the
 village knowledge graph; read only; no sign-in: the app server names the owner
-to Edge Library by their numeric Telegram id, never the username;
+to Edge Library by a private, stable per-app reference, never a Telegram id or
+username;
 tenant-restricted),
 and `forkicks` (live café menu/schedule and exact-preview,
 manually approved orders with returned UPI links or card at pickup). UPI receipts

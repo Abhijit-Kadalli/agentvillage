@@ -14,7 +14,7 @@
     {
       "kind": "read",
       "label": "Search and read the village knowledge graph",
-      "description": "Your searches and the nodes, sources, history and proposals you open in Edge Library (library.positivesumexperiments.com). With each request Agent Village sends Edge Library your numeric Telegram user id, so it knows which member you are, and never your Telegram username. Your first request creates your member entry in Edge Library if you do not have one. Edge Library keeps search words without who asked."
+      "description": "Your searches and the nodes, sources, history and proposals you open in Edge Library (library.positivesumexperiments.com). Agent Village tells Edge Library which resident you are by a private, stable reference, never your Telegram id or username. Reading does not create a member entry for you in Edge Library. Edge Library keeps search words without who asked."
     }
   ],
   "service": {
@@ -303,7 +303,7 @@
     {
       "name": "library",
       "version": "1.0.0",
-      "sha256": "2e906c26a8118063dc7e7915847fb12030796f1682f2a6214f1dc7fbd2574783",
+      "sha256": "7ac599c8ff1f6099d4e8bd8d27916625a87db0adec6efaaa6196915fd62b26e7",
       "path": "skills/library/SKILL.md"
     }
   ]

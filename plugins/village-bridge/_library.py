@@ -5,9 +5,9 @@ library_write, library_propose) are not exposed in 1.0.0: no operation, schema e
 
 The Agent Village app server holds Edge Library's one service token (manifest v2 auth mode app-token, secretRef
 MINI_APP_LIBRARY_KEY) and calls https://library.positivesumexperiments.com/api/mcp through the generic dispatcher,
-with `X-Agent-Village-Telegram-User-Id`: the owner's NUMERIC Telegram user id, taken by the app from the bridge
-connection's live pairing. Never the Telegram username, and never from the box or the model. The box never sees a
-token, an endpoint, a header or a resident id, and never sends one: any key naming a resident (a Telegram id or
+with X-Village-Subject: the app's opaque, stable, per-app reference for this resident (the app's existing `subject`
+separation mode, as Kismet's). Never a Telegram id or username, and never from the box or the model. The box never
+sees a token, an endpoint, a header or a resident id, and never sends one: any key naming a resident (a Telegram id or
 username, a user, resident or subject id), at any depth, is refused before anything is sent. Every other input is
 checked here against the reviewed manifest's `input` schema (Edge Library's own tool schemas; additionalProperties
 false), so a bad call is refused before anything is sent.
@@ -39,7 +39,7 @@ NOT_EXPOSED = ("library_submit_source", "library_write", "library_propose",
 # The manifest's maxRequestBytes: the whole request the box sends (compact UTF-8 JSON, as transport() writes it).
 MAX_REQUEST_BYTES = 4096
 
-# Keys that name a resident. Edge Library knows the owner only by the Telegram id the app server adds.
+# Keys that name a resident. Edge Library knows the owner only by the subject the app server adds.
 IDENTITY_KEYS = frozenset({"residentid", "subject", "userid", "telegramid", "telegramuserid", "telegramusername",
                            "username", "humanid", "personid", "ownerid", "ownertelegramid", "xvillagesubject",
                            "xagentvillagetelegramuserid", "xagentvillagetelegramusername"})
@@ -148,8 +148,8 @@ LIBRARY_UNAVAILABLE = ("Tell the owner Edge Library is not available from here r
 LIBRARY_INVALID = ("Nothing was sent. Check the library skill's input for this operation: only its keys, inside arguments; "
                    "ids, paths and queryId exactly as Edge Library returned them; within the operation's limits. Edge "
                    "Library is read-only from here: there is no operation that adds to it.")
-LIBRARY_IDENTITY = ("Nothing was sent. Edge Library knows the owner only by the Telegram id Agent Village's app server "
-                    "adds: never send a Telegram id, username, user id or subject. Call again without it.")
+LIBRARY_IDENTITY = ("Nothing was sent. Edge Library knows the owner only by the private reference Agent Village's app "
+                    "server adds: never send a Telegram id, username, user id or subject. Call again without it.")
 LIBRARY_NOT_CONNECTED = ("Tell the owner: \"Edge Library isn't connected yet.\" Nothing was read; do not retry now. The owner "
                          "can use " + LIBRARY_SITE + " (sign in with Telegram).")
 LIBRARY_RATE_LIMITED = ("Edge Library allows 60 calls a minute for each resident and this owner has used them. Wait a minute "

@@ -30,12 +30,12 @@ the display name is "Edge Library".
 ## Why the reviewed path, and why app-token
 
 Every Edge Library tool, the two no-argument reads included, needs Edge
-Library's service token and the member's Telegram id, and its content is for
-members only. A generic entry (`mcp`, `auth: none`) cannot carry either, so
-this is a reviewed app. The service is `app-token`: one token between Agent
-Village and Edge Library and no second sign-in. The owner only installs the
-mini-app. The box never sees the token, the endpoint, the Telegram id or a
-person id.
+Library's service token and an identity header for the resident, and its
+content is for members only. A generic entry (`mcp`, `auth: none`) cannot
+carry either, so this is a reviewed app. The service is `app-token`: one token
+between Agent Village and Edge Library and no second sign-in. The owner only
+installs the mini-app. The box never sees the token, the endpoint, the subject
+or a person id.
 
 ## What is sent, and to whom (CD-44)
 
@@ -47,25 +47,29 @@ person id.
   the app).
 - **Per call:** the service token (`Authorization: Bearer`, from the env name
   `MINI_APP_LIBRARY_KEY` by `secretRef`), the header
-  `X-Agent-Village-Telegram-User-Id: <the owner's numeric Telegram user id>`,
-  and the read's own `arguments` (search words, ids, paths, limits) as the MCP
-  tool's arguments.
-- **Never:** the Telegram username (no `X-Agent-Village-Telegram-Username`
-  header), `X-Village-Subject`, an email, a name, the cp tenant or human id.
+  `X-Village-Subject: <the app's per-app reference for the owner>`, and the
+  read's own `arguments` (search words, ids, paths, limits) as the MCP tool's
+  arguments.
+- **Never:** a Telegram id or username (no `X-Agent-Village-Telegram-User-Id`
+  or `X-Agent-Village-Telegram-Username` header), an email, a name, the cp
+  tenant or human id.
 
-The Telegram id comes from the bridge connection's live pairing
-(`owner_telegram_id`, checked against the cp's pairing on every authorize),
-never from the box or the model. The box refuses any argument key naming a
-resident, at any depth, before sending.
+The subject is the app server's existing `subject` separation mode, as
+Kismet's: an HMAC under `MINI_APPS_SUBJECT_SECRET` of the app id, the tenant
+id and the human id. It is stable for this app and resident and does not link
+to Telegram, an email or another app. It never comes from the box or the
+model. The box refuses any argument key naming a resident, at any depth,
+before sending.
 
-## Identity on the Edge Library side (from its integration guide)
+## Identity on the Edge Library side (its integration guide and Naman's answers)
 
-- The Telegram id is the member. An unknown id **creates** the member's entry
-  on the first call, a read included (the manifest's permission says so).
-- Every call acts as one "Agent Village" agent on behalf of the member, with
-  that member's role in Edge Library. A member-role cap for Agent Village calls
-  is asked of Naman (Q7) and is not assumed here; for reads, an admin's role
-  may show more proposals or history than a member's.
+- Edge Library accepts `X-Village-Subject` as the resident's identity when no
+  Telegram id is sent (Naman, 29 October).
+- A read never creates a member entry. Edge Library creates one only on a
+  resident's first write, and 1.0.0 has no write.
+- Every call acts as one "Agent Village" agent on behalf of the resident, with
+  a member's role, whatever the person's own Edge Library role. An admin's
+  agent reads no more than a member's.
 - An admin revoking the Agent Village agent switches the whole link off (403).
 - **Rate limit: 60 tool calls a minute per resident** (`initialize` and
   `tools/list` do not count).
@@ -113,15 +117,15 @@ The app half rides the generic dispatcher (`dispatch/*`), as Kismet's does
 1. The vendored `library` manifest (this file's `manifest.json`, byte for
    byte at the overlay tag) and its catalog row.
 2. A reviewed resident-separation entry for `library` bound to that
-   manifest's sha256, in a **new mode `telegram-id`** (residents.ts today has
-   only `subject` and `stateless`): the dispatcher adds
-   `X-Agent-Village-Telegram-User-Id` from the bridge connection row's
-   `owner_telegram_id` (it must match `^[1-9][0-9]{0,15}$`, else fail closed
-   `mini_app_unconfigured`), never `X-Village-Subject` and never a username.
-   `DispatchAuth.row` then carries `owner_telegram_id` (the route already has
-   it from `authorize()`).
+   manifest's sha256, in the existing `subject` mode (as Kismet's):
+   `RESIDENT_SEPARATION.library = {mode: "subject", manifestSha256}`. The
+   dispatcher already adds `X-Village-Subject` for a `subject` app; no new
+   mode, no Telegram id and no username. Without the entry the app sends no
+   identity and Edge Library refuses every call (401); nothing leaks.
 3. `library` in `MINI_APPS_DISPATCH`; fail closed (503
    `mini_app_unconfigured`) while `MINI_APP_LIBRARY_KEY` is unset.
+   `MINI_APPS_SUBJECT_SECRET` must be set (already a Kismet go-live item; it
+   never rotates).
 
 The dispatcher already does the MCP call: `initialize` (protocol
 `2025-06-18`), `notifications/initialized` and `tools/call`, bearer only to
@@ -130,11 +134,10 @@ the manifest origin, `redirect: "error"`, the response cap, and the frame
 
 ## Edge Library's refusals and what the box says
 
-Before MCP (an HTTP status): a 401 (unknown token, or a missing or bad Telegram
-id header) and a 403 (the Agent Village agent revoked) reach the box as the
-dispatcher's closed codes (`mini_app_upstream_refused` and the like). The box
-replaces every closed code with its own text (`_library.py`
-`LIBRARY_APP_ERRORS`).
+Before MCP (an HTTP status): a 401 (unknown token, or no identity header) and
+a 403 (the Agent Village agent revoked) reach the box as the dispatcher's
+closed codes (`mini_app_upstream_refused` and the like). The box replaces
+every closed code with its own text (`_library.py` `LIBRARY_APP_ERRORS`).
 
 A tool's own refusal is an MCP result with `isError: true` and
 `structuredContent: {code, detail}`. The box maps `invalid_arguments`,
@@ -180,7 +183,7 @@ UTF-16 length, so an offset still points at the same text.
 5. Carter's hands: `MINI_APP_LIBRARY_KEY` on the app service (where
    `MINI_APP_KISMET_KEY` lives; never in a pull request), and
    `MINI_APPS_TENANT_ALLOWLIST.library` for the first tenants. Then Naman's
-   smoke test, reads only.
+   smoke test, reads only, with the subject header.
 
 ## V0 conformance evidence
 
