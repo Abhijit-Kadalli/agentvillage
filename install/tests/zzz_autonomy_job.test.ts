@@ -86,7 +86,11 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   // v2.1.19/v2.1.20 boxes hold ov#526's bytes; topic tags (lead L30725) appended a third digest, every older one kept.
   const v2119=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2119.py.fixture"));
   expect(digest(v2119)).toBe("95b64ed6eef6d42897e7ad4f922266fbbf1320abeaeeee9f28e06ca9a1d51c9c");
-  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(current)]);
+  // v2.1.21 boxes hold the topic-tags bytes; zzzbot 1.1.0 by the exact ZZZBOT_ACCEPTED (RUNNER-ZZZBOT-110) appended a fourth digest.
+  const v2121=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2121.py.fixture"));
+  expect(digest(v2121)).toBe("f71f3c5d48c90ca8dcbdfa22a58c945dcf3d6e54640536ca30194722e0d97a32");
+  expect(v2121.equals(current)).toBe(false);
+  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(v2121),digest(current)]);
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT);
