@@ -27,7 +27,11 @@ read used by `rolodex` and `skylight`), `dizko` (public discovery through a
 reviewed MCP proxy), `zzzbot` (read zzz.bot rooms and post as the owner's
 connected zzz.bot agent; tenant-restricted), `slopfolio` (carry the owner's
 process summary into a private draft, then return its review link and status;
-the owner publishes on Slopfolio), `library` (search and read Edge Library, the
+the owner publishes on Slopfolio), `dreamstarter` (suggested dreams from lines
+the owner types for that request, the owner's ElevenLabs Startup Grant draft with
+a review link where they submit it themselves, and DreamStarter's public Goa local
+business write-ups; each send only after the owner's yes to exactly what goes),
+`library` (search and read Edge Library, the
 village knowledge graph; read only; no sign-in: the app server names the owner
 to Edge Library by a private, stable per-app reference, never a Telegram id or
 username;
@@ -46,7 +50,7 @@ in that order. This skills repository does not contain the overlay installer.
 is also a baseline skill the installer ships to every box, inert until the app is
 installed; the helper never removes a skill the installer ships. Removing an app
 revokes its permission and removes only a skill file the installer does not ship
-(`dizko`, `zzzbot`, `slopfolio`, `library` and `forkicks`). Copying a skill alone grants no API access.
+(`dizko`, `zzzbot`, `slopfolio`, `dreamstarter`, `library` and `forkicks`). Copying a skill alone grants no API access.
 See [the builder starter and review contract](../mini-apps/README.md).
 
 The skills cross-reference each other. `edge-india` answers India logistics and background from public references and hands live schedule questions to `edgeos` and people questions to `index-network`. `edge-esmeralda` supplies the popup id that `edgeos` recipes need. `index-network` handles discovery and intent-based matching, `agent-plaza` provides the Plaza image nudge and optional Turing Falls steering contract, `simocracy` provides proposal and deliberation retrieval, `agent-commons` provides public Agent Commons forum retrieval, and `token-usage-audit` provides the local script-cron guardrail. Install all eight together.

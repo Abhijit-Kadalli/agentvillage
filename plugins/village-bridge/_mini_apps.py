@@ -54,6 +54,13 @@ ZZZ_TEAM_READ_OPERATIONS = ("zzz.list_team_invites",)
 ZZZ_TEAM_WRITE_OPERATIONS = ("zzz.open_team_room", "zzz.respond_team_invite", "zzz.add_team_members")
 ZZZ_TEAM_BORROWS = {"zzz.list_team_invites": "zzz.list_rooms", "zzz.open_team_room": "zzz.create_thread",
                     "zzz.respond_team_invite": "zzz.create_thread", "zzz.add_team_members": "zzz.create_thread"}
+# DreamStarter (adapted from ov#393, arrfire): public reads (the workflow catalog, the grant's rules, the local
+# businesses) and the owner's own status reads by a returned ref, plus two owner-asked WRITES that send the owner's
+# own words: dreamstarter.discover (the lines typed for that request) and dreamstarter.grant_prepare (the confirmed
+# application answers). The writes take zzz's path (gate_verified), never a card or a manual grant.
+DS_READ_OPERATIONS = ("dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_status",
+                      "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status")
+DS_WRITE_OPERATIONS = ("dreamstarter.discover", "dreamstarter.grant_prepare")
 # Edge Library (Naman, adapted from ov#506): the village knowledge graph's eight reads. 1.0.0 is READS ONLY (Carter,
 # CD-44): Edge Library's three writes are not exposed, so none is in WRITE_OPERATIONS. The reads join the existing read
 # class: no new class, row, gate or card.
@@ -61,10 +68,10 @@ LIBRARY_READ_OPERATIONS = ("library.initialize", "library.search", "library.get"
                            "library.changes_since", "library.proposals")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
-                             *ZZZ_TEAM_READ_OPERATIONS, *LIBRARY_READ_OPERATIONS})
+                             *ZZZ_TEAM_READ_OPERATIONS, *DS_READ_OPERATIONS, *LIBRARY_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
                               "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_POST_WRITES,
-                              *ZZZ_TEAM_WRITE_OPERATIONS})
+                              *ZZZ_TEAM_WRITE_OPERATIONS, *DS_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
@@ -80,6 +87,11 @@ ZZZBOT_ACCEPTED = (ZZZBOT, ZZZBOT_PREVIOUS)
 # list_rooms install permission; it is deliberately absent from the CP catalog.
 ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs", *ZZZ_TEAM_READ_OPERATIONS, *ZZZ_TEAM_WRITE_OPERATIONS))
 SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}
+# The dreamstarter install, by exact equality (CP catalog entry and install/install_miniapps.ts, the manifest's order).
+DREAMSTARTER = {"version": "2.0.0", "skills": ["dreamstarter"], "operations": [
+    "dreamstarter.discover", "dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_prepare",
+    "dreamstarter.grant_status", "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status"]}
+DS_OPERATIONS = frozenset(DREAMSTARTER["operations"])
 # The library install, by exact equality (CP catalog entry and install/install_miniapps.ts, this order).
 LIBRARY = {"version": "1.0.0", "skills": ["library"], "operations": [*LIBRARY_READ_OPERATIONS]}
 LIBRARY_OPERATIONS = frozenset(LIBRARY["operations"])
@@ -201,6 +213,7 @@ def _card_entry_ok(app) -> bool:
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
 REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": ZZZBOT_ACCEPTED, ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
                     ZZZ_AUTONOMY_RUNNER_ID: (ZZZ_AUTONOMY_RUNNER,), "slopfolio": (SLOPFOLIO,),
+                    "dreamstarter": (DREAMSTARTER,),
                     "library": (LIBRARY,)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")
