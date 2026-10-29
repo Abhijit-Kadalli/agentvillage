@@ -617,7 +617,7 @@ Every catalog app is in one of three tiers. Edge City picks the tier; a partner 
 | --- | --- | --- | --- | --- |
 | 1. Staff | `"staff": true` on the control plane's catalog entry, acted on while `CP_MINI_APPS_STAFF=1` | Installed for every agent in the mini-apps cohort at provisioning, rebuild and by the default-install job | No. A removal is refused `409 mini_app_staff_locked`. | Gold Stars, For Kicks, Mosaic, zzz.bot |
 | 2. Default | The control plane's `MINI_APPS_DEFAULT_INSTALL`, a comma list of reviewed ids. Not a manifest field: the schema is closed and has no `default` key. | Installed for every agent in the cohort, by the same paths | Yes. The removal is recorded and the app is never installed again over it. | Which ids it names is an Edge City setting |
-| 3. Optional | Neither | The resident installs it from the catalog | Yes | Dizko, Slopfolio (allowlisted tenants only), every generic and partner app |
+| 3. Optional | Neither | The resident installs it from the Mini-apps page | Yes | Dizko, Slopfolio (allowlisted tenants only), every generic and partner app |
 
 Source:
 - cp `docs/RAILWAY.md:167` (`CP_MINI_APPS_STAFF`: installed through the Install path, `409 mini_app_staff_locked`) and `:168` (`MINI_APPS_DEFAULT_INSTALL`: removable, tombstone respected, reviewed ids only).
