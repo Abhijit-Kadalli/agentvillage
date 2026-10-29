@@ -24,8 +24,9 @@ export const REVIEWED_MINI_APPS = [
   { id: "gold-stars", version: "1.1.0", operations: ["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel", "rolodex.meeting", "skylight.status", "rolodex.person"], skills: ["gold-stars"] },
   { id: "dizko", version: "1.0.0", operations: ["mini-app.read", "mini-app.context.read", "mini-app.context.write"], skills: ["dizko"] },
   { id: "forkicks", version: "1.0.0", operations: ["forkicks.menu", "forkicks.schedule", "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.status", "forkicks.order.cancel"], skills: ["forkicks"] },
-  // P-6 ZZZ-MINIAPP: restricted zzz.bot, five named operations (plugins/village-bridge/_mini_apps.py ZZZBOT, exact).
-  { id: "zzzbot", version: "1.0.0", operations: ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"], skills: ["zzzbot"] },
+  // P-6 ZZZ-MINIAPP: restricted zzz.bot, its named operations (plugins/village-bridge/_mini_apps.py ZZZBOT, exact). 1.1.0
+  // (lead L30481): the five, then the agent's own retag and edit (gated writes). The five alone (1.0.0) is below.
+  { id: "zzzbot", version: "1.1.0", operations: ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread", "zzz.tag_thread", "zzz.edit_post"], skills: ["zzzbot"] },
   // ov#441 S1 (lead RULING CLAIMS L16692/L16696): the ONLY gate for managed private-pair participation, a separate
   // cp catalog/allowlist entry granted per tenant at activation (the Mosaic restricted-entry pattern). Spelled
   // `zzz-bridge`: cp and app ids match ^[a-z0-9][a-z0-9-]{0,39}$ (no underscore; app#500 reads the same id).
@@ -37,6 +38,9 @@ export const REVIEWED_MINI_APPS = [
   // MOSAIC (app#486, rides v2.1.9): restricted in the CP catalog (MINI_APPS_TENANT_ALLOWLIST key `mosaic`).
   // Dizko's shape: the public read first, then its own context namespace read and write, served per box.
   { id: "mosaic", version: "1.0.0", operations: ["mini-app.read", "mini-app.context.read", "mini-app.context.write"], skills: ["mosaic"] },
+  // DreamStarter (adapted from ov#393, arrfire): seven reads and two owner-asked writes, discover and grant_prepare
+  // (_mini_apps.py DREAMSTARTER, exact; the manifest's order).
+  { id: "dreamstarter", version: "2.0.0", operations: ["dreamstarter.discover", "dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_prepare", "dreamstarter.grant_status", "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status"], skills: ["dreamstarter"] },
   // Kismet Part 2 (lead L29830): its three public reads and the owner's own summary, then the owner's own sign-up, new
   // dates, meet or pass and deletion (gated writes); _mini_apps.py KISMET, exact. Part 1's read alone is below.
   { id: "kismet", version: "1.1.0", operations: ["kismet.how_it_works", "kismet.village_stats", "kismet.public_board", "kismet.summary", "kismet.signup", "kismet.go", "kismet.decide", "kismet.delete"], skills: ["kismet"] },
@@ -47,7 +51,8 @@ export const REVIEWED_MINI_APPS = [
  * eight-op entry (ov#350, _mini_apps.py GOLD_STARS_RESTORED; the CP's current entry, rolodex.person
  * refused under it) and the six-op entry before the restore (ov#343, GOLD_STARS_PREVIOUS; no meeting,
  * Skylight or person operation), and dizko's public read alone (NEW-03: the CP's entry until it
- * projects the context operations), and mosaic's the same way, and kismet's Part 1 read (ov#533). Remove each after the CP catalog serves a newer
+ * projects the context operations), and mosaic's the same way, and zzzbot's five (1.0.0, _mini_apps.py ZZZBOT_PREVIOUS: the
+ * CP's entry until its catalog serves 1.1.0; the two edits refused under it), and kismet's Part 1 read (ov#533). Remove each after the CP catalog serves a newer
  * list everywhere.
  */
 export const PREVIOUS_REVIEWED_MINI_APPS = [
@@ -56,6 +61,8 @@ export const PREVIOUS_REVIEWED_MINI_APPS = [
   { id: "dizko", version: "1.0.0", operations: ["mini-app.read"], skills: ["dizko"] },
   // MOSAIC: its read alone, the CP's entry for a box that does not take the context entry (as dizko's).
   { id: "mosaic", version: "1.0.0", operations: ["mini-app.read"], skills: ["mosaic"] },
+  // ZZZBOT: the five named operations alone (v2.1.3 to v2.1.19), the CP's entry until its catalog serves 1.1.0.
+  { id: "zzzbot", version: "1.0.0", operations: ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"], skills: ["zzzbot"] },
   // KISMET: Part 1's public relay read alone (ov#533), the CP's entry until its catalog serves 1.1.0 (_mini_apps.py KISMET_PUBLIC).
   { id: "kismet", version: "1.0.0", operations: ["mini-app.read"], skills: ["kismet"] },
 ] as const;
@@ -73,6 +80,7 @@ const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).dige
 export const ZZZ_BRIDGE_ID = "zzz-bridge";
 const ZZZ_SHIM = "zzz_managed_runner.py";
 const ZZZ_LEGACY_SHIM = "agentvillage_zzz_pairs.sh";
+// cp#467: the control plane mirrors the receipt paths these give (mini-apps-skills.js ZZZ_STAGE_FILE_LISTS); change it first.
 const ZZZ_MANAGED_FILES = [`scripts/${ZZZ_LEGACY_SHIM}`, `scripts/${ZZZ_SHIM}`, "prompts/participate.md"] as const;
 const ZZZ_STAGE_FILES = ZZZ_MANAGED_FILES.filter(relative => relative !== `scripts/${ZZZ_LEGACY_SHIM}`);
 /**

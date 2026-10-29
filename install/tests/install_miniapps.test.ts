@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 import * as installMiniApps from "../install_miniapps";
 import { PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REVIEWED_MINI_APPS, SHIPPED_SKILLS, validateProjection, ZZZ_BRIDGE_ID, zzzParticipation } from "../install_miniapps";
 import * as zzzManagedJob from "../zzz_managed_job";
+import { AUTONOMY_FILES, AUTONOMY_GATE } from "../zzz_autonomy_job";
 import { EDGE_SKILL_NAMES } from "../paths";
 import { createRequire } from "node:module";
 
@@ -60,10 +61,25 @@ test("reviewed skills are optional, disk-only staging has deterministic receipts
   expect(receipt).toEqual(reconcileMiniApps(all, root));
   expect(receipt).toEqual(reconcileMiniApps(all, root, undefined, true));
   expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(all)).digest("hex"));
-  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md", "skills/zzzbot/SKILL.md", "skills/slopfolio/SKILL.md", "skills/mosaic/SKILL.md", "skills/kismet/SKILL.md", "skills/zzzbot/scripts/zzz_managed_runner.py", "skills/zzzbot/prompts/participate.md", "skills/zzzbot/scripts/zzz_autonomy_runner.py", "skills/zzzbot/prompts/autonomy.md"]);
+  expect(receipt.files.map(x => x.path)).toEqual(["skills/gold-stars/SKILL.md", "skills/dizko/SKILL.md", "skills/forkicks/SKILL.md", "skills/zzzbot/SKILL.md", "skills/slopfolio/SKILL.md", "skills/mosaic/SKILL.md", "skills/dreamstarter/SKILL.md", "skills/kismet/SKILL.md", "skills/zzzbot/scripts/zzz_managed_runner.py", "skills/zzzbot/prompts/participate.md", "skills/zzzbot/scripts/zzz_autonomy_runner.py", "skills/zzzbot/prompts/autonomy.md"]);
   expect(receipt).not.toHaveProperty("active");
   writeFileSync(join(root, "skills", "gold-stars", "SKILL.md"), "tampered");
   expect(() => reconcileMiniApps(all, root, undefined, true)).toThrow("mini_apps_skill_mismatch");
+});
+
+// cp#467 (runner SEV1 28 Oct 2026): the control plane holds these receipt paths by hand and fails EVERY mini-app on a
+// box whose receipt differs. A change here lands in cp control-plane/src/mini-apps-skills.js ZZZ_STAGE_FILE_LISTS /
+// ZZZ_AUTONOMY_FILE_LISTS FIRST (as a new list, the old one kept for the roll), deployed before the tag that ships it.
+test("zzz managed receipt files are the cp's mirrored lists (change the cp first: mini-apps-skills.js ZZZ_*_FILE_LISTS)", () => {
+  const root = installedBox();
+  const projection = { version: 1, apps: REVIEWED_MINI_APPS.filter(app => ["zzzbot", ZZZ_BRIDGE_ID, AUTONOMY_GATE].includes(app.id)) };
+  expect(projection.apps.map(app => app.id).sort()).toEqual([AUTONOMY_GATE, ZZZ_BRIDGE_ID, "zzzbot"].sort());
+  const managed = reconcileMiniApps(projection, root).files.map(file => file.path).filter(path => path !== "skills/zzzbot/SKILL.md");
+  expect(managed).toEqual([
+    "skills/zzzbot/scripts/zzz_managed_runner.py", "skills/zzzbot/prompts/participate.md", // cp ZZZ_STAGE_FILE_LISTS[0]
+    "skills/zzzbot/scripts/zzz_autonomy_runner.py", "skills/zzzbot/prompts/autonomy.md", // cp ZZZ_AUTONOMY_FILE_LISTS[0]
+  ]);
+  expect(AUTONOMY_FILES).toEqual(["scripts/zzz_autonomy_runner.py", "prompts/autonomy.md"]);
 });
 
 test("uninstall revokes the projection and removes only exact managed files, never a shipped skill", () => {
@@ -87,6 +103,7 @@ test("uninstall revokes the projection and removes only exact managed files, nev
   expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "slopfolio", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "mosaic", "SKILL.md"))).toBe(false);
+  expect(existsSync(join(root, "skills", "dreamstarter", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "kismet", "SKILL.md"))).toBe(false);
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
   expect(reconcileMiniApps({ version: 1, apps: [] }, root, undefined, true).apps).toEqual([]);
@@ -111,6 +128,7 @@ test("the helper never removes an installer-shipped skill, for any desired set",
     expect(existsSync(join(root, "skills", "zzzbot", "SKILL.md"))).toBe(second.some((a) => a.id === "zzzbot"));
     expect(existsSync(join(root, "skills", "slopfolio", "SKILL.md"))).toBe(second.some((a) => a.id === "slopfolio"));
     expect(existsSync(join(root, "skills", "mosaic", "SKILL.md"))).toBe(second.some((a) => a.id === "mosaic"));
+    expect(existsSync(join(root, "skills", "dreamstarter", "SKILL.md"))).toBe(second.some((a) => a.id === "dreamstarter"));
     expect(existsSync(join(root, "skills", "kismet", "SKILL.md"))).toBe(second.some((a) => a.id === "kismet"));
   }
 });
@@ -155,9 +173,9 @@ test("ROLODEX.PERSON: gold-stars carries rolodex.person last; the 8-op and 6-op 
   expect(gold.operations).toEqual(["rolodex.search", "gold-stars.quota", "gold-stars.prepare", "gold-stars.send", "gold-stars.status", "gold-stars.cancel", "rolodex.meeting", "skylight.status", "rolodex.person"]);
   expect(gold.operations.slice(0, 8)).toEqual([...restored.operations]);
   expect(gold.operations.slice(0, 6)).toEqual([...previous.operations]);
-  // NEW-03: the third previous entry is dizko's public read alone, the fourth mosaic's, the fifth kismet's Part 1 read
+  // NEW-03: the third previous entry is dizko's public read alone, the fourth mosaic's, the fifth zzzbot's five (1.0.0), the sixth kismet's Part 1 read
   // (each asserted in its own test below).
-  expect(PREVIOUS_REVIEWED_MINI_APPS.length).toBe(5);
+  expect(PREVIOUS_REVIEWED_MINI_APPS.length).toBe(6);
   expect(PREVIOUS_REVIEWED_MINI_APPS.filter((x) => x.id === "gold-stars").length).toBe(2);
   for (const entry of [gold, restored, previous]) expect([entry.id, entry.version, [...entry.skills]]).toEqual(["gold-stars", "1.1.0", ["gold-stars"]]);
   // Parity: the plugin's reviewed lists and the reviewed manifest carry exactly the same operations, in order.
@@ -243,11 +261,27 @@ test("verify is read-only and refuses an absent or removed projection", () => {
   expect(existsSync(join(root, "skills", "gold-stars", "SKILL.md"))).toBe(true);
 });
 
-test("zzz.bot manifest and native allowlist pin exactly its five named operations and stage the author skill", () => {
+test("zzz.bot manifest and native allowlist pin exactly its named operations (1.1.0: seven; 1.0.0: five) and stage the author skill", () => {
   const app = REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
-  const ops = ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"];
+  const five = ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"];
+  const ops = [...five, "zzz.tag_thread", "zzz.edit_post"];
   const manifest = reviewedManifest("zzzbot");
-  expect(app).toEqual({ id: "zzzbot", version: "1.0.0", operations: ops, skills: ["zzzbot"] });
+  expect(app).toEqual({ id: "zzzbot", version: "1.1.0", operations: ops, skills: ["zzzbot"] });
+  // 1.0.0 (the five alone) stays stageable, so this overlay rolls out before the CP catalog serves 1.1.0.
+  const previous = PREVIOUS_REVIEWED_MINI_APPS.find(app => app.id === "zzzbot")!;
+  expect(previous).toEqual({ id: "zzzbot", version: "1.0.0", operations: five, skills: ["zzzbot"] });
+  for (const entry of [app, previous]) {
+    const staged = { version: 1, apps: [{ id: entry.id, version: entry.version, operations: [...entry.operations], skills: [...entry.skills] }] };
+    expect(validateProjection(staged)).toEqual(staged);
+    const box = installedBox();
+    const receipt = reconcileMiniApps(staged, box);
+    expect(receipt.projectionSha256).toBe(createHash("sha256").update(JSON.stringify(staged)).digest("hex"));
+    expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
+  }
+  // Neither version with the other's list, and no edit alone, is reviewed.
+  for (const changed of [{ ...app, version: "1.0.0" }, { ...previous, version: "1.1.0" }, { ...app, operations: [...five, "zzz.edit_post"] },
+    { ...app, operations: [...five, "zzz.edit_post", "zzz.tag_thread"] }])
+    expect(() => validateProjection({ version: 1, apps: [changed] })).toThrow("mini_apps_unreviewed_bundle");
   expect(manifest).toMatchObject({ ...app, homepage: "https://zzz.bot" });
   expect(Object.keys(manifest).sort()).toEqual(["auth", "description", "homepage", "id", "name", "operations", "permissions", "provenance", "restricted", "skills", "version"]);
   expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["read", "action"]);
@@ -266,6 +300,10 @@ test("zzz.bot manifest and native allowlist pin exactly its five named operation
   const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
   expect(plugin).toContain('ZZZ_READ_OPERATIONS = ("zzz.list_rooms", "zzz.read_thread", "zzz.changes")');
   expect(plugin).toContain('ZZZ_WRITE_OPERATIONS = ("zzz.reply", "zzz.create_thread")');
+  expect(plugin).toContain('ZZZ_EDIT_OPERATIONS = ("zzz.tag_thread", "zzz.edit_post")');
+  expect(plugin).toContain('ZZZBOT = {"version": "1.1.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS, *ZZZ_EDIT_OPERATIONS]}');
+  expect(plugin).toContain('ZZZBOT_PREVIOUS = {"version": "1.0.0", "skills": ["zzzbot"], "operations": [*ZZZ_READ_OPERATIONS, *ZZZ_WRITE_OPERATIONS]}');
+  expect(plugin).toContain('ZZZBOT_ACCEPTED = (ZZZBOT, ZZZBOT_PREVIOUS)');
   const root = installedBox();
   const receipt = reconcileMiniApps(projection, root);
   expect(receipt.files.map(file => file.path)).toEqual(["skills/zzzbot/SKILL.md"]);
@@ -457,6 +495,50 @@ test("MOSAIC (app#486): Dizko's shape, its context read/write after mini-app.rea
     [read, ctxWrite, ctxRead], [read, read], [read, ctxRead], [read, ctxWrite], [ctxRead, ctxWrite], [],
   ];
   for (const operations of planted) expect(() => validateProjection({ version: 1, apps: [{ ...mosaic, operations }] })).toThrow("mini_apps_unreviewed_bundle");
+});
+
+test("DreamStarter (adapted from ov#393): the manifest and native allowlist pin its nine named operations, two of them writes, and stage the skill", () => {
+  const app = REVIEWED_MINI_APPS.find(app => app.id === "dreamstarter")!;
+  const ops = ["dreamstarter.discover", "dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_prepare",
+    "dreamstarter.grant_status", "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status"];
+  const writes = ["dreamstarter.discover", "dreamstarter.grant_prepare"];
+  const manifest = reviewedManifest("dreamstarter");
+  expect(app).toEqual({ id: "dreamstarter", version: "2.0.0", operations: ops, skills: ["dreamstarter"] });
+  expect(manifest).toMatchObject({ ...app, homepage: "https://dreamstarter.xyz", restricted: true });
+  // app-token: no per-resident OAuth (`auth`), no relay (`mcp`, never served as mini-app.read); sandbox, so restricted.
+  expect(Object.keys(manifest).sort()).toEqual(["description", "homepage", "id", "name", "operations", "permissions", "restricted", "skills", "version"]);
+  expect(manifest.permissions.map((permission: { kind: string }) => permission.kind)).toEqual(["action", "action", "read", "read", "read"]);
+  expect(manifest).not.toHaveProperty("mcp");
+  expect(manifest).not.toHaveProperty("auth");
+  const v2 = JSON.parse(readFileSync(join(REPO, "mini-apps", "dreamstarter", "manifest.json"), "utf8"));
+  expect(v2.service).toEqual({ kind: "mcp", baseUrl: "https://mcp.dreamstarter.xyz/mcp", auth: { mode: "app-token", secretRef: "MINI_APP_DREAMSTARTER_KEY" } });
+  expect(v2.operations.map((op: { class: string }) => op.class)).toEqual(ops.map(op => writes.includes(op) ? "write" : "read"));
+  expect(EDGE_SKILL_NAMES).not.toContain("dreamstarter");
+  expect(SHIPPED_SKILLS.has("dreamstarter")).toBe(false);
+  const projection = { version: 1, apps: [app] };
+  expect(validateProjection(projection)).toEqual(projection);
+  for (const changed of [
+    { ...app, operations: [...app.operations, "dreamstarter.claim"] },
+    { ...app, operations: [...app.operations].reverse() },
+    { ...app, operations: ["mini-app.read"] },
+    { ...app, operations: ops.filter(op => !writes.includes(op)) },
+    { ...app, skills: ["other"] },
+    { ...app, version: "1.1.0" },
+  ]) expect(() => validateProjection({ version: 1, apps: [changed] })).toThrow("mini_apps_unreviewed_bundle");
+  const plugin = readFileSync(join(REPO, "plugins", "village-bridge", "_mini_apps.py"), "utf8");
+  expect(plugin).toContain('DS_WRITE_OPERATIONS = ("dreamstarter.discover", "dreamstarter.grant_prepare")');
+  const root = installedBox();
+  const receipt = reconcileMiniApps(projection, root);
+  expect(receipt.files.map(file => file.path)).toEqual(["skills/dreamstarter/SKILL.md"]);
+  expect(readFileSync(join(root, "skills", "dreamstarter", "SKILL.md"))).toEqual(readFileSync(join(REPO, "skills", "dreamstarter", "SKILL.md")));
+  expect(statSync(join(root, "skills", "dreamstarter", "SKILL.md")).mode & 0o777).toBe(0o600);
+  expect(reconcileMiniApps(projection, root, undefined, true)).toEqual(receipt);
+  // The skill fetches nothing remote and never names the endpoint or a credential.
+  const skill = readFileSync(join(REPO, "skills", "dreamstarter", "SKILL.md"), "utf8");
+  expect(skill).not.toMatch(/mcp\.dreamstarter\.xyz|\.well-known|curl|wget|Authorization:/);
+  expect(skill).toMatch(/^name: dreamstarter$/m);
+  reconcileMiniApps({ version: 1, apps: [] }, root);
+  expect(existsSync(join(root, "skills", "dreamstarter", "SKILL.md"))).toBe(false);
 });
 
 test("kismet 1.1.0: the eight named operations (Part 2) and Part 1's public read alone, staged and removed", () => {

@@ -1,14 +1,15 @@
 /** Separate, projection-gated no-agent ZZZ event job. No pair-gate dependency. */
-import { chmodSync, constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, openSync, readFileSync, closeSync, fstatSync, rmdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { hermesBin, hermesExecEnv } from "./hermes_cli";
 import { hermesAvailable } from "../skills/index-network/scripts/hermes-cli";
-import { jobApi, jobPython, parseHermesJobs } from "./zzz_managed_job";
+import { jobApi, jobPython, parseHermesJobs, replaceFileNoFollow } from "./zzz_managed_job";
 
 export const AUTONOMY_GATE = "zzz-autonomy-runner";
 export const AUTONOMY_JOB_NAME = "Edge — zzz event autonomy";
 export const AUTONOMY_JOB_SCRIPT = "zzz_autonomy_runner.py";
+// cp#467: the control plane mirrors these receipt paths (mini-apps-skills.js ZZZ_AUTONOMY_FILE_LISTS); change it first.
 export const AUTONOMY_FILES = ["scripts/zzz_autonomy_runner.py", "prompts/autonomy.md"] as const;
 const ID = /^[0-9a-f]{12}$/;
 const TOKEN = /^avb_[A-Za-z0-9_-]{43}$/;
@@ -21,6 +22,8 @@ export const AUTONOMY_SHIPPED = {
   "scripts/zzz_autonomy_runner.py": [
     "f25327ecfb2781969d511c23c1c1c4e5e93e829f9abae1384d3b582174b3061e", // ov#528 9d80c106 (the runner PR alone)
     "95b64ed6eef6d42897e7ad4f922266fbbf1320abeaeeee9f28e06ca9a1d51c9c", // + untrusted event_brief + ZZZ 0031 reuse (ov#526)
+    "f71f3c5d48c90ca8dcbdfa22a58c945dcf3d6e54640536ca30194722e0d97a32", // + topic tags, only with the app's room_tags (lead L30725)
+    "cd566df9f69d257a4f75e0d59e331902381ff9bb61ed0e2945d1bedf6e7a3f78", // + zzzbot 1.1.0 by the bridge's exact ZZZBOT_ACCEPTED (RUNNER-ZZZBOT-110)
   ],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
@@ -211,7 +214,7 @@ export function reconcileAutonomyJob(home: string, installed: boolean): void {
   mkdirSync(scripts, {recursive:true,mode:0o700});
   const shim = join(scripts, AUTONOMY_JOB_SCRIPT);
   if (ownedFile(shim, AUTONOMY_FILES[0]) === "not_ours") throw new Error("zzz_autonomy_shim_not_ours");
-  writeFileSync(shim, script, {mode:0o700}); chmodSync(shim,0o700);
+  replaceFileNoFollow(scripts, AUTONOMY_JOB_SCRIPT, script);
   const id = jobs[0]?.id;
   if (id !== undefined && (typeof id !== "string" || !ID.test(id))) throw new Error("zzz_autonomy_job_invalid");
   jobApi(python, home, {action:"install",...(id?{id}:{}),name:AUTONOMY_JOB_NAME,prompt,
