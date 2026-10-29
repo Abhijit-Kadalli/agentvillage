@@ -35,9 +35,15 @@ class FakeHttp:
         return False
 
 
+class FakeTimeout:
+    """httpx.Timeout's keyword form, as the runner builds it (connect, read, write, pool)."""
+    def __init__(self, *, connect, read, write, pool):
+        self.connect, self.read, self.write, self.pool = connect, read, write, pool
+
+
 def clients():
     """Both model-turn clients as loaded modules: run() checks both are importable before it claims."""
-    return {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()), "openai": SimpleNamespace(OpenAI=None)}
+    return {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout), "openai": SimpleNamespace(OpenAI=None)}
 
 
 class TestAutonomyRunner(unittest.TestCase):
@@ -136,7 +142,7 @@ class TestAutonomyRunner(unittest.TestCase):
             def __exit__(self, *_):
                 return False
         context = {"kind": "reply", "candidate_id": "x", "source": {"body": "A current point."}}
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout),
                                       "openai": SimpleNamespace(OpenAI=OpenAI)}), \
                 patch.object(runner, "_model_route", return_value=("https://api.openai.com/v1", "fixture", "model")):
             self.assertEqual(runner._output(context, self.home), {"body": "One focused answer."})
@@ -169,7 +175,7 @@ class TestAutonomyRunner(unittest.TestCase):
             # N2: OpenAI-direct takes max_completion_tokens; OpenRouter takes max_tokens. Both cap at 700.
             self.assertEqual(calls[0].get("max_completion_tokens"), 700)
             self.assertNotIn("max_tokens", calls[0])
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout),
                                       "openai": SimpleNamespace(OpenAI=OpenAI)}), \
                 patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "model")):
             runner._output(context, self.home)
@@ -651,7 +657,7 @@ class TestAutonomyRunner(unittest.TestCase):
         self.assertLessEqual(len(capped.encode()), runner.EVENT_BRIEF_MAX_BYTES)
         self.assertEqual(capped, "é" * 300)
         self.assertEqual(len(runner._event_brief("x" * 5000).encode()), runner.EVENT_BRIEF_MAX_BYTES)
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout),
                                       "openai": SimpleNamespace(OpenAI=OpenAI)}), \
                 patch.object(runner, "_model_route", return_value=("https://api.openai.com/v1", "fixture", "model")):
             reply = {"kind": "reply", "candidate_id": "x", "source": {"body": "A current point."}, "event_brief": raw}
@@ -705,7 +711,7 @@ class TestAutonomyRunner(unittest.TestCase):
         capped = {**topic, "can_create_topic": False}
         self.assertIn("existing_thread_id", runner.SYSTEM)
         self.assertIn("can_create_topic", runner.SYSTEM)
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout),
                                       "openai": SimpleNamespace(OpenAI=OpenAI)}), \
                 patch.object(runner, "_model_route", return_value=("https://api.openai.com/v1", "fixture", "model")):
             # Create a topic while creation is open; the model sees the advisory flag and the issued targets.
@@ -814,6 +820,9 @@ class TestAutonomyRunner(unittest.TestCase):
         self.assertEqual(self.state()["turns"], 1)
 
     def test_fixed_bridge_route_and_response_size(self):
+        modules = patch.dict(sys.modules, {"httpx": SimpleNamespace(Timeout=FakeTimeout)})
+        modules.start()
+        self.addCleanup(modules.stop)
         calls = []
         class Response:
             status_code = 200
@@ -832,9 +841,155 @@ class TestAutonomyRunner(unittest.TestCase):
         self.assertEqual(runner._activity(Http(), self.cfg, "claim"), {"candidate": None})
         self.assertEqual(calls[0][0:2], ("POST", "https://agents.edgecity.live/api/v1/village-bridge/zzz-autonomy"))
         self.assertFalse(calls[0][2]["follow_redirects"])
+        # Outside run() there is no deadline: each call gets its own default.
+        self.assertEqual(vars(calls[0][2]["timeout"]), {"connect": 10, "read": 10, "write": 10, "pool": 10})
         Response.data = [b"x" * 16385]
         with self.assertRaisesRegex(ValueError, "activity-size"):
             runner._activity(Http(), self.cfg, "claim")
+
+    # The run deadline (review-b S1 on app#932): the app holds a seat turn's context reply up to 10 s (ZZZ) + 60 s (the
+    # cp's ODIN answer), so a flat 10 s client timeout read-timed-out every answered seat turn. These runs go through
+    # the real _activity and _output against a fake bridge, a fake model and a fake monotonic clock.
+    SEAT = {"text": "ODIN says: the build table meets at 4pm."}
+
+    def deadline_turn(self, seat=..., spend=None, late=0.0, model_seconds=1.0):
+        """One run() through the real _activity and _output. `spend` maps a bridge operation to the seconds it takes on
+        the fake clock, and a call whose read timeout is shorter fails as httpx's read timeout does; `late` is spent
+        on the fake clock before the claim (slow local steps). Returns (ops, timeouts by call, complete outputs)."""
+        spend = spend or {}
+        clock = [1000.0]
+        ops, timeouts, completed = [], {}, []
+        candidate = dict(self.CANDIDATE)
+        class ReadTimeout(Exception):
+            pass
+        class Response:
+            status_code = 200
+            headers = {}
+            def __init__(self, body):
+                self.body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def iter_bytes(self):
+                return iter([json.dumps(self.body).encode()])
+        class Http:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def stream(self, _method, _url, **kwargs):
+                operation = kwargs["json"]["operation"]
+                ops.append(operation)
+                timeouts[operation] = kwargs["timeout"]
+                took = spend.get(operation, 0.5)
+                clock[0] += min(took, kwargs["timeout"].read)
+                if took > kwargs["timeout"].read:
+                    raise ReadTimeout()
+                if operation == "claim":
+                    return Response({"candidate": candidate})
+                if operation == "context":
+                    reply = {"candidate_id": candidate["id"], "kind": "comment", "source": {"body": "A current point."}}
+                    return Response(reply if seat is ... else {**reply, "seat_answer": seat})
+                completed.append(kwargs["json"]["output"])
+                return Response({"state": "posted", "post_id": None, "thread_id": None, "replayed": False})
+        clients_made = []
+        def client(**kwargs):
+            clients_made.append(kwargs["timeout"])
+            if len(clients_made) == 1:
+                clock[0] += late  # run() opens the bridge client just before the claim
+            return Http()
+        class Choice:
+            finish_reason = "stop"
+            message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
+        class Model:
+            def create(self, **kwargs):
+                ops.append("model")
+                timeouts["model"] = kwargs["timeout"]
+                clock[0] += model_seconds
+                return SimpleNamespace(choices=[Choice()])
+        class OpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=Model())
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        try:
+            with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=client, Timeout=FakeTimeout),
+                                          "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+                    patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "k", "m")), \
+                    patch.object(runner, "_clock", side_effect=lambda: clock[0]):
+                runner.run(self.home)
+        finally:
+            self.assertIsNone(runner._deadline)  # cleared whatever the run did
+            if "model" in timeouts:  # the model's HTTP client and its request carry the same cut timeout
+                self.assertIs(clients_made[1], timeouts["model"])
+        return ops, timeouts, completed
+
+    def test_budget_numbers_fit_the_alarm_the_lease_and_the_seat_hold(self):
+        self.assertLess(runner.RUN_BUDGET_SECONDS, runner.DEADLINE_SECONDS)
+        self.assertLess(runner.DEADLINE_SECONDS, 90)  # ZZZ's claim lease: a complete after it is refused
+        self.assertGreaterEqual(runner.CONTEXT_SECONDS, 10 + 60)  # the app's ZZZ context + cp ODIN answer hold
+        # A fresh run's context call gets at least the app's whole seat hold, and the complete keeps its full 10 s.
+        self.assertGreaterEqual(runner.RUN_BUDGET_SECONDS - runner.COMPLETE_SECONDS - 1, 10 + 60)
+
+    def test_context_call_waits_for_the_seat_hold_and_claim_complete_stay_10s(self):
+        for seat in (self.SEAT, ...):
+            with self.subTest(seat=seat is not ...):
+                ops, timeouts, completed = self.deadline_turn(seat=seat, spend={"claim": 0, "context": 0})
+                self.assertEqual(ops, ["claim", "context", "complete"] if seat is not ... else
+                                 ["claim", "context", "model", "complete"])
+                self.assertEqual(vars(timeouts["claim"]), {"connect": 10, "read": 10, "write": 10, "pool": 10})
+                self.assertEqual(vars(timeouts["complete"]), {"connect": 10, "read": 10, "write": 10, "pool": 10})
+                # The long read is the context's alone: everything else connects, writes and waits in the pool for 10 s.
+                context = timeouts["context"]
+                self.assertGreaterEqual(context.read, 70)
+                self.assertEqual(context.read, runner.RUN_BUDGET_SECONDS - runner.COMPLETE_SECONDS)
+                self.assertEqual((context.connect, context.write, context.pool), (10, 10, 10))
+                if seat is ...:
+                    self.assertEqual(vars(timeouts["model"]), {"connect": 10, "read": 30, "write": 10, "pool": 10})
+                self.assertEqual(self.state()["failures"], 0)
+
+    def test_a_seat_turn_whose_context_takes_65s_still_posts(self):
+        ops, timeouts, completed = self.deadline_turn(seat=self.SEAT, spend={"claim": 2.7, "context": 65})
+        self.assertEqual(ops, ["claim", "context", "complete"])
+        self.assertEqual(completed, [{"body": self.SEAT["text"]}])
+        self.assertEqual(timeouts["complete"].read, 10)
+        self.assertEqual((self.state()["failures"], self.state()["turns"]), (0, 1))
+
+    def test_near_the_deadline_the_context_call_is_never_started(self):
+        budget = runner.RUN_BUDGET_SECONDS - runner.COMPLETE_SECONDS - runner.CONTEXT_MIN_SECONDS  # 53 s
+        # At the floor exactly the context still starts, with its read cut to the time left.
+        ops, timeouts, _ = self.deadline_turn(seat=self.SEAT, late=budget - 3, spend={"claim": 3, "context": 1})
+        self.assertEqual(ops, ["claim", "context", "complete"])
+        self.assertEqual(timeouts["context"].read, runner.CONTEXT_MIN_SECONDS)
+        # Under it the context call is not made: the run fails with run-budget and counts toward the backoff, but
+        # not the daily cap (no context, no model call).
+        with self.assertRaisesRegex(ValueError, "^run-budget$"):
+            try:
+                self.deadline_turn(seat=self.SEAT, late=budget - 2, spend={"claim": 3})
+            finally:
+                self.assertEqual(runner.reason_line(ValueError("run-budget")),
+                                 "zzz-autonomy: turn ValueError run-budget\n")
+        state = self.state()
+        self.assertEqual((state["failures"], state["turns"]), (1, 1))  # the earlier passing turn's count only
+
+    def test_near_the_deadline_the_model_call_is_never_started(self):
+        # Context took 50 s: the model call still starts, its read cut to what is left after the complete's 10 s.
+        ops, timeouts, completed = self.deadline_turn(spend={"claim": 0, "context": 50})
+        self.assertEqual(ops, ["claim", "context", "model", "complete"])
+        self.assertEqual(timeouts["model"].read, runner.RUN_BUDGET_SECONDS - 50 - runner.COMPLETE_SECONDS)
+        self.assertEqual(timeouts["model"].connect, 10)
+        self.assertEqual(completed, [{"silent": True}])
+        # Context took 60 s: under MODEL_MIN_SECONDS is left, so the paid call is never made and nothing completes.
+        with self.assertRaisesRegex(ValueError, "^run-budget$"):
+            self.deadline_turn(spend={"claim": 0, "context": 60})
+        state = self.state()
+        self.assertEqual((state["failures"], state["turns"]), (1, 2))  # counted before the model step, like today
+        # The same 60 s on a seat turn needs no model call and still posts.
+        ops, _, completed = self.deadline_turn(seat=self.SEAT, spend={"claim": 0, "context": 60})
+        self.assertEqual((ops, completed), (["claim", "context", "complete"], [{"body": self.SEAT["text"]}]))
 
     def test_inherited_sdk_debug_cannot_log_room_context(self):
         previous = logging.root.manager.disable
@@ -889,7 +1044,7 @@ class TestResidentBrief(unittest.TestCase):
         def write(fd, data):
             written.append((fd, data))
             return len(data)
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout),
                                       "openai": SimpleNamespace(OpenAI=OpenAI)}), \
                 patch.object(module, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "m")), \
                 patch.object(module.os, "write", side_effect=write):
@@ -1052,7 +1207,7 @@ class TestResidentBrief(unittest.TestCase):
                 return self
             def __exit__(self, *_):
                 return False
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp(), Timeout=FakeTimeout),
                                       "openai": SimpleNamespace(OpenAI=OpenAI)}), \
                 patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "m")), \
                 patch.object(runner, "_output", side_effect=model or runner._output):

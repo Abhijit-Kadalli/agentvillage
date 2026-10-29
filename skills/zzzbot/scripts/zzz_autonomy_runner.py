@@ -19,6 +19,7 @@ import math
 import re
 import signal
 import stat
+import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -28,6 +29,21 @@ from urllib.parse import urlsplit
 JOB_NAME = "Edge — zzz event autonomy"
 JOB_SCRIPT = "zzz_autonomy_runner.py"
 DEADLINE_SECONDS = 85  # Below the service's 90-second claim lease.
+# The run deadline (review-b S1 on app#932): one time.monotonic() budget for the whole run, measured when run() starts
+# and 2 s under the alarm above, so it also sits under ZZZ's 90 s claim lease (a complete after it is refused) and
+# Hermes's 120 s cron.script_timeout_seconds. Each bridge call and the model call gets its own default timeout cut to
+# the time left; the context and model calls also leave COMPLETE_SECONDS for the complete. A call that would get less
+# than its floor is never started: the run fails with code `run-budget` (counted toward the backoff) instead.
+RUN_BUDGET_SECONDS = DEADLINE_SECONDS - 2
+BUDGET_CODE = "run-budget"
+CONNECT_SECONDS = 10  # connect, write and pool; only the read is long
+CLAIM_SECONDS = COMPLETE_SECONDS = 10
+# The app holds a seat turn's context reply while it asks the cp for ODIN's answer: up to 10 s (ZZZ) + 60 s (the cp).
+CONTEXT_SECONDS, CONTEXT_MIN_SECONDS = 75, 20
+MODEL_SECONDS, MODEL_MIN_SECONDS = 30, 15
+# operation: (its own read timeout, seconds kept back for the complete after it, the least worth starting with)
+ACTIVITY_BUDGET = {"claim": (CLAIM_SECONDS, 0, 1), "context": (CONTEXT_SECONDS, COMPLETE_SECONDS, CONTEXT_MIN_SECONDS),
+                   "complete": (COMPLETE_SECONDS, 0, 1)}
 PROMPT = ("Check zzz.bot for one due event contribution under the owner's current autonomy settings.\n"
           "This no-agent job must use only the installed, fixed zzz.bot activity bridge.")
 ROUTE = "/api/v1/village-bridge/zzz-autonomy"
@@ -347,10 +363,35 @@ def _turn_lock(home: Path):
         os.close(fd)
 
 
+_deadline = None  # run()'s monotonic deadline while it runs; None outside run() (each call then gets its default)
+
+
+def _clock() -> float:
+    return time.monotonic()
+
+
+def _budget(own: float, reserve: float, floor: float) -> float:
+    """Seconds the next call may take: its own default cut to what the run deadline leaves after `reserve`, or
+    ValueError("run-budget") before the call starts when that is under `floor`."""
+    if _deadline is None:
+        return own
+    left = _deadline - _clock() - reserve
+    if left < floor:
+        raise ValueError(BUDGET_CODE)
+    return min(own, left)
+
+
+def _timeout(seconds: float):
+    import httpx
+    short = min(CONNECT_SECONDS, seconds)
+    return httpx.Timeout(connect=short, read=seconds, write=short, pool=short)
+
+
 def _activity(http, cfg: dict, operation: str, **fields):
+    timeout = _timeout(_budget(*ACTIVITY_BUDGET[operation]))
     with http.stream("POST", cfg["origin"] + ROUTE, headers={"Authorization": "Bearer " + cfg["token"],
         "Content-Type": "application/json", "Accept": "application/json"},
-        json={"operation": operation, **fields}, follow_redirects=False, timeout=10) as response:
+        json={"operation": operation, **fields}, follow_redirects=False, timeout=timeout) as response:
         if response.status_code != 200 or int(response.headers.get("content-length", "0")) > 16384:
             raise ValueError("activity-refused")
         chunks, size = [], 0
@@ -720,14 +761,16 @@ def _output(context: dict, home: Path):
     from openai import OpenAI
     # OpenAI-direct reasoning models refuse max_tokens; they take max_completion_tokens (same 700 cap).
     limit = {"max_tokens": 700} if endpoint == ENDPOINTS["openrouter"][0] else {"max_completion_tokens": 700}
-    with httpx.Client(trust_env=False, timeout=30) as client_http:
+    # Checked last, just before the paid call: a turn with too little time left never starts it.
+    timeout = _timeout(_budget(MODEL_SECONDS, COMPLETE_SECONDS, MODEL_MIN_SECONDS))
+    with httpx.Client(trust_env=False, timeout=timeout) as client_http:
         with OpenAI(api_key=key, base_url=endpoint, http_client=client_http, max_retries=0) as client:
             response = client.chat.completions.create(model=model, messages=[
                 {"role": "system", "content": SYSTEM + ("" if brief is None else BRIEF_GUIDANCE) +
                  (TAG_GUIDANCE if tags_ok and can_create else "") + ("" if resident is None else RESIDENT_GUIDANCE)},
                 {"role": "user", "content": json.dumps({"kind": kind, **data}, ensure_ascii=False)[:10000] +
                  ("" if resident is None else "\n\n" + resident)}],
-                timeout=30, **limit)
+                timeout=timeout, **limit)
     # "length" is accepted only if the text still parses as the strict JSON below.
     if not isinstance(response.choices, list) or len(response.choices) != 1 or \
             response.choices[0].finish_reason not in ("stop", "end_turn", "length"):
@@ -908,6 +951,15 @@ def reason_line(error: BaseException) -> str:
 
 
 def run(home: Path):
+    global _deadline
+    _deadline = _clock() + RUN_BUDGET_SECONDS
+    try:
+        _run(home)
+    finally:
+        _deadline = None
+
+
+def _run(home: Path):
     _quiet_sdk()
     _enter("installed")
     if not _installed(home):
