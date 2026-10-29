@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REVIEWED_MINI_APPS } from "../install_miniapps";
 import { AUTONOMY_FILES, AUTONOMY_GATE, AUTONOMY_JOB_NAME, AUTONOMY_JOB_SCRIPT,
-  AUTONOMY_SHIPPED, autonomyMarkers, autonomySchedule } from "../zzz_autonomy_job";
+  AUTONOMY_SHIPPED, autonomyMarkers, autonomySchedule, reconcileAutonomyJob } from "../zzz_autonomy_job";
+import { withSymlinkPlantedAfterCheck } from "./plant_after_check";
 import { createHash } from "node:crypto";
 
 const repo = join(import.meta.dir, "../..");
@@ -86,7 +87,11 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   // v2.1.19/v2.1.20 boxes hold ov#526's bytes; topic tags (lead L30725) appended a third digest, every older one kept.
   const v2119=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2119.py.fixture"));
   expect(digest(v2119)).toBe("95b64ed6eef6d42897e7ad4f922266fbbf1320abeaeeee9f28e06ca9a1d51c9c");
-  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(current)]);
+  // v2.1.21 boxes hold the topic-tags bytes; zzzbot 1.1.0 by the exact ZZZBOT_ACCEPTED (RUNNER-ZZZBOT-110) appended a fourth digest.
+  const v2121=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2121.py.fixture"));
+  expect(digest(v2121)).toBe("f71f3c5d48c90ca8dcbdfa22a58c945dcf3d6e54640536ca30194722e0d97a32");
+  expect(v2121.equals(current)).toBe(false);
+  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(v2121),digest(current)]);
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT);
@@ -177,6 +182,29 @@ test("a dangling resident shim symlink never creates its outside target",()=>{
   expect(existsSync(target)).toBe(false);
   expect(JSON.parse(readFileSync(join(home,"mini-apps.json"),"utf8")).apps.map((app:{id:string})=>app.id))
     .toEqual(["zzzbot"]);
+});
+
+test("v2.1.20: a symlink swapped in after the shim check is replaced, never followed (temp file + rename)",()=>{
+  const {home,stage,jobs}=box();
+  expect(stage([zzzbot,pair,autonomy]).status).toBe(0);
+  const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT), outside=join(home,"outside-target");
+  unlinkSync(shim);
+  writeFileSync(outside,"resident outside file");
+  const saved={HERMES_HOME:process.env.HERMES_HOME,HERMES_BIN:process.env.HERMES_BIN};
+  process.env.HERMES_HOME=home; process.env.HERMES_BIN=join(home,"bin/hermes");
+  try {
+    // ownedFile(shim) sees no shim ("absent"); the symlink lands between that check and the write.
+    expect(withSymlinkPlantedAfterCheck(shim,outside,()=>reconcileAutonomyJob(home,true)).planted).toBe(true);
+  } finally {
+    for (const [key,value] of Object.entries(saved)) { if (value===undefined) delete process.env[key]; else process.env[key]=value; }
+  }
+  expect(readFileSync(outside,"utf8")).toBe("resident outside file");
+  const meta=lstatSync(shim);
+  expect(meta.isFile()&&!meta.isSymbolicLink()).toBe(true);
+  expect(meta.mode&0o777).toBe(0o700);
+  expect(readFileSync(shim)).toEqual(readFileSync(join(repo,"skills/zzzbot/scripts",AUTONOMY_JOB_SCRIPT)));
+  expect(readdirSync(join(home,"scripts")).filter(name=>name.endsWith(".tmp"))).toEqual([]);
+  expect(jobs().filter(job=>job.name===AUTONOMY_JOB_NAME)).toHaveLength(1);
 });
 
 test("a resident job that only mentions the reserved name is not a marker; the real job still is",()=>{
