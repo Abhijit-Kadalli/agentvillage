@@ -38,7 +38,7 @@ BAD_BUTTON = "This button is not valid."
 INVALID = "This card is no longer valid."
 CLOSED = "This card has closed."
 ALREADY = "Already noted."
-IN_FLIGHT = "Still saving..."
+IN_FLIGHT = "Still saving…"
 FAILED = "Could not save that. Tap again in a moment."
 
 # --------------------------------------------------------------------------- the three answers

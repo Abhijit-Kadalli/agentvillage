@@ -1777,8 +1777,11 @@ async def _elicit_merge(query: Any, message: Any, nonce: str, field: str, positi
 # ``THOR_NUDGES_ENABLED`` is on: off = no read, no card, and a tap is answered "This card has closed." with nothing sent.
 #
 # The wire: ``GET {CONTROL_PLANE_URL}/tenants/<own tenant>/thor/today`` and ``POST .../thor/<item_key>/answer
-# {"answer": "do_it"|"not_now"|"not_for_me"}``, ``Authorization: Bearer $EDGEOS_API_KEY`` (the box's own credential, as
-# ask_odin / village search / prayers send it), CP_HOSTS-pinned, no redirects, no proxies. The control plane is the
+# {"answer": "do_it"|"not_now"|"not_for_me"}``, both with ``Authorization: Bearer $AV_THOR_KEY``: a per-tenant key the
+# control plane writes for this plugin only, held in custody (av-approval custody_keys.json "strip" and _custody.FLOOR,
+# as AV_GODCONST_BALLOT_KEY), so agent-run code can never answer or suppress its human's cards. Never EDGEOS_API_KEY
+# (the agent can read that one) and no fallback to it: with no AV_THOR_KEY on the box the card mode is off (no read, no
+# card; one code-only log line, ``thor_no_key``). CP_HOSTS-pinned, no redirects, no proxies. The control plane is the
 # authority for everything else (approved run, consent, double opt-in for intros, expiry, one per day, the B mirror
 # card); this box renders only what the route returns and never names or contacts anyone.
 #
@@ -1793,7 +1796,7 @@ async def _elicit_merge(query: Any, message: Any, nonce: str, field: str, positi
 # or name. Logs: ``av-godconst: tenant=<id8> outcome=thor_<code> [k=v]``, codes and counts only.
 
 THOR_SWITCH = "THOR_NUDGES_ENABLED"
-THOR_CREDENTIAL_ENV = "EDGEOS_API_KEY"
+THOR_CREDENTIAL_ENV = "AV_THOR_KEY"
 THOR_READ_PATH = "/tenants/{tenant}/thor/today"
 THOR_ANSWER_PATH = "/tenants/{tenant}/thor/{item_key}/answer"
 THOR_ANSWER_FIELD = "answer"
@@ -1810,10 +1813,29 @@ _THOR_PASS_LOCK: Optional[asyncio.Lock] = None
 #: nonce -> (card text, expires_at): a carded card waiting for its Telegram send. Memory only.
 _THOR_PENDING: dict = {}
 _thor_in_flight: set = set()
+_THOR_NO_KEY_LOGGED = False
 
 
 def thor_on(home: Optional[str] = None) -> bool:
     return env(THOR_SWITCH, home).lower() in TRUTHY
+
+
+def thor_key(home: Optional[str] = None) -> str:
+    """The custody-held THOR key, read as the ballot key is (process environment, then ``$HERMES_HOME/.env``)."""
+    return env(THOR_CREDENTIAL_ENV, home)
+
+
+def thor_active(home: Optional[str] = None) -> bool:
+    """The card mode runs only with the switch on AND the custody key present; no key = off, logged once by code."""
+    global _THOR_NO_KEY_LOGGED
+    if not thor_on(home):
+        return False
+    if thor_key(home):
+        return True
+    if not _THOR_NO_KEY_LOGGED:
+        _THOR_NO_KEY_LOGGED = True
+        _thor_log("no_key")
+    return False
 
 
 def thor_ledger_path(home: Optional[str] = None) -> str:
@@ -1847,7 +1869,7 @@ def thor_cp_call(method: str, path: str, body: Optional[dict] = None, home: Opti
     with ``{tenant}`` (and ``{item_key}`` already filled). Never raises; ``code`` is ``ok`` on a 200, else the refusal's
     closed ``error`` code, ``http_<status>``, or a transport code (not_configured, network, timeout, bad_response)."""
     origin = cp_origin(env(URL_ENV, home))
-    key = env(THOR_CREDENTIAL_ENV, home)
+    key = thor_key(home)
     tenant = tenant_id(home)
     if origin is None or not key or tenant is None or method not in ("GET", "POST"):
         return Reply(None, None, "not_configured")
@@ -1928,7 +1950,7 @@ async def thor_pass_once(bot: Any, adapter: Any, make_button: Callable, make_mar
         _thor_log(code)
 
     try:
-        if not thor_on(home):
+        if not thor_active(home):
             return codes
         stamp = time.time() if now is None else now
         if not L.in_send_window(stamp):
@@ -2045,7 +2067,7 @@ def make_thor_handler(adapter: Any = None, *, make_button: Callable, make_markup
                 await _answer(query, T.BAD_BUTTON)
                 return
             choice, tapped = parsed
-            if not thor_on(home):
+            if not thor_active(home):
                 _thor_log("tap_switch_off")
                 await _answer(query, T.CLOSED)
                 return
@@ -2177,5 +2199,6 @@ __all__ = [
     "Reply", "ballot_on", "cp_call", "cp_origin", "elicit_on", "elicit_pass_once", "home_chat_id", "is_owner_tap",
     "ledger_path", "load_elicit_ledger", "load_ledger", "make_elicit_handler", "make_handler", "mark_keyboard",
     "new_session", "pass_once", "register", "save_ledger", "sync",
-    "load_thor_ledger", "make_thor_handler", "save_thor_ledger", "thor_cp_call", "thor_on", "thor_pass_once",
+    "load_thor_ledger", "make_thor_handler", "save_thor_ledger", "thor_active", "thor_cp_call", "thor_key", "thor_on",
+    "thor_pass_once",
 ]

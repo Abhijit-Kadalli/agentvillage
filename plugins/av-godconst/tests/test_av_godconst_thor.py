@@ -23,6 +23,7 @@ import pytest
 OWNER = 4242
 TENANT = "0190a5b2-aaaa-4222-8333-444455556666"
 EOS = "eos_box_key_marker"
+THOR_KEY = "thor_custody_key_marker"
 BALLOT_KEY = "ballot_key_marker"
 DAY = datetime(2026, 10, 30, 5, 0, tzinfo=timezone.utc).timestamp()  # 10:30 IST, UTC day 2026-10-30
 LATER_SAME_DAY = datetime(2026, 10, 30, 15, 0, tzinfo=timezone.utc).timestamp()  # 20:30 IST
@@ -118,7 +119,7 @@ class _Response:
 class Server:
     """Data's two THOR routes, as the contract states them; records (method, path, auth, body)."""
 
-    def __init__(self, plugin, items=None):
+    def __init__(self, plugin, items=None, no_key=False):
         self.P = plugin
         self.items = [item()] if items is None else items
         self.calls = []
@@ -126,7 +127,8 @@ class Server:
         self.answer_refuse = None
         self.network_down = 0
         with open(os.path.join(os.environ["HERMES_HOME"], ".env"), "w", encoding="utf-8") as handle:
-            handle.write(f"CONTROL_PLANE_URL=http://127.0.0.1:9\nEDGEOS_API_KEY={EOS}\nAV_GODCONST_BALLOT_KEY={BALLOT_KEY}\n")
+            handle.write(f"CONTROL_PLANE_URL=http://127.0.0.1:9\nEDGEOS_API_KEY={EOS}\nAV_GODCONST_BALLOT_KEY={BALLOT_KEY}\n"
+                         + ("" if no_key else f"AV_THOR_KEY={THOR_KEY}\n"))
         plugin._OPENER = self
 
     def __call__(self, method, path, body=None, home=None):
@@ -209,7 +211,7 @@ def ledger(home):
 def assert_nothing_private_on_disk(home):
     path = os.path.join(home, "av-godconst", "thor.json")
     raw = open(path, encoding="utf-8").read()
-    for text in (TITLE, DRAFT, EVIDENCE, "Asha", EOS, BALLOT_KEY, "robotics"):
+    for text in (TITLE, DRAFT, EVIDENCE, "Asha", EOS, BALLOT_KEY, THOR_KEY, "robotics"):
         assert text not in raw
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
     for card in json.loads(raw)["cards"]:
@@ -412,7 +414,7 @@ def test_each_tap_posts_its_value_once_and_shows_the_copy_line(plugin, thor, ind
     pass_(plugin, bot, server)
     card = bot.cards()[0]
     q = tap(plugin, server, card, index)
-    assert server.answers() == [("POST", f"/tenants/{TENANT}/thor/{KEY1}/answer", f"Bearer {EOS}", {"answer": value})]
+    assert server.answers() == [("POST", f"/tenants/{TENANT}/thor/{KEY1}/answer", f"Bearer {THOR_KEY}", {"answer": value})]
     assert q.answers == [line]
     assert bot.lines()[-1] == plugin.html.escape(line, quote=False)
     (row,) = card.reply_markup.inline_keyboard
@@ -581,12 +583,54 @@ def test_a_restart_between_read_and_send_loses_that_days_card_only(plugin, thor)
 def test_the_wire_uses_the_box_credential_and_the_pinned_host(plugin, thor, monkeypatch):
     bot, server = Bot(), Server(plugin)
     pass_(plugin, bot, server)
-    assert server.reads() == [("GET", READ, f"Bearer {EOS}", None)]
+    assert server.reads() == [("GET", READ, f"Bearer {THOR_KEY}", None)]
     monkeypatch.setenv("CONTROL_PLANE_URL", "https://evil.example.com")
     assert plugin.thor_cp_call("GET", plugin.THOR_READ_PATH).code == "not_configured"
     monkeypatch.setenv("CONTROL_PLANE_URL", "http://127.0.0.1:9")
-    monkeypatch.setenv("EDGEOS_API_KEY", "")
+    monkeypatch.setenv("AV_THOR_KEY", "")
     assert plugin.thor_cp_call("GET", plugin.THOR_READ_PATH).code == "not_configured"
+    assert all(c[2] == f"Bearer {THOR_KEY}" and EOS not in str(c) for c in server.calls)
+
+
+def test_both_routes_carry_the_custody_key_never_edgeos_api_key(plugin, thor, monkeypatch):
+    monkeypatch.setenv("EDGEOS_API_KEY", EOS)  # present and agent-readable: never sent
+    bot, server = Bot(), Server(plugin)
+    pass_(plugin, bot, server)
+    tap(plugin, server, bot.cards()[0], 0)
+    assert [(c[0], c[2]) for c in server.calls] == [("GET", f"Bearer {THOR_KEY}"), ("POST", f"Bearer {THOR_KEY}")]
+    assert plugin.THOR_CREDENTIAL_ENV == "AV_THOR_KEY"
+
+
+@pytest.mark.parametrize("blank", [False, True])
+def test_no_custody_key_no_read_no_card_one_code_line(plugin, thor, monkeypatch, caplog, blank):
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("EDGEOS_API_KEY", EOS)  # no fallback to it
+    bot, server = Bot(), Server(plugin, no_key=True)
+    if blank:
+        monkeypatch.setenv("AV_THOR_KEY", "")
+    for now in (DAY, DAY + 60, LATER_SAME_DAY, NEXT_DAY):
+        assert pass_(plugin, bot, server, now=now) == {}
+    assert server.calls == [] and bot.sent == []
+    assert not os.path.exists(os.path.join(thor, "av-godconst", "thor.json"))
+    lines = [r.getMessage() for r in caplog.records if "thor" in r.getMessage()]
+    assert lines == ["av-godconst: tenant=0190a5b2 outcome=thor_no_key"]
+
+
+def test_a_tap_after_the_key_is_gone_posts_nothing(plugin, thor, monkeypatch):
+    bot, server = Bot(), Server(plugin)
+    pass_(plugin, bot, server)
+    monkeypatch.setenv("AV_THOR_KEY", "")
+    q = tap(plugin, server, bot.cards()[0], 1)
+    assert q.answers == ["This card has closed."] and server.answers() == []
+
+
+def test_the_thor_key_stays_in_custody(plugin):
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(plugin.__file__))))
+    with open(os.path.join(root, "plugins", "av-approval", "custody_keys.json"), encoding="utf-8") as handle:
+        names = json.load(handle)["names"]
+    assert names["AV_THOR_KEY"]["decision"] == "strip"
+    with open(os.path.join(root, "plugins", "av-approval", "_custody.py"), encoding="utf-8") as handle:
+        assert '"AV_THOR_KEY"' in handle.read()
 
 
 def test_logs_carry_codes_and_counts_only(plugin, thor, caplog):
@@ -598,7 +642,7 @@ def test_logs_carry_codes_and_counts_only(plugin, thor, caplog):
     tap(plugin, server, card, 0)
     lines = "\n".join(r.getMessage() for r in caplog.records)
     assert "outcome=thor_served" in lines and "outcome=thor_card_sent" in lines and "outcome=thor_answered do_it=1" in lines
-    for secret in (TITLE, DRAFT, EVIDENCE, "Asha", KEY1, EOS, "avt:", str(OWNER), "999", TENANT):
+    for secret in (TITLE, DRAFT, EVIDENCE, "Asha", KEY1, EOS, THOR_KEY, "avt:", str(OWNER), "999", TENANT):
         assert secret not in lines
 
 
@@ -631,5 +675,9 @@ def test_the_ballot_never_reads_the_thor_route_nor_thor_the_ballot_key(plugin, t
     bot, server = Bot(), Server(plugin)
     pass_(plugin, bot, server)
     tap(plugin, server, bot.cards()[0], 2)
-    assert all(c[2] == f"Bearer {EOS}" and "/thor/" in c[1] for c in server.calls)
+    assert all(c[2] == f"Bearer {THOR_KEY}" and "/thor/" in c[1] for c in server.calls)
     assert not os.path.exists(os.path.join(thor, "av-godconst", "ballot.json"))
+
+
+def test_the_in_flight_string_uses_the_ellipsis_character(plugin):
+    assert plugin.T.IN_FLIGHT == "Still saving\u2026"
