@@ -45,12 +45,20 @@ opener is pending, the box offers those statements as ``gce:`` cards (its own ha
 and tombstones); each tap saves one rating on the elicitation's own ratings via ``.../godconst/elicitation-ratings``.
 It never touches the ballot, and the shared page-open marker stays while either mode has an open page.
 
+**THOR nudge card** (third, independent mode; data's ODIN-THOR-NUDGES design section 5, product copy
+THOR-NUDGE-CARD-COPY-2026-10-29): behind ``THOR_NUDGES_ENABLED`` (off: no read, no card), the same pass reads
+``GET /tenants/<own tenant>/thor/today`` at most once per UTC day in village daytime and sends at most one card from the
+resident's own bot (Do it / Not now / Not for me, ``avt:`` buttons, its own handler and ledger ``av-godconst/thor.json``);
+a tap posts the answer to ``.../thor/<item_key>/answer`` and shows the copy file's follow-up line. No approval class, no
+consent step, no gate; nothing injected into the agent's session; the control plane serves an intro's B card itself.
+
 Python 3.11, standard library only; the Telegram SDK is imported inside the factory.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import http.client
 import json
 import logging
@@ -74,6 +82,15 @@ except ImportError:  # loaded by path without a package (a local run)
     _spec = _ilu.spec_from_file_location("av_godconst_logic", os.path.join(os.path.dirname(os.path.abspath(__file__)), "_logic.py"))
     L = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
     _spec.loader.exec_module(L)  # type: ignore[union-attr]
+
+try:
+    from . import _thor as T
+except ImportError:  # loaded by path without a package (a local run)
+    import importlib.util as _ilu
+
+    _tspec = _ilu.spec_from_file_location("av_godconst_thor", os.path.join(os.path.dirname(os.path.abspath(__file__)), "_thor.py"))
+    T = _ilu.module_from_spec(_tspec)  # type: ignore[arg-type]
+    _tspec.loader.exec_module(T)  # type: ignore[union-attr]
 
 logger = logging.getLogger(__name__)
 
@@ -1752,6 +1769,338 @@ async def _elicit_merge(query: Any, message: Any, nonce: str, field: str, positi
             _log("elicit_sync", **codes)
 
 
+# --------------------------------------------------------------------------- THOR nudge card (third mode)
+#
+# The resident's daily THOR nudge (data's ODIN-THOR-NUDGES design section 5; product copy THOR-NUDGE-CARD-COPY): at most
+# one card per UTC day, from the resident's own bot in their own DM, three taps (Do it / Not now / Not for me). It rides
+# this plugin's existing pass (no poller of its own) and Telegram factory (its own ``^avt:`` handler). Dark unless
+# ``THOR_NUDGES_ENABLED`` is on: off = no read, no card, and a tap is answered "This card has closed." with nothing sent.
+#
+# The wire: ``GET {CONTROL_PLANE_URL}/tenants/<own tenant>/thor/today`` and ``POST .../thor/<item_key>/answer
+# {"answer": "do_it"|"not_now"|"not_for_me"}``, ``Authorization: Bearer $EDGEOS_API_KEY`` (the box's own credential, as
+# ask_odin / village search / prayers send it), CP_HOSTS-pinned, no redirects, no proxies. The control plane is the
+# authority for everything else (approved run, consent, double opt-in for intros, expiry, one per day, the B mirror
+# card); this box renders only what the route returns and never names or contacts anyone.
+#
+# Read cadence: inside village daytime (_logic.in_send_window, 08:00-21:30 IST, inside one UTC day), at most once per
+# UTC day after an answered read (served, empty, expired, refused); a transport failure or a 429/5xx retries after
+# THOR_RETRY_S, at most THOR_READS_PER_DAY reads a day. Serving marks the item carded at the control plane, so a card
+# whose Telegram send fails is retried from memory (THOR_SEND_ATTEMPTS, while unexpired); a restart in between loses
+# it for that day (logged ``thor_send_lost``).
+#
+# Nothing private on disk: the ledger ``av-godconst/thor.json`` (0600) holds the day, read counters and, per card, its
+# nonce, the opaque item_key, the intro flag, message id, the day and the answer value; never a title, draft, evidence
+# or name. Logs: ``av-godconst: tenant=<id8> outcome=thor_<code> [k=v]``, codes and counts only.
+
+THOR_SWITCH = "THOR_NUDGES_ENABLED"
+THOR_CREDENTIAL_ENV = "EDGEOS_API_KEY"
+THOR_READ_PATH = "/tenants/{tenant}/thor/today"
+THOR_ANSWER_PATH = "/tenants/{tenant}/thor/{item_key}/answer"
+THOR_ANSWER_FIELD = "answer"
+THOR_RESPONSE_MAX_BYTES = 256 * 1024
+THOR_RETRY_S = 1800.0
+THOR_READS_PER_DAY = 4
+THOR_SEND_ATTEMPTS = 3
+THOR_CARDS_KEPT = 14
+#: A refused answer whose code means the card can no longer be answered.
+THOR_CLOSED_CODES = frozenset({"expired", "not_found", "already_answered", "answered", "not_carded", "not_enabled", "suppressed"})
+
+_THOR_LEDGER_LOCK = threading.RLock()
+_THOR_PASS_LOCK: Optional[asyncio.Lock] = None
+#: nonce -> (card text, expires_at): a carded card waiting for its Telegram send. Memory only.
+_THOR_PENDING: dict = {}
+_thor_in_flight: set = set()
+
+
+def thor_on(home: Optional[str] = None) -> bool:
+    return env(THOR_SWITCH, home).lower() in TRUTHY
+
+
+def thor_ledger_path(home: Optional[str] = None) -> str:
+    return os.path.join(state_dir(home), "thor.json")
+
+
+def empty_thor_ledger() -> dict:
+    return {"v": 1, "day": None, "reads": 0, "next_read_at": None, "done": False, "cards": []}
+
+
+def load_thor_ledger(home: Optional[str] = None) -> tuple:
+    data, why = _read_private(thor_ledger_path(home), LEDGER_MAX_BYTES)
+    if why is not None:
+        return empty_thor_ledger(), why
+    if not isinstance(data, dict) or data.get("v") != 1 or not isinstance(data.get("cards"), list):
+        return empty_thor_ledger(), "bad_shape"
+    return data, None
+
+
+def save_thor_ledger(ledger: dict, home: Optional[str] = None) -> None:
+    ledger["cards"] = ledger.get("cards", [])[-THOR_CARDS_KEPT:]
+    _write_private(thor_ledger_path(home), ledger)
+
+
+def _thor_log(outcome: str, **counts: Any) -> None:
+    _log(f"thor_{outcome}", **counts)
+
+
+def thor_cp_call(method: str, path: str, body: Optional[dict] = None, home: Optional[str] = None) -> Reply:
+    """One call to the control plane's THOR route (blocking; run through asyncio.to_thread). `path` is a template
+    with ``{tenant}`` (and ``{item_key}`` already filled). Never raises; ``code`` is ``ok`` on a 200, else the refusal's
+    closed ``error`` code, ``http_<status>``, or a transport code (not_configured, network, timeout, bad_response)."""
+    origin = cp_origin(env(URL_ENV, home))
+    key = env(THOR_CREDENTIAL_ENV, home)
+    tenant = tenant_id(home)
+    if origin is None or not key or tenant is None or method not in ("GET", "POST"):
+        return Reply(None, None, "not_configured")
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {key}"}
+    data = None
+    if method == "POST":
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body or {}, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(origin + path.format(tenant=tenant), data=data, method=method, headers=headers)
+    try:
+        with _OPENER.open(request, timeout=HTTP_TIMEOUT_S) as response:
+            status, raw = int(getattr(response, "status", 0) or 0), response.read(THOR_RESPONSE_MAX_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        status = int(error.code)
+        try:
+            raw = error.read(THOR_RESPONSE_MAX_BYTES + 1)
+        except Exception:  # noqa: BLE001
+            raw = b""
+    except (TimeoutError, OSError, http.client.HTTPException, ValueError) as error:
+        return Reply(None, None, "timeout" if "timed out" in str(error).lower() or isinstance(error, TimeoutError) else "network")
+    if len(raw) > THOR_RESPONSE_MAX_BYTES:
+        return Reply(status, None, "bad_response")
+    try:
+        parsed = json.loads(raw.decode("utf-8")) if raw else {}
+    except (UnicodeDecodeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, dict):
+        return Reply(status, None, "bad_response" if status == 200 else f"http_{status}")
+    if status == 200:
+        return Reply(status, parsed, "ok")
+    code = parsed.get("error")
+    return Reply(status, parsed, code if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) else f"http_{status}")
+
+
+def _thor_pass_lock() -> asyncio.Lock:
+    global _THOR_PASS_LOCK
+    if _THOR_PASS_LOCK is None:
+        _THOR_PASS_LOCK = asyncio.Lock()
+    return _THOR_PASS_LOCK
+
+
+def _thor_retryable(reply: Reply) -> bool:
+    return reply.status is None and reply.code != "not_configured" or reply.status == 429 or (reply.status or 0) >= 500
+
+
+async def _thor_send(bot: Any, chat: str, card: dict, make_button: Callable, make_markup: Callable, now: float) -> Optional[str]:
+    """Send a pending card; the outcome code. The caller saves the ledger."""
+    pending = _THOR_PENDING.get(card["nonce"])
+    if pending is None:
+        card["status"] = "lost"
+        return "send_lost"
+    text, expires = pending
+    if expires <= now:
+        _THOR_PENDING.pop(card["nonce"], None)
+        card["status"] = "expired"
+        return "expired_unsent"
+    message_id = await _send(bot, chat, text, make_markup(T.card_rows(card["nonce"], make_button)))
+    if message_id is None:
+        card["send_failures"] = int(card.get("send_failures", 0)) + 1
+        if card["send_failures"] >= THOR_SEND_ATTEMPTS:
+            _THOR_PENDING.pop(card["nonce"], None)
+            card["status"] = "undeliverable"
+            return "undeliverable"
+        return "send_failed"
+    _THOR_PENDING.pop(card["nonce"], None)
+    card.update({"status": "sent", "message_id": message_id, "chat": str(chat), "sent_at": now_iso(now)})
+    return "card_sent"
+
+
+async def thor_pass_once(bot: Any, adapter: Any, make_button: Callable, make_markup: Callable, home: Optional[str] = None,
+                         now: Optional[float] = None, reader: Optional[Callable] = None) -> dict:
+    """One THOR step on the shared pass: send a pending card, else read today's item once and send its card. Returns
+    code -> count; never raises."""
+    codes: dict = {}
+
+    def count(code: str) -> None:
+        codes[code] = codes.get(code, 0) + 1
+        _thor_log(code)
+
+    try:
+        if not thor_on(home):
+            return codes
+        stamp = time.time() if now is None else now
+        if not L.in_send_window(stamp):
+            return codes
+        chat = home_chat_id(adapter)
+        if chat is None:
+            count("no_home_chat")
+            return codes
+        call = reader or thor_cp_call
+        async with _thor_pass_lock():
+            with _THOR_LEDGER_LOCK:
+                ledger, why = load_thor_ledger(home)
+            if why not in (None, "missing"):
+                count(f"ledger_{why}")
+                return codes
+            today = T.utc_day(stamp)
+            if ledger.get("day") != today:
+                ledger.update({"day": today, "reads": 0, "next_read_at": None, "done": False})
+            for card in ledger["cards"]:
+                if card.get("status") == "pending":
+                    if card.get("day") != today:
+                        _THOR_PENDING.pop(card.get("nonce"), None)
+                        card["status"] = "lost"
+                        continue
+                    count(await _thor_send(bot, chat, card, make_button, make_markup, stamp))
+                    with _THOR_LEDGER_LOCK:
+                        save_thor_ledger(_merge_thor(ledger, home), home)
+                    return codes
+            if ledger.get("done") or any(c.get("day") == today for c in ledger["cards"]):
+                return codes
+            next_at = ledger.get("next_read_at")
+            if isinstance(next_at, (int, float)) and stamp < next_at:
+                return codes
+            if int(ledger.get("reads", 0)) >= THOR_READS_PER_DAY:
+                ledger["done"] = True
+                count("reads_exhausted")
+                with _THOR_LEDGER_LOCK:
+                    save_thor_ledger(_merge_thor(ledger, home), home)
+                return codes
+            ledger["reads"] = int(ledger.get("reads", 0)) + 1
+            reply = await asyncio.to_thread(call, "GET", THOR_READ_PATH, None, home)
+            if not reply.ok:
+                if _thor_retryable(reply):
+                    ledger["next_read_at"] = stamp + THOR_RETRY_S
+                    count(f"read_retry_{reply.code}")
+                else:
+                    ledger["done"] = True
+                    count(f"read_refused_{reply.code}")
+                with _THOR_LEDGER_LOCK:
+                    save_thor_ledger(_merge_thor(ledger, home), home)
+                return codes
+            item, code = T.today_item(reply.data, stamp)
+            ledger["done"] = True
+            if item is None:
+                count(f"read_{code}")
+                with _THOR_LEDGER_LOCK:
+                    save_thor_ledger(_merge_thor(ledger, home), home)
+                return codes
+            nonce = secrets.token_urlsafe(6)[: T.NONCE_CHARS].replace("=", "A")
+            card = {"nonce": nonce, "item_key": item["item_key"], "intro": item["intro"], "day": today, "status": "pending",
+                    "message_id": None, "chat": None, "sent_at": None, "send_failures": 0, "answer": None, "answered_at": None}
+            ledger["cards"].append(card)
+            _THOR_PENDING[nonce] = (T.card_text(item), item["expires_at"])
+            with _THOR_LEDGER_LOCK:  # write-ahead: the card is on the ledger before the send
+                save_thor_ledger(_merge_thor(ledger, home), home)
+            count("served")
+            count(await _thor_send(bot, chat, card, make_button, make_markup, stamp))
+            with _THOR_LEDGER_LOCK:
+                save_thor_ledger(_merge_thor(ledger, home), home)
+    except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
+        logger.warning("av-godconst: tenant=%s outcome=thor_pass_error", tenant_id8())
+    return codes
+
+
+def _merge_thor(ledger: dict, home: Optional[str]) -> dict:
+    """The pass's ledger with answers a tap saved meanwhile kept (a tap never waits for the pass's lock)."""
+    disk, why = load_thor_ledger(home)
+    if why is None:
+        answered = {c.get("nonce"): c for c in disk["cards"] if c.get("answer")}
+        for card in ledger["cards"]:
+            seen = answered.get(card.get("nonce"))
+            if seen is not None and not card.get("answer"):
+                card["answer"], card["answered_at"] = seen.get("answer"), seen.get("answered_at")
+    return ledger
+
+
+def make_thor_handler(adapter: Any = None, *, make_button: Callable, make_markup: Callable, home: Optional[str] = None,
+                      clock: Callable[[], float] = time.time, caller: Optional[Callable] = None) -> Callable:
+    """The PTB callback for ``avt:`` taps: owner only (av-vote's rule), one answer per card, posted to the answer
+    route; the card keeps only the chosen button (marked) and the copy file's follow-up line is sent."""
+    call = caller or thor_cp_call
+
+    async def on_tap(update: Any, context: Any = None) -> None:
+        query = getattr(update, "callback_query", None)
+        if query is None:
+            return
+        nonce: Optional[str] = None
+        try:
+            data = getattr(query, "data", None)
+            user = _positive_id(getattr(getattr(query, "from_user", None), "id", None))
+            message = getattr(query, "message", None)
+            chat_obj = getattr(message, "chat", None) if message is not None else None
+            raw_chat = getattr(chat_obj, "id", None)
+            chat = None if raw_chat is None else str(raw_chat).strip()
+            chat_type = getattr(chat_obj, "type", None)
+            chat_type = getattr(chat_type, "value", chat_type)
+            if not is_owner_tap(adapter, user, chat, chat_type):
+                _thor_log("not_owner")
+                await _answer(query, T.NOT_YOURS)
+                return
+            parsed = T.parse_callback(data)
+            if parsed is None:
+                _thor_log("bad_data")
+                await _answer(query, T.BAD_BUTTON)
+                return
+            choice, tapped = parsed
+            if not thor_on(home):
+                _thor_log("tap_switch_off")
+                await _answer(query, T.CLOSED)
+                return
+            with _THOR_LEDGER_LOCK:
+                ledger, why = load_thor_ledger(home)
+            card = next((c for c in ledger["cards"] if c.get("nonce") == tapped), None) if why is None else None
+            if card is None or card.get("message_id") != getattr(message, "message_id", None) or card.get("chat") != chat:
+                _thor_log("old_card" if why is None else f"ledger_{why}")
+                await _answer(query, T.INVALID)
+                return
+            if card.get("answer"):
+                _thor_log("already_answered")
+                await _answer(query, T.ALREADY)
+                return
+            if tapped in _thor_in_flight:
+                _thor_log("in_flight")
+                await _answer(query, T.IN_FLIGHT)
+                return
+            nonce = tapped
+            _thor_in_flight.add(nonce)
+            value = T.ANSWERS[choice]
+            path = THOR_ANSWER_PATH.replace("{item_key}", urllib.parse.quote(card["item_key"], safe=""))
+            reply = await asyncio.to_thread(call, "POST", path, {THOR_ANSWER_FIELD: value}, home)
+            if not reply.ok:
+                closed = reply.status is not None and 400 <= reply.status < 500 and reply.code in THOR_CLOSED_CODES
+                _thor_log("answer_closed" if closed else f"answer_failed_{reply.code}")
+                await _answer(query, T.CLOSED if closed else T.FAILED)
+                return
+            with _THOR_LEDGER_LOCK:
+                ledger, why = load_thor_ledger(home)
+                if why is None:
+                    for stored in ledger["cards"]:
+                        if stored.get("nonce") == nonce:
+                            stored["answer"], stored["answered_at"] = value, now_iso(clock())
+                    save_thor_ledger(ledger, home)
+            _thor_log("answered", **{value: 1})
+            line = T.follow_up(choice, bool(card.get("intro")))
+            await _answer(query, line)
+            try:
+                await query.edit_message_reply_markup(reply_markup=make_markup(T.card_rows(nonce, make_button, chosen=choice)))
+            except Exception:  # noqa: BLE001 - recorded already; the mark is cosmetic
+                _thor_log("edit_failed")
+            bot = _bot_of(query, message)
+            if bot is None or await _send(bot, chat, html.escape(line, quote=False)) is None:
+                _thor_log("follow_up_failed")
+        except Exception:  # noqa: BLE001 - fail-open: never raise into the gateway
+            logger.warning("av-godconst: tenant=%s outcome=thor_handler_error", tenant_id8())
+            await _answer(query, T.FAILED)
+        finally:
+            if nonce is not None:
+                _thor_in_flight.discard(nonce)
+
+    return on_tap
+
+
 # --------------------------------------------------------------------------- wiring
 
 
@@ -1768,11 +2117,15 @@ def _wire_telegram(application: Any, adapter: Any) -> None:
     application.add_handler(CallbackQueryHandler(make_elicit_handler(adapter, make_button=make_button, make_markup=make_markup),
                                                  pattern=L.ELICIT_HANDLER_PATTERN, block=False))
     logger.info("av-godconst: elicitation card buttons wired (pattern %s)", L.ELICIT_HANDLER_PATTERN)
+    application.add_handler(CallbackQueryHandler(make_thor_handler(adapter, make_button=make_button, make_markup=make_markup),
+                                                 pattern=T.HANDLER_PATTERN, block=False))
+    logger.info("av-godconst: THOR nudge card buttons wired (pattern %s)", T.HANDLER_PATTERN)
 
     async def tick(*_: Any) -> None:
-        # Two independent modes, each behind its own switch; each pass never raises.
+        # Three independent modes, each behind its own switch; each pass never raises.
         await pass_once(application.bot, adapter, make_button, make_markup)
         await elicit_pass_once(application.bot, adapter, make_button, make_markup)
+        await thor_pass_once(application.bot, adapter, make_button, make_markup)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -1824,4 +2177,5 @@ __all__ = [
     "Reply", "ballot_on", "cp_call", "cp_origin", "elicit_on", "elicit_pass_once", "home_chat_id", "is_owner_tap",
     "ledger_path", "load_elicit_ledger", "load_ledger", "make_elicit_handler", "make_handler", "mark_keyboard",
     "new_session", "pass_once", "register", "save_ledger", "sync",
+    "load_thor_ledger", "make_thor_handler", "save_thor_ledger", "thor_cp_call", "thor_on", "thor_pass_once",
 ]
