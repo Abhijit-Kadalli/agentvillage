@@ -459,7 +459,7 @@ test("MOSAIC (app#486): Dizko's shape, its context read/write after mini-app.rea
   expect(EDGE_SKILL_NAMES).not.toContain("mosaic");
   expect(SHIPPED_SKILLS.has("mosaic")).toBe(false);
   const skill = readFileSync(join(REPO, "skills", "mosaic", "SKILL.md"), "utf8");
-  expect(skill).toMatch(/^---\nname: mosaic\n[\s\S]*\nversion: 1\.0\.0\n/);
+  expect(skill).toMatch(/^---\nname: mosaic\n[\s\S]*\nversion: 1\.0\.1\n/);
   expect(skill).toContain('{"operation":"mini-app.context.read","appId":"mosaic","arguments":{}}');
   expect(skill).not.toMatch(/prompt\.txt|\.well-known|\/mcp\b|curl|wget|https?:\/\//);
   for (const entry of [mosaic, previous]) {
