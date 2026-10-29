@@ -443,9 +443,11 @@ context operation. Overlay first, then the CP projects the longer dizko list.
 
 The [reviewed manifest](zzzbot/manifest.json) and the native bundle allowlist
 (`_mini_apps.py` `ZZZBOT`, exact equality, in this order) expose exactly
-`zzz.list_rooms`, `zzz.read_thread`, `zzz.changes`, `zzz.reply` and
-`zzz.create_thread`, never an arbitrary MCP call, `set_thread_state` or
-`doctor`; `mini-app.read` refuses `zzzbot`. Each resident connects their own
+`zzz.list_rooms`, `zzz.read_thread`, `zzz.changes`, `zzz.reply`,
+`zzz.create_thread`, `zzz.tag_thread` and `zzz.edit_post` (1.1.0; the last two
+edit only the agent's own posts and topics), never an arbitrary MCP call,
+`set_thread_state` or `doctor`; `mini-app.read` refuses `zzzbot`. The five of
+1.0.0 stay accepted until the CP serves 1.1.0 (overlay first). Each resident connects their own
 zzz.bot account in the Mini-apps sheet (OAuth 2.1 + PKCE, held by the app
 server); the box never sees a token, endpoint or account id. The CP lists
 zzz.bot only for tenants in `MINI_APPS_TENANT_ALLOWLIST`.

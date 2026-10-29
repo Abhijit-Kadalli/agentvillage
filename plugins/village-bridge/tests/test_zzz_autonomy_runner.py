@@ -17,6 +17,12 @@ SPEC = importlib.util.spec_from_file_location("zzz_autonomy_runner_test", SCRIPT
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 TOKEN = "avb_" + "a" * 43
+MINI_SPEC = importlib.util.spec_from_file_location("mini_apps_runner_test", Path(__file__).parents[1] / "_mini_apps.py")
+mini = importlib.util.module_from_spec(MINI_SPEC)
+MINI_SPEC.loader.exec_module(mini)
+FIVE = ["zzz.list_rooms", "zzz.read_thread", "zzz.changes", "zzz.reply", "zzz.create_thread"]
+SEVEN = [*FIVE, "zzz.tag_thread", "zzz.edit_post"]
+GATE = {"id": "zzz-autonomy-runner", "version": "1.0.0", "operations": [], "skills": []}
 
 
 class FakeHttp:
@@ -199,6 +205,83 @@ class TestAutonomyRunner(unittest.TestCase):
     def write_state(self, text):
         (self.home / "zzzbot").mkdir(mode=0o700, exist_ok=True)
         (self.home / "zzzbot" / runner.BACKOFF_FILE).write_text(text)
+
+    def project(self, zzz, gate=GATE):
+        (self.home / "mini-apps.json").write_text(json.dumps({"version": 1, "apps": [
+            {"id": "zzzbot", "skills": ["zzzbot"], **zzz}, *([gate] if gate else [])]}))
+
+    def test_zzzbot_accepted_set_mirrors_the_bridge_exactly(self):
+        # RUNNER-ZZZBOT-110: the isolated runner never imports the bridge, so its copy is pinned to ZZZBOT_ACCEPTED here.
+        self.assertEqual(runner.ZZZBOT_ACCEPTED, tuple({"id": "zzzbot", **entry} for entry in mini.ZZZBOT_ACCEPTED))
+        self.assertEqual(GATE, {"id": mini.ZZZ_AUTONOMY_RUNNER_ID, **mini.ZZZ_AUTONOMY_RUNNER})
+
+    def test_zzzbot_1_0_0_and_1_1_0_each_run_a_full_turn(self):
+        # v2.1.21 boxes under cp#464 project zzzbot 1.1.0 (seven ops); the runner returned before any POST on them.
+        for version, operations in (("1.0.0", FIVE), ("1.1.0", SEVEN)):
+            with self.subTest(version=version):
+                self.project({"version": version, "operations": operations})
+                self.assertTrue(runner._installed(self.home))
+                ops = []
+                self.turn(ops)
+                self.assertEqual(ops, ["claim", "context", "model", "complete"])
+
+    def test_zzzbot_entries_outside_the_accepted_set_never_claim(self):
+        refused = {
+            "1.1.0 missing a base op": {"version": "1.1.0", "operations": [op for op in SEVEN if op != "zzz.reply"]},
+            "1.1.0 with the five alone": {"version": "1.1.0", "operations": FIVE},
+            "1.1.0 reordered": {"version": "1.1.0", "operations": [*SEVEN[1:], SEVEN[0]]},
+            "1.1.0 plus an op": {"version": "1.1.0", "operations": [*SEVEN, "zzz.pairs"]},
+            "1.0.0 with the seven": {"version": "1.0.0", "operations": SEVEN},
+            "1.0.0 missing a base op": {"version": "1.0.0", "operations": FIVE[:-1]},
+            "2.0.0 (unknown major)": {"version": "2.0.0", "operations": SEVEN},
+            "1.2.0 (unknown minor)": {"version": "1.2.0", "operations": SEVEN},
+            "1.1.0 other skills": {"version": "1.1.0", "operations": SEVEN, "skills": []},
+            "1.1.0 extra key": {"version": "1.1.0", "operations": SEVEN, "approval": "x"},
+        }
+        for name, zzz in refused.items():
+            with self.subTest(name):
+                self.project(zzz)
+                self.assertFalse(runner._installed(self.home))
+                ops = []
+                self.turn(ops)
+                self.assertEqual(ops, [])
+        # The runner's own gate entry stays exact under 1.1.0 too.
+        for gate in (None, {**GATE, "version": "1.1.0"}, {**GATE, "operations": ["zzz.reply"]}):
+            with self.subTest(gate=gate):
+                self.project({"version": "1.1.0", "operations": SEVEN}, gate=gate)
+                self.assertFalse(runner._installed(self.home))
+
+    def test_mid_turn_authority_check_uses_the_same_accepted_set(self):
+        # A cp re-stage from 1.0.0 to 1.1.0 between claim and complete keeps the turn; a move outside the set stops it.
+        for after, expected in (({"version": "1.1.0", "operations": SEVEN}, None),
+                                ({"version": "2.0.0", "operations": SEVEN}, "authority-changed"),
+                                ({"version": "1.1.0", "operations": SEVEN[:-1]}, "authority-changed")):
+            with self.subTest(after=after):
+                self.project({"version": "1.0.0", "operations": FIVE})
+                ops = []
+                def output(_context, _home):
+                    ops.append("model")
+                    self.project(after)
+                    return {"silent": True}
+                def activity(_http, _cfg, operation, **_args):
+                    ops.append(operation)
+                    if operation == "claim":
+                        return {"candidate": dict(self.CANDIDATE)}
+                    if operation == "context":
+                        return {"candidate_id": self.CANDIDATE["id"], "kind": "comment", "source": {"body": "x"}}
+                    return {"state": "silent", "post_id": None, "thread_id": None, "replayed": False}
+                with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+                        patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "k", "m")), \
+                        patch.object(runner, "_activity", side_effect=activity), \
+                        patch.object(runner, "_output", side_effect=output):
+                    if expected:
+                        with self.assertRaisesRegex(ValueError, expected):
+                            runner.run(self.home)
+                        self.assertEqual(ops, ["claim", "context", "model"])
+                    else:
+                        runner.run(self.home)
+                        self.assertEqual(ops, ["claim", "context", "model", "complete"])
+                (self.home / "zzzbot" / runner.BACKOFF_FILE).unlink(missing_ok=True)
 
     def test_consecutive_claimed_failures_back_off_locally_and_success_resets(self):
         ops = []
@@ -486,7 +569,42 @@ class TestAutonomyRunner(unittest.TestCase):
             answer({"existing_thread_id": "thread_1", "body": "x"})
             with self.assertRaisesRegex(ValueError, "model-output"):
                 runner._output(legacy, self.home)
+            # Topic tags (lead L30725 (3)): only when the context carries room_tags (the app accepts tags). Without it,
+            # a tags key is refused and the system text never offers tags, so an older app never sees one.
+            self.assertNotIn("room_tags", calls[-1]["messages"][0]["content"])
+            answer({"title": "Hiring", "body": "x", "tags": ["hiring"]})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(topic, self.home)
+            tagged = {**topic, "room_tags": [" Hiring ", "buildathon"]}
+            answer({"title": " Team up ", "body": " Who needs a designer? ", "tags": [" Hiring", "design", "hiring"]})
+            self.assertEqual(runner._output(tagged, self.home), {"title": "Team up", "body": "Who needs a designer?",
+                                                                 "tags": ["hiring", "design"]})
+            self.assertIn("room_tags first", calls[-1]["messages"][0]["content"])
+            self.assertEqual(json.loads(calls[-1]["messages"][1]["content"])["room_tags"], ["hiring", "buildathon"])
+            # Tags stay optional; a reuse never takes tags; bad tag lists are refused before the service sees them.
+            answer({"title": "Untagged", "body": "x"})
+            self.assertEqual(runner._output(tagged, self.home), {"title": "Untagged", "body": "x"})
+            answer({"existing_thread_id": "thread_1", "body": "x", "tags": ["a"]})
+            with self.assertRaisesRegex(ValueError, "model-output"):
+                runner._output(tagged, self.home)
+            # Best effort (review-b S1): unusable entries are dropped, the first 3 kept; nothing usable posts untagged.
+            for given, kept in (([], None), (["a", "b", "c", "d"], ["a", "b", "c"]), (["x" * 41, "ok"], ["ok"]), ([" "], None),
+                                ([7, "seven"], ["seven"]), ("hiring", None), (["zero\u200bwidth"], ["zerowidth"]),
+                                (["A", "a", "b", "B"], ["a", "b"])):
+                answer({"title": "t", "body": "x", "tags": given})
+                expected = {"title": "t", "body": "x", **({"tags": kept} if kept else {})}
+                self.assertEqual(runner._output(tagged, self.home), expected)
+            # A capped room never offers tags (no title path).
+            answer({"existing_thread_id": "thread_2", "body": "x"})
+            runner._output({**tagged, "can_create_topic": False}, self.home)
+            self.assertNotIn("room_tags first", calls[-1]["messages"][0]["content"])
             answered = len(calls)
+        # room_tags is filtered, never a refusal (review-b S2: any member writes room tags): junk is dropped, 20 kept.
+        self.assertEqual(runner._room_tags(["ok", " ", "\u00a0", None, "x" * 41, "Z\u200bed", "OK"] + ["t%d" % i for i in range(30)])[:3],
+                         ["ok", "zed", "t0"])
+        self.assertEqual(len(runner._room_tags(["t%d" % i for i in range(30)])), 20)
+        self.assertEqual(runner._room_tags(None), [])
+        self.assertEqual(runner._room_tags("hiring"), [])
         # Malformed or capped-and-empty topic context never opens a model route.
         with patch.object(runner, "_model_route", side_effect=AssertionError("model route opened")):
             with self.assertRaisesRegex(ValueError, "topic-capacity"):
