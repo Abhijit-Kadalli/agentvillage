@@ -144,13 +144,13 @@ class TransportTest(unittest.TestCase):
     for operation in ('zzz.add_team_members','zzz.open_team_room'):
      with self.subTest(code=code,operation=operation):
       opener.open.side_effect=refuse(code,status)
-      result=real_transport(config,{'operation':operation,'room':'room_core','with':['A']})
+      result=real_transport(config,{'operation':operation,'room_id':'room_core','with':['A']})
       self.assertEqual(result,{'error':code,'instruction':bridge.ZZZ_ERRORS[code]})
       text=bridge.ZZZ_ERRORS[code];self.assertNotIn('Retrying the SAME request',text)
       self.assertNotIn('upstream text',json.dumps(result))
    # An app without the add half: its strict ToolRequest refuses the add as zzz_invalid (422).
    opener.open.side_effect=refuse('zzz_invalid',422)
-   result=real_transport(config,{'operation':'zzz.add_team_members','room':'room_core','with':['A']})
+   result=real_transport(config,{'operation':'zzz.add_team_members','room_id':'room_core','with':['A']})
    self.assertEqual(result,{'error':'zzz_team_add_not_ready','instruction':bridge.ZZZ_TEAM_ADD_NOT_READY})
    self.assertIn("isn't available yet",result['instruction']);self.assertIn('never open a new room',result['instruction'])
    # Every other zzz operation keeps zzz_invalid's own text.
@@ -1581,9 +1581,11 @@ class BridgeTest(unittest.TestCase):
      self.assertIn('data',self.call(self.TEAM_ADD_ROOM))
    self.assertIn('data',self.call(self.TEAM_ADD_GROUP))
   self.assertEqual([c.args[1] for c in self.transport.call_args_list],
-                   [{'operation':'zzz.add_team_members','room':'room_core','with':['Asha Rao']},
-                    {'operation':'zzz.add_team_members','room':'room_core','with':['Asha Rao']},
-                    {'operation':'zzz.add_team_members','group':'cxg_0123abcd','with':['Asha Rao','att_123']}])
+                   [{'operation':'zzz.add_team_members','room_id':'room_core','with':['Asha Rao']},
+                    {'operation':'zzz.add_team_members','room_id':'room_core','with':['Asha Rao']},
+                    {'operation':'zzz.add_team_members','group_id':'cxg_0123abcd','with':['Asha Rao','att_123']}])
+  # The contract names travel unchanged (the app refuses room / group, data L31318).
+  for call in self.transport.call_args_list:self.assertFalse({'room','group'}&set(call.args[1]))
  def test_team_add_needs_the_verified_gate_and_exact_bounded_arguments(self):
   self.zzz_home()
   rule=bridge.ZZZ_TEAM_INPUT['zzz.add_team_members']
@@ -1603,7 +1605,7 @@ class BridgeTest(unittest.TestCase):
         add(**{'room_id':'room_core','with':'Asha'}),add(**{'room_id':'room_core','with':['x'*121]}),
         add(**{'room_id':'Agent Village Core','with':['A']}),add(**{'room_id':'../x','with':['A']}),
         add(**{'room_id':'','with':['A']}),add(**{'group_id':7,'with':['A']}),add(**{'room_id':None,'with':['A']}),
-        add(**{'room':'room_core','with':['A']}),add(**{'group':'cxg_1','with':['A']}),       # the forwarded names are not the agent's
+        add(**{'room':'room_core','with':['A']}),add(**{'group':'cxg_1','with':['A']}),       # room / group are not the add's names (the app refuses them too)
         add(**{'room_id':'room_core','with':['A'],'title':'t'}),add(**{'room_id':'room_core','with':['A'],'turnId':'forged'}),
         add(**{'room_id':'room_core','with':['A'],'idempotency_key':'k-0123456789'}),
         {'operation':'zzz.add_team_members','room_id':'room_core','with':['A']},
@@ -1617,8 +1619,8 @@ class BridgeTest(unittest.TestCase):
     self.assertIn('data',self.call(add(**{'group_id':'cxg_1','with':['x'*120]})))
   # No trusted turn id is forwarded: the app derives the add's idempotency key, as for open.
   self.assertEqual([c.args[1] for c in self.transport.call_args_list],
-                   [{'operation':'zzz.add_team_members','room':'r'*200,'with':['p%d'%i for i in range(7)]},
-                    {'operation':'zzz.add_team_members','group':'cxg_1','with':['x'*120]}])
+                   [{'operation':'zzz.add_team_members','room_id':'r'*200,'with':['p%d'%i for i in range(7)]},
+                    {'operation':'zzz.add_team_members','group_id':'cxg_1','with':['x'*120]}])
  def test_team_add_refusals_reach_the_agent_with_the_plugins_text_only(self):
   self.zzz_home()
   with self.gate():

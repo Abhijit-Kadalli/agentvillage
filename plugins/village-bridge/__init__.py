@@ -143,9 +143,9 @@ ZZZ_ARGUMENTS = {
     "zzz.tag_thread": (("thread", "tags"), ()),
     "zzz.edit_post": (("post",), ("body", "title")),
     # TEAM-ADD-MEMBER (release's contract v2, section 2; product's skill line, CLAIMS L31291): exactly ONE of room_id
-    # (the room's id from zzz.list_rooms) or group_id (a team room's group id), plus the people to add. zzz_payload()
-    # forwards them as the app's ZzzAgentAddTeamMembers keys, room or group (the bridge's own room/group names, as
-    # zzz.changes and zzz.respond_team_invite send them). The app derives the idempotency key, as for open.
+    # (the room's id from zzz.list_rooms) or group_id (a team room's group id), plus the people to add. Forwarded
+    # unchanged: the app takes the contract names end to end and refuses room / group (data, CLAIMS L31318). The app
+    # derives the idempotency key, as for open.
     "zzz.add_team_members": (("with",), ("room_id", "group_id")),
 }
 ZZZ_TEAM_TITLE_CHARS, ZZZ_TEAM_MAX, ZZZ_TEAM_NAME_CHARS = 100, 7, 120
@@ -267,11 +267,8 @@ def zzz_payload(op, args, context):
         out[key] = value
     if op == "zzz.edit_post" and "body" not in out and "title" not in out:
         raise ValueError("invalid_zzz_arguments")
-    if op == "zzz.add_team_members":
-        if ("room_id" in out) == ("group_id" in out):
-            raise ValueError("invalid_zzz_arguments")  # exactly one of the two (contract section 2)
-        # The app's agent keys for the same two ids (its ZzzAgentAddTeamMembers: room / group).
-        out = {"room" if key == "room_id" else "group" if key == "group_id" else key: value for key, value in out.items()}
+    if op == "zzz.add_team_members" and ("room_id" in out) == ("group_id" in out):
+        raise ValueError("invalid_zzz_arguments")  # exactly one of the two (contract section 2)
     if op in ZZZ_POST_WRITES:
         # Stable on retries in this originating turn, distinct across later turns: the app's idempotency key input.
         out["turnId"] = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(["zzz-turn", context["SESSION_KEY"], context["MESSAGE_ID"]])))
