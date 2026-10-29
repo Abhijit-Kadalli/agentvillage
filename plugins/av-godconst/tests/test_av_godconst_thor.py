@@ -213,11 +213,11 @@ def ledger(home):
 def assert_nothing_private_on_disk(home):
     path = os.path.join(home, "av-godconst", "thor.json")
     raw = open(path, encoding="utf-8").read()
-    for text in (TITLE, DRAFT, EVIDENCE, "Asha", EOS, BALLOT_KEY, THOR_KEY, "robotics"):
+    for text in (TITLE, DRAFT, EVIDENCE, "Asha", "Ravi", EOS, BALLOT_KEY, THOR_KEY, "robotics"):
         assert text not in raw
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
     for card in json.loads(raw)["cards"]:
-        assert set(card) == {"nonce", "item_key", "intro", "day", "status", "message_id", "chat", "sent_at",
+        assert set(card) == {"nonce", "item_key", "intro", "role", "day", "status", "message_id", "chat", "sent_at",
                              "send_failures", "answer", "answered_at"}
 
 
@@ -440,8 +440,12 @@ def test_a_failed_answer_keeps_the_card_and_a_retap_posts_again(plugin, thor):
 
 
 @pytest.mark.parametrize("refusal,text", [
-    ((409, {"error": "expired"}), "This card has closed."),
-    ((404, {"error": "not_found"}), "This card has closed."),
+    ((410, {"error": "thor_item_expired"}), "This card has closed."),
+    ((410, {"error": "thor_already_answered"}), "This card has closed."),
+    ((410, {"error": "thor_nudges_off"}), "This card has closed."),
+    ((404, {"error": "thor_unknown_item"}), "This card has closed."),
+    ((403, {"error": "thor_not_yours"}), "This card has closed."),
+    ((401, {"error": "unauthorized"}), "Could not save that. Tap again in a moment."),
     ((400, {"error": "body_invalid"}), "Could not save that. Tap again in a moment."),
     ((503, {"error": "unavailable"}), "Could not save that. Tap again in a moment."),
 ])
@@ -487,34 +491,94 @@ def test_yesterdays_unanswered_card_still_takes_its_answer(plugin, thor):
 # --------------------------------------------------------------------------- intros
 
 
-def test_an_intro_card_shows_only_what_the_route_returns_and_never_a_b_name(plugin, thor):
-    intro = item(channel="intro", title="An intro for your hardware idea",
-                 draft="Someone building sensor rigs could help with your prototype.",
-                 b_first_name="Ravi", recipients=["Ravi Example"], b="Ravi")
+def test_a_card_on_a_cards_intro_says_asked_with_the_other_first_name(plugin, thor):
+    intro = item(channel="room", intro=True, role="a", other_first_name="Ravi", title="An intro for your hardware idea",
+                 draft="Someone building sensor rigs could help with your prototype.", recipients=["Ravi Example"])
     bot, server = Bot(), Server(plugin, [intro])
     pass_(plugin, bot, server)
     card = bot.cards()[0]
-    assert "Ravi" not in card.text
-    q = tap(plugin, server, card, 0)
-    assert q.answers == ["Noted."]
-    assert all("Ravi" not in line and not line.startswith("Asked.") for line in bot.lines())
-    assert ledger(thor)["cards"][0]["intro"] is True
+    assert "Ravi" not in card.text  # the name is never rendered on the card, only in A's follow-up line
+    assert tap(plugin, server, card, 0).answers == ["Asked. ODIN will check with Ravi too."]
+    assert bot.lines()[-1] == "Asked. ODIN will check with Ravi too."
+    stored = ledger(thor)["cards"][0]
+    assert stored["intro"] is True and stored["role"] == "a"
     assert [c[0] for c in server.calls] == ["GET", "POST"]  # nobody else is contacted
+    assert_nothing_private_on_disk(thor)
+
+
+def test_bs_mirror_card_renders_the_cps_text_and_says_noted(plugin, thor):
+    mirror = item(intro=True, role="b", other_first_name="Asha", title="Asha would like an intro.",
+                  draft="Asha builds sensor rigs and asked to meet builders.")
+    bot, server = Bot(), Server(plugin, [mirror])
+    pass_(plugin, bot, server)
+    card = bot.cards()[0]
+    assert card.text.startswith("Asha would like an intro.\n\nAsha builds sensor rigs")  # the cp's title and draft
+    assert tap(plugin, server, card, 0).answers == ["Noted."]
+    assert not any(line.startswith("Asked.") for line in bot.lines())
+
+
+@pytest.mark.parametrize("fields", [
+    {},                                                    # non-intro: both fields missing
+    {"intro": True, "role": "a"},                          # B will not be asked: no name
+    {"intro": True, "role": "a", "other_first_name": " "},
+    {"intro": True, "other_first_name": "Ravi"},           # no role: never guessed to be A
+    {"intro": "true", "role": "a", "other_first_name": "Ravi"},
+    {"intro": False, "role": "a", "other_first_name": "Ravi"},
+    {"channel": "intro", "other_first_name": "Ravi"},      # the channel text is not the intro marker
+])
+def test_do_it_is_plain_noted_without_a_cards_intro_and_name(plugin, thor, fields):
+    body = item()
+    body.update(fields)
+    bot, server = Bot(), Server(plugin, [body])
+    pass_(plugin, bot, server)
+    card = bot.cards()[0]
+    assert "Ravi" not in card.text
+    assert tap(plugin, server, card, 0).answers == ["Noted."]
 
 
 def test_an_intro_card_shows_a_name_only_when_it_is_in_timours_draft(plugin, thor):
-    intro = item(channel="intro", title="Meet a hardware builder", draft="Asha builds sensor rigs and asked to meet builders.")
+    intro = item(intro=True, role="a", title="Meet a hardware builder", draft="Asha builds sensor rigs and asked to meet builders.")
     bot, server = Bot(), Server(plugin, [intro])
     pass_(plugin, bot, server)
     assert "Asha builds sensor rigs" in bot.cards()[0].text
 
 
-def test_the_intro_asked_line_needs_a_given_first_name(plugin):
+def test_the_intro_asked_line_needs_role_a_and_a_given_first_name(plugin):
     T = plugin.T
     assert T.follow_up("d", True) == "Noted."
-    assert T.follow_up("d", True, "  ") == "Noted."
-    assert T.follow_up("d", True, "Asha") == "Asked. ODIN will check with Asha too."
-    assert T.follow_up("d", False, "Asha") == "Noted."
+    assert T.follow_up("d", True, "  ", "a") == "Noted."
+    assert T.follow_up("d", True, "Asha", "a") == "Asked. ODIN will check with Asha too."
+    assert T.follow_up("d", True, "Asha", "b") == "Noted."
+    assert T.follow_up("d", True, "Asha") == "Noted."
+    assert T.follow_up("d", False, "Asha", "a") == "Noted."
+    assert T.follow_up("l", True, "Asha", "a") == "OK. ODIN may bring this back another day."
+
+
+# --------------------------------------------------------------------------- 401 / 403 while the key rolls out
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_an_unauthorized_read_is_no_card_and_not_one_of_the_days_reads(plugin, thor, caplog, status):
+    caplog.set_level(logging.DEBUG)
+    bot, server = Bot(), Server(plugin)
+    server.read_refuse = status
+    read_at = []
+    times = [DAY + i * 60 for i in range(60)] + [DAY + 3600 + i * plugin.THOR_RETRY_S for i in range(1, 2 * plugin.THOR_READS_PER_DAY)]
+    for now in times:
+        before = len(server.reads())
+        assert pass_(plugin, bot, server, now=now) in ({}, {"unauthorized": 1})
+        if len(server.reads()) > before:
+            read_at.append(now)
+    assert bot.sent == []  # no resident-facing text
+    assert len(read_at) > plugin.THOR_READS_PER_DAY  # never spent the day's reads
+    assert all(b - a >= plugin.THOR_RETRY_S for a, b in zip(read_at, read_at[1:]))
+    lines = [r.getMessage() for r in caplog.records if "thor" in r.getMessage()]
+    assert lines and set(lines) == {"av-godconst: tenant=0190a5b2 outcome=thor_unauthorized"}
+    assert ledger(thor)["reads"] == 0 and ledger(thor)["done"] is False
+    # The key lands later that day: the card arrives that same day.
+    server.read_refuse = None
+    pass_(plugin, bot, server, now=times[-1] + plugin.THOR_RETRY_S)
+    assert len(bot.cards()) == 1
 
 
 # --------------------------------------------------------------------------- reads that fail
@@ -637,14 +701,14 @@ def test_the_thor_key_stays_in_custody(plugin):
 
 def test_logs_carry_codes_and_counts_only(plugin, thor, caplog):
     caplog.set_level(logging.DEBUG)
-    bot, server = Bot(), Server(plugin, [item(channel="intro", show=True, evidence=EVIDENCE)])
+    bot, server = Bot(), Server(plugin, [item(intro=True, role="a", other_first_name="Ravi", show=True, evidence=EVIDENCE)])
     pass_(plugin, bot, server)
     card = bot.cards()[0]
     tap(plugin, server, card, 0, user=999)
     tap(plugin, server, card, 0)
     lines = "\n".join(r.getMessage() for r in caplog.records)
     assert "outcome=thor_served" in lines and "outcome=thor_card_sent" in lines and "outcome=thor_answered do_it=1" in lines
-    for secret in (TITLE, DRAFT, EVIDENCE, "Asha", KEY1, EOS, THOR_KEY, "avt:", str(OWNER), "999", TENANT):
+    for secret in (TITLE, DRAFT, EVIDENCE, "Asha", "Ravi", KEY1, EOS, THOR_KEY, "avt:", str(OWNER), "999", TENANT):
         assert secret not in lines
 
 

@@ -46,8 +46,11 @@ FAILED = "Could not save that. Tap again in a moment."
 #: callback letter -> the value the answer route takes, and the button label.
 ANSWERS = {"d": "do_it", "l": "not_now", "n": "not_for_me"}
 LABELS = {"d": THOR_NUDGE_DO, "l": THOR_NUDGE_LATER, "n": THOR_NUDGE_NEVER}
-#: Data marks an intro by its channel (design section 3; "channel = intro").
-INTRO_CHANNEL = "intro"
+#: An intro item carries ``intro: true`` and ``role`` ("a": the one asked first; "b": the mirror card the control
+#: plane serves once A said Do it), plus ``other_first_name`` (the other party's first name for whoever receives the
+#: card), present only when that person will actually be asked (data's cp#493 contract).
+ROLES = ("a", "b")
+FIRST_NAME_MAX = 64
 
 PREFIX = "avt:"
 HANDLER_PATTERN = r"^avt:"
@@ -78,19 +81,19 @@ def card_rows(nonce: str, make_button: Callable, chosen: Optional[str] = None) -
     return [[make_button(LABELS[c], callback(c, nonce)) for c in ("d", "l", "n")]]
 
 
-def follow_up(choice: str, intro: bool, b_first_name: Optional[str] = None) -> str:
+def follow_up(choice: str, intro: bool, other_first_name: Optional[str] = None, role: Optional[str] = None) -> str:
     """The line the resident sees after a recorded tap (the copy file's "three answers").
 
     Do it, non-intro: nothing performs the action on our side yet (ODIN answers and explains only), so just "Noted."
-    (never a promised pick-up). Do it on an intro: "Asked. ODIN will check with {b} too." only with B's first name; the
-    card route carries no such field today, so it is "Noted." until data adds one (the report's question). Never a
-    name the route did not give."""
+    (never a promised pick-up). Do it on A's intro card (``intro`` true, ``role`` "a") with ``other_first_name``:
+    "Asked. ODIN will check with {b} too." B's mirror card (role "b"), an intro with no name, or a role not given: the
+    plain "Noted.". Never a name the route did not give."""
     if choice == "l":
         return THOR_NUDGE_LATER_OK
     if choice == "n":
         return THOR_NUDGE_NEVER_OK
-    if intro and isinstance(b_first_name, str) and b_first_name.strip():
-        return THOR_NUDGE_INTRO_ASKED.format(b=b_first_name.strip())
+    if intro and role == "a" and isinstance(other_first_name, str) and other_first_name.strip():
+        return THOR_NUDGE_INTRO_ASKED.format(b=other_first_name.strip())
     return THOR_NUDGE_NOTED
 
 
@@ -119,7 +122,8 @@ def utc_day(now: float) -> str:
 
 def valid_item(raw: Any) -> Optional[dict]:
     """One item, checked; None when unusable. Only the fields the card needs are kept: item_key, title, draft, channel,
-    intro, expires_at (epoch), and evidence ONLY when ``show_evidence`` is exactly true and the text is there (while it
+    intro (exactly true), role ("a"/"b", else None), other_first_name (a short non-empty string, else None; used only
+    for A's follow-up line, never rendered on the card), expires_at (epoch), and evidence ONLY when ``show_evidence`` is exactly true and the text is there (while it
     is false the route sends no evidence at all: no "Why you:" line). Other keys are ignored, never rendered."""
     if not isinstance(raw, dict):
         return None
@@ -138,8 +142,12 @@ def valid_item(raw: Any) -> Optional[dict]:
     show = raw.get("show_evidence") is True
     evidence = raw.get("evidence")
     evidence = evidence.strip() if show and isinstance(evidence, str) and len(evidence) <= EVIDENCE_MAX_IN else ""
-    return {"item_key": key, "title": title.strip(), "draft": draft.strip(), "channel": channel,
-            "intro": channel == INTRO_CHANNEL, "expires_at": expires, "evidence": evidence}
+    intro = raw.get("intro") is True
+    role = raw.get("role") if intro and raw.get("role") in ROLES else None
+    other = raw.get("other_first_name")
+    other = other.strip() if intro and isinstance(other, str) and 0 < len(other.strip()) <= FIRST_NAME_MAX else None
+    return {"item_key": key, "title": title.strip(), "draft": draft.strip(), "channel": channel, "intro": intro,
+            "role": role, "other_first_name": other, "expires_at": expires, "evidence": evidence}
 
 
 def today_item(data: Any, now: float) -> tuple:

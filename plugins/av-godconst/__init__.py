@@ -1808,12 +1808,19 @@ THOR_READS_PER_DAY = 4
 THOR_SEND_ATTEMPTS = 3
 THOR_CARDS_KEPT = 14
 #: A refused answer whose code means the card can no longer be answered.
-THOR_CLOSED_CODES = frozenset({"expired", "not_found", "already_answered", "answered", "not_carded", "not_enabled", "suppressed"})
+THOR_CLOSED_CODES = frozenset({"thor_unknown_item", "thor_not_yours", "thor_item_expired", "thor_already_answered",
+                               "thor_nudges_off"})
+#: A read refused for the credential (the box's AV_THOR_KEY not written yet, or not accepted): no card, no text, retry
+#: after THOR_RETRY_S, and NOT one of the day's reads, so the card can still arrive that day once the key lands.
+THOR_AUTH_STATUSES = frozenset({401, 403})
 
 _THOR_LEDGER_LOCK = threading.RLock()
 _THOR_PASS_LOCK: Optional[asyncio.Lock] = None
 #: nonce -> (card text, expires_at): a carded card waiting for its Telegram send. Memory only.
 _THOR_PENDING: dict = {}
+#: nonce -> the other party's first name on A's intro card, for the follow-up line. Memory only (never on disk): after
+#: a restart the line is the plain "Noted.".
+_THOR_NAMES: dict = {}
 _thor_in_flight: set = set()
 _THOR_NO_KEY_LOGGED = False
 #: (tenant, UTC day) -> {"reads", "done", "next_read_at"}: the day's read state in memory, so an unwritable ledger
@@ -2007,7 +2014,11 @@ async def thor_pass_once(bot: Any, adapter: Any, make_button: Callable, make_mar
             ledger["reads"] = mem["reads"] = reads + 1
             reply = await asyncio.to_thread(call, "GET", THOR_READ_PATH, None, home)
             if not reply.ok:
-                if _thor_retryable(reply):
+                if reply.status in THOR_AUTH_STATUSES:
+                    ledger["reads"] = mem["reads"] = reads  # not one of the day's reads
+                    ledger["next_read_at"] = mem["next_read_at"] = stamp + THOR_RETRY_S
+                    count("unauthorized")
+                elif _thor_retryable(reply):
                     ledger["next_read_at"] = mem["next_read_at"] = stamp + THOR_RETRY_S
                     count(f"read_retry_{reply.code}")
                 else:
@@ -2024,8 +2035,10 @@ async def thor_pass_once(bot: Any, adapter: Any, make_button: Callable, make_mar
                     save_thor_ledger(_merge_thor(ledger, home), home)
                 return codes
             nonce = secrets.token_urlsafe(6)[: T.NONCE_CHARS].replace("=", "A")
-            card = {"nonce": nonce, "item_key": item["item_key"], "intro": item["intro"], "day": today, "status": "pending",
-                    "message_id": None, "chat": None, "sent_at": None, "send_failures": 0, "answer": None, "answered_at": None}
+            if item["other_first_name"]:
+                _THOR_NAMES[nonce] = item["other_first_name"]
+            card = {"nonce": nonce, "item_key": item["item_key"], "intro": item["intro"], "role": item["role"],
+                    "day": today, "status": "pending", "message_id": None, "chat": None, "sent_at": None, "send_failures": 0, "answer": None, "answered_at": None}
             ledger["cards"].append(card)
             _THOR_PENDING[nonce] = (T.card_text(item), item["expires_at"])
             with _THOR_LEDGER_LOCK:  # write-ahead: the card is on the ledger before the send
@@ -2118,7 +2131,7 @@ def make_thor_handler(adapter: Any = None, *, make_button: Callable, make_markup
                             stored["answer"], stored["answered_at"] = value, now_iso(clock())
                     save_thor_ledger(ledger, home)
             _thor_log("answered", **{value: 1})
-            line = T.follow_up(choice, bool(card.get("intro")))
+            line = T.follow_up(choice, card.get("intro") is True, _THOR_NAMES.get(nonce), card.get("role"))
             await _answer(query, line)
             try:
                 await query.edit_message_reply_markup(reply_markup=make_markup(T.card_rows(nonce, make_button, chosen=choice)))
