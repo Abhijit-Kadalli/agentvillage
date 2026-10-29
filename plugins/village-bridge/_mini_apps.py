@@ -46,12 +46,14 @@ ZZZ_EDIT_OPERATIONS = ("zzz.tag_thread", "zzz.edit_post")
 ZZZ_POST_WRITES = (*ZZZ_WRITE_OPERATIONS, *ZZZ_EDIT_OPERATIONS)
 # Buildathon team rooms (zzz#32 + app#842, lead L28970): app-side feature-gated operations that, like zzz.pairs,
 # borrow an existing zzzbot install permission and are deliberately absent from the CP catalog and from ZZZBOT.
-# The read borrows zzz.list_rooms; the two writes borrow zzz.create_thread and take the same gated-write path.
+# The read borrows zzz.list_rooms; the writes borrow zzz.create_thread and take the same gated-write path.
 # They are owner-led only: the managed pair job's CRON_OPS (and any runner) never includes them.
+# TEAM-ADD-MEMBER (lead L31271, release's TEAM-ADD-MEMBER-CONTRACT.md): zzz.add_team_members adds people to a team
+# room the owner already has, borrowing exactly as zzz.open_team_room does (no catalog, class or gate change).
 ZZZ_TEAM_READ_OPERATIONS = ("zzz.list_team_invites",)
-ZZZ_TEAM_WRITE_OPERATIONS = ("zzz.open_team_room", "zzz.respond_team_invite")
+ZZZ_TEAM_WRITE_OPERATIONS = ("zzz.open_team_room", "zzz.respond_team_invite", "zzz.add_team_members")
 ZZZ_TEAM_BORROWS = {"zzz.list_team_invites": "zzz.list_rooms", "zzz.open_team_room": "zzz.create_thread",
-                    "zzz.respond_team_invite": "zzz.create_thread"}
+                    "zzz.respond_team_invite": "zzz.create_thread", "zzz.add_team_members": "zzz.create_thread"}
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
                              *ZZZ_TEAM_READ_OPERATIONS})
