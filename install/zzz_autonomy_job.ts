@@ -26,6 +26,7 @@ export const AUTONOMY_SHIPPED = {
     "cd566df9f69d257a4f75e0d59e331902381ff9bb61ed0e2945d1bedf6e7a3f78", // + zzzbot 1.1.0 by the bridge's exact ZZZBOT_ACCEPTED (RUNNER-ZZZBOT-110)
     "5db8a0da4210b5145b55d713e0a97a5a0627332b1f6728c4bf30261432838e45", // + stdlib-only model route read and a stderr reason line (ov#550 8821169a)
     "e6edc00f2b8f02ab87787f0592645fa134c6bbfa68de36a349f34c0f6113c498", // + PyYAML first, the stdlib reader only when PyYAML is not importable (review-b ov#550 S1)
+    "06607497360fc59bd9507eccab0a40280a321f9bab6bf6e31e6c574f1dee8ef5", // + provider auto takes config.yaml's own OpenRouter api_key only with the OpenRouter base_url (RUNNER-MODEL-RESOLVE + review-b ov#553 S1, canary aa9a5de3)
   ],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;

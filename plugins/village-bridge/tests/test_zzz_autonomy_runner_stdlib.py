@@ -495,6 +495,15 @@ class TestShippedRunnerWithoutPackages(unittest.TestCase):
                 self.assertEqual(self.run_runner(), (1, line))
                 self.assertFalse((self.box.home / "zzzbot").exists())  # every one stops before the lock
 
+    def test_the_canary_route_passes_the_model_route_step(self):
+        # RUNNER-MODEL-RESOLVE (canary aa9a5de3): provider auto, the OpenRouter base_url and key in config.yaml, no
+        # key in .env. v2.1.22 stopped here at `model_route ValueError model-provider`; now the claim step is next.
+        (self.box.home / "config.yaml").write_text(
+            "model:\n  default: anthropic/claude-haiku-5.5\n  provider: auto\n  base_url: https://openrouter.ai/api/v1\n"
+            "  api_key: fixture-openrouter\nfallback_providers:\n  - provider: openrouter\n    model: openai/gpt-6-luna\n")
+        (self.box.home / ".env").write_text("HERMES_MODEL=anthropic/claude-haiku-5.5\n")
+        self.assertEqual(self.run_runner(), (1, "zzz-autonomy: claim ValueError http-client\n"))
+
     def test_a_foreign_hermes_home_is_the_home_step(self):
         with tempfile.TemporaryDirectory() as other:
             self.assertEqual(self.run_runner(home=Path(other).resolve()), (1, "zzz-autonomy: home ValueError home\n"))

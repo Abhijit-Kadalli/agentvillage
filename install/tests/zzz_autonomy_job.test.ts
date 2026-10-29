@@ -99,13 +99,25 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   const ov550=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.ov550-stdlib.py.fixture"));
   expect(digest(ov550)).toBe("5db8a0da4210b5145b55d713e0a97a5a0627332b1f6728c4bf30261432838e45");
   expect(ov550.equals(current)).toBe(false);
-  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(v2121),digest(ov548),digest(ov550),digest(current)]);
+  // v2.1.22's bytes (ov#550's final head, the canary's runner); the config-key OpenRouter route (RUNNER-MODEL-RESOLVE) appended a seventh.
+  const v2122=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2122.py.fixture"));
+  expect(digest(v2122)).toBe("e6edc00f2b8f02ab87787f0592645fa134c6bbfa68de36a349f34c0f6113c498");
+  expect(v2122.equals(current)).toBe(false);
+  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(v2121),digest(ov548),digest(ov550),digest(v2122),digest(current)]);
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT);
-  // The box as the previous release left it: previous bytes in the shim and the staged skill copy.
-  writeFileSync(shim,previous,{mode:0o700});
   const skillCopy=join(home,"skills/zzzbot/scripts",AUTONOMY_JOB_SCRIPT);
+  // The box as v2.1.22 left it (the canary): v2.1.22's bytes in the shim and the staged skill copy.
+  writeFileSync(shim,v2122,{mode:0o700});
+  if (existsSync(skillCopy)) writeFileSync(skillCopy,v2122);
+  expect(autonomyMarkers(home)).toBe(true);
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  expect(readFileSync(shim).equals(current)).toBe(true);
+  expect(jobs().map(job=>job.name)).toEqual([AUTONOMY_JOB_NAME]);
+  expect(stage([zzzbot,autonomy],["--verify"]).status).toBe(0);
+  // The same upgrade from the first shipped bytes.
+  writeFileSync(shim,previous,{mode:0o700});
   if (existsSync(skillCopy)) writeFileSync(skillCopy,previous);
   expect(autonomyMarkers(home)).toBe(true);
   expect(stage([zzzbot,autonomy]).status).toBe(0);
