@@ -442,17 +442,28 @@ def _timeout(seconds: float):
     return httpx.Timeout(connect=short, read=seconds, write=short, pool=short)
 
 
+# The bridge reply caps (review-b ov#554 Fold 4, L33044 S1). Claim and complete replies are small and keep 16 KiB. A
+# context reply now carries a 4,000-byte source, up to 8,000 bytes of thread_replies bodies (12 replies of at most
+# 1,000 bytes, plus 80-code-point labels) and the app's resident_brief (rendered up to RESIDENT_BRIEF_BYTES, about 12
+# KiB, more as raw JSON), with JSON overhead: about 19-26 KB for a legitimate reply, past 16 KiB, which refused it after
+# the claim (a recorded failure and a spent ZZZ attempt). 64 KiB holds that with headroom.
+ACTIVITY_REPLY_BYTES = 16384
+CONTEXT_REPLY_BYTES = 65536
+ACTIVITY_REPLY_CAP = {"claim": ACTIVITY_REPLY_BYTES, "context": CONTEXT_REPLY_BYTES, "complete": ACTIVITY_REPLY_BYTES}
+
+
 def _activity(http, cfg: dict, operation: str, **fields):
     timeout = _timeout(_budget(*ACTIVITY_BUDGET[operation]))
+    cap = ACTIVITY_REPLY_CAP[operation]
     with http.stream("POST", cfg["origin"] + ROUTE, headers={"Authorization": "Bearer " + cfg["token"],
         "Content-Type": "application/json", "Accept": "application/json"},
         json={"operation": operation, **fields}, follow_redirects=False, timeout=timeout) as response:
-        if response.status_code != 200 or int(response.headers.get("content-length", "0")) > 16384:
+        if response.status_code != 200 or int(response.headers.get("content-length", "0")) > cap:
             raise ValueError("activity-refused")
         chunks, size = [], 0
         for chunk in response.iter_bytes():
             size += len(chunk)
-            if size > 16384:
+            if size > cap:
                 raise ValueError("activity-size")
             chunks.append(chunk)
     result = json.loads(b"".join(chunks))

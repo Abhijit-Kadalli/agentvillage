@@ -1512,5 +1512,91 @@ class TestThreadReplies(unittest.TestCase):
         self.assertEqual((messages, sent), ([], [{"body": "ODIN says: hi"}]))
 
 
+class TestContextReplyCap(unittest.TestCase):
+    """Fold 4 (review-b ov#554 L33044 S1): a legitimate maximal context reply (source + thread_replies + resident_brief)
+    passes 16 KiB, so the context reply cap is CONTEXT_REPLY_BYTES; claim and complete keep 16 KiB."""
+
+    setUp = TestResidentBrief.setUp
+    calls = TestResidentBrief.calls
+    CFG = {"origin": "https://agents.edgecity.live", "token": TOKEN}
+    FIELDS = {"candidate_id": "12345678-1234-1234-1234-123456789abc", "lease_token": "a" * 64}
+
+    def maximal(self):
+        """A 4,000-byte source, 12 x 1,000-byte replies with 80-code-point labels, a brief rendering exactly 12,288 B."""
+        source = {"post_id": "p", "thread_id": "t", "author_label": "Sancho's agent", "body": "s" * 4000,
+                  "body_truncated": False, "title": "Solar first", "post_revision": 1}
+        replies = [reply(n, body="r" * 1000, label=f"{n:02d}" + "L" * 78) for n in range(12)]
+        snippets = [{"source": SOURCES[n], "text": "z" * runner.RESIDENT_TEXT_CHARS} for n in range(5)]
+        brief = {"agent_name": "n" * runner.RESIDENT_NAME_CHARS, "voice": "v" * runner.RESIDENT_VOICE_CHARS,
+                 "snippets": snippets}
+        block, _ = runner._resident_brief(brief)
+        room = runner.RESIDENT_BRIEF_BYTES - len(block.encode()) - 1 - len("[digest] ")
+        brief["snippets"] = [*snippets, {"source": "digest", "text": "y" * room}]
+        block, code = runner._resident_brief(brief)
+        self.assertEqual((len(block.encode()), code), (runner.RESIDENT_BRIEF_BYTES, None))
+        return {"candidate_id": self.FIELDS["candidate_id"], "kind": "comment", "source": source,
+                "thread_replies": replies, "resident_brief": brief}, block
+
+    def activity(self, raw, operation="context", length=True):
+        """The real _activity against a fake bridge replying `raw` in 4 KiB chunks (with a content-length or not)."""
+        class Response:
+            status_code = 200
+            headers = {"content-length": str(len(raw))} if length else {}
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+            def iter_bytes(self):
+                return iter([raw[i:i + 4096] for i in range(0, len(raw), 4096)])
+        class Http:
+            def stream(self, _method, _url, **_kwargs):
+                return Response()
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Timeout=FakeTimeout)}):
+            return runner._activity(Http(), self.CFG, operation, **self.FIELDS)
+
+    def test_the_caps(self):
+        self.assertEqual(runner.CONTEXT_REPLY_BYTES, 65536)
+        self.assertEqual(runner.ACTIVITY_REPLY_CAP, {"claim": 16384, "context": 65536, "complete": 16384})
+
+    def test_a_maximal_context_is_accepted_end_to_end(self):
+        context, block = self.maximal()
+        raw = json.dumps(context).encode()
+        self.assertGreater(len(raw), runner.ACTIVITY_REPLY_BYTES)  # refused before this fold
+        self.assertLessEqual(len(raw), runner.CONTEXT_REPLY_BYTES)
+        for length in (True, False):
+            with self.subTest(content_length=length):
+                got = self.activity(raw, length=length)
+                self.assertEqual(got, context)
+                (messages,), written = self.calls(runner, [got])
+                self.assertEqual(written, [])
+                self.assertTrue(messages[0]["content"].endswith(runner.RESIDENT_GUIDANCE + runner.REPLIES_GUIDANCE))
+                room, _, sent_block = messages[1]["content"].partition("\n\n")
+                data = json.loads(room)  # the slice cut nothing
+                self.assertEqual(data["source"], context["source"])
+                self.assertGreaterEqual(len(data["thread_replies"]), 1)
+                self.assertEqual(data["thread_replies"], context["thread_replies"][-len(data["thread_replies"]):])
+                self.assertEqual(sent_block, block)
+
+    def test_a_context_over_the_cap_is_still_refused(self):
+        context, _ = self.maximal()
+        base = len(json.dumps({**context, "pad": ""}).encode())
+        at_cap = json.dumps({**context, "pad": "p" * (runner.CONTEXT_REPLY_BYTES - base)}).encode()
+        self.assertEqual(len(at_cap), runner.CONTEXT_REPLY_BYTES)
+        self.assertEqual(self.activity(at_cap)["pad"], "p" * (runner.CONTEXT_REPLY_BYTES - base))
+        over = json.dumps({**context, "pad": "p" * (runner.CONTEXT_REPLY_BYTES - base + 1)}).encode()
+        with self.assertRaisesRegex(ValueError, "activity-refused"):
+            self.activity(over)
+        with self.assertRaisesRegex(ValueError, "activity-size"):
+            self.activity(over, length=False)
+        # Claim and complete replies keep 16 KiB.
+        small = json.dumps({"state": "posted", "pad": "p" * 16384}).encode()
+        for operation in ("claim", "complete"):
+            with self.subTest(operation=operation):
+                with self.assertRaisesRegex(ValueError, "activity-refused"):
+                    self.activity(small, operation)
+                with self.assertRaisesRegex(ValueError, "activity-size"):
+                    self.activity(small, operation, length=False)
+
+
 if __name__ == "__main__":
     unittest.main()
