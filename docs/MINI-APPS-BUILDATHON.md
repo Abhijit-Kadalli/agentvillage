@@ -4,16 +4,18 @@ One page for a buildathon team. It says what a mini-app is, what you build, how 
 
 ## Deadlines: what counts and when
 
-**The buildathon deadline is Friday 30 October, 6pm IST (18:00 IST).** To be installable during the event, open your pull request by **Friday 12pm IST (noon)**.
+**Submit by the buildathon deadline (the organisers announce it in the buildathon Telegram group).** To be installable during the event, open your pull request at least 6 hours before the deadline.
 
-1. **Your entry counts** when, by the deadline (Friday 6pm IST), you have:
+1. **Your entry counts** when, by the deadline, you have:
    - a working, publicly reachable HTTPS MCP or API endpoint;
    - your manifest and SKILL.md opened as a pull request (or sent to the organisers if you cannot open one);
    - a short demo (video or live) of your agent using it.
 
    Our review and catalog listing are not part of the deadline and never count against you.
-2. **To let residents install it during the event,** open the pull request at least 6 hours before the deadline (by Friday 12pm IST). We review in order of arrival. A complete pull request that passes the automated checks gets a quick human review. We cannot promise a slot for anything opened later.
+2. **To let residents install it during the event,** open the pull request at least 6 hours before the deadline. We review in order of arrival. A complete pull request that passes the automated checks gets a quick human review. We cannot promise a slot for anything opened later.
 3. **Run the local checks (section 6) before you open the pull request.** A pull request that fails them goes to the back of the queue until it is fixed.
+
+Questions: ask in the buildathon Telegram group, or ask ODIN in Agent Village.
 
 ## 1. What a mini-app is
 
@@ -51,7 +53,7 @@ Start on the generic path if you can. It is the fast one.
 | Starter | Files | Use it for |
 | --- | --- | --- |
 | Dizko: public read MCP | [manifest](../mini-apps/dizko/manifest.json), [SKILL.md](../skills/dizko/SKILL.md) | The template for a generic app |
-| Hello Village (invented) | [docs/examples/mini-apps/hello-village](examples/mini-apps/hello-village/) | The smallest valid generic app: one read, plus its own notes |
+| Hello Village (an example) | [docs/examples/mini-apps/hello-village](examples/mini-apps/hello-village/) | The smallest valid generic app: one read, plus its own notes |
 | Gold Stars | [manifest](../mini-apps/gold-stars/manifest.json), [SKILL.md](../skills/gold-stars/SKILL.md) | The prepare, then confirm, pattern for an action. First-party, with its own server code: read it, do not copy it |
 | For Kicks | [manifest](../mini-apps/forkicks/manifest.json), [SKILL.md](../skills/forkicks/SKILL.md) | The one payment flow, with an approval card. First-party: reference only |
 
@@ -104,7 +106,7 @@ A reviewed app's `service` block instead:
 
 1. Review the manifest, the permission text and every line of the skill.
 2. Copy the manifest and skill into the control-plane catalog with the skill's sha256 pin. The control plane is a private repo, so we make that change.
-3. Turn it on for your test account first, then for everyone. Each resident installs it from the catalog.
+3. Turn it on for your test account first, then for everyone. Each resident installs it from the Mini-apps page in Agent Village.
 
 **Reviewed app** (what Kismet, DreamStarter and Edge Library needed):
 
@@ -190,6 +192,8 @@ Village-level, consent-filtered read access for buildathon teams is being set up
 - Mark a write as a read.
 - Add a class, an approval rule or a gate. App actions use the classes that exist ([developer guide section 7](MINI-APPS-DEVELOPER.md#7-approvals-what-your-apps-actions-feel-like)).
 - Use an id that is reserved or already a skill ([quickstart section 1](MINI-APPS-QUICKSTART.md#1-what-a-generic-app-may-do)).
+
+## Sources (for reviewers)
 
 Sources (overlay `main` at `f3fcca4b`; app and control plane at their `main`, 29 Oct 2026):
 

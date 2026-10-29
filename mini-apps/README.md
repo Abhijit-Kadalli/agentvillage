@@ -688,8 +688,9 @@ the sources):
    Installed for every agent, removable; an uninstall is respected and the app
    is never installed again over it. It is a control-plane setting, not a
    manifest field: the closed schema has no `default` key.
-3. **Optional**: the resident installs it from the catalog. Dizko, Slopfolio
-   (allowlisted tenants only), and every generic and partner app.
+3. **Optional**: the resident installs it from the Mini-apps page in Agent
+   Village. Dizko, Slopfolio (allowlisted tenants only), and every generic and
+   partner app.
 
 ## Mini-apps v2 today
 
