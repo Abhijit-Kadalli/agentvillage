@@ -84,7 +84,10 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   const digest=(bytes:Buffer)=>createHash("sha256").update(bytes).digest("hex");
   expect(digest(previous)).toBe("f25327ecfb2781969d511c23c1c1c4e5e93e829f9abae1384d3b582174b3061e");
   expect(previous.equals(current)).toBe(false);
-  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(current)]);
+  // v2.1.19/v2.1.20 boxes hold ov#526's bytes; topic tags (lead L30725) appended a third digest, every older one kept.
+  const v2119=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2119.py.fixture"));
+  expect(digest(v2119)).toBe("95b64ed6eef6d42897e7ad4f922266fbbf1320abeaeeee9f28e06ca9a1d51c9c");
+  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(current)]);
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT);
@@ -96,6 +99,11 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   expect(readFileSync(shim).equals(current)).toBe(true);
   expect(jobs().map(job=>job.name)).toEqual([AUTONOMY_JOB_NAME]);
+  // The same upgrade from the v2.1.19 bytes (what every box runs today).
+  writeFileSync(shim,v2119,{mode:0o700});
+  if (existsSync(skillCopy)) writeFileSync(skillCopy,v2119);
+  expect(stage([zzzbot,autonomy]).status).toBe(0);
+  expect(readFileSync(shim).equals(current)).toBe(true);
   expect(stage([zzzbot,autonomy],["--verify"]).status).toBe(0);
   // Teardown straight from the previous bytes also removes the shim and the job.
   writeFileSync(shim,previous,{mode:0o700});

@@ -117,7 +117,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import _miniapp_epoch
+from . import _miniapp_epoch, _skill_change_note
 from ._core import env
 
 logger = logging.getLogger("av-events")
@@ -701,6 +701,9 @@ def check_and_refresh(agent: Any, loop: Any, system_message: Any, history: Any, 
             _miniapp_epoch.confirm_rebuilt(agent._cached_system_prompt, apps_before)
         except Exception as exc:  # noqa: BLE001 - the rebuild landed; never fail the turn (fold round 1, S1)
             _warn("miniapps confirm", exc)
+        # SKILL-CHANGE-NOTE: this turn's one note naming the changed apps, and the chat's saved
+        # `village` tool re-saved (`_skill_change_note.py`); never raises.
+        _skill_change_note.after_rebuild(agent, prompt)
     _mark_unpersisted(session_id, not persisted)
     if persisted:
         _record(session_id, digests)
@@ -792,6 +795,10 @@ def _wrap(original: Callable, signature: inspect.Signature, loop: Any, collector
                 agent_._cached_system_prompt = held  # a cached agent: exactly the bytes it had
             else:
                 hermes_restore(agent_, system_message, conversation_history)
+            if apps:
+                # SKILL-CHANGE-NOTE (review-b M1): the chat's saved overlay tools re-saved once per session
+                # per process, whatever changed (`_skill_change_note.first_restore`; never raises).
+                _skill_change_note.first_restore(agent_)
             check_and_refresh(agent_, loop, system_message, conversation_history, digests, memory=memory, apps=apps)
 
         if held is not None:
