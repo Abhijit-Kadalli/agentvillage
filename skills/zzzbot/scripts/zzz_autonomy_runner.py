@@ -583,7 +583,10 @@ def _model_route(home: Path):
         # An OpenRouter-style `vendor/model` id with an OpenRouter key in .env or, as Hermes also reads it, in
         # config.yaml's own model.api_key (RUNNER-MODEL-RESOLVE: canary aa9a5de3 keeps its key there, none in .env).
         # The base_url and api_mode checks below still apply, so a block aimed at another host stops at model-route.
-        if "/" not in name or not (_key(home, "OPENROUTER_API_KEY") or _usable_key(model.get("api_key"))):
+        # review-b ov#553 S1: the config key counts only when the block names OpenRouter's endpoint itself; with no
+        # base_url nothing shows that key is an OpenRouter key, so it is never sent to openrouter.ai.
+        config_key = model.get("base_url") == ENDPOINTS["openrouter"][0] and _usable_key(model.get("api_key"))
+        if "/" not in name or not (_key(home, "OPENROUTER_API_KEY") or config_key):
             raise ValueError("model-provider")
         provider = "openrouter"
     if provider not in ENDPOINTS:

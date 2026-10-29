@@ -115,11 +115,14 @@ class TestConfigKeyUnderAuto(unittest.TestCase):
                 self.assertEqual(self.route(config, ENVS["canary"]),
                                  ("route", (OPENROUTER, CONFIG_KEY, "anthropic/claude-haiku-5.5")))
 
-    def test_an_empty_base_url_also_routes(self):
+    def test_an_empty_base_url_does_not_send_the_config_key_to_openrouter(self):
+        # review-b ov#553 S1: with no base_url nothing shows the config key is an OpenRouter key; v2.1.22's answer stands.
         for line in ("", "  base_url: ''\n"):
             with self.subTest(line=line):
                 config = CANARY.replace("  base_url: https://openrouter.ai/api/v1\n", line)
-                self.assertEqual(self.route(config, ENVS["canary"])[0], "route")
+                self.assertEqual(self.route(config, ENVS["canary"]), ("ValueError", "model-provider"))
+                # An .env OpenRouter key still routes it, as v2.1.22 did.
+                self.assertEqual(self.route(config, ENVS["openrouter"])[0], "route")
 
     def test_a_dotenv_key_still_wins_over_the_config_key(self):
         self.assertEqual(self.route(CANARY, ENVS["openrouter"]),
@@ -134,7 +137,10 @@ class TestConfigKeyUnderAuto(unittest.TestCase):
                     "https://evil.example/api/v1"):
             with self.subTest(url=url):
                 config = CANARY.replace(OPENROUTER, url)
-                self.assertEqual(self.route(config, ENVS["canary"]), ("ValueError", "model-route"))
+                # S1: the config key counts only with OpenRouter's own base_url, so this refuses one step earlier,
+                # exactly as v2.1.22 did (model-provider); with an .env OpenRouter key it still stops at model-route.
+                self.assertEqual(self.route(config, ENVS["canary"]), ("ValueError", "model-provider"))
+                self.assertEqual(self.route(config, ENVS["openrouter"]), ("ValueError", "model-route"))
 
     def test_another_api_mode_still_refuses(self):
         config = CANARY.replace("  provider: auto\n", "  provider: auto\n  api_mode: anthropic_messages\n")
@@ -170,8 +176,8 @@ class TestConfigKeyUnderAuto(unittest.TestCase):
 
 
 class TestDifferentialAgainstV2122(unittest.TestCase):
-    """New == v2.1.22 everywhere, except the one widened case: provider none/empty/auto, a slash model, no usable
-    OPENROUTER_API_KEY in .env and a usable config api_key, which v2.1.22 refused as model-provider and which now
+    """New == v2.1.22 everywhere, except the one widened case: provider none/empty/auto, a slash model, base_url exactly
+    OpenRouter's endpoint, no usable OPENROUTER_API_KEY in .env and a usable config api_key, which v2.1.22 refused as model-provider and which now
     takes the route (or the base_url/api_mode/key check that follows, exactly as an .env key would)."""
 
     @staticmethod
@@ -181,6 +187,7 @@ class TestDifferentialAgainstV2122(unittest.TestCase):
         model = runner._model_section((home / "config.yaml").read_bytes())
         return (isinstance(model, dict) and model.get("provider") in (None, "", "auto")
                 and isinstance(model.get("default"), str) and "/" in model["default"]
+                and model.get("base_url") == runner.ENDPOINTS["openrouter"][0]
                 and not runner._key(home, "OPENROUTER_API_KEY") and runner._usable_key(model.get("api_key")))
 
     def compare(self, texts):
