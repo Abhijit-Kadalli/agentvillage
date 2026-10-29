@@ -122,10 +122,13 @@ def test_a_noted_entry_with_no_mark_drops_every_unmarked_line(vm):
     "- Hidden (agentvillage/secret)",
     "- Hidden (you , village)",      # a no-break space
 ])
-def test_a_mark_the_gate_cannot_parse_is_dropped_even_in_an_unmarked_entry(vm, line):
+def test_a_mark_the_gate_cannot_parse_is_dropped_and_marks_the_entry(vm, line):
+    """The bad line goes, and (security review on 674f8760) it counts as a mark, as the Index readers'
+    LINE would see one: the entry is marked, so its unmarked lines are Private and go too."""
     entry = "\n".join([TAGS, HEADER, "Here to:", "- Meet people who repair things (setup)", line])
     out = vm.shared_tags_entry(entry)
-    assert "Hidden" not in out and "- Meet people who repair things (setup)" in out
+    assert "Hidden" not in out and "Meet people" not in out
+    assert out == "\n".join([TAGS, HEADER, "Here to:"])
 
 
 @pytest.mark.parametrize("line", ["- Plain words with a (bracket) in them", "- A gift line (gift 3c6438)",
@@ -219,3 +222,59 @@ def test_a_failing_gate_leaves_out_the_tags_entry_too(vm, session, h, monkeypatc
 
     monkeypatch.setattr(vm, "agent_is_private", boom)
     assert module._memory_parts(_agent(session, "group")) == ["MEMORY"]
+
+
+# ---- security review on 674f8760: the marked signal, line splitting, hidden items ----------------------
+
+
+@pytest.mark.parametrize("line", ["- Hidden (you, privatе)", "- Hidden (PRIVATE)", "- Hidden (you, private).",
+                                  "- Hidden (you, private) ", "- Hidden (you, private", "- Hidden (agentvillage/private)!"])
+def test_an_entry_whose_only_mark_is_one_the_gate_cannot_parse_is_marked(vm, line):
+    """A bad mark counts as a mark: the entry's unmarked lines are then Private, as in any marked entry."""
+    entry = "\n".join([TAGS, HEADER, "Summary: Repairs bicycles.", "Here to:", "- Unmarked neighbour line (you)", line])
+    out = vm.shared_tags_entry(entry)
+    assert "Hidden" not in out and "Unmarked neighbour line" not in out and "Summary:" not in out
+    assert out.split("\n")[:3] == [TAGS, HEADER, "Here to:"]
+
+
+def test_an_entry_with_only_private_lines_drops_its_unmarked_lines_too(vm):
+    entry = "\n".join([TAGS, HEADER, "Here to:", "- Private one (you, private)", "- Unmarked one (setup)"])
+    assert vm.shared_tags_entry(entry) == "\n".join([TAGS, HEADER, "Here to:"])
+
+
+@pytest.mark.parametrize("brk", ["\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", " ", " "])
+def test_a_private_item_behind_another_line_break_never_passes(vm, brk):
+    """Lines are split as the Index readers split them (\\r\\n and \\r folded); any other break left in a line
+    drops it, so a Private item cannot ride on a shared one's physical line."""
+    for hidden in (f"- Shared one (you, village){brk}- Hidden one (you, private)",
+                   f"Here to:{brk}- Hidden one (you, private)",
+                   f"- Hidden one (you, private){brk}- Shared one (you, village)"):
+        entry = "\n".join([TAGS, HEADER, "Here to:", "- Kept shared (setup, public)", hidden])
+        out = vm.shared_tags_entry(entry)
+        assert "Hidden one" not in out, (brk, hidden)
+        assert "- Kept shared (setup, public)" in out
+    crlf = "\r\n".join([TAGS, HEADER, "Here to:", "- Kept shared (setup, public)", "- Hidden one (you, private)"])
+    assert vm.shared_tags_entry(crlf) == "\n".join([TAGS, HEADER, "Here to:", "- Kept shared (setup, public)"])
+
+
+@pytest.mark.parametrize("line", [
+    "- Hidden one (you, private) - Shared one (you, village)",
+    "- Hidden one (setup) and more (you, village)",
+    "- Hidden one (agentvillage/private) x (you, public)",
+])
+def test_an_item_hidden_in_a_shared_lines_words_is_dropped(vm, line):
+    entry = "\n".join([TAGS, HEADER, "Here to:", line])
+    assert "Hidden one" not in vm.shared_tags_entry(entry)
+
+
+@pytest.mark.parametrize("line", ["Here to: - Hidden one (you, private)", "Note - Hidden one (setup, private)"])
+def test_a_line_that_is_no_item_but_holds_a_tag_is_dropped_even_unmarked(vm, line):
+    entry = "\n".join([TAGS, HEADER, "Here to:", "- Plain (you)", line])
+    out = vm.shared_tags_entry(entry)
+    assert "Hidden one" not in out and "- Plain (you)" not in out  # the bad line marks the entry
+
+
+def test_plain_words_in_brackets_do_not_mark_an_entry(vm):
+    entry = "\n".join([TAGS, HEADER, "Summary: Builds a (village) garden.", "Here to:",
+                       "- Build a (village) garden (you)", "- Bicycle tune-ups (cheap) (setup)"])
+    assert vm.shared_tags_entry(entry) == entry
