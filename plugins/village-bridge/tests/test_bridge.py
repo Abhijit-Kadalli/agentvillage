@@ -1689,8 +1689,9 @@ class BridgeTest(unittest.TestCase):
   # TEAM-ADD-MEMBER (v2.1.22): the add is appended last, written out.
   self.assertEqual(enum[-1],'zzz.add_team_members')
   # v2.1.20 (lead L30644): the description surfaces the team-room operations, and only those zzz names.
-  desc=bridge.SCHEMA['description'];self.assertEqual(sorted(set(re.findall(r'zzz\.[a-z]+_[a-z_]+',desc))),['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
-  self.assertIn('only declines',desc)
+  # TEAM-ADD-MEMBER: and the add, with its never-re-open rule.
+  desc=bridge.SCHEMA['description'];self.assertEqual(sorted(set(re.findall(r'zzz\.[a-z]+_[a-z_]+',desc))),['zzz.add_team_members','zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
+  self.assertIn('only declines',desc);self.assertIn('zzz.add_team_members adds named people to a team room the owner already has (never open a new room to add someone)',desc)
   self.assertFalse(hasattr(bridge,'schema_for'))
   for apps in ([],[{'id':'gold-stars',**mini.GOLD_STARS}],[{'id':'gold-stars',**mini.GOLD_STARS},{'id':'zzzbot',**mini.ZZZBOT}]):
    with self.subTest(apps=[a['id'] for a in apps]):
