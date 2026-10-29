@@ -4,7 +4,7 @@ One page for a buildathon team. It says what a mini-app is, what you build, how 
 
 ## Deadlines: what counts and when
 
-**Submit by the buildathon deadline (the organisers announce it in the buildathon Telegram group).** To be installable during the event, open your pull request at least 6 hours before the deadline.
+**Submit by Friday 30 October, 6pm IST** (the buildathon deadline). To be installable during the event, open your pull request by Friday 12pm IST, six hours before the deadline.
 
 1. **Your entry counts** when, by the deadline, you have:
    - a working, publicly reachable HTTPS MCP or API endpoint;
@@ -12,7 +12,7 @@ One page for a buildathon team. It says what a mini-app is, what you build, how 
    - a short demo (video or live) of your agent using it.
 
    Our review and catalog listing are not part of the deadline and never count against you.
-2. **To let residents install it during the event,** open the pull request at least 6 hours before the deadline. We review in order of arrival. A complete pull request that passes the automated checks gets a quick human review. We cannot promise a slot for anything opened later.
+2. **To let residents install it during the event,** open the pull request by Friday 12pm IST, six hours before the deadline. We review in order of arrival. A complete pull request that passes the automated checks gets a quick human review. We cannot promise a slot for anything opened later.
 3. **Run the local checks (section 6) before you open the pull request.** A pull request that fails them goes to the back of the queue until it is fixed.
 
 Questions: ask in the buildathon Telegram group, or ask ODIN in Agent Village.
@@ -202,3 +202,4 @@ Sources (overlay `main` at `f3fcca4b`; app and control plane at their `main`, 29
 - Reviewed path: ov#535, ov#536, ov#539 (open); app#882 (open: Kismet's app half, the key sent only to the manifest's origin); app `src/lib/server/mini-apps/dispatch/registry.ts:11-24` (what the dispatcher needs per app), `dispatch/residents.ts:1-20` (resident separation), `dispatch/mcp-call.ts:84-89` (the bearer, no redirects).
 - Manifest rules: `scripts/mini-apps-manifests.cjs` (validator; `secretRef` form); `mini-apps/manifest.v2.schema.json`. The `app-token` block above was run through the validator: `{"ok":true}`.
 - Checks: `package.json:11` (`conformance`), `scripts/mini-apps-conformance.ts:1-60` (checks, fixtures, `--service`), `:414` (error codes), `scripts/mini-apps-review.ts:1-50`, `:693` (`new_app`), `scripts/tests/mini-app-manifests.test.ts:39-41` (what `mini-apps/<id>/` may hold), `:101` (the listed ids). Each command above was run on this branch's base.
+- Deadline Friday 30 October 6pm IST and the Friday 12pm IST pull-request time: ruled by Carter on 29 October (12:16 IST), relayed on CLAIMS L32593.
