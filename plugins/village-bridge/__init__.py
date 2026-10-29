@@ -213,12 +213,27 @@ ZZZ_ERRORS = {
     # (Carter's 429, CLAIMS L31265). Each says what happened and that nothing is retried.
     "zzz_team_room_limit": "The owner's team room limit was reached, so no new room was opened. Do not retry and do not open another room; tell the owner plainly.",
     "zzz_team_write_limited": "zzz.bot's daily team room limit was reached (it resets at 05:30 IST). Nothing was changed. Do not retry now; tell the owner plainly.",
-    "zzz_team_unavailable": "zzz.bot did not allow this team room change: only people in a team room can add someone to it, and team rooms work once the owner's zzz.bot connection is in the village room. Nothing was changed. Do not retry; tell the owner.",
+    "zzz_team_unavailable": "zzz.bot did not allow this team room: team rooms work once the owner's zzz.bot connection is in the village room. Nothing was changed. Do not retry; tell the owner.",
     "zzz_team_room_not_found": "zzz.bot has no team room with that id for this connection. Nothing was changed. Use the room's id from zzz.list_rooms; never guess one, and never open a new room instead.",
     "zzz_team_full": "That team room is full (up to 8 people, counting open invites). Nobody was added. Do not retry; tell the owner plainly.",
     "zzz_team_not_added": "No one could be invited to that team room right now. Do not retry now; tell the owner.",
     "zzz_team_add_not_ready": ZZZ_TEAM_ADD_NOT_READY,
+    # review-b S1 (ov#547): the app's other team codes, open's and the add's. zzz_team_invalid is the add's (and open's)
+    # answer when no name resolves to a villager (app messaging-teams.ts invalid()): ask for full names, never retry.
+    "zzz_team_invalid": "Nothing was changed: those people were not found in the owner's village, or the request was refused. Ask the owner for each person's full name as the Rolodex lists it; do not retry the same request.",
+    "zzz_team_conflict": "Nothing was changed: this team room changed meanwhile. Check it with zzz.list_rooms, and retry once only if the owner still wants it; never in a loop.",
+    "zzz_team_not_opened": "No one could be invited, so no room was opened. Do not retry now; tell the owner.",
+    "zzz_team_not_ready": "Team rooms aren't available yet. Nothing was changed. Tell the owner; do not retry now.",
 }
+# review-b N2 (ov#547): the add's own text where open's would be off-topic (the app's TEAM_ADD words, by op).
+ZZZ_ADD_ERRORS = {
+    "zzz_team_unavailable": "zzz.bot did not allow this add: only people in a team room can add someone to it, once their zzz.bot connection is in the village room. Nothing was changed. Do not retry; tell the owner.",
+}
+
+
+def zzz_error_text(op, code):
+    """The plugin's own text for a known zzz error code on this operation."""
+    return (ZZZ_ADD_ERRORS.get(code) if op == "zzz.add_team_members" else None) or ZZZ_ERRORS[code]
 
 
 def zzz_payload(op, args, context):
@@ -912,7 +927,7 @@ def transport(config, payload, flat_card=True, operation_class=None, *, timeout=
         }
         if zzz:
             # zzz.bot's own codes, only for zzz operations (never Gold Stars wording, never upstream text).
-            codes = {code: text for code, text in ZZZ_ERRORS.items() if code.startswith("zzz_")}
+            codes = {code: zzz_error_text(payload.get("operation"), code) for code in ZZZ_ERRORS if code.startswith("zzz_")}
         if payload.get("operation") in ("slopfolio.prepare", "slopfolio.status"):
             codes.update({
                 "CAPABILITY_NOT_GRANTED": SLOPFOLIO_ERRORS["CAPABILITY_NOT_GRANTED"],
@@ -1295,7 +1310,7 @@ def handle(args, **kwargs):
             code = result.get("error") if isinstance(result, dict) else None
             if isinstance(code, str) and code in ZZZ_ERRORS:
                 # Only the plugin's own text: every other upstream field is dropped.
-                error = {"error": code, "instruction": ZZZ_ERRORS[code]}
+                error = {"error": code, "instruction": zzz_error_text(op, code)}
                 if code == "connection_or_request_refused":
                     if type(result.get("status")) is int and 400 <= result["status"] <= 599:
                         error["status"] = result["status"]
