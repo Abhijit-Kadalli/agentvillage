@@ -24,6 +24,7 @@ export const AUTONOMY_SHIPPED = {
     "95b64ed6eef6d42897e7ad4f922266fbbf1320abeaeeee9f28e06ca9a1d51c9c", // + untrusted event_brief + ZZZ 0031 reuse (ov#526)
     "f71f3c5d48c90ca8dcbdfa22a58c945dcf3d6e54640536ca30194722e0d97a32", // + topic tags, only with the app's room_tags (lead L30725)
     "cd566df9f69d257a4f75e0d59e331902381ff9bb61ed0e2945d1bedf6e7a3f78", // + zzzbot 1.1.0 by the bridge's exact ZZZBOT_ACCEPTED (RUNNER-ZZZBOT-110)
+    "5db8a0da4210b5145b55d713e0a97a5a0627332b1f6728c4bf30261432838e45", // + stdlib-only model route read and a stderr reason line (RUNNER-STDLIB-ROUTE)
   ],
   "prompts/autonomy.md": ["93b8442797de1957ac5e64eb7477e1288601654fdaccb56fc4791f0bfd608587"],
 } as const;
