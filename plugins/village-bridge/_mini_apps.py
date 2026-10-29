@@ -61,6 +61,11 @@ ZZZ_TEAM_BORROWS = {"zzz.list_team_invites": "zzz.list_rooms", "zzz.open_team_ro
 DS_READ_OPERATIONS = ("dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_status",
                       "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status")
 DS_WRITE_OPERATIONS = ("dreamstarter.discover", "dreamstarter.grant_prepare")
+# Kismet Part 2 (lead L29830, product's build spec): its three public reads and the owner's own summary (reads), and
+# the owner's own sign-up, new dates, meet or pass and account deletion (writes). The writes take zzz's path
+# (gate_verified), never a manual grant, a card or a new class: each happens only on the owner's own ask in this chat.
+KISMET_READ_OPERATIONS = ("kismet.how_it_works", "kismet.village_stats", "kismet.public_board", "kismet.summary")
+KISMET_WRITE_OPERATIONS = ("kismet.signup", "kismet.go", "kismet.decide", "kismet.delete")
 # Edge Library (Naman, adapted from ov#506): the village knowledge graph's eight reads. 1.0.0 is READS ONLY (Carter,
 # CD-44): Edge Library's three writes are not exposed, so none is in WRITE_OPERATIONS. The reads join the existing read
 # class: no new class, row, gate or card.
@@ -68,10 +73,10 @@ LIBRARY_READ_OPERATIONS = ("library.initialize", "library.search", "library.get"
                            "library.changes_since", "library.proposals")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
-                             *ZZZ_TEAM_READ_OPERATIONS, *DS_READ_OPERATIONS, *LIBRARY_READ_OPERATIONS})
+                             *ZZZ_TEAM_READ_OPERATIONS, *DS_READ_OPERATIONS, *KISMET_READ_OPERATIONS, *LIBRARY_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
                               "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_POST_WRITES,
-                              *ZZZ_TEAM_WRITE_OPERATIONS, *DS_WRITE_OPERATIONS})
+                              *ZZZ_TEAM_WRITE_OPERATIONS, *DS_WRITE_OPERATIONS, *KISMET_WRITE_OPERATIONS})
 # Only generic reviewed app operations accept an appId from the caller.
 APP_SCOPED_OPERATIONS = frozenset({"mini-app.read", "mini-app.context.read", "mini-app.context.write"})
 # The zzzbot install, by exact equality: the CP catalog entry and install/install_miniapps.ts carry the same
@@ -86,6 +91,12 @@ ZZZBOT_ACCEPTED = (ZZZBOT, ZZZBOT_PREVIOUS)
 # zzz.pairs is an app-side feature-gated read which borrows the existing
 # list_rooms install permission; it is deliberately absent from the CP catalog.
 ZZZ_OPERATIONS = frozenset((*ZZZBOT["operations"], "zzz.pairs", *ZZZ_TEAM_READ_OPERATIONS, *ZZZ_TEAM_WRITE_OPERATIONS))
+# The kismet install, by exact equality (CP catalog entry and install/install_miniapps.ts, this order), and Part 1's
+# public read alone (ov#533), still accepted while the CP catalog serves it. Under 1.0.0 the named operations stay
+# refused (mini_app_not_installed); under 1.1.0 mini-app.read is refused for kismet.
+KISMET = {"version": "1.1.0", "skills": ["kismet"], "operations": [*KISMET_READ_OPERATIONS, *KISMET_WRITE_OPERATIONS]}
+KISMET_PUBLIC = {"version": "1.0.0", "skills": ["kismet"], "operations": ["mini-app.read"]}
+KISMET_OPERATIONS = frozenset(KISMET["operations"])
 SLOPFOLIO = {"version": "1.0.0", "skills": ["slopfolio"], "operations": ["slopfolio.prepare", "slopfolio.status"]}
 # The dreamstarter install, by exact equality (CP catalog entry and install/install_miniapps.ts, the manifest's order).
 DREAMSTARTER = {"version": "2.0.0", "skills": ["dreamstarter"], "operations": [
@@ -213,7 +224,7 @@ def _card_entry_ok(app) -> bool:
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
 REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": ZZZBOT_ACCEPTED, ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
                     ZZZ_AUTONOMY_RUNNER_ID: (ZZZ_AUTONOMY_RUNNER,), "slopfolio": (SLOPFOLIO,),
-                    "dreamstarter": (DREAMSTARTER,),
+                    "dreamstarter": (DREAMSTARTER,), "kismet": (KISMET, KISMET_PUBLIC),
                     "library": (LIBRARY,)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")

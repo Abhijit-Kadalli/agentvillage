@@ -537,7 +537,8 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(mini.WRITE_OPERATIONS,{'rolodex.meeting','gold-stars.prepare','gold-stars.send','gold-stars.cancel','mini-app.context.write',
                                           'forkicks.order.prepare','forkicks.order.confirm','forkicks.order.cancel','slopfolio.prepare','zzz.reply','zzz.create_thread',
                                           'zzz.open_team_room','zzz.respond_team_invite','zzz.tag_thread','zzz.edit_post','zzz.add_team_members',
-                                          'dreamstarter.discover','dreamstarter.grant_prepare'})
+                                          'dreamstarter.discover','dreamstarter.grant_prepare',
+                                          'kismet.signup','kismet.go','kismet.decide','kismet.delete'})
   self.assertIn('rolodex.meeting is a write',bridge.SCHEMA['description']);self.assertIn('skylight.status is a read',bridge.SCHEMA['description'])
   attendee='550e8400-e29b-41d4-a716-446655440000'
   # The gate is off, unverified or absent: the write is refused before any network call.
@@ -598,7 +599,7 @@ class BridgeTest(unittest.TestCase):
   self.assertEqual(bridge.SCHEMA['name'],'village')
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
   self.assertEqual(set(enum),set(mini.GOLD_STARS['operations'])|set(mini.FORKICKS['operations'])|{'mini-app.read','mini-app.context.read','mini-app.context.write','slopfolio.prepare','slopfolio.status','zzz.pairs'}|set(mini.ZZZBOT['operations'])
-                   |{'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite','zzz.add_team_members'}|set(mini.DREAMSTARTER['operations'])|set(mini.LIBRARY['operations']))
+                   |{'zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite','zzz.add_team_members'}|set(mini.DREAMSTARTER['operations'])|set(mini.KISMET['operations'])|set(mini.LIBRARY['operations']))
   self.assertEqual(bridge.SCHEMA['parameters']['properties']['met'],{'type':'boolean','description':bridge.SCHEMA['parameters']['properties']['met']['description']})
   self.assertFalse({'humanId','tenantId','userId','ownerTelegramId','requestId','turnId'}&set(bridge.SCHEMA['parameters']['properties']))
   approval=(Path(__file__).parents[2]/'av-approval'/'__init__.py').read_text()
@@ -2105,14 +2106,16 @@ class BridgeTest(unittest.TestCase):
   # MINIAPP-PICKUP (v2.1.5): one fixed schema on every box; the feature-gated pairs read follows the five
   # properties are as before (no zzz text). Registration no longer depends on the projection.
   enum=bridge.SCHEMA['parameters']['properties']['operation']['enum']
-  # Team rooms (zzz#32 + app#842) are appended after zzz.pairs, again written out; the add (v2.1.22) follows zzzbot 1.1.0's two edits, then DreamStarter's nine, then Edge Library's eight.
-  self.assertEqual(enum[-29:-24],mini.ZZZBOT_PREVIOUS['operations']);self.assertEqual(enum[-24],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
-  self.assertEqual(enum[-23:-20],['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
+  # Team rooms (zzz#32 + app#842) are appended after zzz.pairs, again written out; the add (v2.1.22) follows zzzbot 1.1.0's two edits, then DreamStarter's nine, then Kismet's eight, then Edge Library's eight.
+  self.assertEqual(enum[-37:-32],mini.ZZZBOT_PREVIOUS['operations']);self.assertEqual(enum[-32],'zzz.pairs');self.assertEqual(len(enum),len(set(enum)))
+  self.assertEqual(enum[-31:-28],['zzz.list_team_invites','zzz.open_team_room','zzz.respond_team_invite'])
   # zzzbot 1.1.0's two edits are appended after them, written out (an open chat keeps its pinned tools[]; the enum is fixed).
-  self.assertEqual(enum[-20:-18],['zzz.tag_thread','zzz.edit_post'])
+  self.assertEqual(enum[-28:-26],['zzz.tag_thread','zzz.edit_post'])
   # TEAM-ADD-MEMBER (v2.1.22): the add is appended after them, written out.
-  self.assertEqual(enum[-18],'zzz.add_team_members')
-  self.assertEqual(enum[-17:-8],mini.DREAMSTARTER['operations'])
+  self.assertEqual(enum[-26],'zzz.add_team_members')
+  self.assertEqual(enum[-25:-16],mini.DREAMSTARTER['operations'])
+  # Kismet Part 2's eight follow DreamStarter's nine (v2.1.22), appended likewise.
+  self.assertEqual(enum[-16:-8],mini.KISMET['operations'])
   # Edge Library's eight reads are appended last.
   self.assertEqual(enum[-8:],mini.LIBRARY['operations'])
   # v2.1.20 (lead L30644): the description surfaces the team-room operations, and only those zzz names.
