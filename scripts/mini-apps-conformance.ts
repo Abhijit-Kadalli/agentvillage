@@ -405,6 +405,7 @@ export const BRIDGE_ERROR_CODES: Readonly<Record<string, string>> = Object.freez
   DRAFT_NOT_EDITABLE: "slopfolio", DRAFT_NOT_FOUND: "slopfolio", CAPABILITY_NOT_GRANTED: "slopfolio", RATE_LIMITED: "slopfolio",
   zzz_not_connected: "zzzbot", zzz_reconnect_required: "zzzbot", zzz_rate_limited: "zzzbot",
   zzz_write_not_authorized: "zzzbot", zzz_not_found: "zzzbot", zzz_invalid: "zzzbot",
+  zzz_not_own_post: "zzzbot", zzz_post_changed: "zzzbot",
   connection_or_request_refused: "zzzbot", response_too_large: "zzzbot",
   // Kismet's box-side step refusals (lead L29897: stage then send, shown dates only), _kismet.py / KISMET_STEP_ERRORS.
   kismet_preview_expired: "kismet", kismet_preview_unavailable: "kismet", kismet_confirmation_required: "kismet",
