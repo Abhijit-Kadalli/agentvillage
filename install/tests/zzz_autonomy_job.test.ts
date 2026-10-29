@@ -91,7 +91,15 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   const v2121=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.v2121.py.fixture"));
   expect(digest(v2121)).toBe("f71f3c5d48c90ca8dcbdfa22a58c945dcf3d6e54640536ca30194722e0d97a32");
   expect(v2121.equals(current)).toBe(false);
-  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(v2121),digest(current)]);
+  // ov#548's bytes (main before v2.1.22's tag); the stdlib-only model route (ov#550) appended a fifth digest.
+  const ov548=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.ov548.py.fixture"));
+  expect(digest(ov548)).toBe("cd566df9f69d257a4f75e0d59e331902381ff9bb61ed0e2945d1bedf6e7a3f78");
+  expect(ov548.equals(current)).toBe(false);
+  // ov#550's first head (8821169a, stdlib-only route); PyYAML first with the stdlib fallback (review-b S1) appended a sixth.
+  const ov550=readFileSync(join(import.meta.dir,"fixtures/zzz_autonomy_runner.ov550-stdlib.py.fixture"));
+  expect(digest(ov550)).toBe("5db8a0da4210b5145b55d713e0a97a5a0627332b1f6728c4bf30261432838e45");
+  expect(ov550.equals(current)).toBe(false);
+  expect(AUTONOMY_SHIPPED[AUTONOMY_FILES[0]]).toEqual([digest(previous),digest(v2119),digest(v2121),digest(ov548),digest(ov550),digest(current)]);
   const {home,stage,jobs}=box();
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   const shim=join(home,"scripts",AUTONOMY_JOB_SCRIPT);
@@ -109,6 +117,13 @@ test("a box holding the previous runner bytes upgrades to the current bytes, the
   expect(stage([zzzbot,autonomy]).status).toBe(0);
   expect(readFileSync(shim).equals(current)).toBe(true);
   expect(stage([zzzbot,autonomy],["--verify"]).status).toBe(0);
+  // And from the v2.1.21 bytes (the fleet at v2.1.22's cut), ov#548's and ov#550's first head.
+  for (const older of [v2121,ov548,ov550]) {
+    writeFileSync(shim,older,{mode:0o700});
+    if (existsSync(skillCopy)) writeFileSync(skillCopy,older);
+    expect(stage([zzzbot,autonomy]).status).toBe(0);
+    expect(readFileSync(shim).equals(current)).toBe(true);
+  }
   // Teardown straight from the previous bytes also removes the shim and the job.
   writeFileSync(shim,previous,{mode:0o700});
   expect(stage([zzzbot]).status).toBe(0);

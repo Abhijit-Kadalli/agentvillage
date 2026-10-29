@@ -33,8 +33,15 @@ class FakeHttp:
         return False
 
 
+def clients():
+    """Both model-turn clients as loaded modules: run() checks both are importable before it claims."""
+    return {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()), "openai": SimpleNamespace(OpenAI=None)}
+
+
 class TestAutonomyRunner(unittest.TestCase):
     def setUp(self):
+        # run() quiets logging process-wide (_quiet_sdk); restore it so later test files still see their logs.
+        self.addCleanup(logging.disable, logging.root.manager.disable)
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name).resolve()  # macOS /var is a symlink; the runner refuses linked parents
         (self.home / "cron").mkdir()
@@ -62,7 +69,7 @@ class TestAutonomyRunner(unittest.TestCase):
         def activity(_http, _cfg, operation, **_args):
             ops.append(operation)
             return {"candidate": None, "next_check_at": "2026-10-28T00:00:00Z"}
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+        with patch.dict(sys.modules, clients()), \
                 patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "model")), \
                 patch.object(runner, "_activity", side_effect=activity), \
                 patch.object(runner, "_output", side_effect=AssertionError("model called")):
@@ -76,7 +83,7 @@ class TestAutonomyRunner(unittest.TestCase):
             if operation == "claim":
                 return {"candidate": {"id": "12345678-1234-1234-1234-123456789abc", "kind": "comment", "lease_token": "a" * 64}}
             raise ValueError("current policy paused")
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+        with patch.dict(sys.modules, clients()), \
                 patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "model")), \
                 patch.object(runner, "_activity", side_effect=activity), \
                 patch.object(runner, "_output", side_effect=AssertionError("model called")):
@@ -169,7 +176,7 @@ class TestAutonomyRunner(unittest.TestCase):
 
     def test_unusable_model_route_never_claims(self):
         ops = []
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+        with patch.dict(sys.modules, clients()), \
                 patch.object(runner, "_model_route", side_effect=ValueError("model-provider")), \
                 patch.object(runner, "_activity", side_effect=lambda *_a, **_k: ops.append("called")):
             with self.assertRaisesRegex(ValueError, "model-provider"):
@@ -192,7 +199,7 @@ class TestAutonomyRunner(unittest.TestCase):
             if fail:
                 raise ValueError("model-response")
             return {"silent": True}
-        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+        with patch.dict(sys.modules, clients()), \
                 patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "k", "m")), \
                 patch.object(runner, "_activity", side_effect=activity), \
                 patch.object(runner, "_output", side_effect=output), \
@@ -270,7 +277,7 @@ class TestAutonomyRunner(unittest.TestCase):
                     if operation == "context":
                         return {"candidate_id": self.CANDIDATE["id"], "kind": "comment", "source": {"body": "x"}}
                     return {"state": "silent", "post_id": None, "thread_id": None, "replayed": False}
-                with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp())}), \
+                with patch.dict(sys.modules, clients()), \
                         patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "k", "m")), \
                         patch.object(runner, "_activity", side_effect=activity), \
                         patch.object(runner, "_output", side_effect=output):
