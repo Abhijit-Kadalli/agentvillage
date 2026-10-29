@@ -701,15 +701,21 @@ def test_an_unwritable_ledger_still_caps_the_days_reads(plugin, thor, served):
     if not served:
         server.network_down = 1000
     path = _read_only_ledger_dir(thor)
+    read_at = []
+    times = [DAY + i * 60 for i in range(120)]  # two hours of passes, one a minute, and then the rest of the day
+    times += [DAY + 7200 + i * plugin.THOR_RETRY_S for i in range(1, 12)]
     try:
-        for i in range(120):  # two hours of passes, one a minute, and then the rest of the day
-            pass_(plugin, bot, server, now=DAY + i * 60)
-        for i in range(1, 12):
-            pass_(plugin, bot, server, now=DAY + 7200 + i * plugin.THOR_RETRY_S)
+        for now in times:
+            before = len(server.reads())
+            pass_(plugin, bot, server, now=now)
+            if len(server.reads()) > before:
+                read_at.append(now)
         assert not os.path.exists(os.path.join(path, "thor.json"))
     finally:
         os.chmod(path, 0o700)
     assert len(server.reads()) == (1 if served else plugin.THOR_READS_PER_DAY)
+    # review-b DN1: the backoff holds in memory too, so failed reads stay THOR_RETRY_S apart, never a burst.
+    assert all(b - a >= plugin.THOR_RETRY_S for a, b in zip(read_at, read_at[1:]))
     assert bot.cards() == []  # the write-ahead save failed: nothing is sent that the ledger could not record
     pass_(plugin, bot, server, now=NEXT_DAY)  # a new UTC day, the ledger writable again: one read, one card
     assert len(server.reads()) == (2 if served else plugin.THOR_READS_PER_DAY + 1)
