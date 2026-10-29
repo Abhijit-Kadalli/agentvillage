@@ -79,6 +79,7 @@ import os
 import re
 import stat
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -165,6 +166,29 @@ SETUP_PROFILE_MARK = "[Edge City profile, written at setup]"
 #: Hermes's entry delimiter and USER.md block title (tools/memory_tool_store.py:20-23, `_render_block`).
 ENTRY_DELIMITER = "\n§\n"
 USER_BLOCK_TITLE = "USER PROFILE (who the user is)"
+#: The app's tags entry in USER.md (app person-model/render.ts TAGS_MARK; Index context-tags.ts CONTEXT_TAGS_MARK)
+#: and the sections notes its writers print after the header (render.ts ENTRY_SECTIONS_NOTE, ENTRY_SECTIONS_NOTE_OLD).
+TAGS_MARK = "[Context tags, kept in the Agent Village app]"
+TAGS_SECTIONS_NOTES = frozenset({
+    "Card items marked public or village (not guesses) are shared with Edge City India 2026: residents may see them in "
+    "Skylight and other residents' agents may use them; private items stay between you and the person. An item with no "
+    "mark: treat it as private. Gift lines are offers the person chose to share.",
+    "Card items marked public may be shown to people; marked village may reach other residents' agents; marked private "
+    "are for you alone. An item with no mark: treat it as private. Gift lines are offers the person chose to share.",
+})
+#: One item line of the tags entry: the Index readers' pattern exactly (memory_signal_gate.py ITEM_LINE, context-tags.ts
+#: LINE; a test holds this one to the Python reader's), so the gate and Index read every mark alike.
+ITEM_LINE = re.compile(
+    r"^- (.+?)(?:\s+\((setup|telegram|you|guess|chat)(?:,\s*intros chat\s+([0-9a-f]{12})|,\s*(guess))?(?:,\s*(public|village|private|agentvillage\/edgecityindia2026|agentvillage\/private))?\))?$",
+    re.I,
+)
+ITEM_MARKERS = frozenset({"setup", "telegram", "you", "guess", "chat"})
+#: The marks that name Edge City India 2026 (memory_signal_gate.py MARK_VISIBILITY); every other mark is Private.
+SHARED_MARKS = frozenset({"public", "village", "agentvillage/edgecityindia2026"})
+#: Words that make a trailing parenthesis the grammar did not parse read as a mark attempt (fail closed).
+MARK_WORDS = ("public", "village", "private", "agentvillage")
+_ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+
 #: Set on the wrapped `agent.system_prompt._memory_parts`: `gate(agent, user_block) -> block`, so F1
 #: (av-events/_prompt_refresh.py) renders the USER.md block exactly as the prompt carries it.
 USER_GATE_ATTR = "village_user_gate"
@@ -629,16 +653,87 @@ def is_private_session(chat_type: str, platform: str, agent_context: str) -> boo
 # untouched, byte for byte. The agent's other entries (its own notes, the app's tags entry) stay.
 
 
+def _ascii_lower(text: str) -> str:
+    return text.translate(_ASCII_LOWER)
+
+
+def _mark_attempt(line: str) -> bool:
+    """A line whose marker the grammar did not parse, ending in a parenthesis that reads like one: a list
+    (a comma), anything but printable ASCII (a lookalike, an invisible), or a mark word after folding."""
+    if not line.endswith(")") or "(" not in line:
+        return False
+    inner = line[line.rindex("(") + 1:-1]
+    if "," in inner or any(not (" " <= c <= "~") for c in inner):
+        return True
+    folded = unicodedata.normalize("NFKC", inner).casefold()
+    return any(word in folded for word in MARK_WORDS)
+
+
+def tags_item(line: str) -> Tuple[str, bool]:
+    """How the Index readers read one `- ` line of the tags entry (memory_signal_gate.py parse_item_line):
+    `("marked", shared)`, `("unmarked", False)`, or `("bad", False)` for a mark the gate cannot parse
+    (a lookalike marker, a parenthesis that is not printable ASCII, a marker list the grammar refuses).
+    Shared only with a mark naming Edge City India 2026 on a line known to be no guess: a guess, a
+    `(chat)` line and a guess suffix are Private whatever their mark (the vocab's guess rule)."""
+    match = ITEM_LINE.match(line)
+    if not match or not match.group(1).strip():
+        return "unmarked", False
+    if match.group(2) is None:
+        return ("bad", False) if _mark_attempt(line) else ("unmarked", False)
+    marker = _ascii_lower(match.group(2))
+    if marker not in ITEM_MARKERS or any(not (" " <= c <= "~") for c in line[match.end(1):]):
+        return "bad", False
+    if match.group(5) is None:
+        return "unmarked", False
+    guess = marker in ("guess", "chat") or match.group(4) is not None
+    return "marked", (not guess) and _ascii_lower(match.group(5)) in SHARED_MARKS
+
+
+def shared_tags_entry(entry: str) -> str:
+    """The app's tags entry for a session that is not private (lead L32765 R1). Every Private-marked line
+    goes, and every line whose mark the gate cannot parse. An unmarked line keeps its current meaning:
+    in an entry that is marked (any line with a mark, as the Index readers judge it, or the sections note,
+    which says "an item with no mark: treat it as private") it is Private and goes, the unmarked Summary
+    line, gift lines, group posts and "Removed by you" lines included; in an entry with no mark and no
+    note (a dark tenant's, or one an app write left unmarked) every such line stays, as today. Headings,
+    the header and the note stay."""
+    lines = entry.split("\n")
+    reads = [tags_item(line.strip()) if line.strip().startswith("- ") else None for line in lines]
+    marked = any(r is not None and r[0] == "marked" for r in reads) or any(l.strip() in TAGS_SECTIONS_NOTES for l in lines)
+    kept = []
+    for line, read in zip(lines, reads):
+        if read is None:
+            if not (marked and line.strip().startswith("Summary:")):
+                kept.append(line)
+            continue
+        kind, shared = read
+        if kind == "marked" and shared or kind == "unmarked" and not marked:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _shared_entry(entry: str) -> Optional[str]:
+    if SETUP_PROFILE_MARK in entry:
+        return None
+    if TAGS_MARK in entry:
+        return shared_tags_entry(entry)
+    return entry
+
+
 def shared_user_block(block: Any) -> Any:
-    """Hermes's USER.md block for a session that is not private: the setup-profile entry left out,
-    the header (and its usage figure, which is the file's) kept. "" when nothing else is left.
-    Fail closed: a block that holds the mark in a shape this does not know is dropped whole."""
-    if not isinstance(block, str) or SETUP_PROFILE_MARK not in block:
+    """Hermes's USER.md block for a session that is not private: the setup-profile entry left out, the
+    app's tags entry without its Private lines (`shared_tags_entry`), the header (and its usage figure,
+    which is the file's) kept. "" when nothing else is left. Fail closed: a block that holds either mark
+    in a shape this does not know is dropped whole."""
+    if not isinstance(block, str) or (SETUP_PROFILE_MARK not in block and TAGS_MARK not in block):
         return block
     lines = block.split("\n", 3)
     if len(lines) < 4 or lines[0] != SEPARATOR or lines[2] != SEPARATOR or not lines[1].startswith(USER_BLOCK_TITLE):
         return ""
-    kept = [entry for entry in lines[3].split(ENTRY_DELIMITER) if SETUP_PROFILE_MARK not in entry]
+    entries = lines[3].split(ENTRY_DELIMITER)
+    kept = [e for e in (_shared_entry(entry) for entry in entries) if e is not None]
+    if kept == entries:
+        return block
     if not [entry for entry in kept if entry.strip()]:
         return ""
     return "\n".join(lines[:3]) + "\n" + ENTRY_DELIMITER.join(kept)
@@ -696,8 +791,8 @@ def gate_memory_parts(original: Any) -> Any:
             return [p for p in gated if p]
         except Exception as exc:  # noqa: BLE001 - never cost a prompt build; fail closed on the entry
             _log_once(f"user_gate:error_{type(exc).__name__}",
-                      "village-memory: USER.md gate failed (%s); setup profile left out", type(exc).__name__)
-            return [p for p in parts if not (isinstance(p, str) and SETUP_PROFILE_MARK in p)]
+                      "village-memory: USER.md gate failed (%s); setup profile and tags left out", type(exc).__name__)
+            return [p for p in parts if not (isinstance(p, str) and (SETUP_PROFILE_MARK in p or TAGS_MARK in p))]
 
     _memory_parts.__wrapped__ = original  # type: ignore[attr-defined]
     setattr(_memory_parts, USER_GATE_ATTR, user_block_for)
