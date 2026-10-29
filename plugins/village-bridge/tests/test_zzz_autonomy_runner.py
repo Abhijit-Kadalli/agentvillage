@@ -1,8 +1,10 @@
 """Synthetic, no-network contract tests for the installer-owned event turn."""
+import importlib.machinery
 import importlib.util
 import json
 import logging
 import os
+import signal
 import sys
 import tempfile
 import threading
@@ -427,6 +429,177 @@ class TestAutonomyRunner(unittest.TestCase):
             self.turn(ops, fail=True, now=day + 24 * 3600 + 600)
         self.assertEqual(self.state()["turns"], 2)
 
+    # ODIN's seat in rooms (data L32206, context L32211): the context reply's seat_answer replaces the model call.
+    SEAT_TEXT = "ODIN says: the build table meets at 4pm by the north door.\nAsk Mira about the solar rig."
+
+    def seat_turn(self, seat, kind="comment", now=None, receipt="posted", entry=None):
+        """One run() (or entry()) whose context reply carries seat_answer=seat, or no such key when seat is `...`.
+        The model route is allowed once, for run()'s pre-claim check; a second read, the model call or the OpenAI
+        client fails the test. Returns (ops, the complete call's fields or None)."""
+        ops, completed, routes = [], [], []
+        candidate = {**self.CANDIDATE, "kind": kind}
+        def activity(_http, _cfg, operation, **args):
+            ops.append(operation)
+            if operation == "claim":
+                return {"candidate": dict(candidate)}
+            if operation == "context":
+                reply = {"candidate_id": candidate["id"], "kind": kind, "source": {"body": "A current point."}}
+                return reply if seat is ... else {**reply, "seat_answer": seat}
+            completed.append(args)
+            return {"state": receipt, "post_id": None, "thread_id": None, "replayed": False}
+        def route(_home):
+            routes.append(1)
+            if len(routes) > 1:
+                raise AssertionError("model route read in the turn")
+            return ("https://openrouter.ai/api/v1", "k", "m")
+        def output(_context, _home):
+            ops.append("model")
+            return {"silent": True}
+        def no_client(**_):
+            raise AssertionError("OpenAI client built")
+        modules = {**clients(), "openai": SimpleNamespace(OpenAI=no_client)}
+        try:
+            with patch.dict(sys.modules, modules), \
+                    patch.object(runner, "_model_route", side_effect=route), \
+                    patch.object(runner, "_activity", side_effect=activity), \
+                    patch.object(runner, "_output", side_effect=output if seat is ... else AssertionError("model called")), \
+                    patch.object(runner, "_now", return_value=now if now is not None else runner._now()):
+                if entry is None:
+                    runner.run(self.home)
+                else:
+                    entry()
+        finally:
+            self.assertEqual(len(routes), 1)  # only run()'s pre-claim gate
+            self.last_complete = completed
+        return ops, (completed[0] if completed else None)
+
+    def test_seat_text_is_posted_exactly_as_given_with_no_model_call(self):
+        fields = {"candidate_id": self.CANDIDATE["id"], "lease_token": self.CANDIDATE["lease_token"]}
+        for kind in ("comment", "reply"):
+            with self.subTest(kind=kind):
+                ops, complete = self.seat_turn({"text": self.SEAT_TEXT}, kind=kind)
+                self.assertEqual(ops, ["claim", "context", "complete"])
+                # The same complete call and target fields the model path sends; the body is the text byte for byte.
+                self.assertEqual(complete, {**fields, "output": {"body": self.SEAT_TEXT}})
+                self.assertEqual(complete["output"]["body"].encode(), self.SEAT_TEXT.encode())
+        # The runner never adds or strips anything: a text without the "ODIN says:" frame posts unchanged, and edge
+        # white space, inner new lines and non-ASCII text are kept.
+        for text in ("the build table meets at 4pm", "  padded \n", "ODIN says:", "é" * runner.SEAT_ANSWER_CHARS,
+                     "\U0001F600 emoji first", "x"):
+            with self.subTest(text=text[:20]):
+                ops, complete = self.seat_turn({"text": text})
+                self.assertEqual(ops, ["claim", "context", "complete"])
+                self.assertEqual(complete["output"], {"body": text})
+                self.assertEqual(complete["output"]["body"].encode(), text.encode())
+        self.assertEqual(self.state()["failures"], 0)
+
+    def test_seat_null_completes_silent_with_no_model_call(self):
+        ops, complete = self.seat_turn(None, receipt="silent")
+        self.assertEqual(ops, ["claim", "context", "complete"])
+        # The same output today's model path completes a chosen silence with.
+        self.assertEqual(complete["output"], {"silent": True})
+        self.assertEqual(self.state()["failures"], 0)
+
+    def test_every_bad_seat_shape_completes_silent_then_fails_with_the_code(self):
+        bad = {
+            "a string": self.SEAT_TEXT, "a list": [self.SEAT_TEXT], "a number": 1, "true": True, "false": False,
+            "an empty dict": {}, "text null": {"text": None}, "text a number": {"text": 7}, "text a list": {"text": ["x"]},
+            "empty text": {"text": ""}, "blank text": {"text": " \n\t "},
+            "over 2000 code points": {"text": "x" * (runner.SEAT_ANSWER_CHARS + 1)},
+            "a NUL": {"text": "ODIN says: a\0b"}, "a lone surrogate": {"text": "ODIN says: \ud800"},
+            "an extra key": {"text": self.SEAT_TEXT, "thread_id": "t1"}, "only other keys": {"body": self.SEAT_TEXT},
+        }
+        for name, seat in bad.items():
+            with self.subTest(name):
+                (self.home / "zzzbot" / runner.BACKOFF_FILE).unlink(missing_ok=True)
+                with self.assertRaisesRegex(ValueError, "^seat-answer-shape$"):
+                    self.seat_turn(seat, receipt="silent")
+                self.assertEqual(len(self.last_complete), 1)
+                self.assertEqual(self.last_complete[0]["output"], {"silent": True})  # never the malformed text
+                self.assertEqual(self.state()["turns"], 1)
+                self.assertEqual(self.state()["failures"], 1)
+        # 2000 code points of 4-byte characters is still in range (code points, not bytes).
+        (self.home / "zzzbot" / runner.BACKOFF_FILE).unlink(missing_ok=True)
+        _ops, complete = self.seat_turn({"text": "\U0001F600" * runner.SEAT_ANSWER_CHARS})
+        self.assertEqual(complete["output"], {"body": "\U0001F600" * runner.SEAT_ANSWER_CHARS})
+
+    def test_seat_turn_reads_no_model_route_and_needs_no_model_client(self):
+        # The turn alone, with the model route, the .env key read and the OpenAI client all unusable.
+        fields = {"candidate_id": self.CANDIDATE["id"], "lease_token": self.CANDIDATE["lease_token"]}
+        for seat, output in (({"text": self.SEAT_TEXT}, {"body": self.SEAT_TEXT}), (None, {"silent": True})):
+            with self.subTest(seat=seat):
+                calls = []
+                def activity(_http, _cfg, operation, **args):
+                    calls.append((operation, args))
+                    if operation == "context":
+                        return {"candidate_id": self.CANDIDATE["id"], "kind": "comment", "seat_answer": seat}
+                    return {"state": "posted", "post_id": None, "thread_id": None, "replayed": False}
+                state = {"failures": 0, "until": 0, "day": runner._utc_day(runner._now()), "turns": 3}
+                (self.home / "zzzbot").mkdir(mode=0o700, exist_ok=True)
+                with patch.dict(sys.modules, {"openai": None}), \
+                        patch.object(runner, "_model_route", side_effect=AssertionError("model route read")), \
+                        patch.object(runner, "_key", side_effect=AssertionError("model key read")), \
+                        patch.object(runner, "_activity", side_effect=activity):
+                    runner._claimed_turn(self.home, self.cfg, FakeHttp(), dict(self.CANDIDATE), state)
+                self.assertEqual(calls, [("context", fields), ("complete", {**fields, "output": output})])
+                self.assertEqual(state["turns"], 4)
+
+    def test_seat_answer_absent_keeps_the_model_path(self):
+        ops, complete = self.seat_turn(...)
+        self.assertEqual(ops, ["claim", "context", "model", "complete"])
+        self.assertEqual(complete["output"], {"silent": True})
+
+    def test_daily_cap_counts_seat_turns_like_model_turns(self):
+        day = datetime(2026, 10, 28, 0, 1, tzinfo=timezone.utc).timestamp()
+        ops = []
+        for tick in range(runner.DAILY_MODEL_TURNS - 2):
+            self.turn(ops, now=day + tick * 300)
+        tick = runner.DAILY_MODEL_TURNS - 2
+        self.seat_turn({"text": self.SEAT_TEXT}, now=day + tick * 300)
+        self.assertEqual(self.state()["turns"], runner.DAILY_MODEL_TURNS - 1)
+        self.seat_turn(None, now=day + (tick + 1) * 300, receipt="silent")
+        self.assertEqual(self.state()["turns"], runner.DAILY_MODEL_TURNS)
+        # At the cap a seat box skips before claiming, exactly as a model box does.
+        self.assertEqual(self.seat_turn({"text": self.SEAT_TEXT}, now=day + (tick + 2) * 300), ([], None))
+        self.assertEqual(self.state()["code"], runner.DAILY_CAP_CODE)
+        # A malformed seat answer counts too.
+        with self.assertRaisesRegex(ValueError, "seat-answer-shape"):
+            self.seat_turn({"text": ""}, now=day + 24 * 3600, receipt="silent")
+        self.assertEqual(self.state()["turns"], 1)
+
+    def test_seat_text_never_reaches_stderr(self):
+        marker = "ODIN says: SEAT-PRIVATE-7f3c the room's own words"
+        line = b"zzz-autonomy: turn ValueError seat-answer-shape\n"
+        real_run = runner.run
+        for seat, expected in (({"text": marker}, []), ({"text": marker + "x" * runner.SEAT_ANSWER_CHARS}, [(2, line)]),
+                               ({"text": marker, "extra": marker}, [(2, line)]), (marker, [(2, line)])):
+            with self.subTest(expected=expected):
+                (self.home / "zzzbot" / runner.BACKOFF_FILE).unlink(missing_ok=True)
+                written = []
+                def write(fd, data):
+                    written.append((fd, data))
+                    return len(data)
+                env = {key: value for key, value in os.environ.items() if key != "HERMES_HOME"}
+                handler = signal.getsignal(signal.SIGALRM)
+                try:
+                    # main() as the scheduler runs it, its run() pointed at this test's home.
+                    with patch.dict(os.environ, env, clear=True), \
+                            patch.object(runner, "run", side_effect=lambda _home: real_run(self.home)), \
+                            patch.object(runner.os, "write", side_effect=write), \
+                            patch.object(runner.os, "_exit", side_effect=SystemExit):
+                        if expected:
+                            with self.assertRaises(SystemExit):
+                                self.seat_turn(seat, receipt="silent", entry=runner.main)
+                        else:
+                            self.seat_turn(seat, entry=runner.main)
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, handler)
+                self.assertEqual(written, expected)
+                self.assertFalse(any(b"SEAT-PRIVATE" in data for _fd, data in written))
+                if not expected:
+                    self.assertEqual(self.last_complete[0]["output"], {"body": marker})
+
     def test_unreadable_turn_count_fails_closed_for_today_only(self):
         day = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc).timestamp()
         ops = []
@@ -672,6 +845,249 @@ class TestAutonomyRunner(unittest.TestCase):
                 self.assertGreaterEqual(logging.root.manager.disable, logging.CRITICAL)
         finally:
             logging.disable(previous)
+
+
+# ov#553's runner bytes (main before seat_answer and resident_brief): the "today's prompt, byte for byte" baseline.
+OV553_BYTES = Path(__file__).parents[3] / "install/tests/fixtures/zzz_autonomy_runner.ov553.py.fixture"
+OV553_LOADER = importlib.machinery.SourceFileLoader("zzz_autonomy_runner_ov553", str(OV553_BYTES))
+ov553 = importlib.util.module_from_spec(importlib.util.spec_from_loader(OV553_LOADER.name, OV553_LOADER))
+OV553_LOADER.exec_module(ov553)
+SOURCES = ("claim", "mosaic", "intent", "offer", "gift", "rolodex", "digest")  # data L32263's seven real sources
+
+
+class TestResidentBrief(unittest.TestCase):
+    """Grounding (lead L32261, data L32263): the app's resident_brief rides the one model call as delimited context."""
+
+    def setUp(self):
+        self.addCleanup(logging.disable, logging.root.manager.disable)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name).resolve()
+
+    def brief(self, snippets=None, **fields):
+        return {"agent_name": "Juniper", "voice": "warm, brief, curious",
+                "snippets": [{"source": source, "text": f"{source} note {n}"} for n, source in enumerate(SOURCES)]
+                if snippets is None else snippets, **fields}
+
+    def calls(self, module, contexts):
+        """The messages each context's one model call sends from `module`, plus the stderr writes in order."""
+        calls, written = [], []
+        class Choice:
+            finish_reason = "stop"
+            message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
+        class Model:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(choices=[Choice()])
+        class OpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=Model())
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        def write(fd, data):
+            written.append((fd, data))
+            return len(data)
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+                                      "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+                patch.object(module, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "m")), \
+                patch.object(module.os, "write", side_effect=write):
+            for context in contexts:
+                self.assertEqual(module._output(context, self.home), {"silent": True})
+        return [call["messages"] for call in calls], written
+
+    REPLY = {"kind": "reply", "candidate_id": "x", "source": {"body": "A current point."}}
+    TOPIC = {"kind": "new_topic", "candidate_id": "x", "room_brief": "Edge City India 2026", "can_create_topic": True,
+             "recent_topics": [{"thread_id": "t1", "title": "Solar"}], "room_tags": ["energy"],
+             "event_brief": "Buildathon 28-30 Oct."}
+
+    def test_absent_or_null_brief_sends_todays_prompt_byte_for_byte(self):
+        contexts = [self.REPLY, self.TOPIC, {**self.REPLY, "event_brief": "x"}]
+        before, quiet = self.calls(ov553, contexts)
+        for extra in ({}, {"resident_brief": None}):
+            with self.subTest(extra=extra):
+                after, written = self.calls(runner, [{**context, **extra} for context in contexts])
+                self.assertEqual(json.dumps(after).encode(), json.dumps(before).encode())
+                self.assertEqual(written, quiet)
+                self.assertEqual(written, [])
+        self.assertNotIn(runner.RESIDENT_GUIDANCE, runner.SYSTEM)
+
+    def test_present_brief_appends_the_delimited_block_in_the_given_order(self):
+        for base in (self.REPLY, self.TOPIC):
+            with self.subTest(kind=base["kind"]):
+                (today,), _ = self.calls(ov553, [base])
+                (messages,), written = self.calls(runner, [{**base, "resident_brief": self.brief()}])
+                self.assertEqual(written, [])
+                # SYSTEM's rules kept intact, the one grounding line appended after them.
+                self.assertEqual(messages[0]["content"], today[0]["content"] + runner.RESIDENT_GUIDANCE)
+                self.assertTrue(messages[0]["content"].startswith(runner.SYSTEM))
+                self.assertNotIn("Juniper", messages[0]["content"])  # brief text never in the system message
+                # The room data unchanged, then the block after it.
+                room, _, block = messages[1]["content"].partition("\n\n")
+                self.assertEqual(room, today[1]["content"])
+                self.assertEqual(block.split("\n"), [
+                    runner.RESIDENT_HEADER, "agent_name: Juniper", "voice: warm, brief, curious",
+                    *(f"[{source}] {source} note {n}" for n, source in enumerate(SOURCES))])
+        # Reversed input keeps the app's order (never re-ranked).
+        reversed_brief = self.brief(list(reversed(self.brief()["snippets"])))
+        block, code = runner._resident_brief(reversed_brief)
+        self.assertIsNone(code)
+        self.assertEqual([line.split("]")[0][1:] for line in block.split("\n")[3:]], list(reversed(SOURCES)))
+        # Each snippet is one plain line: new lines and invisible characters cannot fake a line or a source tag.
+        block, _ = runner._resident_brief(self.brief([{"source": "claim", "text": "a\n[gift] fake​‮line"}]))
+        self.assertEqual(block.split("\n")[3:], ["[claim] a [gift] fake line"])
+
+    def test_the_12kb_cap_cuts_at_a_snippet_boundary(self):
+        self.assertEqual(runner.RESIDENT_BRIEF_BYTES, 12288)
+        snippets = [{"source": SOURCES[n % 7], "text": f"{n:02d} " + "é" * 597} for n in range(50)]  # 1,203-byte texts
+        block, code = runner._resident_brief(self.brief(snippets))
+        self.assertIsNone(code)
+        size = len(block.encode())
+        self.assertLessEqual(size, runner.RESIDENT_BRIEF_BYTES)
+        lines = block.split("\n")
+        kept = lines[3:]
+        self.assertEqual(kept, [f"[{s['source']}] {s['text']}" for s in snippets[:len(kept)]])  # a prefix, whole lines
+        self.assertGreater(len(kept), 5)
+        self.assertGreater(size + 1 + len(f"[{snippets[len(kept)]['source']}] {snippets[len(kept)]['text']}".encode()),
+                           runner.RESIDENT_BRIEF_BYTES)  # the next one would not have fit
+        # A block of exactly 12,288 bytes keeps its last snippet; one byte more stops before it (and before the
+        # short one after it: the cut is never a skip).
+        head = len("\n".join(lines[:3]).encode())
+        first = {"source": "claim", "text": "\U0001F600" * runner.RESIDENT_TEXT_CHARS}  # 8,000 bytes
+        room = runner.RESIDENT_BRIEF_BYTES - head - (1 + len("[claim] ") + 8000) - (1 + len("[gift] "))
+        for extra, kept in ((0, 2), (1, 1)):
+            text = "\U0001F600" * ((room + extra) // 4) + "x" * ((room + extra) % 4)
+            block, _ = runner._resident_brief(self.brief([first, {"source": "gift", "text": text},
+                                                          {"source": "digest", "text": "short"}]))
+            self.assertEqual(len(block.split("\n")) - 3, kept)
+            self.assertEqual(len(block.encode()), runner.RESIDENT_BRIEF_BYTES if not extra else head + 1 + 8 + 8000)
+        # The app's own caps (about 10 KB, 600 characters a snippet) always fit whole.
+        app = [{"source": SOURCES[n % 7], "text": "z" * 600} for n in range(16)]
+        block, _ = runner._resident_brief(self.brief(app))
+        self.assertEqual(len(block.split("\n")) - 3, 16)
+
+    def test_bad_snippets_are_dropped_and_the_rest_kept(self):
+        good = {"source": "offer", "text": "Lends a soldering kit."}
+        bad = [
+            "a string", 7, None, ["offer", "x"], {"source": "offer"}, {"text": "x"},
+            {"source": "offer", "text": "x", "private": True}, {"source": 1, "text": "x"}, {"source": "offer", "text": 2},
+            {"source": "x" * 41, "text": "x"}, {"source": "offer", "text": "x" * 2001}, {"source": "offer", "text": "a\0b"},
+            {"source": "of\0fer", "text": "x"}, {"source": "", "text": "x"}, {"source": "offer", "text": " \n​ "},
+            {"source": "offer", "text": "lone \ud800"},
+        ]
+        snippets = [good]
+        for item in bad:
+            snippets += [item, good]
+        block, code = runner._resident_brief(self.brief(snippets))
+        self.assertIsNone(code)
+        self.assertEqual(block.split("\n")[3:], ["[offer] Lends a soldering kit."] * (len(bad) + 1))
+        # At the limits a snippet is kept.
+        block, _ = runner._resident_brief(self.brief([{"source": "s" * 40, "text": "t" * 2000}]))
+        self.assertEqual(block.split("\n")[3], "[" + "s" * 40 + "] " + "t" * 2000)
+        # No usable snippet still sends the name and voice.
+        block, code = runner._resident_brief(self.brief([]))
+        self.assertEqual((block.split("\n"), code), ([runner.RESIDENT_HEADER, "agent_name: Juniper",
+                                                       "voice: warm, brief, curious"], None))
+
+    def test_a_malformed_brief_falls_back_to_todays_prompt_with_a_code(self):
+        malformed = {
+            "a string": "Juniper", "a list": [self.brief()], "a number": 3, "true": True, "empty dict": {},
+            "missing voice": {"agent_name": "J", "snippets": []}, "extra key": self.brief(private="x"),
+            "name not str": self.brief(agent_name=7), "name over 200": self.brief(agent_name="n" * 201),
+            "voice over 600": self.brief(voice="v" * 601), "name NUL": self.brief(agent_name="J\0"),
+            "voice NUL": self.brief(voice="\0"), "snippets not a list": self.brief(snippets={"source": "claim"}),
+            "51 snippets": self.brief([{"source": "claim", "text": "x"}] * 51), "name lone surrogate": self.brief(agent_name="\ud800"),
+        }
+        before, _ = self.calls(ov553, [self.REPLY])
+        for name, value in malformed.items():
+            with self.subTest(name):
+                self.assertEqual(runner._resident_brief(value), (None, runner.RESIDENT_BRIEF_CODE))
+                after, written = self.calls(runner, [{**self.REPLY, "resident_brief": value}])
+                self.assertEqual(json.dumps(after).encode(), json.dumps(before).encode())  # today's prompt
+                self.assertEqual(len(written), 1)
+                self.assertRegex(written[0][1].decode(), r"\Azzz-autonomy: [a-z_]+ ValueError resident-brief-shape\n\Z")
+                self.assertEqual(written[0][0], 2)
+        # At the limits a brief is well formed.
+        self.assertIsNone(runner._resident_brief(self.brief([], agent_name="n" * 200, voice="v" * 600))[1])
+        self.assertIsNone(runner._resident_brief(self.brief([{"source": "claim", "text": "x"}] * 50))[1])
+
+    def test_a_malformed_brief_still_completes_the_turn(self):
+        # Grounding, not a gate: run() still claims, calls the model once and completes, and exits cleanly.
+        test = TestAutonomyRunner("test_seat_answer_absent_keeps_the_model_path")
+        test.setUp()
+        self.addCleanup(test.tearDown)
+        written, sent = [], []
+        plain = {"candidate_id": test.CANDIDATE["id"], "kind": "comment", "source": {"body": "A current point."}}
+        def activity(_http, _cfg, operation, **args):
+            if operation == "claim":
+                return {"candidate": dict(test.CANDIDATE)}
+            if operation == "context":
+                return {**plain, "resident_brief": {"agent_name": "SECRET-NAME-91", "voice": 5, "snippets": []}}
+            sent.append(args["output"])
+            return {"state": "silent", "post_id": None, "thread_id": None, "replayed": False}
+        with patch.object(runner, "_activity", side_effect=activity), \
+                patch.object(runner.os, "write", side_effect=lambda fd, data: written.append((fd, data)) or len(data)):
+            messages, _ = self.calls_run(test)
+        (today,), _ = self.calls(ov553, [plain])
+        self.assertEqual(messages, [today])  # one model call, today's prompt
+        self.assertEqual(sent, [{"silent": True}])
+        self.assertEqual(test.state()["failures"], 0)
+        self.assertEqual(written, [(2, b"zzz-autonomy: turn ValueError resident-brief-shape\n")])
+        self.assertFalse(any(b"SECRET" in data for _fd, data in written))
+
+    def calls_run(self, test, model=None):
+        calls = []
+        class Choice:
+            finish_reason = "stop"
+            message = SimpleNamespace(content='{"silent":true}', tool_calls=None, function_call=None)
+        class Model:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(choices=[Choice()])
+        class OpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=Model())
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        with patch.dict(sys.modules, {"httpx": SimpleNamespace(Client=lambda **_: FakeHttp()),
+                                      "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+                patch.object(runner, "_model_route", return_value=("https://openrouter.ai/api/v1", "fixture", "m")), \
+                patch.object(runner, "_output", side_effect=model or runner._output):
+            runner.run(test.home)
+        return [call["messages"] for call in calls], None
+
+    def test_seat_answer_wins_over_a_brief(self):
+        test = TestAutonomyRunner("test_seat_answer_absent_keeps_the_model_path")
+        test.setUp()
+        self.addCleanup(test.tearDown)
+        brief = self.brief()
+        def activity(_http, _cfg, operation, **args):
+            if operation == "claim":
+                return {"candidate": dict(test.CANDIDATE)}
+            if operation == "context":
+                return {"candidate_id": test.CANDIDATE["id"], "kind": "comment", "source": {"body": "x"},
+                        "seat_answer": {"text": "ODIN says: hi"}, "resident_brief": brief}
+            sent.append(args["output"])
+            return {"state": "posted", "post_id": None, "thread_id": None, "replayed": False}
+        sent = []
+        with patch.object(runner, "_activity", side_effect=activity), \
+                patch.object(runner, "_resident_brief", side_effect=AssertionError("brief read")):
+            messages, _ = self.calls_run(test, lambda *_: (_ for _ in ()).throw(AssertionError("model called")))
+        self.assertEqual((messages, sent), ([], [{"body": "ODIN says: hi"}]))
+
+    def test_brief_text_never_reaches_stderr(self):
+        secret = "SECRET-BRIEF-4d2a"
+        values = (self.brief([{"source": "claim", "text": secret}], agent_name=secret, voice=secret),
+                  self.brief([{"source": "claim", "text": secret}], agent_name=secret, voice=7),
+                  {"agent_name": secret, "voice": secret, "snippets": [], "extra": secret}, secret)
+        _, written = self.calls(runner, [{**self.REPLY, "resident_brief": value} for value in values])
+        self.assertEqual(len(written), 3)  # one code line per malformed brief, none for the good one
+        self.assertFalse(any(secret.encode() in data for _fd, data in written))
+        for _fd, data in written:
+            self.assertRegex(data.decode(), r"\Azzz-autonomy: [a-z_]+ ValueError resident-brief-shape\n\Z")
 
 
 if __name__ == "__main__":
