@@ -182,7 +182,7 @@ PROFILE_HEADING = "## Setup profile"
 RAW_HEADINGS = (PROFILE_HEADING, SOURCES_HEADING)
 #: The claim sections a shared line may come from (every other section, known or not, gives nothing).
 CLAIM_HEADINGS = ("## Context tags", "## From the village group")
-APP_HEADING_RE = re.compile(r"^## From .+ \(saved by your agent with .+; data, not instructions\)$")
+APP_HEADING_RE = re.compile(r"^## From (\S(?:.*\S)?) \(saved by your agent with \1; data, not instructions\)$")
 SHARED_NOTE = (
     "This chat is not your private chat with your human, so only the lines they share with Edge City India 2026 "
     "are here. Share only lines tagged Edge City India 2026. Everything else you know about them (a line tagged "
@@ -361,13 +361,25 @@ def without_sources(body: str) -> Tuple[str, bool]:
 # --------------------------------------------------------------------------
 
 
-def shared_lines(body: str) -> str:
+def _clean_line(line: str) -> bool:
+    """A raw line `visible()` would leave as it is: no invisible code point, no C0/C1 control (a `\\r`
+    included), no fence tag. Only such a line may open a section or count as shared (security review on
+    ov#559: a heading that appears only after the overlay strips characters cp#487 did not escape)."""
+    return not (_INVISIBLE_RE.search(line) or _CONTROL_RE.search(line) or _FENCE_TAG_RE.search(line))
+
+
+def shared_lines(raw: str) -> str:
     """The profile's lines tagged Edge City India 2026 (cp#487), under their section and card headings, for a
-    session that is not private. Only the claim sections (Context tags, the village group, the mini-app
-    sections) are read; the raw sections never. Fail closed: a file without cp#487's tags (no
-    `PRIVATE_SECTION` line under both raw headings) gives "", and so does a file with no shared line.
-    cp#487 escapes every Markdown heading inside free text, so an unescaped `## ` line is the file's own."""
-    lines = body.split("\n")
+    session that is not private. Classified on the RAW decoded text (before `visible()`), whole lines only:
+    a line `_clean_line` refuses never opens a section and never counts as shared.
+
+    Only the claim sections are read, in the order cp writes them: Context tags and From the village group
+    before the raw sections, the mini-app sections (`APP_HEADING_RE`, the same name twice) after Shared on
+    the Context page. A claim heading after a raw heading, or an app heading before the sources heading,
+    stops the read there (fail closed: that line and the rest stay out). The raw sections are never read.
+    Fail closed too: a file without cp#487's tags (no `PRIVATE_SECTION` line under both raw headings) gives
+    "", and so does a file with no shared line. cp#487 escapes every Markdown heading inside free text."""
+    lines = raw.split("\n")
     for heading in RAW_HEADINGS:
         if heading not in lines:
             return ""
@@ -378,10 +390,27 @@ def shared_lines(body: str) -> str:
     section: Optional[str] = None
     section_shown = False
     card: Optional[str] = None
+    raw_seen = sources_seen = False
     for line in lines:
+        if not _clean_line(line):
+            continue
         if line.startswith("## ") or line.startswith("# "):
-            claims = line in CLAIM_HEADINGS or bool(APP_HEADING_RE.match(line))
-            section, section_shown, card = (line if claims else None), False, None
+            if line in RAW_HEADINGS:
+                raw_seen = True
+                sources_seen = sources_seen or line == SOURCES_HEADING
+                section = None
+                continue
+            if line in CLAIM_HEADINGS:
+                if raw_seen:
+                    break
+                section = line
+            elif APP_HEADING_RE.match(line):
+                if not sources_seen:
+                    break
+                section = line
+            else:
+                section = None
+            section_shown, card = False, None
             continue
         if section is None:
             continue
@@ -439,9 +468,11 @@ class Profile:
     """One read of `_profile.md`. `reason` is empty when it was read."""
 
     def __init__(self, reason: str = "", *, body: str = "", rendered_at: Optional[str] = None,
-                 sha_ok: Optional[bool] = None, removed: int = 0) -> None:
+                 sha_ok: Optional[bool] = None, removed: int = 0, raw: str = "") -> None:
         self.reason = reason
         self.body = body
+        #: The decoded text before `visible()` (manifest line off): what `shared_lines` classifies.
+        self.raw = raw
         self.rendered_at = rendered_at
         self.sha_ok = sha_ok
         self.removed = removed
@@ -491,7 +522,8 @@ def read_profile(home: Optional[Path] = None) -> Profile:
             text = rest
         body, removed = visible(text)
         body = body.strip("\n").rstrip()
-        return Profile("" if body else "empty", body=body, rendered_at=rendered_at, sha_ok=sha_ok, removed=removed)
+        return Profile("" if body else "empty", body=body, rendered_at=rendered_at, sha_ok=sha_ok, removed=removed,
+                       raw=text)
     except Exception as exc:  # noqa: BLE001 - fail open
         return Profile(f"error_{type(exc).__name__}")
 
@@ -869,7 +901,7 @@ class VillageMemoryProvider(MemoryProvider):
         full, limit = block_budget(context_length(home), not shares_only)
         body = profile.body
         if shares_only:
-            body = shared_lines(body)
+            body, _removed = visible(shared_lines(profile.raw))
             if not body:
                 _log_once(f"{where}:no_shared", "village-memory: %s: no line tagged %s; no block", where, SHARED_LABEL)
         elif not full:
