@@ -44,6 +44,9 @@ export const REVIEWED_MINI_APPS = [
   // Kismet Part 2 (lead L29830): its three public reads and the owner's own summary, then the owner's own sign-up, new
   // dates, meet or pass and deletion (gated writes); _mini_apps.py KISMET, exact. Part 1's read alone is below.
   { id: "kismet", version: "1.1.0", operations: ["kismet.how_it_works", "kismet.village_stats", "kismet.public_board", "kismet.summary", "kismet.signup", "kismet.go", "kismet.decide", "kismet.delete"], skills: ["kismet"] },
+  // Edge Library (Naman, adapted from ov#506): READS ONLY in 1.0.0 (CD-44), the village knowledge graph's eight reads;
+  // its writes are not exposed (_mini_apps.py LIBRARY, exact).
+  { id: "library", version: "1.0.0", operations: ["library.initialize", "library.search", "library.get", "library.source", "library.schema", "library.history", "library.changes_since", "library.proposals"], skills: ["library"] },
 ] as const;
 /**
  * Earlier gold-stars entries, still staged byte for byte so this overlay can roll out BEFORE the CP

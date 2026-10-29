@@ -66,9 +66,14 @@ DS_WRITE_OPERATIONS = ("dreamstarter.discover", "dreamstarter.grant_prepare")
 # (gate_verified), never a manual grant, a card or a new class: each happens only on the owner's own ask in this chat.
 KISMET_READ_OPERATIONS = ("kismet.how_it_works", "kismet.village_stats", "kismet.public_board", "kismet.summary")
 KISMET_WRITE_OPERATIONS = ("kismet.signup", "kismet.go", "kismet.decide", "kismet.delete")
+# Edge Library (Naman, adapted from ov#506): the village knowledge graph's eight reads. 1.0.0 is READS ONLY (Carter,
+# CD-44): Edge Library's three writes are not exposed, so none is in WRITE_OPERATIONS. The reads join the existing read
+# class: no new class, row, gate or card.
+LIBRARY_READ_OPERATIONS = ("library.initialize", "library.search", "library.get", "library.source", "library.schema", "library.history",
+                           "library.changes_since", "library.proposals")
 READ_OPERATIONS = frozenset({"rolodex.search", "rolodex.person", "gold-stars.quota", "gold-stars.status", "skylight.status", "mini-app.read",
                              "mini-app.context.read", "forkicks.menu", "forkicks.schedule", "forkicks.order.status", "slopfolio.status", "zzz.pairs", *ZZZ_READ_OPERATIONS,
-                             *ZZZ_TEAM_READ_OPERATIONS, *DS_READ_OPERATIONS, *KISMET_READ_OPERATIONS})
+                             *ZZZ_TEAM_READ_OPERATIONS, *DS_READ_OPERATIONS, *KISMET_READ_OPERATIONS, *LIBRARY_READ_OPERATIONS})
 WRITE_OPERATIONS = frozenset({"rolodex.meeting", "gold-stars.prepare", "gold-stars.send", "gold-stars.cancel", "mini-app.context.write",
                               "forkicks.order.prepare", "forkicks.order.confirm", "forkicks.order.cancel", "slopfolio.prepare", *ZZZ_POST_WRITES,
                               *ZZZ_TEAM_WRITE_OPERATIONS, *DS_WRITE_OPERATIONS, *KISMET_WRITE_OPERATIONS})
@@ -98,6 +103,9 @@ DREAMSTARTER = {"version": "2.0.0", "skills": ["dreamstarter"], "operations": [
     "dreamstarter.discover", "dreamstarter.dream_status", "dreamstarter.workflows", "dreamstarter.grant_requirements", "dreamstarter.grant_prepare",
     "dreamstarter.grant_status", "dreamstarter.businesses", "dreamstarter.business_brief", "dreamstarter.business_status"]}
 DS_OPERATIONS = frozenset(DREAMSTARTER["operations"])
+# The library install, by exact equality (CP catalog entry and install/install_miniapps.ts, this order).
+LIBRARY = {"version": "1.0.0", "skills": ["library"], "operations": [*LIBRARY_READ_OPERATIONS]}
+LIBRARY_OPERATIONS = frozenset(LIBRARY["operations"])
 # ov#441 S1 (lead RULING CLAIMS L16692, reaffirmed L16696): managed private-pair participation is gated ONLY by a
 # separate cp catalog/allowlist entry, projected in `apps` beside zzzbot and granted per tenant at activation (the
 # Mosaic restricted-entry pattern). Id `zzz-bridge`: cp and app validate app ids with ^[a-z0-9][a-z0-9-]{0,39}$,
@@ -216,7 +224,8 @@ def _card_entry_ok(app) -> bool:
 # object or has no string id, a duplicate id, and a reviewed id failing its exact equality (the tamper signal).
 REVIEWED_ENTRIES = {"forkicks": (FORKICKS,), "zzzbot": ZZZBOT_ACCEPTED, ZZZ_BRIDGE_ID: (ZZZ_BRIDGE,),
                     ZZZ_AUTONOMY_RUNNER_ID: (ZZZ_AUTONOMY_RUNNER,), "slopfolio": (SLOPFOLIO,),
-                    "dreamstarter": (DREAMSTARTER,), "kismet": (KISMET, KISMET_PUBLIC)}
+                    "dreamstarter": (DREAMSTARTER,), "kismet": (KISMET, KISMET_PUBLIC),
+                    "library": (LIBRARY,)}
 LOGGED_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 LOG = logging.getLogger("village_bridge")
 _REFUSED_LOGGED = set()
