@@ -1779,7 +1779,8 @@ async def _elicit_merge(query: Any, message: Any, nonce: str, field: str, positi
 # The wire: ``GET {CONTROL_PLANE_URL}/tenants/<own tenant>/thor/today`` and ``POST .../thor/<item_key>/answer
 # {"answer": "do_it"|"not_now"|"not_for_me"}``, both with ``Authorization: Bearer $AV_THOR_KEY``: a per-tenant key the
 # control plane writes for this plugin only, held in custody (av-approval custody_keys.json "strip" and _custody.FLOOR,
-# as AV_GODCONST_BALLOT_KEY), so agent-run code can never answer or suppress its human's cards. Never EDGEOS_API_KEY
+# as AV_GODCONST_BALLOT_KEY), so agent-run code gets no copy of it through the tool and environment surface custody
+# controls; the residual is the ballot key's ($HERMES_HOME/.env stays readable by the agent's user). Never EDGEOS_API_KEY
 # (the agent can read that one) and no fallback to it: with no AV_THOR_KEY on the box the card mode is off (no read, no
 # card; one code-only log line, ``thor_no_key``). CP_HOSTS-pinned, no redirects, no proxies. The control plane is the
 # authority for everything else (approved run, consent, double opt-in for intros, expiry, one per day, the B mirror
@@ -1787,7 +1788,8 @@ async def _elicit_merge(query: Any, message: Any, nonce: str, field: str, positi
 #
 # Read cadence: inside village daytime (_logic.in_send_window, 08:00-21:30 IST, inside one UTC day), at most once per
 # UTC day after an answered read (served, empty, expired, refused); a transport failure or a 429/5xx retries after
-# THOR_RETRY_S, at most THOR_READS_PER_DAY reads a day. Serving marks the item carded at the control plane, so a card
+# THOR_RETRY_S, at most THOR_READS_PER_DAY reads a day. The day's read count, its answered read and its backoff are
+# kept in memory too (per tenant and UTC day), so a ledger that cannot be written still caps the reads. Serving marks the item carded at the control plane, so a card
 # whose Telegram send fails is retried from memory (THOR_SEND_ATTEMPTS, while unexpired); a restart in between loses
 # it for that day (logged ``thor_send_lost``).
 #
@@ -1814,6 +1816,16 @@ _THOR_PASS_LOCK: Optional[asyncio.Lock] = None
 _THOR_PENDING: dict = {}
 _thor_in_flight: set = set()
 _THOR_NO_KEY_LOGGED = False
+#: (tenant, UTC day) -> {"reads", "done", "next_read_at"}: the day's read state in memory, so an unwritable ledger
+#: never lifts the reads-per-day cap (each GET can spend the day's item at the control plane). Today's key only.
+_THOR_DAY: dict = {}
+
+
+def _thor_day_state(tenant: str, day: str) -> dict:
+    key = (tenant, day)
+    for stale in [k for k in _THOR_DAY if k != key]:
+        _THOR_DAY.pop(stale, None)
+    return _THOR_DAY.setdefault(key, {"reads": 0, "done": False, "next_read_at": None})
 
 
 def thor_on(home: Optional[str] = None) -> bool:
@@ -1969,6 +1981,7 @@ async def thor_pass_once(bot: Any, adapter: Any, make_button: Callable, make_mar
             today = T.utc_day(stamp)
             if ledger.get("day") != today:
                 ledger.update({"day": today, "reads": 0, "next_read_at": None, "done": False})
+            mem = _thor_day_state(tenant_id(home) or "-", today)
             for card in ledger["cards"]:
                 if card.get("status") == "pending":
                     if card.get("day") != today:
@@ -1979,31 +1992,32 @@ async def thor_pass_once(bot: Any, adapter: Any, make_button: Callable, make_mar
                     with _THOR_LEDGER_LOCK:
                         save_thor_ledger(_merge_thor(ledger, home), home)
                     return codes
-            if ledger.get("done") or any(c.get("day") == today for c in ledger["cards"]):
+            if ledger.get("done") or mem["done"] or any(c.get("day") == today for c in ledger["cards"]):
                 return codes
-            next_at = ledger.get("next_read_at")
-            if isinstance(next_at, (int, float)) and stamp < next_at:
+            waits = [t for t in (ledger.get("next_read_at"), mem["next_read_at"]) if isinstance(t, (int, float))]
+            if waits and stamp < max(waits):
                 return codes
-            if int(ledger.get("reads", 0)) >= THOR_READS_PER_DAY:
-                ledger["done"] = True
+            reads = max(int(ledger.get("reads", 0)), int(mem["reads"]))
+            if reads >= THOR_READS_PER_DAY:
+                ledger["done"] = mem["done"] = True
                 count("reads_exhausted")
                 with _THOR_LEDGER_LOCK:
                     save_thor_ledger(_merge_thor(ledger, home), home)
                 return codes
-            ledger["reads"] = int(ledger.get("reads", 0)) + 1
+            ledger["reads"] = mem["reads"] = reads + 1
             reply = await asyncio.to_thread(call, "GET", THOR_READ_PATH, None, home)
             if not reply.ok:
                 if _thor_retryable(reply):
-                    ledger["next_read_at"] = stamp + THOR_RETRY_S
+                    ledger["next_read_at"] = mem["next_read_at"] = stamp + THOR_RETRY_S
                     count(f"read_retry_{reply.code}")
                 else:
-                    ledger["done"] = True
+                    ledger["done"] = mem["done"] = True
                     count(f"read_refused_{reply.code}")
                 with _THOR_LEDGER_LOCK:
                     save_thor_ledger(_merge_thor(ledger, home), home)
                 return codes
             item, code = T.today_item(reply.data, stamp)
-            ledger["done"] = True
+            ledger["done"] = mem["done"] = True
             if item is None:
                 count(f"read_{code}")
                 with _THOR_LEDGER_LOCK:

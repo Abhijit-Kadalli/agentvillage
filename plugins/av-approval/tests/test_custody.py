@@ -208,7 +208,7 @@ def test_install_covers_all_three_surfaces_and_strips_case_folded(caplog):
     # agent-readable EDGEOS_API_KEY does.
     assert "AV_GODCONST_BALLOT_KEY" not in ec and "AV_GODCONST_BALLOT_KEY" not in fg
     assert "AV_GODCONST_BALLOT_KEY" in c.FLOOR
-    # THOR nudge card: the same for its key, so agent code can never answer or suppress its human's cards.
+    # THOR nudge card: the same for its key: no agent-run child gets a copy (the residual is the ballot key's: .env).
     assert "AV_THOR_KEY" not in ec and "AV_THOR_KEY" not in fg
     assert "AV_THOR_KEY" in c.FLOOR
 

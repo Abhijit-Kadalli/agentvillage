@@ -14,6 +14,8 @@ import io
 import json
 import logging
 import os
+import threading
+import time
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
@@ -228,8 +230,8 @@ def test_the_copy_strings_are_the_copy_files_verbatim(plugin):
     assert T.THOR_NUDGE_WHY == "Why you: "
     assert (T.THOR_NUDGE_DO, T.THOR_NUDGE_LATER, T.THOR_NUDGE_NEVER) == ("Do it", "Not now", "Not for me")
     assert T.THOR_NUDGE_DONE == "Done: {title}."
-    assert T.THOR_NUDGE_NOTED == "Noted. ODIN will pick this up."
-    assert T.THOR_NUDGE_INTRO_ASKED == "Asked. {b} hears about this only if they also say yes."
+    assert T.THOR_NUDGE_NOTED == "Noted."
+    assert T.THOR_NUDGE_INTRO_ASKED == "Asked. ODIN will check with {b} too."
     assert T.THOR_NUDGE_INTRO_MIRROR == "{a} would like an intro."
     assert T.THOR_NUDGE_INTRO_MATCH == "It's a match: {a} and {b} both said yes."
     assert T.THOR_NUDGE_LATER_OK == "OK. ODIN may bring this back another day."
@@ -405,7 +407,7 @@ def test_an_unusable_item_is_never_rendered(plugin, thor, bad):
 
 
 @pytest.mark.parametrize("index,value,line", [
-    (0, "do_it", "Noted. ODIN will pick this up."),
+    (0, "do_it", "Noted."),
     (1, "not_now", "OK. ODIN may bring this back another day."),
     (2, "not_for_me", "OK. You won't see this one again."),
 ])
@@ -494,7 +496,7 @@ def test_an_intro_card_shows_only_what_the_route_returns_and_never_a_b_name(plug
     card = bot.cards()[0]
     assert "Ravi" not in card.text
     q = tap(plugin, server, card, 0)
-    assert q.answers == ["Noted. ODIN will pick this up."]
+    assert q.answers == ["Noted."]
     assert all("Ravi" not in line and not line.startswith("Asked.") for line in bot.lines())
     assert ledger(thor)["cards"][0]["intro"] is True
     assert [c[0] for c in server.calls] == ["GET", "POST"]  # nobody else is contacted
@@ -509,10 +511,10 @@ def test_an_intro_card_shows_a_name_only_when_it_is_in_timours_draft(plugin, tho
 
 def test_the_intro_asked_line_needs_a_given_first_name(plugin):
     T = plugin.T
-    assert T.follow_up("d", True) == "Noted. ODIN will pick this up."
-    assert T.follow_up("d", True, "  ") == "Noted. ODIN will pick this up."
-    assert T.follow_up("d", True, "Asha") == "Asked. Asha hears about this only if they also say yes."
-    assert T.follow_up("d", False, "Asha") == "Noted. ODIN will pick this up."
+    assert T.follow_up("d", True) == "Noted."
+    assert T.follow_up("d", True, "  ") == "Noted."
+    assert T.follow_up("d", True, "Asha") == "Asked. ODIN will check with Asha too."
+    assert T.follow_up("d", False, "Asha") == "Noted."
 
 
 # --------------------------------------------------------------------------- reads that fail
@@ -681,3 +683,63 @@ def test_the_ballot_never_reads_the_thor_route_nor_thor_the_ballot_key(plugin, t
 
 def test_the_in_flight_string_uses_the_ellipsis_character(plugin):
     assert plugin.T.IN_FLIGHT == "Still saving\u2026"
+
+
+# --------------------------------------------------------------------------- review-b ov#561 N2, N3
+
+
+def _read_only_ledger_dir(home):
+    path = os.path.join(home, "av-godconst")
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o500)  # private, readable, not writable: every ledger save fails
+    return path
+
+
+@pytest.mark.parametrize("served", [True, False])
+def test_an_unwritable_ledger_still_caps_the_days_reads(plugin, thor, served):
+    bot, server = Bot(), Server(plugin)
+    if not served:
+        server.network_down = 1000
+    path = _read_only_ledger_dir(thor)
+    try:
+        for i in range(120):  # two hours of passes, one a minute, and then the rest of the day
+            pass_(plugin, bot, server, now=DAY + i * 60)
+        for i in range(1, 12):
+            pass_(plugin, bot, server, now=DAY + 7200 + i * plugin.THOR_RETRY_S)
+        assert not os.path.exists(os.path.join(path, "thor.json"))
+    finally:
+        os.chmod(path, 0o700)
+    assert len(server.reads()) == (1 if served else plugin.THOR_READS_PER_DAY)
+    assert bot.cards() == []  # the write-ahead save failed: nothing is sent that the ledger could not record
+    pass_(plugin, bot, server, now=NEXT_DAY)  # a new UTC day, the ledger writable again: one read, one card
+    assert len(server.reads()) == (2 if served else plugin.THOR_READS_PER_DAY + 1)
+
+
+def test_two_taps_at_once_on_one_card_post_exactly_once(plugin, thor):
+    bot, server = Bot(), Server(plugin)
+    pass_(plugin, bot, server)
+    card = bot.cards()[0]
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(method, path, body=None, home=None):
+        entered.set()
+        release.wait(5)
+        return server(method, path, body, home)
+
+    handler = plugin.make_thor_handler(None, make_button=make_button, make_markup=make_markup, caller=slow, clock=lambda: DAY)
+    first = Query(card.reply_markup.inline_keyboard[0][0].callback_data, card)
+    second = Query(card.reply_markup.inline_keyboard[0][2].callback_data, card)
+
+    async def both():
+        one = asyncio.ensure_future(handler(type("Update", (), {"callback_query": first})()))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        await handler(type("Update", (), {"callback_query": second})())
+        release.set()
+        await one
+
+    start = time.monotonic()
+    run(both())
+    assert time.monotonic() - start < 5
+    assert second.answers == ["Still saving\u2026"] and first.answers == ["Noted."]
+    assert server.answers() == [("POST", f"/tenants/{TENANT}/thor/{KEY1}/answer", f"Bearer {THOR_KEY}", {"answer": "do_it"})]

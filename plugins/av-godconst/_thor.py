@@ -22,8 +22,8 @@ THOR_NUDGE_DO = "Do it"
 THOR_NUDGE_LATER = "Not now"
 THOR_NUDGE_NEVER = "Not for me"
 THOR_NUDGE_DONE = "Done: {title}."
-THOR_NUDGE_NOTED = "Noted. ODIN will pick this up."
-THOR_NUDGE_INTRO_ASKED = "Asked. {b} hears about this only if they also say yes."
+THOR_NUDGE_NOTED = "Noted."
+THOR_NUDGE_INTRO_ASKED = "Asked. ODIN will check with {b} too."
 THOR_NUDGE_INTRO_MIRROR = "{a} would like an intro."
 THOR_NUDGE_INTRO_MATCH = "It's a match: {a} and {b} both said yes."
 THOR_NUDGE_LATER_OK = "OK. ODIN may bring this back another day."
@@ -81,9 +81,10 @@ def card_rows(nonce: str, make_button: Callable, chosen: Optional[str] = None) -
 def follow_up(choice: str, intro: bool, b_first_name: Optional[str] = None) -> str:
     """The line the resident sees after a recorded tap (the copy file's "three answers").
 
-    Do it, non-intro: nothing happens on our side yet (dark build), so "Noted. ODIN will pick this up." Do it on an
-    intro: "Asked. {b} hears ..." only with B's first name; the card route carries no such field today, so it is the
-    Noted line until data adds one (the report's question). Never a name the route did not give."""
+    Do it, non-intro: nothing performs the action on our side yet (ODIN answers and explains only), so just "Noted."
+    (never a promised pick-up). Do it on an intro: "Asked. ODIN will check with {b} too." only with B's first name; the
+    card route carries no such field today, so it is "Noted." until data adds one (the report's question). Never a
+    name the route did not give."""
     if choice == "l":
         return THOR_NUDGE_LATER_OK
     if choice == "n":

@@ -40,7 +40,7 @@
     },
     "AV_THOR_KEY": {
       "decision": "strip",
-      "reason": "THOR nudge card: the resident's per-tenant THOR credential the control plane writes; it reads the resident's daily card (GET /tenants/:id/thor/today) and records their Do it / Not now / Not for me answer (POST .../thor/:item_key/answer, not_for_me suppressing that title for good). Only av-godconst, inside the gateway, reads it (process environment, then $HERMES_HOME/.env). With it agent code could answer or suppress its human's cards, so it is in _custody.FLOOR too."
+      "reason": "THOR nudge card: the resident's per-tenant THOR credential the control plane writes; it reads the resident's daily card (GET /tenants/:id/thor/today) and records their Do it / Not now / Not for me answer (POST .../thor/:item_key/answer, not_for_me suppressing that title for good). Only av-godconst, inside the gateway, reads it (process environment, then $HERMES_HOME/.env). With it agent code could answer or suppress its human's cards, so it is in _custody.FLOOR too: agent-run code gets no copy of it through the tool and environment surface custody controls; the residual is the ballot key's ($HERMES_HOME/.env stays readable by the agent's user)."
     },
     "TURING_FALLS_CLAIM_TOKEN": {
       "decision": "agent_readable",
