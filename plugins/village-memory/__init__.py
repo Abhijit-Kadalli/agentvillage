@@ -673,9 +673,15 @@ def _mark_attempt(line: str) -> bool:
     return _mark_token(unicodedata.normalize("NFKC", inner).casefold().strip())
 
 
-def _mark_token(token: str) -> bool:
-    """A folded token that is a mark (`public`, `village`, `private`) or an `agentvillage/` id."""
-    return token in MARK_WORDS or token.startswith("agentvillage")
+_TOKEN_SPLIT_RE = re.compile(r"[^\w/]+|_")
+
+
+def _mark_token(text: str) -> bool:
+    """Folded parenthesis text that mentions a mark: split on anything but letters, digits and `/`, any
+    token a mark word (`public`, `village`, `private`) or an `agentvillage` id. `(you; private)`,
+    `(private!)` and `(visibility: private)` all mention one (fail closed)."""
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(text) if t]
+    return any(t.startswith("agentvillage") or any(part in MARK_WORDS for part in t.split("/")) for t in tokens)
 
 
 #: A parenthesis inside an item's words that reads as a marker or a mark: a second item hidden behind the
@@ -686,12 +692,12 @@ _OTHER_BREAKS_RE = re.compile("[\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 
 
 def _embedded_mark(words: str) -> bool:
-    """A parenthesis in the words that is shaped like an item's tag: its first token one of the five
-    markers (`(you, private)`, `(setup)`), or any token an `agentvillage/` id. A plain word in brackets
-    (`a (village) garden`) is words."""
+    """A parenthesis in the words that is shaped like an item's tag (its first token one of the five
+    markers: `(you, private)`, `(setup)`) or that mentions a mark at all (`_mark_token`: `(village)`,
+    `(you; private)`). Fail closed: any parenthesis that mentions a mark."""
     for found in _EMBEDDED_PAREN_RE.finditer(words):
-        tokens = [t.strip() for t in unicodedata.normalize("NFKC", found.group(1)).casefold().split(",")]
-        if tokens[0] in ITEM_MARKERS or any(t.startswith("agentvillage") for t in tokens):
+        folded = unicodedata.normalize("NFKC", found.group(1)).casefold()
+        if folded.split(",")[0].strip() in ITEM_MARKERS or _mark_token(folded):
             return True
     return False
 
@@ -703,10 +709,12 @@ def tags_item(line: str) -> Tuple[str, bool]:
     mark word in a last parenthesis the grammar did not read, a marker or mark inside the words). Shared
     only with a mark naming Edge City India 2026 on a line known to be no guess: a guess, a `(chat)` line
     and a guess suffix are Private whatever their mark (the vocab's guess rule)."""
+    # Every branch: a tag-shaped or mark-mentioning parenthesis before the line's last one is a hidden item.
+    last = line.rfind("(")
+    if _embedded_mark(line[:last] if last >= 0 else line):
+        return "bad", False
     match = ITEM_LINE.match(line)
-    if not match or not match.group(1).strip():
-        return ("bad", False) if _mark_attempt(line) else ("unmarked", False)
-    if match.group(2) is None:
+    if not match or not match.group(1).strip() or match.group(2) is None:
         return ("bad", False) if _mark_attempt(line) else ("unmarked", False)
     if _embedded_mark(match.group(1)):
         return "bad", False

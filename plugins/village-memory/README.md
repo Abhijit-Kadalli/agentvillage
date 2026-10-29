@@ -52,7 +52,8 @@ plugins/village-memory/
   group posts and Removed-by-you lines included; in an entry with no mark and no note every line stays,
   as today. Headings, the header and the note stay. A private session is byte for byte. A mark the gate
   cannot parse (a lookalike, an invisible, a refused list, a mark word in a last parenthesis even with
-  punctuation after it or left unclosed, a tag-shaped parenthesis inside the words) drops the line and
+  punctuation after it or left unclosed, a parenthesis before the last that is tag-shaped or mentions a
+  mark; a mark is any token, split on anything but letters, digits and `/`) drops the line and
   counts as a mark, so the entry reads marked. Lines are split as the Index readers split them (`\r\n`,
   `\r` folded to `\n`); a line still holding another line break is dropped, and so is a line that is no
   item and no structure line but holds a tag-shaped parenthesis.

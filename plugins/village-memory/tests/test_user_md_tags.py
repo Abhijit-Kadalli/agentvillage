@@ -274,7 +274,28 @@ def test_a_line_that_is_no_item_but_holds_a_tag_is_dropped_even_unmarked(vm, lin
     assert "Hidden one" not in out and "- Plain (you)" not in out  # the bad line marks the entry
 
 
-def test_plain_words_in_brackets_do_not_mark_an_entry(vm):
-    entry = "\n".join([TAGS, HEADER, "Summary: Builds a (village) garden.", "Here to:",
-                       "- Build a (village) garden (you)", "- Bicycle tune-ups (cheap) (setup)"])
+def test_plain_words_in_brackets_without_a_mark_do_not_mark_an_entry(vm):
+    entry = "\n".join([TAGS, HEADER, "Summary: Builds a (shared) garden.", "Here to:",
+                       "- Build a (community) garden (you)", "- Bicycle tune-ups (cheap) (setup)"])
     assert vm.shared_tags_entry(entry) == entry
+
+
+@pytest.mark.parametrize("line", ["- Build a (village) garden (you)", "- Hidden (you; private)", "- Hidden (private!)",
+                                  "- Hidden (visibility: private)", "- Hidden (you - private)", "- Hidden (my/public) x"])
+def test_any_parenthesis_that_mentions_a_mark_fails_closed(vm, line):
+    """Security review on bf16a133: a mark word anywhere in a parenthesis, as a token (split on anything
+    but letters, digits and /), drops the line and marks the entry."""
+    entry = "\n".join([TAGS, HEADER, "Here to:", "- Plain (you)", line])
+    assert vm.shared_tags_entry(entry) == "\n".join([TAGS, HEADER, "Here to:"])
+
+
+@pytest.mark.parametrize("line", [
+    "- Hidden one (you, private) and words",                 # no marker parsed: group(2) is None
+    "- Hidden one (setup, private) then more (chat)",        # marker parsed: the embedded one checked too
+    "- Hidden one (you, private) - tail without a bracket",
+    "-  (you, private) words",                               # no words for ITEM_LINE
+    "- Hidden one (agentvillage/private) and (cheap)",
+])
+def test_an_embedded_mark_is_checked_in_every_branch(vm, line):
+    entry = "\n".join([TAGS, HEADER, "Here to:", line])
+    assert vm.shared_tags_entry(entry) == "\n".join([TAGS, HEADER, "Here to:"])
