@@ -4,13 +4,15 @@ One page for a buildathon team. It says what a mini-app is, what you build, how 
 
 ## Deadlines: what counts and when
 
-1. **Your entry counts** when, by the buildathon submission deadline, you have:
+**The buildathon deadline is Friday 30 October, 6pm IST (18:00 IST).** To be installable during the event, open your pull request by **Friday 12pm IST (noon)**.
+
+1. **Your entry counts** when, by the deadline (Friday 6pm IST), you have:
    - a working, publicly reachable HTTPS MCP or API endpoint;
    - your manifest and SKILL.md opened as a pull request (or sent to the organisers if you cannot open one);
    - a short demo (video or live) of your agent using it.
 
    Our review and catalog listing are not part of the deadline and never count against you.
-2. **To let residents install it during the event,** open the pull request at least 6 hours before the deadline. We review in order of arrival. A complete pull request that passes the automated checks gets a quick human review. We cannot promise a slot for anything opened later.
+2. **To let residents install it during the event,** open the pull request at least 6 hours before the deadline (by Friday 12pm IST). We review in order of arrival. A complete pull request that passes the automated checks gets a quick human review. We cannot promise a slot for anything opened later.
 3. **Run the local checks (section 6) before you open the pull request.** A pull request that fails them goes to the back of the queue until it is fixed.
 
 ## 1. What a mini-app is
