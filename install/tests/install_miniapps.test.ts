@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 import * as installMiniApps from "../install_miniapps";
 import { PREVIOUS_REVIEWED_MINI_APPS, reconcileMiniApps, REVIEWED_MINI_APPS, SHIPPED_SKILLS, validateProjection, ZZZ_BRIDGE_ID, zzzParticipation } from "../install_miniapps";
 import * as zzzManagedJob from "../zzz_managed_job";
+import { AUTONOMY_FILES, AUTONOMY_GATE } from "../zzz_autonomy_job";
 import { EDGE_SKILL_NAMES } from "../paths";
 import { createRequire } from "node:module";
 
@@ -64,6 +65,21 @@ test("reviewed skills are optional, disk-only staging has deterministic receipts
   expect(receipt).not.toHaveProperty("active");
   writeFileSync(join(root, "skills", "gold-stars", "SKILL.md"), "tampered");
   expect(() => reconcileMiniApps(all, root, undefined, true)).toThrow("mini_apps_skill_mismatch");
+});
+
+// cp#467 (runner SEV1 28 Oct 2026): the control plane holds these receipt paths by hand and fails EVERY mini-app on a
+// box whose receipt differs. A change here lands in cp control-plane/src/mini-apps-skills.js ZZZ_STAGE_FILE_LISTS /
+// ZZZ_AUTONOMY_FILE_LISTS FIRST (as a new list, the old one kept for the roll), deployed before the tag that ships it.
+test("zzz managed receipt files are the cp's mirrored lists (change the cp first: mini-apps-skills.js ZZZ_*_FILE_LISTS)", () => {
+  const root = installedBox();
+  const projection = { version: 1, apps: REVIEWED_MINI_APPS.filter(app => ["zzzbot", ZZZ_BRIDGE_ID, AUTONOMY_GATE].includes(app.id)) };
+  expect(projection.apps.map(app => app.id).sort()).toEqual([AUTONOMY_GATE, ZZZ_BRIDGE_ID, "zzzbot"].sort());
+  const managed = reconcileMiniApps(projection, root).files.map(file => file.path).filter(path => path !== "skills/zzzbot/SKILL.md");
+  expect(managed).toEqual([
+    "skills/zzzbot/scripts/zzz_managed_runner.py", "skills/zzzbot/prompts/participate.md", // cp ZZZ_STAGE_FILE_LISTS[0]
+    "skills/zzzbot/scripts/zzz_autonomy_runner.py", "skills/zzzbot/prompts/autonomy.md", // cp ZZZ_AUTONOMY_FILE_LISTS[0]
+  ]);
+  expect(AUTONOMY_FILES).toEqual(["scripts/zzz_autonomy_runner.py", "prompts/autonomy.md"]);
 });
 
 test("uninstall revokes the projection and removes only exact managed files, never a shipped skill", () => {
