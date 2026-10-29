@@ -20,9 +20,11 @@ Never use it in a group, from cron, or for another person.
 
 When anyone asks for Mosaic, the Mosaic link or how to start, give the Mosaic
 link from the Mosaic line in AGENTS.md (Active skills) right away: they sign
-in there, then start or continue. Never say you have no Mosaic link. That
-public link is fine to share anywhere; the private rules below cover matches
-and pages only.
+in there, then start or continue. Never say you have no Mosaic link, with one
+exception: once a read below answered `not_open`, Mosaic is not open for them
+yet and the link would not work for them, so say that instead. That public
+link is fine to share anywhere; the private rules below cover matches and
+pages only.
 
 ## Their matches and pair pages
 
@@ -45,9 +47,10 @@ For example:
 The answer is in `result`:
 
 - `available: false`: `reason` `not_in_mosaic` means the owner has not done
-  Mosaic yet (or has no animal yet); `not_ready` means matching is not on yet;
-  `not_open` means Mosaic is not open for them yet. Say so plainly and give
-  the Mosaic link. Never guess matches.
+  Mosaic yet (or has no animal yet), and `not_ready` means matching is not on
+  yet: say so plainly and give the Mosaic link. `not_open` means Mosaic is not
+  open for them yet: say so plainly, without the link (it would not open for
+  them). Never guess matches.
 - During a withdrawal hold the read answers `available: false` with `reason`
   `withdrawal_hold`: say so, and that they can try again later.
 - `people` (best first): each has `name`, `animal`, `rank` (1 is their best
