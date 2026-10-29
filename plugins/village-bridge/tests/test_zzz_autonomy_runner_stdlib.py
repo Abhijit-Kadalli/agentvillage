@@ -11,6 +11,7 @@ The fixtures in fixtures/zzz_runner_config/ are real writer output, not hand-wri
 """
 import importlib.util
 import json
+import logging
 import os
 import random
 import shutil
@@ -278,6 +279,12 @@ class TestModelConfigReader(unittest.TestCase):
                 self.assertGreater(stats["equal"], count // (30 if hostile else 2))
 
     def test_model_route_reads_the_writer_shapes(self):
+        # Through the stdlib fallback (PyYAML blocked) and, where it is importable, through yaml.safe_load.
+        for blocked in (True, False) if yaml else (True,):
+            with self.subTest(pyyaml_blocked=blocked), patch.dict(sys.modules, {"yaml": None} if blocked else {}):
+                self.check_model_route(blocked)
+
+    def check_model_route(self, blocked):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp).resolve()
             texts = self.fixtures()
@@ -296,9 +303,53 @@ class TestModelConfigReader(unittest.TestCase):
                     (home / "config.yaml").write_text(texts[name])
                     with self.assertRaisesRegex(ValueError, f"^{code}$"):
                         runner._model_route(home)
+            # An anchor: PyYAML reads it (no `default`, so model-name); the fallback refuses it.
             (home / "config.yaml").write_text("model:\n  provider: &p openrouter\n")
-            with self.assertRaisesRegex(ValueError, "^model-config$"):
+            with self.assertRaisesRegex(ValueError, "^model-config$" if blocked else "^model-name$"):
                 runner._model_route(home)
+
+
+# Shapes PyYAML reads that the strict fallback refuses (review-b ov#550 S1): with PyYAML importable they must read
+# exactly as yaml.safe_load, as the v2.1.21 runner did.
+PYYAML_ONLY = {
+    "document start": "---\nmodel:\n  provider: openrouter\n  default: anthropic/claude-haiku-4.5\n",
+    "anchor, alias and tag": "base: &p openrouter\nmodel:\n  provider: *p\n  default: !!str anthropic/claude-haiku-4.5\n",
+    "tab in a quoted string": 'model:\n  provider: openrouter\n  default: "anthropic/claude-haiku-4.5"\nagent:\n  note: "a\tb"\n',
+    "lone carriage returns": "model:\r  provider: openrouter\r  default: anthropic/claude-haiku-4.5\r",
+}
+
+
+class TestPyYamlFirst(unittest.TestCase):
+    def home(self, text):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name).resolve()
+        (home / ".env").write_text("OPENROUTER_API_KEY=fixture-openrouter\n")
+        (home / "config.yaml").write_bytes(text.encode())
+        return home
+
+    @unittest.skipUnless(yaml, "PyYAML importable")
+    def test_pyyaml_reads_the_route_when_importable(self):
+        route = ("https://openrouter.ai/api/v1", "fixture-openrouter", "anthropic/claude-haiku-4.5")
+        for name, text in PYYAML_ONLY.items():
+            with self.subTest(name):
+                self.assertEqual(read(text), REFUSED)  # the fallback alone would refuse it
+                with patch.object(runner, "_model_config", side_effect=AssertionError("fallback used")):
+                    self.assertEqual(runner._model_section(text.encode()), yaml.safe_load(text)["model"])
+                    self.assertEqual(runner._model_route(self.home(text)), route)
+
+    def test_the_stdlib_reader_is_used_only_when_pyyaml_is_blocked(self):
+        fixture = (FIXTURES / "hermes-odin-model-put.yaml").read_bytes()
+        with patch.dict(sys.modules, {"yaml": None}):
+            with patch.object(runner, "_model_config", wraps=runner._model_config) as reader:
+                self.assertEqual(runner._model_section(fixture), {
+                    "default": "anthropic/claude-opus-5.5", "provider": "openrouter",
+                    "base_url": "https://openrouter.ai/api/v1"})
+                self.assertEqual(reader.call_count, 1)
+            for name, text in PYYAML_ONLY.items():
+                with self.subTest(name):
+                    with self.assertRaisesRegex(ValueError, "^model-config$"):
+                        runner._model_route(self.home(text))
 
 
 class TestReasonLine(unittest.TestCase):
@@ -455,6 +506,7 @@ class TestShippedRunnerWithoutPackages(unittest.TestCase):
 
 class TestClientsBeforeClaim(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(logging.disable, logging.root.manager.disable)  # run() quiets logging process-wide
         self.box = ShippedRunnerHome()
         self.addCleanup(self.box.temp.cleanup)
 

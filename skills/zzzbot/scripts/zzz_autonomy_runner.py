@@ -294,8 +294,9 @@ def _activity(http, cfg: dict, operation: str, **fields):
     return result
 
 
-# config.yaml's top-level `model`, read with the standard library only (RUNNER-STDLIB-ROUTE): the cron interpreter
-# may lack PyYAML, and this isolated child imports nothing outside the standard library before its claim. It reads the
+# config.yaml's top-level `model` (RUNNER-STDLIB-ROUTE). Hermes runs this job with its own interpreter, where PyYAML
+# is a core dependency, so the route is read with yaml.safe_load exactly as before; only when PyYAML cannot be imported
+# does this strict standard-library fallback read it, so a box missing PyYAML still reaches the claim step. It reads the
 # one top-level `model:` key, either as an inline scalar or as a block of `key: value` lines indented under it, with
 # plain, 'single'- or "double"-quoted one-line scalars, comments and blank lines; of that block it keeps MODEL_KEYS and
 # ignores the rest. Anything PyYAML might read differently raises ValueError("model-config"): a flow collection (other
@@ -554,6 +555,16 @@ def _model_config(raw: bytes):
     return model
 
 
+def _model_section(raw: bytes):
+    """config.yaml's top-level `model`: yaml.safe_load's, or the stdlib reader's only when PyYAML is not importable."""
+    try:
+        import yaml
+    except ImportError:
+        return _model_config(raw)
+    config = yaml.safe_load(raw)
+    return config.get("model") if isinstance(config, dict) else None
+
+
 def _model_route(home: Path):
     path = home / "config.yaml"
     if any(part.is_symlink() for part in (path, *path.parents)):
@@ -563,7 +574,7 @@ def _model_route(home: Path):
         meta = os.fstat(source.fileno())
         if not stat.S_ISREG(meta.st_mode) or meta.st_size > 65536:
             raise ValueError("model-config")
-        model = _model_config(source.read(65537))
+        model = _model_section(source.read(65537))
     provider = model.get("provider") if isinstance(model, dict) else None
     name = model.get("default") if isinstance(model, dict) else None
     if not isinstance(name, str) or not 1 <= len(name) <= 200 or any(ord(c) < 32 for c in name):

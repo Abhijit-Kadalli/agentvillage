@@ -40,6 +40,8 @@ def clients():
 
 class TestAutonomyRunner(unittest.TestCase):
     def setUp(self):
+        # run() quiets logging process-wide (_quiet_sdk); restore it so later test files still see their logs.
+        self.addCleanup(logging.disable, logging.root.manager.disable)
         self.temp = tempfile.TemporaryDirectory()
         self.home = Path(self.temp.name).resolve()  # macOS /var is a symlink; the runner refuses linked parents
         (self.home / "cron").mkdir()
